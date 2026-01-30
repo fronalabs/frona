@@ -15,14 +15,12 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
                 return None;
             }
             let nested: Meta = attr.parse_args().ok()?;
-            if let Meta::NameValue(nv) = nested {
-                if nv.path.is_ident("table") {
-                    if let Expr::Lit(lit) = &nv.value {
-                        if let Lit::Str(s) = &lit.lit {
-                            return Some(s.value());
-                        }
-                    }
-                }
+            if let Meta::NameValue(nv) = nested
+                && nv.path.is_ident("table")
+                && let Expr::Lit(lit) = &nv.value
+                && let Lit::Str(s) = &lit.lit
+            {
+                return Some(s.value());
             }
             None
         })

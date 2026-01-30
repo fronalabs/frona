@@ -1,0 +1,24 @@
+services:
+  browserless:
+    image: ghcr.io/browserless/chromium:latest
+    ports:
+      - "3333:3333"
+    environment:
+      - MAX_CONCURRENT_SESSIONS=10
+      - PREBOOT_CHROME=true
+      - ENABLE_DEBUGGER=true
+      - PORT=3333
+      - TIMEOUT=1800000
+    volumes:
+      - ./data/browser_profiles:/profiles
+    restart: unless-stopped
+
+  searxng:
+    image: searxng/searxng:latest
+    ports:
+      - "3400:8080"
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:3400
+    volumes:
+      - ./data/searxng:/etc/searxng
+    restart: unless-stopped

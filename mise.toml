@@ -1,0 +1,71 @@
+[tools]
+rust = "1.89"
+node = "22"
+rust-analyzer = "latest"
+"cargo:cargo-watch" = "latest"
+
+[env]
+JWT_SECRET = "dev-secret-change-in-production"
+SURREAL_PATH = "data/db"
+RUST_LOG = "frona=debug,tower_http=debug"
+NEXT_PUBLIC_API_URL = "http://localhost:3001"
+PORT = "3001"
+ANTHROPIC_API_KEY = { required = true }
+BROWSERLESS_WS_URL = "ws://localhost:3333"
+BROWSER_PROFILES_PATH = "/profiles"
+
+[tasks.dev]
+description = "Run backend + frontend in parallel"
+depends = ["install-frontend", "dev:frontend", "dev:backend"]
+
+[tasks."dev:frontend"]
+description = "Run Next.js dev server"
+dir = "frontend"
+run = "npm run dev"
+
+[tasks."dev:backend"]
+description = "Run backend with cargo-watch"
+run = "cargo watch -w engine/ -w Cargo.toml -w Cargo.lock --delay 3 -x 'run -p frona'"
+
+[tasks.install-frontend]
+description = "Install frontend dependencies"
+dir = "frontend"
+run = "npm install"
+
+[tasks.build]
+description = "Production build (frontend + backend)"
+depends = ["build:frontend", "build:backend"]
+
+[tasks."build:frontend"]
+description = "Build frontend static export"
+dir = "frontend"
+run = "npm ci && npm run build"
+
+[tasks."build:backend"]
+description = "Build backend release binary"
+run = "cargo build --release -p frona"
+
+[tasks.check]
+description = "Cargo check all crates"
+run = "cargo check --workspace"
+
+[tasks.lint]
+description = "Run clippy + frontend lint"
+depends = ["lint:backend", "lint:frontend"]
+
+[tasks."lint:backend"]
+description = "Run clippy"
+run = "cargo clippy --workspace -- -D warnings"
+
+[tasks."lint:frontend"]
+description = "Run Next.js lint"
+dir = "frontend"
+run = "npm run lint"
+
+[tasks.test]
+description = "Run all tests"
+run = "cargo test --workspace"
+
+[tasks.docker]
+description = "Build Docker image"
+run = "docker build -t frona ."

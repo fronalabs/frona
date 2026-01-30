@@ -1,0 +1,122 @@
+use chrono::Utc;
+use frona::agent::models::Agent;
+use frona::agent::repository::AgentRepository;
+use frona::repository::Repository;
+use frona::api::db;
+use frona::api::repo::agents::SurrealAgentRepo;
+use surrealdb::engine::local::{Db, Mem};
+use surrealdb::Surreal;
+
+async fn test_db() -> Surreal<Db> {
+    let db = Surreal::new::<Mem>(()).await.unwrap();
+    db::setup_schema(&db).await.unwrap();
+    db
+}
+
+fn test_agent(user_id: &str) -> Agent {
+    let now = Utc::now();
+    Agent {
+        id: uuid::Uuid::new_v4().to_string(),
+        user_id: Some(user_id.to_string()),
+        name: "Test Agent".to_string(),
+        description: "A test agent".to_string(),
+        system_prompt: "You are a test agent".to_string(),
+        model_group: "primary".to_string(),
+        enabled: true,
+        tools: vec!["browser".to_string()],
+        sandbox_config: None,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+#[tokio::test]
+async fn test_create_and_find_by_id() {
+    let db = test_db().await;
+    let repo = SurrealAgentRepo::new(db);
+    let agent = test_agent("user-1");
+
+    let created = repo.create(&agent).await.unwrap();
+    assert_eq!(created.id, agent.id);
+    assert_eq!(created.user_id, agent.user_id);
+    assert_eq!(created.name, agent.name);
+    assert_eq!(created.description, agent.description);
+    assert_eq!(created.system_prompt, agent.system_prompt);
+    assert_eq!(created.model_group, agent.model_group);
+    assert_eq!(created.enabled, agent.enabled);
+    assert_eq!(created.created_at, agent.created_at);
+    assert_eq!(created.updated_at, agent.updated_at);
+
+    let found = repo.find_by_id(&agent.id).await.unwrap().unwrap();
+    assert_eq!(found.id, agent.id);
+    assert_eq!(found.name, agent.name);
+    assert_eq!(found.created_at, agent.created_at);
+    assert_eq!(found.updated_at, agent.updated_at);
+}
+
+#[tokio::test]
+async fn test_find_by_user_id() {
+    let db = test_db().await;
+    let repo = SurrealAgentRepo::new(db);
+
+    let agent1 = test_agent("user-1");
+    let mut agent2 = test_agent("user-1");
+    agent2.name = "Agent 2".to_string();
+    let agent3 = test_agent("user-2");
+
+    repo.create(&agent1).await.unwrap();
+    repo.create(&agent2).await.unwrap();
+    repo.create(&agent3).await.unwrap();
+
+    let agents = repo.find_by_user_id("user-1").await.unwrap();
+    assert_eq!(agents.len(), 2);
+    assert!(agents.iter().all(|a| a.user_id.as_deref() == Some("user-1")));
+
+    let agents = repo.find_by_user_id("user-2").await.unwrap();
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents[0].id, agent3.id);
+}
+
+#[tokio::test]
+async fn test_update() {
+    let db = test_db().await;
+    let repo = SurrealAgentRepo::new(db);
+    let agent = test_agent("user-1");
+
+    repo.create(&agent).await.unwrap();
+
+    let mut updated_agent = agent.clone();
+    updated_agent.name = "Updated Agent".to_string();
+    updated_agent.enabled = false;
+    updated_agent.updated_at = Utc::now();
+
+    let result = repo.update(&updated_agent).await.unwrap();
+    assert_eq!(result.name, "Updated Agent");
+    assert_eq!(result.enabled, false);
+
+    let found = repo.find_by_id(&agent.id).await.unwrap().unwrap();
+    assert_eq!(found.name, "Updated Agent");
+    assert_eq!(found.enabled, false);
+}
+
+#[tokio::test]
+async fn test_delete() {
+    let db = test_db().await;
+    let repo = SurrealAgentRepo::new(db);
+    let agent = test_agent("user-1");
+
+    repo.create(&agent).await.unwrap();
+    assert!(repo.find_by_id(&agent.id).await.unwrap().is_some());
+
+    repo.delete(&agent.id).await.unwrap();
+    assert!(repo.find_by_id(&agent.id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_find_by_id_not_found() {
+    let db = test_db().await;
+    let repo = SurrealAgentRepo::new(db);
+
+    let found = repo.find_by_id("nonexistent-id").await.unwrap();
+    assert!(found.is_none());
+}

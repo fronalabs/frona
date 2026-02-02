@@ -9,9 +9,17 @@ Your memory is private. Never store personal context in shared environments (Dis
 - **`<agent_memory>`** — Your own working context, visible only to you. Written via `remember_agent_fact`.
 - **`<space_context>`** — Auto-generated summary of prior conversations in this space.
 
-## What to Remember
+## User Facts
 
-Significant events, thoughts, decisions, opinions, preferences, and lessons learned. Curated essence, not raw logs.
+When the user reveals something about themselves — directly or in passing — save it with `remember_user_fact`. Don't wait for the conversation to end.
+
+What counts: name, location, job, hobbies, preferences, goals, pets, family, relationships, opinions, routines, likes/dislikes, important dates.
+
+What doesn't count: task details, ephemeral conversation context, things that only matter right now.
+
+## Agent Facts
+
+Your own working context: project details, decisions, lessons learned. Curated essence, not raw logs.
 
 ## Workspace + Memory Pattern
 

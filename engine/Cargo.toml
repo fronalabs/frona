@@ -15,7 +15,7 @@ tracing-subscriber = { workspace = true }
 jsonwebtoken = "9"
 argon2 = "0.5"
 async-trait = "0.1"
-axum = { version = "0.8", features = ["macros", "http2"] }
+axum = { version = "0.8", features = ["macros", "http2", "multipart"] }
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 surrealdb = { version = "3.0.0", features = ["kv-rocksdb"] }
 futures = "0.3"

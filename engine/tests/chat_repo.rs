@@ -5,6 +5,7 @@ use frona::agent::task::models::{Task, TaskKind, TaskStatus};
 use frona::api::db;
 use frona::api::repo::chats::SurrealChatRepo;
 use frona::api::repo::messages::SurrealMessageRepo;
+use frona::api::files::Attachment;
 use frona::chat::message::models::{Message, MessageRole};
 use frona::chat::message::repository::MessageRepository;
 use frona::chat::models::Chat;
@@ -59,6 +60,7 @@ fn test_message(chat_id: &str, content: &str) -> Message {
         tool_calls: None,
         tool_call_id: None,
         tool: None,
+        attachments: vec![],
         created_at: Utc::now(),
     }
 }
@@ -378,4 +380,126 @@ async fn test_cascade_delete_task_removes_chat_and_messages() {
 
     assert!(chat_repo.find_by_id(&chat.id).await.unwrap().is_none());
     assert!(msg_repo.find_by_chat_id(&chat.id).await.unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Attachment integration tests
+// ---------------------------------------------------------------------------
+
+fn test_attachment(filename: &str, path: &str) -> Attachment {
+    Attachment {
+        filename: filename.to_string(),
+        content_type: "text/plain".to_string(),
+        size_bytes: 100,
+        path: path.to_string(),
+    }
+}
+
+#[tokio::test]
+async fn test_message_with_attachments_round_trips_through_db() {
+    let db = test_db().await;
+    let msg_repo = SurrealMessageRepo::new(db.clone());
+    let chat_repo = SurrealChatRepo::new(db);
+
+    let chat = test_chat("user-1", "system", None);
+    chat_repo.create(&chat).await.unwrap();
+
+    let mut msg = test_message(&chat.id, "check this file");
+    msg.attachments = vec![test_attachment("report.pdf", "user://uid/report.pdf")];
+
+    msg_repo.create(&msg).await.unwrap();
+
+    let found = msg_repo.find_by_chat_id(&chat.id).await.unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].attachments.len(), 1);
+    assert_eq!(found[0].attachments[0].filename, "report.pdf");
+    assert_eq!(found[0].attachments[0].path, "user://uid/report.pdf");
+}
+
+#[tokio::test]
+async fn test_message_without_attachments_backward_compat() {
+    let db = test_db().await;
+    let msg_repo = SurrealMessageRepo::new(db.clone());
+    let chat_repo = SurrealChatRepo::new(db);
+
+    let chat = test_chat("user-1", "system", None);
+    chat_repo.create(&chat).await.unwrap();
+
+    let msg = test_message(&chat.id, "no attachments");
+    msg_repo.create(&msg).await.unwrap();
+
+    let found = msg_repo.find_by_chat_id(&chat.id).await.unwrap();
+    assert_eq!(found.len(), 1);
+    assert!(found[0].attachments.is_empty());
+}
+
+#[tokio::test]
+async fn test_find_attachments_by_chat_id_flat_list() {
+    let db = test_db().await;
+    let msg_repo = SurrealMessageRepo::new(db.clone());
+    let chat_repo = SurrealChatRepo::new(db);
+
+    let chat = test_chat("user-1", "system", None);
+    chat_repo.create(&chat).await.unwrap();
+
+    let mut m1 = test_message(&chat.id, "first");
+    m1.attachments = vec![test_attachment("a.txt", "user://uid/a.txt")];
+
+    let mut m2 = test_message(&chat.id, "second");
+    m2.attachments = vec![
+        test_attachment("b.txt", "agent://dev/b.txt"),
+        test_attachment("c.csv", "agent://dev/c.csv"),
+    ];
+
+    msg_repo.create(&m1).await.unwrap();
+    msg_repo.create(&m2).await.unwrap();
+
+    let attachments = msg_repo.find_attachments_by_chat_id(&chat.id).await.unwrap();
+    assert_eq!(attachments.len(), 3);
+
+    let filenames: Vec<&str> = attachments.iter().map(|a| a.filename.as_str()).collect();
+    assert!(filenames.contains(&"a.txt"));
+    assert!(filenames.contains(&"b.txt"));
+    assert!(filenames.contains(&"c.csv"));
+}
+
+#[tokio::test]
+async fn test_find_attachments_by_chat_id_empty() {
+    let db = test_db().await;
+    let msg_repo = SurrealMessageRepo::new(db.clone());
+    let chat_repo = SurrealChatRepo::new(db);
+
+    let chat = test_chat("user-1", "system", None);
+    chat_repo.create(&chat).await.unwrap();
+
+    let msg = test_message(&chat.id, "no files");
+    msg_repo.create(&msg).await.unwrap();
+
+    let attachments = msg_repo.find_attachments_by_chat_id(&chat.id).await.unwrap();
+    assert!(attachments.is_empty());
+}
+
+#[tokio::test]
+async fn test_find_attachments_scoped_to_chat() {
+    let db = test_db().await;
+    let msg_repo = SurrealMessageRepo::new(db.clone());
+    let chat_repo = SurrealChatRepo::new(db);
+
+    let chat_a = test_chat("user-1", "system", None);
+    let chat_b = test_chat("user-1", "system", None);
+    chat_repo.create(&chat_a).await.unwrap();
+    chat_repo.create(&chat_b).await.unwrap();
+
+    let mut m_a = test_message(&chat_a.id, "in chat a");
+    m_a.attachments = vec![test_attachment("a.txt", "user://uid/a.txt")];
+
+    let mut m_b = test_message(&chat_b.id, "in chat b");
+    m_b.attachments = vec![test_attachment("b.txt", "user://uid/b.txt")];
+
+    msg_repo.create(&m_a).await.unwrap();
+    msg_repo.create(&m_b).await.unwrap();
+
+    let attachments = msg_repo.find_attachments_by_chat_id(&chat_a.id).await.unwrap();
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0].filename, "a.txt");
 }

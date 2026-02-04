@@ -1,8 +1,44 @@
 "use client";
 
-import type { MessageResponse } from "@/lib/types";
+import type { MessageResponse, Attachment } from "@/lib/types";
 import { useNavigation } from "@/lib/navigation-context";
+import { fileDownloadUrl } from "@/lib/api-client";
 import { MarkdownContent } from "./markdown-content";
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function AttachmentItem({ attachment }: { attachment: Attachment }) {
+  const url = fileDownloadUrl(attachment.path);
+  const isImage = attachment.content_type.startsWith("image/");
+
+  if (isImage) {
+    return (
+      <a href={url} target="_blank" rel="noopener noreferrer">
+        <img
+          src={url}
+          alt={attachment.filename}
+          className="max-w-xs max-h-48 rounded-md border border-border"
+        />
+      </a>
+    );
+  }
+
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center gap-1.5 rounded-md bg-surface-tertiary px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary transition"
+    >
+      <span className="truncate max-w-[200px]">{attachment.filename}</span>
+      <span className="text-text-tertiary">({formatFileSize(attachment.size_bytes)})</span>
+    </a>
+  );
+}
 
 interface MessageBubbleProps {
   message: MessageResponse;
@@ -18,6 +54,8 @@ export function MessageBubble({ message, agentName }: MessageBubbleProps) {
     : message.agent_id
       ? (agents.find((a) => a.id === message.agent_id)?.name ?? agentName)
       : agentName;
+
+  const attachments = message.attachments ?? [];
 
   return (
     <div className="flex justify-start">
@@ -38,6 +76,13 @@ export function MessageBubble({ message, agentName }: MessageBubbleProps) {
           <div className="text-sm text-text-primary">
             <MarkdownContent content={message.content} />
           </div>
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 mt-2">
+              {attachments.map((att, i) => (
+                <AttachmentItem key={i} attachment={att} />
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -4,7 +4,7 @@ use frona::agent::task::service::TaskService;
 use frona::api::db;
 use frona::api::repo::generic::SurrealRepo;
 use frona::repository::Repository;
-use frona::schedule::service::ScheduleService;
+use frona::tool::schedule::next_cron_occurrence;
 use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
 
@@ -23,7 +23,7 @@ async fn create_cron_template_stores_correctly() {
     let db = test_db().await;
     let svc = make_task_service(db);
 
-    let next = ScheduleService::next_cron_occurrence("0 9 * * *").unwrap();
+    let next = next_cron_occurrence("0 9 * * *").unwrap();
     let task = svc
         .create_cron_template(
             "user-1",
@@ -32,6 +32,7 @@ async fn create_cron_template_stores_correctly() {
             "Check things every day",
             "0 9 * * *",
             next,
+            None,
             None,
             None,
         )
@@ -64,7 +65,7 @@ async fn create_cron_template_with_source_provenance() {
     let db = test_db().await;
     let svc = make_task_service(db);
 
-    let next = ScheduleService::next_cron_occurrence("*/5 * * * *").unwrap();
+    let next = next_cron_occurrence("*/5 * * * *").unwrap();
     let task = svc
         .create_cron_template(
             "user-1",
@@ -75,6 +76,7 @@ async fn create_cron_template_with_source_provenance() {
             next,
             Some("agent-system".into()),
             Some("chat-origin".into()),
+            None,
         )
         .await
         .unwrap();
@@ -97,7 +99,7 @@ async fn advance_cron_template_updates_next_run_at() {
     let db = test_db().await;
     let svc = make_task_service(db);
 
-    let first_next = ScheduleService::next_cron_occurrence("0 9 * * *").unwrap();
+    let first_next = next_cron_occurrence("0 9 * * *").unwrap();
     let template = svc
         .create_cron_template(
             "user-1",
@@ -106,6 +108,7 @@ async fn advance_cron_template_updates_next_run_at() {
             "description",
             "0 9 * * *",
             first_next,
+            None,
             None,
             None,
         )
@@ -128,42 +131,6 @@ async fn advance_cron_template_updates_next_run_at() {
 }
 
 #[tokio::test]
-async fn create_cron_run_creates_child_task() {
-    let db = test_db().await;
-    let svc = make_task_service(db);
-
-    let next = ScheduleService::next_cron_occurrence("0 9 * * *").unwrap();
-    let template = svc
-        .create_cron_template(
-            "user-1",
-            "agent-1",
-            "Daily task",
-            "Do the thing",
-            "0 9 * * *",
-            next,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    let child = svc.create_cron_run(&template).await.unwrap();
-
-    assert_eq!(child.user_id, template.user_id);
-    assert_eq!(child.agent_id, template.agent_id);
-    assert_eq!(child.title, "Daily task (run)");
-    assert_eq!(child.description, "Do the thing");
-    assert_eq!(child.status, TaskStatus::Pending);
-
-    match &child.kind {
-        TaskKind::CronRun { template_task_id } => {
-            assert_eq!(template_task_id, &template.id);
-        }
-        _ => panic!("Expected CronRun variant"),
-    }
-}
-
-#[tokio::test]
 async fn find_due_cron_templates_returns_only_due_pending() {
     let db = test_db().await;
     let repo: SurrealRepo<Task> = SurrealRepo::new(db.clone());
@@ -171,18 +138,18 @@ async fn find_due_cron_templates_returns_only_due_pending() {
 
     let past = Utc::now() - Duration::minutes(5);
     let t1 = svc
-        .create_cron_template("user-1", "agent-1", "Due task", "desc", "0 9 * * *", past, None, None)
+        .create_cron_template("user-1", "agent-1", "Due task", "desc", "0 9 * * *", past, None, None, None)
         .await
         .unwrap();
 
     let future = Utc::now() + Duration::hours(2);
     let _t2 = svc
-        .create_cron_template("user-1", "agent-1", "Future task", "desc", "0 11 * * *", future, None, None)
+        .create_cron_template("user-1", "agent-1", "Future task", "desc", "0 11 * * *", future, None, None, None)
         .await
         .unwrap();
 
     let mut cancelled = svc
-        .create_cron_template("user-1", "agent-1", "Cancelled task", "desc", "0 8 * * *", past, None, None)
+        .create_cron_template("user-1", "agent-1", "Cancelled task", "desc", "0 8 * * *", past, None, None, None)
         .await
         .unwrap();
     cancelled.status = TaskStatus::Cancelled;
@@ -210,6 +177,7 @@ async fn find_resumable_excludes_cron_templates() {
         description: "A regular task".to_string(),
         status: TaskStatus::Pending,
         kind: TaskKind::Direct,
+        run_at: None,
         result_summary: None,
         error_message: None,
         created_at: now,
@@ -218,7 +186,7 @@ async fn find_resumable_excludes_cron_templates() {
     repo.create(&direct_task).await.unwrap();
 
     let past = Utc::now() - Duration::minutes(5);
-    svc.create_cron_template("user-1", "agent-1", "Cron template", "desc", "0 9 * * *", past, None, None)
+    svc.create_cron_template("user-1", "agent-1", "Cron template", "desc", "0 9 * * *", past, None, None, None)
         .await
         .unwrap();
 
@@ -245,6 +213,7 @@ async fn find_resumable_includes_in_progress_tasks() {
         description: "Interrupted task".to_string(),
         status: TaskStatus::InProgress,
         kind: TaskKind::Direct,
+        run_at: None,
         result_summary: None,
         error_message: None,
         created_at: now,
@@ -256,25 +225,6 @@ async fn find_resumable_includes_in_progress_tasks() {
     assert_eq!(resumable.len(), 1);
     assert_eq!(resumable[0].id, task.id);
     assert_eq!(resumable[0].status, TaskStatus::InProgress);
-}
-
-#[tokio::test]
-async fn find_resumable_includes_cron_run_children() {
-    let db = test_db().await;
-    let svc = make_task_service(db);
-
-    let past = Utc::now() - Duration::minutes(5);
-    let template = svc
-        .create_cron_template("user-1", "agent-1", "Hourly", "desc", "0 * * * *", past, None, None)
-        .await
-        .unwrap();
-
-    let child = svc.create_cron_run(&template).await.unwrap();
-
-    let resumable = svc.find_resumable().await.unwrap();
-    assert_eq!(resumable.len(), 1, "CronRun child should be resumable");
-    assert_eq!(resumable[0].id, child.id);
-    assert!(matches!(resumable[0].kind, TaskKind::CronRun { .. }));
 }
 
 #[tokio::test]
@@ -298,6 +248,7 @@ async fn find_resumable_includes_delegation_tasks() {
             source_chat_id: "chat-origin".to_string(),
             deliver_directly: false,
         },
+        run_at: None,
         result_summary: None,
         error_message: None,
         created_at: now,
@@ -332,6 +283,7 @@ async fn find_resumable_excludes_terminal_states() {
             description: "Should not resume".to_string(),
             status: status.clone(),
             kind: TaskKind::Direct,
+            run_at: None,
             result_summary: None,
             error_message: None,
             created_at: now + Duration::seconds(i as i64),
@@ -363,6 +315,7 @@ async fn find_resumable_orders_by_created_at_asc() {
             description: "desc".to_string(),
             status: TaskStatus::Pending,
             kind: TaskKind::Direct,
+            run_at: None,
             result_summary: None,
             error_message: None,
             created_at: base + Duration::seconds(i),
@@ -398,6 +351,7 @@ async fn find_resumable_mixed_scenario() {
         description: "d".to_string(),
         status: TaskStatus::Pending,
         kind: TaskKind::Direct,
+        run_at: None,
         result_summary: None,
         error_message: None,
         created_at: now,
@@ -420,6 +374,7 @@ async fn find_resumable_mixed_scenario() {
             source_chat_id: "chat-origin".to_string(),
             deliver_directly: false,
         },
+        run_at: None,
         result_summary: None,
         error_message: None,
         created_at: now + Duration::seconds(1),
@@ -427,29 +382,9 @@ async fn find_resumable_mixed_scenario() {
     };
     repo.create(&in_progress_delegation).await.unwrap();
 
-    // Pending CronRun — should resume
-    let pending_cron_run = Task {
-        id: uuid::Uuid::new_v4().to_string(),
-        user_id: "user-1".to_string(),
-        agent_id: "agent-1".to_string(),
-        space_id: None,
-        chat_id: None,
-        title: "Pending cron run".to_string(),
-        description: "d".to_string(),
-        status: TaskStatus::Pending,
-        kind: TaskKind::CronRun {
-            template_task_id: "tmpl-1".to_string(),
-        },
-        result_summary: None,
-        error_message: None,
-        created_at: now + Duration::seconds(2),
-        updated_at: now,
-    };
-    repo.create(&pending_cron_run).await.unwrap();
-
     // Cron template — should NOT resume
     let past = Utc::now() - Duration::minutes(5);
-    svc.create_cron_template("user-1", "agent-1", "Cron tmpl", "d", "0 9 * * *", past, None, None)
+    svc.create_cron_template("user-1", "agent-1", "Cron tmpl", "d", "0 9 * * *", past, None, None, None)
         .await
         .unwrap();
 
@@ -464,6 +399,7 @@ async fn find_resumable_mixed_scenario() {
         description: "d".to_string(),
         status: TaskStatus::Completed,
         kind: TaskKind::Direct,
+        run_at: None,
         result_summary: Some("done".to_string()),
         error_message: None,
         created_at: now + Duration::seconds(3),
@@ -482,6 +418,7 @@ async fn find_resumable_mixed_scenario() {
         description: "d".to_string(),
         status: TaskStatus::Failed,
         kind: TaskKind::Direct,
+        run_at: None,
         result_summary: None,
         error_message: Some("err".to_string()),
         created_at: now + Duration::seconds(4),
@@ -490,17 +427,15 @@ async fn find_resumable_mixed_scenario() {
     repo.create(&failed).await.unwrap();
 
     let resumable = svc.find_resumable().await.unwrap();
-    assert_eq!(resumable.len(), 3, "Only Pending/InProgress non-Cron tasks");
+    assert_eq!(resumable.len(), 2, "Only Pending/InProgress non-Cron tasks");
 
     let resumable_ids: Vec<&str> = resumable.iter().map(|t| t.id.as_str()).collect();
     assert!(resumable_ids.contains(&pending_direct.id.as_str()));
     assert!(resumable_ids.contains(&in_progress_delegation.id.as_str()));
-    assert!(resumable_ids.contains(&pending_cron_run.id.as_str()));
 
     // Verify ordering: created_at ASC
     assert_eq!(resumable[0].id, pending_direct.id);
     assert_eq!(resumable[1].id, in_progress_delegation.id);
-    assert_eq!(resumable[2].id, pending_cron_run.id);
 }
 
 #[tokio::test]
@@ -510,27 +445,19 @@ async fn find_due_cron_templates_unaffected_by_restart() {
 
     let past = Utc::now() - Duration::minutes(10);
     let template = svc
-        .create_cron_template("user-1", "agent-1", "Hourly", "desc", "0 * * * *", past, None, None)
+        .create_cron_template("user-1", "agent-1", "Hourly", "desc", "0 * * * *", past, None, None, None)
         .await
         .unwrap();
 
-    // Simulate what happens on restart: cron fires, child created, template advanced
-    let child = svc.create_cron_run(&template).await.unwrap();
-    assert_eq!(child.status, TaskStatus::Pending);
-
-    let next = ScheduleService::next_cron_occurrence("0 * * * *").unwrap();
-    svc.advance_cron_template(&template.id, next, None)
+    // Simulate what happens on restart: cron fires, template advanced
+    let next = next_cron_occurrence("0 * * * *").unwrap();
+    svc.advance_cron_template(&template.id, next, Some("chat-1"))
         .await
         .unwrap();
 
     // After advancing, template should no longer be due
     let due = svc.find_due_cron_templates().await.unwrap();
     assert!(due.is_empty(), "Fired template should not be due again");
-
-    // But the child CronRun should be resumable
-    let resumable = svc.find_resumable().await.unwrap();
-    assert_eq!(resumable.len(), 1);
-    assert_eq!(resumable[0].id, child.id);
 }
 
 #[tokio::test]
@@ -550,6 +477,7 @@ async fn mark_in_progress_then_find_resumable() {
         description: "desc".to_string(),
         status: TaskStatus::Pending,
         kind: TaskKind::Direct,
+        run_at: None,
         result_summary: None,
         error_message: None,
         created_at: now,
@@ -587,6 +515,7 @@ async fn completed_during_execution_not_resumable() {
         description: "desc".to_string(),
         status: TaskStatus::Pending,
         kind: TaskKind::Direct,
+        run_at: None,
         result_summary: None,
         error_message: None,
         created_at: now,
@@ -624,6 +553,7 @@ async fn failed_during_execution_not_resumable() {
         description: "desc".to_string(),
         status: TaskStatus::Pending,
         kind: TaskKind::Direct,
+        run_at: None,
         result_summary: None,
         error_message: None,
         created_at: now,
@@ -659,6 +589,7 @@ async fn cancelled_during_execution_not_resumable() {
         description: "desc".to_string(),
         status: TaskStatus::InProgress,
         kind: TaskKind::Direct,
+        run_at: None,
         result_summary: None,
         error_message: None,
         created_at: now,
@@ -688,6 +619,7 @@ async fn cron_template_lifecycle_simulation() {
             first_run,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -695,10 +627,8 @@ async fn cron_template_lifecycle_simulation() {
     let due = svc.find_due_cron_templates().await.unwrap();
     assert_eq!(due.len(), 1);
 
-    let child1 = svc.create_cron_run(&template).await.unwrap();
-    assert!(matches!(child1.kind, TaskKind::CronRun { .. }));
-
-    let second_run = ScheduleService::next_cron_occurrence("0 * * * *").unwrap();
+    // Execute the cron directly (no CronRun child) and advance
+    let second_run = next_cron_occurrence("0 * * * *").unwrap();
     let advanced = svc
         .advance_cron_template(&template.id, second_run, Some("chat-1"))
         .await
@@ -717,4 +647,123 @@ async fn cron_template_lifecycle_simulation() {
 
     let template_check = svc.find_by_id(&template.id).await.unwrap().unwrap();
     assert_eq!(template_check.status, TaskStatus::Pending, "Template stays Pending");
+}
+
+#[tokio::test]
+async fn deferred_task_found_when_due() {
+    let db = test_db().await;
+    let repo: SurrealRepo<Task> = SurrealRepo::new(db.clone());
+    let svc = make_task_service(db);
+
+    let now = Utc::now();
+
+    // Deferred task due in the past
+    let deferred_due = Task {
+        id: uuid::Uuid::new_v4().to_string(),
+        user_id: "user-1".to_string(),
+        agent_id: "agent-1".to_string(),
+        space_id: None,
+        chat_id: None,
+        title: "Past deferred".to_string(),
+        description: "Should be found".to_string(),
+        status: TaskStatus::Pending,
+        kind: TaskKind::Direct,
+        run_at: Some(now - Duration::minutes(5)),
+        result_summary: None,
+        error_message: None,
+        created_at: now,
+        updated_at: now,
+    };
+    repo.create(&deferred_due).await.unwrap();
+
+    // Deferred task due in the future
+    let deferred_future = Task {
+        id: uuid::Uuid::new_v4().to_string(),
+        user_id: "user-1".to_string(),
+        agent_id: "agent-1".to_string(),
+        space_id: None,
+        chat_id: None,
+        title: "Future deferred".to_string(),
+        description: "Should not be found".to_string(),
+        status: TaskStatus::Pending,
+        kind: TaskKind::Direct,
+        run_at: Some(now + Duration::hours(2)),
+        result_summary: None,
+        error_message: None,
+        created_at: now,
+        updated_at: now,
+    };
+    repo.create(&deferred_future).await.unwrap();
+
+    // Immediate task (no run_at)
+    let immediate = Task {
+        id: uuid::Uuid::new_v4().to_string(),
+        user_id: "user-1".to_string(),
+        agent_id: "agent-1".to_string(),
+        space_id: None,
+        chat_id: None,
+        title: "Immediate".to_string(),
+        description: "No run_at".to_string(),
+        status: TaskStatus::Pending,
+        kind: TaskKind::Direct,
+        run_at: None,
+        result_summary: None,
+        error_message: None,
+        created_at: now,
+        updated_at: now,
+    };
+    repo.create(&immediate).await.unwrap();
+
+    let deferred = svc.find_deferred_due().await.unwrap();
+    assert_eq!(deferred.len(), 1, "Only past-due deferred tasks");
+    assert_eq!(deferred[0].id, deferred_due.id);
+}
+
+#[tokio::test]
+async fn deferred_task_excludes_cron() {
+    let db = test_db().await;
+    let svc = make_task_service(db);
+
+    let past = Utc::now() - Duration::minutes(5);
+
+    // Cron template with past next_run_at — should NOT appear in deferred results
+    svc.create_cron_template("user-1", "agent-1", "Cron", "desc", "0 9 * * *", past, None, None, None)
+        .await
+        .unwrap();
+
+    let deferred = svc.find_deferred_due().await.unwrap();
+    assert!(deferred.is_empty(), "Cron tasks excluded from deferred query");
+}
+
+#[tokio::test]
+async fn task_run_at_serialization() {
+    let now = Utc::now();
+    let task = Task {
+        id: "t1".to_string(),
+        user_id: "u1".to_string(),
+        agent_id: "a1".to_string(),
+        space_id: None,
+        chat_id: None,
+        title: "Deferred".to_string(),
+        description: "desc".to_string(),
+        status: TaskStatus::Pending,
+        kind: TaskKind::Direct,
+        run_at: Some(now),
+        result_summary: None,
+        error_message: None,
+        created_at: now,
+        updated_at: now,
+    };
+
+    let json = serde_json::to_string(&task).unwrap();
+    let deserialized: Task = serde_json::from_str(&json).unwrap();
+    assert!(deserialized.run_at.is_some());
+
+    let task_no_run_at = Task {
+        run_at: None,
+        ..task
+    };
+    let json = serde_json::to_string(&task_no_run_at).unwrap();
+    let deserialized: Task = serde_json::from_str(&json).unwrap();
+    assert!(deserialized.run_at.is_none());
 }

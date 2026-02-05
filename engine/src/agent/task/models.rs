@@ -32,9 +32,6 @@ pub enum TaskKind {
         source_agent_id: Option<String>,
         source_chat_id: Option<String>,
     },
-    CronRun {
-        template_task_id: String,
-    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Entity)]
@@ -51,6 +48,8 @@ pub struct Task {
     pub status: TaskStatus,
     #[serde(default)]
     pub kind: TaskKind,
+    #[serde(default)]
+    pub run_at: Option<DateTime<Utc>>,
     pub result_summary: Option<String>,
     pub error_message: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -100,17 +99,6 @@ mod tests {
             _ => panic!("Expected Cron variant"),
         }
 
-        let cron_run = TaskKind::CronRun {
-            template_task_id: "task-1".to_string(),
-        };
-        let json = serde_json::to_string(&cron_run).unwrap();
-        let deserialized: TaskKind = serde_json::from_str(&json).unwrap();
-        match deserialized {
-            TaskKind::CronRun { template_task_id } => {
-                assert_eq!(template_task_id, "task-1");
-            }
-            _ => panic!("Expected CronRun variant"),
-        }
     }
 
     #[test]

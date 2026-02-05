@@ -9,7 +9,7 @@ use crate::api::files::{
 };
 use crate::error::AppError;
 
-use super::{AgentTool, ImageData, ToolDefinition, ToolOutput};
+use super::{AgentTool, ImageData, ToolContext, ToolDefinition, ToolOutput};
 
 pub struct ReadFileTool {
     config: Config,
@@ -59,7 +59,7 @@ impl AgentTool for ReadFileTool {
         }]
     }
 
-    async fn execute(&self, _tool_name: &str, arguments: Value) -> Result<ToolOutput, AppError> {
+    async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let path = arguments
             .get("path")
             .and_then(|v| v.as_str())
@@ -132,13 +132,13 @@ async fn read_image(
         .await
         .map_err(|e| AppError::Internal(format!("Failed to read image: {e}")))?;
 
-    Ok(ToolOutput::Mixed {
-        text: format!("Image: {filename}"),
-        images: vec![ImageData {
+    Ok(ToolOutput::mixed(
+        format!("Image: {filename}"),
+        vec![ImageData {
             bytes,
             media_type: content_type.to_string(),
         }],
-    })
+    ))
 }
 
 async fn read_binary_metadata(path: &PathBuf, filename: &str) -> Result<ToolOutput, AppError> {

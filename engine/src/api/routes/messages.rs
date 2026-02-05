@@ -13,7 +13,7 @@ use tokio_stream::StreamExt;
 
 use crate::chat::broadcast::BroadcastEvent;
 use crate::chat::message::dto::{MessageResponse, ResolveToolRequest, SendMessageRequest};
-use crate::llm::convert::to_rig_messages;
+use crate::llm::convert::{format_content_with_attachments, to_rig_messages};
 use crate::llm::fallback::stream_inference_with_fallback;
 use crate::llm::tool_loop::{self, ToolLoopEvent, ToolLoopEventKind, ToolLoopOutcome};
 use crate::agent::models::SandboxSettings;
@@ -26,12 +26,15 @@ use crate::tool::registry::AgentToolRegistry;
 use crate::tool::remember::{RememberTool, RememberUserFactTool};
 use crate::tool::skill::SkillTool;
 use crate::tool::delegate::DelegateTaskTool;
-use crate::tool::routine::{UpdateRoutineTool, UpdateRoutineFrequencyTool};
+use crate::tool::heartbeat::HeartbeatTool;
 use crate::tool::produce_file::ProduceFileTool;
 use crate::tool::read_file::ReadFileTool;
 use crate::tool::schedule::ScheduleTaskTool;
+use crate::tool::time::TimeTool;
 use crate::tool::update_entity::UpdateEntityTool;
 use crate::tool::update_identity::UpdateIdentityTool;
+use crate::tool::ToolContext;
+use crate::repository::Repository;
 
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
@@ -105,7 +108,6 @@ pub async fn build_tool_registry(
     chat_id: &str,
     allowed_tools: &[String],
     sandbox_config: Option<&SandboxSettings>,
-    event_tx: tokio::sync::mpsc::Sender<ToolLoopEvent>,
 ) -> AgentToolRegistry {
     let mut registry = AgentToolRegistry::new();
 
@@ -118,6 +120,7 @@ pub async fn build_tool_registry(
 
     let credential_id = credential.as_ref().map(|c| c.id.clone());
 
+    registry.register(Arc::new(TimeTool));
     registry.register(Arc::new(NotifyHumanTool::new(credential_id)));
 
     registry.register(Arc::new(ReadFileTool::new(
@@ -136,14 +139,12 @@ pub async fn build_tool_registry(
         agent_id,
         user_id,
         "update_agent",
-        event_tx.clone(),
     )));
 
     registry.register(Arc::new(UpdateIdentityTool::new(
         state.db.clone(),
         agent_id,
         user_id,
-        event_tx,
     )));
 
     registry.register(Arc::new(RememberTool::new(
@@ -216,17 +217,10 @@ pub async fn build_tool_registry(
         )));
     }
 
-    if allowed_tools.iter().any(|t| t == "routine") {
-        registry.register(Arc::new(UpdateRoutineTool::new(
-            state.schedule_service.clone(),
-            agent_repo.clone(),
-            user_id.to_string(),
-            agent_id.to_string(),
-        )));
-        registry.register(Arc::new(UpdateRoutineFrequencyTool::new(
-            state.schedule_service.clone(),
-            agent_repo.clone(),
-            user_id.to_string(),
+    if allowed_tools.iter().any(|t| t == "heartbeat") {
+        registry.register(Arc::new(HeartbeatTool::new(
+            state.agent_service.clone(),
+            state.agent_workspaces.clone(),
             agent_id.to_string(),
         )));
     }
@@ -427,7 +421,16 @@ async fn stream_message(
 
     let registry = state.chat_service.provider_registry().clone();
     let (tool_event_tx, mut tool_event_rx) = tokio::sync::mpsc::channel::<ToolLoopEvent>(32);
-    let tool_registry = build_tool_registry(&state, &chat.agent_id, &auth.user_id, &chat_id, &agent_config.tools, agent_config.sandbox_config.as_ref(), tool_event_tx.clone()).await;
+    let tool_registry = build_tool_registry(&state, &chat.agent_id, &auth.user_id, &chat_id, &agent_config.tools, agent_config.sandbox_config.as_ref()).await;
+
+    let user = state.user_repo.find_by_id(&auth.user_id).await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::from(crate::error::AppError::NotFound("User not found".into())))?;
+    let agent = state.agent_service.find_by_id(&chat.agent_id).await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| ApiError::from(crate::error::AppError::NotFound("Agent not found".into())))?;
+    let tool_ctx = ToolContext { user, agent, chat: chat.clone(), event_tx: tool_event_tx.clone() };
+
     let user_content = req.content;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(32);
@@ -487,6 +490,7 @@ async fn stream_message(
                         &tool_registry,
                         tool_event_tx,
                         cancel_token,
+                        &tool_ctx,
                     )
                     .await
                 })
@@ -497,6 +501,7 @@ async fn stream_message(
         });
     } else {
         let has_tools = !tool_registry.is_empty();
+        let attachments = req.attachments.clone();
 
         let user_response = state
             .chat_service
@@ -538,7 +543,7 @@ async fn stream_message(
             }
 
             if has_tools {
-                let user_rig_msg = RigMessage::user(&user_content);
+                let user_rig_msg = RigMessage::user(format_content_with_attachments(&user_content, &attachments));
                 let mut full_history = rig_history;
                 full_history.push(user_rig_msg);
 
@@ -556,6 +561,7 @@ async fn stream_message(
                             &tool_registry,
                             tool_event_tx,
                             cancel_token,
+                            &tool_ctx,
                         )
                         .await
                     })
@@ -565,7 +571,7 @@ async fn stream_message(
             } else {
                 let (token_tx, mut token_rx) = tokio::sync::mpsc::channel::<Result<String, crate::llm::LlmError>>(32);
 
-                let user_rig_msg = RigMessage::user(&user_content);
+                let user_rig_msg = RigMessage::user(format_content_with_attachments(&user_content, &attachments));
 
                 let stream_handle = tokio::spawn(async move {
                     stream_inference_with_fallback(
@@ -659,7 +665,6 @@ async fn stream_tool_loop_events(
     chat_id: &str,
 ) {
     let mut accumulated = String::new();
-    let mut produced_attachments: Vec<crate::api::files::Attachment> = Vec::new();
     while let Some(event) = tool_event_rx.recv().await {
         match event.kind {
             ToolLoopEventKind::Text(text) => {
@@ -673,8 +678,8 @@ async fn stream_tool_loop_events(
                 }
             }
             ToolLoopEventKind::ToolCall { name, arguments, description } => {
-                let is_human_tool = name == "ask_human_question"
-                    || name == "request_human_takeover";
+                let is_human_tool = name == "ask_user_question"
+                    || name == "request_user_takeover";
                 if !is_human_tool {
                     let tool_event = Event::default()
                         .event("tool_call")
@@ -688,11 +693,6 @@ async fn stream_tool_loop_events(
                 }
             }
             ToolLoopEventKind::ToolResult { name, result } => {
-                if name == "produce_file"
-                    && let Ok(attachment) = serde_json::from_str::<crate::api::files::Attachment>(&result)
-                {
-                    produced_attachments.push(attachment);
-                }
                 let result_event = Event::default()
                     .event("tool_result")
                     .json_data(serde_json::json!({
@@ -737,11 +737,11 @@ async fn stream_tool_loop_events(
     match tool_handle.await {
         Ok(Ok(outcome)) => {
             match outcome {
-                ToolLoopOutcome::Completed(_) => {
+                ToolLoopOutcome::Completed { text: _, attachments } => {
                     if !accumulated.is_empty()
                         && let Ok(assistant_response) =
                             chat_service.save_assistant_message_with_tool_calls(
-                                chat_id, accumulated, None, produced_attachments,
+                                chat_id, accumulated, None, attachments,
                             ).await
                     {
                         let done_event = Event::default()
@@ -879,8 +879,13 @@ async fn resume_tool_loop(
         chat_id,
         &agent_config.tools,
         agent_config.sandbox_config.as_ref(),
-        tool_event_tx.clone(),
     ).await;
+
+    let user = state.user_repo.find_by_id(user_id).await?
+        .ok_or_else(|| crate::error::AppError::NotFound("User not found".into()))?;
+    let agent = state.agent_service.find_by_id(&chat.agent_id).await?
+        .ok_or_else(|| crate::error::AppError::NotFound("Agent not found".into()))?;
+    let tool_ctx = ToolContext { user, agent, chat: chat.clone(), event_tx: tool_event_tx.clone() };
 
     let cancel_token = state.active_sessions.register(chat_id).await;
 
@@ -900,6 +905,7 @@ async fn resume_tool_loop(
                 &tool_registry,
                 tool_event_tx,
                 cancel_token,
+                &tool_ctx,
             )
             .await
         })
@@ -915,10 +921,12 @@ async fn resume_tool_loop(
     match tool_handle.await {
         Ok(Ok(outcome)) => {
             match outcome {
-                ToolLoopOutcome::Completed(_) => {
+                ToolLoopOutcome::Completed { text: _, attachments } => {
                     if !accumulated.is_empty()
                         && let Ok(msg) = state.chat_service
-                            .save_assistant_message(&chat_id_owned, accumulated)
+                            .save_assistant_message_with_tool_calls(
+                                &chat_id_owned, accumulated, None, attachments,
+                            )
                             .await
                     {
                         state.broadcast_service.broadcast_chat_message(

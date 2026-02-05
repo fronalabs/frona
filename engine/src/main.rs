@@ -55,11 +55,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             compaction_group.clone(),
             std::time::Duration::from_secs(3600),
             state.task_service.clone(),
-            state.schedule_service.clone(),
             state.clone(),
         ));
         scheduler.start();
-        info!("Scheduler started (space compaction: 1h, insight compaction: 2h, cron+routines: 60s)");
+        info!("Scheduler started (space compaction: 1h, insight compaction: 2h, cron+heartbeats: 60s)");
     }
 
     let cors = CorsLayer::new()

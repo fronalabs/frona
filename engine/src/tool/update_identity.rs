@@ -5,18 +5,16 @@ use serde_json::Value;
 use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
 use surrealdb::types::RecordId;
-use tokio::sync::mpsc;
 
 use crate::error::AppError;
 use crate::llm::tool_loop::{ToolLoopEvent, ToolLoopEventKind};
 
-use super::{AgentTool, ToolDefinition, ToolOutput};
+use super::{AgentTool, ToolContext, ToolDefinition, ToolOutput};
 
 pub struct UpdateIdentityTool {
     db: Surreal<Db>,
     agent_id: String,
     user_id: String,
-    event_tx: mpsc::Sender<ToolLoopEvent>,
 }
 
 impl UpdateIdentityTool {
@@ -24,13 +22,11 @@ impl UpdateIdentityTool {
         db: Surreal<Db>,
         agent_id: impl Into<String>,
         user_id: impl Into<String>,
-        event_tx: mpsc::Sender<ToolLoopEvent>,
     ) -> Self {
         Self {
             db,
             agent_id: agent_id.into(),
             user_id: user_id.into(),
-            event_tx,
         }
     }
 }
@@ -64,7 +60,7 @@ impl AgentTool for UpdateIdentityTool {
         }]
     }
 
-    async fn execute(&self, _tool_name: &str, arguments: Value) -> Result<ToolOutput, AppError> {
+    async fn execute(&self, _tool_name: &str, arguments: Value, ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let attrs = arguments
             .get("attributes")
             .and_then(|v| v.as_object().cloned())
@@ -141,7 +137,7 @@ impl AgentTool for UpdateIdentityTool {
             entity_fields.insert("name".to_string(), serde_json::json!(agent_name));
         }
 
-        let _ = self
+        let _ = ctx
             .event_tx
             .send(ToolLoopEvent {
                 kind: ToolLoopEventKind::EntityUpdated {

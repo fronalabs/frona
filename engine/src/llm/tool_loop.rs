@@ -7,10 +7,10 @@ use rig::completion::{AssistantContent, Message as RigMessage};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::chat::message::models::{MessageTool, ToolStatus};
+use crate::chat::message::models::MessageTool;
 use crate::error::AppError;
 use crate::tool::registry::AgentToolRegistry;
-use crate::tool::ToolDefinition;
+use crate::tool::{ToolContext, ToolDefinition};
 
 use super::config::ModelGroup;
 use super::registry::ModelProviderRegistry;
@@ -52,39 +52,11 @@ pub struct ToolCallResult {
     pub tool_data: Option<MessageTool>,
 }
 
-fn parse_tool_data(result: &str) -> Option<MessageTool> {
-    let parsed: serde_json::Value = serde_json::from_str(result).ok()?;
-    let tool_type = parsed.get("tool_type")?.as_str()?;
-    match tool_type {
-        "HumanInTheLoop" => Some(MessageTool::HumanInTheLoop {
-            reason: parsed.get("reason")?.as_str()?.to_string(),
-            debugger_url: parsed.get("debugger_url")?.as_str()?.to_string(),
-            status: ToolStatus::Pending,
-            response: None,
-        }),
-        "Question" => Some(MessageTool::Question {
-            question: parsed.get("question")?.as_str()?.to_string(),
-            options: parsed
-                .get("options")?
-                .as_array()?
-                .iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect(),
-            status: ToolStatus::Pending,
-            response: None,
-        }),
-        "Warning" => Some(MessageTool::Warning {
-            message: parsed.get("message")?.as_str()?.to_string(),
-        }),
-        "Info" => Some(MessageTool::Info {
-            message: parsed.get("message")?.as_str()?.to_string(),
-        }),
-        _ => None,
-    }
-}
-
 pub enum ToolLoopOutcome {
-    Completed(String),
+    Completed {
+        text: String,
+        attachments: Vec<crate::api::files::Attachment>,
+    },
     Cancelled(String),
     ExternalToolPending {
         accumulated_text: String,
@@ -104,6 +76,7 @@ fn to_rig_tool_definitions(defs: &[ToolDefinition]) -> Vec<RigToolDefinition> {
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_tool_loop(
     registry: &ModelProviderRegistry,
     model_group: &ModelGroup,
@@ -112,6 +85,7 @@ pub async fn run_tool_loop(
     tool_registry: &AgentToolRegistry,
     event_tx: mpsc::Sender<ToolLoopEvent>,
     cancel_token: CancellationToken,
+    ctx: &ToolContext,
 ) -> Result<ToolLoopOutcome, AppError> {
     let tool_defs = &tool_registry.definitions;
     let rig_tools = to_rig_tool_definitions(tool_defs);
@@ -121,6 +95,7 @@ pub async fn run_tool_loop(
         .map_err(|e| AppError::Llm(e.to_string()))?;
 
     let mut accumulated_text = String::new();
+    let mut all_attachments: Vec<crate::api::files::Attachment> = Vec::new();
 
     for turn in 0..MAX_TOOL_TURNS {
         if cancel_token.is_cancelled() {
@@ -291,7 +266,7 @@ pub async fn run_tool_loop(
 
                 tracing::debug!(tool = %tool_name, args = %arguments, external = is_external, "Executing tool");
 
-                let (result, tool_output) = match tool_registry.execute(tool_name, arguments).await {
+                let (result, tool_output) = match tool_registry.execute(tool_name, arguments, ctx).await {
                     Ok(output) => {
                         let text = output.text_content().to_string();
                         tracing::debug!(tool = %tool_name, result = %text, "Tool executed");
@@ -312,7 +287,14 @@ pub async fn run_tool_loop(
                     })
                     .await;
 
-                let td = parse_tool_data(&result);
+                let td = tool_output.as_ref().and_then(|o| o.tool_data().cloned());
+
+                if let Some(ref output) = tool_output {
+                    for attachment in output.attachments() {
+                        all_attachments.push(attachment.clone());
+                    }
+                }
+
                 let tool_result = ToolCallResult {
                     tool_call_id: tool_call.id.clone(),
                     tool_name: tool_name.clone(),
@@ -408,5 +390,8 @@ pub async fn run_tool_loop(
         }
     }
 
-    Ok(ToolLoopOutcome::Completed(accumulated_text))
+    Ok(ToolLoopOutcome::Completed {
+        text: accumulated_text,
+        attachments: all_attachments,
+    })
 }

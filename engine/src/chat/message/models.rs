@@ -38,12 +38,6 @@ pub enum MessageTool {
         status: ToolStatus,
         response: Option<String>,
     },
-    Warning {
-        message: String,
-    },
-    Info {
-        message: String,
-    },
     TaskCompletion {
         task_id: String,
         chat_id: Option<String>,

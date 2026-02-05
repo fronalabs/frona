@@ -47,10 +47,6 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE INDEX IF NOT EXISTS idx_skill_agent ON TABLE skill COLUMNS agent_id;
         DEFINE INDEX IF NOT EXISTS idx_skill_agent_name ON TABLE skill COLUMNS agent_id, name UNIQUE;
 
-        DEFINE TABLE IF NOT EXISTS routine SCHEMALESS;
-        DEFINE INDEX IF NOT EXISTS idx_routine_agent ON TABLE routine COLUMNS agent_id;
-        DEFINE INDEX IF NOT EXISTS idx_routine_user_agent ON TABLE routine COLUMNS user_id, agent_id UNIQUE;
-
         DEFINE EVENT IF NOT EXISTS cascade_delete_chat_messages ON TABLE chat
           WHEN $event = 'DELETE'
           THEN (DELETE FROM message WHERE chat_id = meta::id($before.id));

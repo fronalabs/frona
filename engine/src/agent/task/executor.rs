@@ -8,6 +8,7 @@ use crate::agent::task::models::{Task, TaskKind, TaskStatus};
 use crate::chat::dto::CreateChatRequest;
 use crate::chat::message::models::MessageTool;
 use crate::error::AppError;
+use crate::repository::Repository;
 use crate::llm::convert::to_rig_messages;
 use crate::llm::tool_loop::{self, ToolLoopEvent, ToolLoopEventKind, ToolLoopOutcome};
 
@@ -275,9 +276,21 @@ impl TaskExecutor {
             &chat_id,
             &agent_config.tools,
             agent_config.sandbox_config.as_ref(),
-            tool_event_tx.clone(),
         )
         .await;
+
+        let chat_obj = self.state.chat_service.find_chat(&chat_id).await?
+            .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
+        let user = self.state.app_state.user_repo.find_by_id(&user_id).await?
+            .ok_or_else(|| AppError::NotFound("User not found".into()))?;
+        let agent_obj = self.state.app_state.agent_service.find_by_id(&agent_id).await?
+            .ok_or_else(|| AppError::NotFound("Agent not found".into()))?;
+        let tool_ctx = crate::tool::ToolContext {
+            user,
+            agent: agent_obj,
+            chat: chat_obj,
+            event_tx: tool_event_tx.clone(),
+        };
 
         let tool_handle = {
             let registry = registry.clone();
@@ -293,6 +306,7 @@ impl TaskExecutor {
                     &tool_registry,
                     tool_event_tx,
                     cancel_token,
+                    &tool_ctx,
                 )
                 .await
             })
@@ -315,12 +329,14 @@ impl TaskExecutor {
 
         match tool_handle.await {
             Ok(Ok(outcome)) => match outcome {
-                ToolLoopOutcome::Completed(_) => {
+                ToolLoopOutcome::Completed { text: _, attachments } => {
                     if !accumulated.is_empty() {
                         let _ = self
                             .state
                             .chat_service
-                            .save_assistant_message(&chat_id, accumulated.clone())
+                            .save_assistant_message_with_tool_calls(
+                                &chat_id, accumulated.clone(), None, attachments,
+                            )
                             .await;
                     }
 

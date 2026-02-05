@@ -1,14 +1,15 @@
 pub mod browser;
 pub mod cli;
 pub mod delegate;
+pub mod heartbeat;
 pub mod notify_human;
 pub mod produce_file;
 pub mod read_file;
 pub mod registry;
 pub mod remember;
-pub mod routine;
 pub mod schedule;
 pub mod skill;
+pub mod time;
 pub mod update_entity;
 pub mod update_identity;
 pub mod web_fetch;
@@ -20,8 +21,13 @@ use std::sync::OnceLock;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::mpsc;
 
+use crate::agent::models::Agent;
+use crate::chat::models::Chat;
 use crate::error::AppError;
+use crate::llm::tool_loop::ToolLoopEvent;
+use crate::models::user::User;
 
 use self::cli::CliToolConfig;
 
@@ -34,7 +40,7 @@ pub fn init_configurable_tools(cli_tools: &[CliToolConfig]) {
     names.push("web_search".to_string());
     names.push("delegate".to_string());
     names.push("schedule".to_string());
-    names.push("routine".to_string());
+    names.push("heartbeat".to_string());
     let _ = CONFIGURABLE_TOOLS.set(names);
 }
 
@@ -61,28 +67,64 @@ pub struct ImageData {
     pub media_type: String,
 }
 
-pub enum ToolOutput {
-    Text(String),
-    Mixed { text: String, images: Vec<ImageData> },
+pub struct ToolOutput {
+    text: String,
+    images: Vec<ImageData>,
+    attachments: Vec<crate::api::files::Attachment>,
+    tool_data: Option<crate::chat::message::models::MessageTool>,
 }
 
 impl ToolOutput {
     pub fn text(s: impl Into<String>) -> Self {
-        ToolOutput::Text(s.into())
+        Self {
+            text: s.into(),
+            images: Vec::new(),
+            attachments: Vec::new(),
+            tool_data: None,
+        }
+    }
+
+    pub fn mixed(text: impl Into<String>, images: Vec<ImageData>) -> Self {
+        Self {
+            text: text.into(),
+            images,
+            attachments: Vec::new(),
+            tool_data: None,
+        }
+    }
+
+    pub fn with_attachment(mut self, a: crate::api::files::Attachment) -> Self {
+        self.attachments.push(a);
+        self
+    }
+
+    pub fn with_tool_data(mut self, td: crate::chat::message::models::MessageTool) -> Self {
+        self.tool_data = Some(td);
+        self
     }
 
     pub fn text_content(&self) -> &str {
-        match self {
-            ToolOutput::Text(s) | ToolOutput::Mixed { text: s, .. } => s,
-        }
+        &self.text
     }
 
     pub fn images(&self) -> &[ImageData] {
-        match self {
-            ToolOutput::Text(_) => &[],
-            ToolOutput::Mixed { images, .. } => images,
-        }
+        &self.images
     }
+
+    pub fn attachments(&self) -> &[crate::api::files::Attachment] {
+        &self.attachments
+    }
+
+    pub fn tool_data(&self) -> Option<&crate::chat::message::models::MessageTool> {
+        self.tool_data.as_ref()
+    }
+}
+
+pub struct ToolContext {
+    pub user: User,
+    pub agent: Agent,
+    pub chat: Chat,
+    pub event_tx: mpsc::Sender<ToolLoopEvent>,
 }
 
 #[async_trait]
@@ -92,7 +134,7 @@ pub trait AgentTool: Send + Sync {
     fn tool_type(&self, _tool_name: &str) -> ToolType {
         ToolType::Internal
     }
-    async fn execute(&self, tool_name: &str, arguments: Value) -> Result<ToolOutput, AppError>;
+    async fn execute(&self, tool_name: &str, arguments: Value, ctx: &ToolContext) -> Result<ToolOutput, AppError>;
     async fn cleanup(&self) -> Result<(), AppError> {
         Ok(())
     }

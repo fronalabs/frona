@@ -4,7 +4,7 @@ use serde_json::Value;
 use crate::agent::skill::resolver::SkillResolver;
 use crate::error::AppError;
 
-use super::{AgentTool, ToolDefinition, ToolOutput};
+use super::{AgentTool, ToolContext, ToolDefinition, ToolOutput};
 
 pub struct SkillTool {
     skill_resolver: SkillResolver,
@@ -43,7 +43,7 @@ impl AgentTool for SkillTool {
         }]
     }
 
-    async fn execute(&self, _tool_name: &str, arguments: Value) -> Result<ToolOutput, AppError> {
+    async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let name = arguments
             .get("name")
             .and_then(|v| v.as_str())

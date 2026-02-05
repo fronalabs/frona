@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::AppError;
-use crate::tool::{AgentTool, ToolDefinition, ToolOutput};
+use crate::tool::{AgentTool, ToolContext, ToolDefinition, ToolOutput};
 
 #[derive(Debug, Clone)]
 pub struct SearchResult {
@@ -285,7 +285,7 @@ impl AgentTool for WebSearchTool {
         }]
     }
 
-    async fn execute(&self, _tool_name: &str, arguments: Value) -> Result<ToolOutput, AppError> {
+    async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let provider = self.provider.as_ref().ok_or_else(|| {
             AppError::Tool(
                 "No search provider configured. Set one of the following environment variables:\n\
@@ -392,6 +392,33 @@ mod tests {
         ]
     }
 
+    fn mock_context() -> ToolContext {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        ToolContext {
+            user: crate::models::user::User {
+                id: "u".into(), email: "e".into(), name: "n".into(),
+                password_hash: String::new(),
+                created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
+            },
+            agent: crate::agent::models::Agent {
+                id: "a".into(), user_id: None, name: "a".into(),
+                description: String::new(), model_group: "p".into(), enabled: true,
+                tools: vec![], sandbox_config: None, max_concurrent_tasks: None,
+                avatar: None, identity: Default::default(),
+                heartbeat_interval: None, next_heartbeat_at: None,
+                heartbeat_chat_id: None,
+                created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
+            },
+            chat: crate::chat::models::Chat {
+                id: "c".into(), user_id: "u".into(), space_id: None,
+                task_id: None, agent_id: "a".into(), title: None,
+                archived_at: None,
+                created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
+            },
+            event_tx: tx,
+        }
+    }
+
     #[test]
     fn test_format_results_empty() {
         assert_eq!(format_results(&[]), "No results found.");
@@ -412,9 +439,10 @@ mod tests {
             results: sample_results(),
         });
         let tool = WebSearchTool::new(Some(provider));
+        let ctx = mock_context();
 
         let args = serde_json::json!({ "query": "rust" });
-        let output = tool.execute("web_search", args).await.unwrap();
+        let output = tool.execute("web_search", args, &ctx).await.unwrap();
         let text = output.text_content();
         assert!(text.contains("Rust Programming"));
         assert!(text.contains("Rust Book"));
@@ -426,9 +454,10 @@ mod tests {
             results: sample_results(),
         });
         let tool = WebSearchTool::new(Some(provider));
+        let ctx = mock_context();
 
         let args = serde_json::json!({ "query": "rust", "max_results": 1 });
-        let output = tool.execute("web_search", args).await.unwrap();
+        let output = tool.execute("web_search", args, &ctx).await.unwrap();
         let text = output.text_content();
         assert!(text.contains("Rust Programming"));
         assert!(!text.contains("Rust Book"));
@@ -440,9 +469,10 @@ mod tests {
             results: vec![],
         });
         let tool = WebSearchTool::new(Some(provider));
+        let ctx = mock_context();
 
         let args = serde_json::json!({});
-        let result = tool.execute("web_search", args).await;
+        let result = tool.execute("web_search", args, &ctx).await;
         assert!(result.is_err());
     }
 
@@ -452,17 +482,19 @@ mod tests {
             results: sample_results(),
         });
         let tool = WebSearchTool::new(Some(provider));
+        let ctx = mock_context();
 
         let args = serde_json::json!({ "query": "rust", "max_results": 100 });
-        let output = tool.execute("web_search", args).await.unwrap();
+        let output = tool.execute("web_search", args, &ctx).await.unwrap();
         assert!(output.text_content().contains("Rust Programming"));
     }
 
     #[tokio::test]
     async fn test_web_search_tool_no_provider() {
         let tool = WebSearchTool::new(None);
+        let ctx = mock_context();
         let args = serde_json::json!({ "query": "rust" });
-        let result = tool.execute("web_search", args).await;
+        let result = tool.execute("web_search", args, &ctx).await;
         match result {
             Err(e) => {
                 let msg = e.to_string();

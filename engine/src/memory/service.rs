@@ -729,7 +729,7 @@ impl MemoryService {
         }
 
         if !agent_summaries.is_empty() {
-            prefix.push_str("<available_agents>\nYou can delegate tasks to the following agents using the `delegate_task` tool.\nUse delegation when the task requires specialized capabilities that another agent has.\n");
+            prefix.push_str("<available_agents>\nYou can delegate tasks to the following agents using `delegate_task` (fire-and-forget) or `run_subtask` (resume with result).\nUse delegation when the task requires specialized capabilities that another agent has.\n");
             for (name, description) in agent_summaries {
                 prefix.push_str(&format!("- {name}: {description}\n"));
             }

@@ -13,6 +13,7 @@ pub struct CreateTaskRequest {
     pub source_agent_id: Option<String>,
     pub source_chat_id: Option<String>,
     pub deliver_directly: Option<bool>,
+    pub run_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,6 +33,7 @@ pub struct TaskResponse {
     pub description: String,
     pub status: TaskStatus,
     pub kind: TaskKind,
+    pub run_at: Option<DateTime<Utc>>,
     pub result_summary: Option<String>,
     pub error_message: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -49,6 +51,7 @@ impl From<super::models::Task> for TaskResponse {
             description: task.description,
             status: task.status,
             kind: task.kind,
+            run_at: task.run_at,
             result_summary: task.result_summary,
             error_message: task.error_message,
             created_at: task.created_at,

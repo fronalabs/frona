@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 use crate::error::AppError;
 
 use super::workspace::WorkspaceManager;
-use super::{AgentTool, ToolDefinition, ToolOutput};
+use super::{AgentTool, ToolContext, ToolDefinition, ToolOutput};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CliToolConfig {
@@ -96,7 +96,7 @@ impl AgentTool for CliTool {
         }]
     }
 
-    async fn execute(&self, _tool_name: &str, arguments: Value) -> Result<ToolOutput, AppError> {
+    async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let args_map = arguments
             .as_object()
             .ok_or_else(|| AppError::Tool("Arguments must be a JSON object".to_string()))?;
@@ -272,6 +272,50 @@ mod tests {
         assert_eq!(defs[0].name, "shell");
     }
 
+    fn mock_context() -> ToolContext {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        ToolContext {
+            user: crate::models::user::User {
+                id: "test-user".into(),
+                email: "test@test.com".into(),
+                name: "Test".into(),
+                password_hash: String::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+            agent: crate::agent::models::Agent {
+                id: "test-agent".into(),
+                user_id: Some("test-user".into()),
+                name: "Test Agent".into(),
+                description: String::new(),
+                model_group: "primary".into(),
+                enabled: true,
+                tools: vec![],
+                sandbox_config: None,
+                max_concurrent_tasks: None,
+                avatar: None,
+                identity: Default::default(),
+                heartbeat_interval: None,
+                next_heartbeat_at: None,
+                heartbeat_chat_id: None,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+            chat: crate::chat::models::Chat {
+                id: "test-chat".into(),
+                user_id: "test-user".into(),
+                space_id: None,
+                task_id: None,
+                agent_id: "test-agent".into(),
+                title: None,
+                archived_at: None,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+            event_tx: tx,
+        }
+    }
+
     #[tokio::test]
     async fn test_cli_tool_execute_echo() {
         let config = CliToolConfig {
@@ -297,11 +341,13 @@ mod tests {
 
         let wm = Arc::new(WorkspaceManager::new(&tmp));
         let tool = CliTool::new(config, wm, "test-agent".to_string(), false, vec![]);
+        let ctx = mock_context();
 
         let result = tool
             .execute(
                 "shell",
                 serde_json::json!({"command": "echo hello world"}),
+                &ctx,
             )
             .await
             .unwrap();

@@ -3,12 +3,11 @@ use serde_json::Value;
 use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
 use surrealdb::types::RecordId;
-use tokio::sync::mpsc;
 
 use crate::error::AppError;
 use crate::llm::tool_loop::{ToolLoopEvent, ToolLoopEventKind};
 
-use super::{AgentTool, ToolDefinition, ToolOutput};
+use super::{AgentTool, ToolContext, ToolDefinition, ToolOutput};
 
 const PROTECTED_FIELDS: &[&str] = &["id", "user_id", "created_at"];
 
@@ -18,7 +17,6 @@ pub struct UpdateEntityTool {
     table: String,
     record_id: String,
     tool_name: String,
-    event_tx: mpsc::Sender<ToolLoopEvent>,
 }
 
 impl UpdateEntityTool {
@@ -28,7 +26,6 @@ impl UpdateEntityTool {
         record_id: impl Into<String>,
         user_id: impl Into<String>,
         tool_name: impl Into<String>,
-        event_tx: mpsc::Sender<ToolLoopEvent>,
     ) -> Self {
         Self {
             db,
@@ -36,7 +33,6 @@ impl UpdateEntityTool {
             table: table.into(),
             record_id: record_id.into(),
             tool_name: tool_name.into(),
-            event_tx,
         }
     }
 }
@@ -67,7 +63,7 @@ impl AgentTool for UpdateEntityTool {
         }]
     }
 
-    async fn execute(&self, _tool_name: &str, arguments: Value) -> Result<ToolOutput, AppError> {
+    async fn execute(&self, _tool_name: &str, arguments: Value, ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         tracing::debug!(
             table = %self.table,
             record_id = %self.record_id,
@@ -132,7 +128,7 @@ impl AgentTool for UpdateEntityTool {
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
 
-        let _ = self
+        let _ = ctx
             .event_tx
             .send(ToolLoopEvent {
                 kind: ToolLoopEventKind::EntityUpdated {

@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::api::files::{detect_content_type, make_agent_path};
 use crate::error::AppError;
 
-use super::{AgentTool, ToolDefinition, ToolOutput};
+use super::{AgentTool, ToolContext, ToolDefinition, ToolOutput};
 
 pub struct ProduceFileTool {
     agent_id: String,
@@ -49,7 +49,7 @@ impl AgentTool for ProduceFileTool {
         }]
     }
 
-    async fn execute(&self, _tool_name: &str, arguments: Value) -> Result<ToolOutput, AppError> {
+    async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let relative_path = arguments
             .get("path")
             .and_then(|v| v.as_str())
@@ -82,13 +82,14 @@ impl AgentTool for ProduceFileTool {
         let content_type = detect_content_type(&filename).to_string();
         let virtual_path = make_agent_path(&self.agent_id, relative_path);
 
-        let attachment = serde_json::json!({
-            "filename": filename,
-            "content_type": content_type,
-            "size_bytes": metadata.len(),
-            "path": virtual_path,
-        });
+        let attachment = crate::api::files::Attachment {
+            filename: filename.clone(),
+            content_type: content_type.clone(),
+            size_bytes: metadata.len(),
+            path: virtual_path.clone(),
+        };
 
-        Ok(ToolOutput::text(attachment.to_string()))
+        Ok(ToolOutput::text(serde_json::to_string(&attachment).unwrap_or_default())
+            .with_attachment(attachment))
     }
 }

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::error::AppError;
-use crate::tool::{AgentTool, ImageData, ToolDefinition, ToolOutput};
+use crate::tool::{AgentTool, ImageData, ToolContext, ToolDefinition, ToolOutput};
 
 use super::session::BrowserSessionManager;
 
@@ -365,7 +365,7 @@ impl AgentTool for BrowserTool {
         ]
     }
 
-    async fn execute(&self, tool_name: &str, arguments: Value) -> Result<ToolOutput, AppError> {
+    async fn execute(&self, tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let browser_tool_name = match tool_name {
             "browser_navigate" => "navigate",
             "browser_go_back" => "go_back",
@@ -405,13 +405,10 @@ impl AgentTool for BrowserTool {
             && let Some(path) = parsed.get("path").and_then(|p| p.as_str())
             && let Ok(bytes) = std::fs::read(path)
         {
-            return Ok(ToolOutput::Mixed {
-                text: result,
-                images: vec![ImageData {
-                    bytes,
-                    media_type: "image/png".into(),
-                }],
-            });
+            return Ok(ToolOutput::mixed(result, vec![ImageData {
+                bytes,
+                media_type: "image/png".into(),
+            }]));
         }
 
         Ok(ToolOutput::text(result))

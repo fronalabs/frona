@@ -3,9 +3,11 @@ use serde_json::Value;
 
 use crate::error::AppError;
 
-use super::{AgentTool, ToolDefinition, ToolOutput, ToolType};
+use crate::chat::message::models::{MessageTool, ToolStatus};
 
-const EXTERNAL_TOOLS: &[&str] = &["ask_human_question", "request_human_takeover"];
+use super::{AgentTool, ToolContext, ToolDefinition, ToolOutput, ToolType};
+
+const EXTERNAL_TOOLS: &[&str] = &["ask_user_question", "request_user_takeover"];
 
 pub struct NotifyHumanTool {
     debugger_url: Option<String>,
@@ -36,22 +38,22 @@ impl AgentTool for NotifyHumanTool {
     fn definitions(&self) -> Vec<ToolDefinition> {
         vec![
             ToolDefinition {
-                name: "request_human_takeover".to_string(),
-                description: "Request the human to take over the browser session (e.g. for CAPTCHA, 2FA, login). The debugger URL is automatically generated from the last browser profile used. Creates a notification and returns immediately.".to_string(),
+                name: "request_user_takeover".to_string(),
+                description: "Request the user to take over the browser session (e.g. for CAPTCHA, 2FA, login). The debugger URL is automatically generated from the last browser profile used. Creates a notification and returns immediately.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "reason": {
                             "type": "string",
-                            "description": "Why human intervention is needed"
+                            "description": "Why user intervention is needed"
                         }
                     },
                     "required": ["reason"]
                 }),
             },
             ToolDefinition {
-                name: "ask_human_question".to_string(),
-                description: "Ask the human a question and wait for their response. Creates a notification and returns immediately.".to_string(),
+                name: "ask_user_question".to_string(),
+                description: "Ask the user a question and wait for their response. Creates a notification and returns immediately.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -68,54 +70,34 @@ impl AgentTool for NotifyHumanTool {
                     "required": ["question", "options"]
                 }),
             },
-            ToolDefinition {
-                name: "warn_human".to_string(),
-                description: "Send a warning notification to the human. Non-blocking.".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "message": {
-                            "type": "string",
-                            "description": "Warning message"
-                        }
-                    },
-                    "required": ["message"]
-                }),
-            },
-            ToolDefinition {
-                name: "inform_human".to_string(),
-                description: "Send an informational notification to the human. Non-blocking.".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "message": {
-                            "type": "string",
-                            "description": "Info message"
-                        }
-                    },
-                    "required": ["message"]
-                }),
-            },
         ]
     }
 
-    async fn execute(&self, tool_name: &str, arguments: Value) -> Result<ToolOutput, AppError> {
+    async fn execute(&self, tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         match tool_name {
-            "request_human_takeover" => {
+            "request_user_takeover" => {
                 let reason = arguments
                     .get("reason")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("Human intervention needed")
+                    .unwrap_or("User intervention needed")
                     .to_string();
                 let debugger_url = self.debugger_url.clone().unwrap_or_default();
 
-                Ok(ToolOutput::text(serde_json::json!({
+                let json = serde_json::json!({
                     "tool_type": "HumanInTheLoop",
                     "reason": reason,
                     "debugger_url": debugger_url,
-                }).to_string()))
+                });
+
+                Ok(ToolOutput::text(json.to_string())
+                    .with_tool_data(MessageTool::HumanInTheLoop {
+                        reason,
+                        debugger_url,
+                        status: ToolStatus::Pending,
+                        response: None,
+                    }))
             }
-            "ask_human_question" => {
+            "ask_user_question" => {
                 let question = arguments
                     .get("question")
                     .and_then(|v| v.as_str())
@@ -126,35 +108,19 @@ impl AgentTool for NotifyHumanTool {
                     .and_then(|v| serde_json::from_value(v.clone()).ok())
                     .unwrap_or_default();
 
-                Ok(ToolOutput::text(serde_json::json!({
+                let json = serde_json::json!({
                     "tool_type": "Question",
                     "question": question,
                     "options": options,
-                }).to_string()))
-            }
-            "warn_human" => {
-                let message = arguments
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Warning")
-                    .to_string();
+                });
 
-                Ok(ToolOutput::text(serde_json::json!({
-                    "tool_type": "Warning",
-                    "message": message,
-                }).to_string()))
-            }
-            "inform_human" => {
-                let message = arguments
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Info")
-                    .to_string();
-
-                Ok(ToolOutput::text(serde_json::json!({
-                    "tool_type": "Info",
-                    "message": message,
-                }).to_string()))
+                Ok(ToolOutput::text(json.to_string())
+                    .with_tool_data(MessageTool::Question {
+                        question,
+                        options,
+                        status: ToolStatus::Pending,
+                        response: None,
+                    }))
             }
             _ => Err(AppError::Tool(format!(
                 "Unknown notify_human sub-tool: {tool_name}"

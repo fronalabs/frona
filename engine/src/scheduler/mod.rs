@@ -1,6 +1,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
+
+use crate::agent::models::Agent;
 use crate::agent::task::models::TaskKind;
 use crate::agent::task::service::TaskService;
 use crate::api::repo::chats::SurrealChatRepo;
@@ -13,13 +16,12 @@ use crate::error::AppError;
 use crate::llm::config::ModelGroup;
 use crate::llm::convert::to_rig_messages;
 use crate::llm::tool_loop::{self, ToolLoopEvent, ToolLoopEventKind, ToolLoopOutcome};
+use crate::repository::Repository;
 use crate::memory::insight::repository::InsightRepository;
 use crate::memory::models::MemorySourceType;
 use crate::memory::service::MemoryService;
-use crate::repository::Repository;
-use crate::schedule::models::Routine;
-use crate::schedule::service::ScheduleService;
 use crate::space::repository::SpaceRepository;
+use crate::tool::schedule::next_cron_occurrence;
 
 pub struct Scheduler {
     memory_service: MemoryService,
@@ -29,7 +31,6 @@ pub struct Scheduler {
     compaction_model_group: ModelGroup,
     interval: Duration,
     task_service: TaskService,
-    schedule_service: ScheduleService,
     app_state: AppState,
 }
 
@@ -43,7 +44,6 @@ impl Scheduler {
         compaction_model_group: ModelGroup,
         interval: Duration,
         task_service: TaskService,
-        schedule_service: ScheduleService,
         app_state: AppState,
     ) -> Self {
         Self {
@@ -54,7 +54,6 @@ impl Scheduler {
             compaction_model_group,
             interval,
             task_service,
-            schedule_service,
             app_state,
         }
     }
@@ -97,8 +96,11 @@ impl Scheduler {
                 if let Err(e) = scheduler.run_cron_tasks().await {
                     tracing::warn!(error = %e, "Cron task check failed");
                 }
-                if let Err(e) = scheduler.run_routines().await {
-                    tracing::warn!(error = %e, "Routine check failed");
+                if let Err(e) = scheduler.run_deferred_tasks().await {
+                    tracing::warn!(error = %e, "Deferred task check failed");
+                }
+                if let Err(e) = scheduler.run_heartbeats().await {
+                    tracing::warn!(error = %e, "Heartbeat check failed");
                 }
             }
         });
@@ -110,19 +112,9 @@ impl Scheduler {
             return Ok(());
         }
 
-        let executor = match self.app_state.task_executor() {
-            Some(e) => e,
-            None => {
-                tracing::warn!("Task executor not available, skipping cron tasks");
-                return Ok(());
-            }
-        };
-
         for template in templates {
-            let (cron_expression, _next_run_at) = match &template.kind {
-                TaskKind::Cron { cron_expression, next_run_at, .. } => {
-                    (cron_expression.clone(), *next_run_at)
-                }
+            let cron_expression = match &template.kind {
+                TaskKind::Cron { cron_expression, .. } => cron_expression.clone(),
                 _ => continue,
             };
 
@@ -132,77 +124,117 @@ impl Scheduler {
                 "Firing cron task"
             );
 
-            let child = match self.task_service.create_cron_run(&template).await {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(error = %e, task_id = %template.id, "Failed to create cron run child");
-                    continue;
+            let app_state = self.app_state.clone();
+            let task_service = self.task_service.clone();
+            let cron_expr = cron_expression.clone();
+            let task_clone = template.clone();
+
+            tokio::spawn(async move {
+                if let Err(e) = execute_cron(&app_state, &task_clone).await {
+                    tracing::error!(
+                        error = %e,
+                        task_id = %task_clone.id,
+                        "Cron execution failed"
+                    );
                 }
-            };
-
-            if let Err(e) = executor.spawn_execution(child).await {
-                tracing::warn!(error = %e, task_id = %template.id, "Failed to spawn cron run");
-            }
-
-            match ScheduleService::next_cron_occurrence(&cron_expression) {
-                Ok(next) => {
-                    if let Err(e) = self
-                        .task_service
-                        .advance_cron_template(&template.id, next, template.chat_id.as_deref())
-                        .await
-                    {
-                        tracing::warn!(error = %e, task_id = %template.id, "Failed to advance cron template");
+                match next_cron_occurrence(&cron_expr) {
+                    Ok(next) => {
+                        if let Err(e) = task_service
+                            .advance_cron_template(&task_clone.id, next, task_clone.chat_id.as_deref())
+                            .await
+                        {
+                            tracing::warn!(error = %e, task_id = %task_clone.id, "Failed to advance cron template");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, task_id = %task_clone.id, "Failed to compute next cron occurrence");
                     }
                 }
-                Err(e) => {
-                    tracing::warn!(error = %e, task_id = %template.id, "Failed to compute next cron occurrence");
-                }
+            });
+        }
+
+        Ok(())
+    }
+
+    async fn run_deferred_tasks(&self) -> Result<(), AppError> {
+        let tasks = self.task_service.find_deferred_due().await?;
+        if tasks.is_empty() {
+            return Ok(());
+        }
+
+        let executor = match self.app_state.task_executor() {
+            Some(e) => e,
+            None => {
+                tracing::warn!("Task executor not available, skipping deferred tasks");
+                return Ok(());
+            }
+        };
+
+        for task in tasks {
+            tracing::info!(
+                task_id = %task.id,
+                title = %task.title,
+                "Firing deferred task"
+            );
+
+            if let Err(e) = executor.spawn_execution(task).await {
+                tracing::warn!(error = %e, "Failed to spawn deferred task");
             }
         }
 
         Ok(())
     }
 
-    async fn run_routines(&self) -> Result<(), AppError> {
-        let routines = self.schedule_service.find_due_routines().await?;
-        if routines.is_empty() {
+    async fn run_heartbeats(&self) -> Result<(), AppError> {
+        let now = Utc::now();
+        let agents = self.app_state.agent_service.find_due_heartbeats(now).await?;
+        if agents.is_empty() {
             return Ok(());
         }
 
-        for routine in routines {
-            if routine.items.is_empty() {
-                continue;
-            }
+        for agent in agents {
+            let interval = match agent.heartbeat_interval {
+                Some(mins) if mins > 0 => mins,
+                _ => continue,
+            };
+
+            let user_id = match &agent.user_id {
+                Some(uid) => uid.clone(),
+                None => continue,
+            };
+
+            let ws = self.app_state.agent_workspaces.get(&agent.id);
+            let heartbeat_content = match ws.read("HEARTBEAT.md") {
+                Some(content) if !content.trim().is_empty() => content,
+                _ => {
+                    let next = now + chrono::Duration::minutes(interval as i64);
+                    let _ = self.app_state.agent_service.update_next_heartbeat(&agent.id, Some(next)).await;
+                    continue;
+                }
+            };
 
             tracing::info!(
-                routine_id = %routine.id,
-                agent_id = %routine.agent_id,
-                item_count = routine.items.len(),
-                "Firing routine"
+                agent_id = %agent.id,
+                "Firing heartbeat"
             );
 
-            let schedule_service = self.schedule_service.clone();
             let app_state = self.app_state.clone();
-            let routine_clone = routine.clone();
-
-            if let Err(e) = self.schedule_service.mark_running(&routine.id).await {
-                tracing::warn!(error = %e, routine_id = %routine.id, "Failed to mark routine running");
-                continue;
-            }
+            let agent_clone = agent.clone();
 
             tokio::spawn(async move {
-                if let Err(e) = execute_routine(&app_state, &routine_clone).await {
+                if let Err(e) = execute_heartbeat(&app_state, &agent_clone, &user_id, &heartbeat_content).await {
                     tracing::error!(
                         error = %e,
-                        routine_id = %routine_clone.id,
-                        "Routine execution failed"
+                        agent_id = %agent_clone.id,
+                        "Heartbeat execution failed"
                     );
                 }
-                if let Err(e) = schedule_service.mark_idle_and_advance(&routine_clone.id).await {
+                let next = Utc::now() + chrono::Duration::minutes(interval as i64);
+                if let Err(e) = app_state.agent_service.update_next_heartbeat(&agent_clone.id, Some(next)).await {
                     tracing::error!(
                         error = %e,
-                        routine_id = %routine_clone.id,
-                        "Failed to mark routine idle"
+                        agent_id = %agent_clone.id,
+                        "Failed to advance heartbeat"
                     );
                 }
             });
@@ -307,14 +339,14 @@ impl Scheduler {
     }
 }
 
-async fn execute_routine(
+async fn execute_cron(
     state: &AppState,
-    routine: &Routine,
+    task: &crate::agent::task::models::Task,
 ) -> Result<(), AppError> {
-    let user_id = &routine.user_id;
-    let agent_id = &routine.agent_id;
+    let user_id = &task.user_id;
+    let agent_id = &task.agent_id;
 
-    let chat_id = if let Some(ref cid) = routine.chat_id {
+    let chat_id = if let Some(ref cid) = task.chat_id {
         cid.clone()
     } else {
         let chat = state
@@ -325,35 +357,71 @@ async fn execute_routine(
                     space_id: None,
                     task_id: None,
                     agent_id: agent_id.clone(),
-                    title: Some("Routine".to_string()),
+                    title: Some(format!("Cron: {}", task.title)),
                 },
             )
             .await?;
 
-        if let Some(r) = state.schedule_service.find_by_id(&routine.id).await? {
-            let mut updated = r;
-            updated.chat_id = Some(chat.id.clone());
-            updated.updated_at = chrono::Utc::now();
-            state.schedule_service.repo().update(&updated).await?;
-        }
+        let _ = state
+            .task_service
+            .advance_cron_template(&task.id, Utc::now(), Some(&chat.id))
+            .await;
 
         chat.id
     };
 
-    let items_text: Vec<String> = routine
-        .items
-        .iter()
-        .enumerate()
-        .map(|(i, item)| format!("{}. {}", i + 1, item.description))
-        .collect();
-    let message_content = format!(
-        "Time to run your routine. Process each item:\n\n{}",
-        items_text.join("\n")
-    );
+    execute_background_agent(state, agent_id, user_id, &chat_id, &task.description).await
+}
 
+async fn execute_heartbeat(
+    state: &AppState,
+    agent: &Agent,
+    user_id: &str,
+    heartbeat_content: &str,
+) -> Result<(), AppError> {
+    let agent_id = &agent.id;
+
+    let chat_id = if let Some(ref cid) = agent.heartbeat_chat_id {
+        cid.clone()
+    } else {
+        let chat = state
+            .chat_service
+            .create_chat(
+                user_id,
+                CreateChatRequest {
+                    space_id: None,
+                    task_id: None,
+                    agent_id: agent_id.clone(),
+                    title: Some("Heartbeat".to_string()),
+                },
+            )
+            .await?;
+
+        state
+            .agent_service
+            .update_heartbeat_chat(&agent.id, &chat.id)
+            .await?;
+
+        chat.id
+    };
+
+    let message = format!(
+        "Heartbeat: review and act on your checklist.\n\n{}",
+        heartbeat_content
+    );
+    execute_background_agent(state, agent_id, user_id, &chat_id, &message).await
+}
+
+async fn execute_background_agent(
+    state: &AppState,
+    agent_id: &str,
+    user_id: &str,
+    chat_id: &str,
+    message_content: &str,
+) -> Result<(), AppError> {
     state
         .chat_service
-        .create_stream_user_message(user_id, &chat_id, &message_content, vec![])
+        .create_stream_user_message(user_id, chat_id, message_content, vec![])
         .await?;
 
     let agent_config = state
@@ -396,7 +464,7 @@ async fn execute_routine(
 
     let registry = state.chat_service.provider_registry().clone();
 
-    let stored_messages = state.chat_service.get_stored_messages(&chat_id).await;
+    let stored_messages = state.chat_service.get_stored_messages(chat_id).await;
     let rig_history = to_rig_messages(&stored_messages, agent_id);
 
     let (tool_event_tx, mut tool_event_rx) = tokio::sync::mpsc::channel::<ToolLoopEvent>(32);
@@ -405,14 +473,26 @@ async fn execute_routine(
         state,
         agent_id,
         user_id,
-        &chat_id,
+        chat_id,
         &agent_config.tools,
         agent_config.sandbox_config.as_ref(),
-        tool_event_tx.clone(),
     )
     .await;
 
-    let cancel_token = state.active_sessions.register(&chat_id).await;
+    let user = state.user_repo.find_by_id(user_id).await?
+        .ok_or_else(|| AppError::NotFound("User not found".into()))?;
+    let agent = state.agent_service.find_by_id(agent_id).await?
+        .ok_or_else(|| AppError::NotFound("Agent not found".into()))?;
+    let chat = state.chat_service.find_chat(chat_id).await?
+        .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
+    let tool_ctx = crate::tool::ToolContext {
+        user,
+        agent,
+        chat,
+        event_tx: tool_event_tx.clone(),
+    };
+
+    let cancel_token = state.active_sessions.register(chat_id).await;
 
     let tool_handle = {
         let cancel_token = cancel_token.clone();
@@ -425,6 +505,7 @@ async fn execute_routine(
                 &tool_registry,
                 tool_event_tx,
                 cancel_token,
+                &tool_ctx,
             )
             .await
         })
@@ -439,23 +520,25 @@ async fn execute_routine(
 
     match tool_handle.await {
         Ok(Ok(outcome)) => {
-            if let ToolLoopOutcome::Completed(_) = outcome
+            if let ToolLoopOutcome::Completed { text: _, attachments } = outcome
                 && !accumulated.is_empty()
             {
                 let _ = state
                     .chat_service
-                    .save_assistant_message(&chat_id, accumulated)
+                    .save_assistant_message_with_tool_calls(
+                        chat_id, accumulated, None, attachments,
+                    )
                     .await;
             }
         }
         Ok(Err(e)) => {
-            tracing::error!(error = %e, routine_id = %routine.id, "Routine tool loop failed");
+            tracing::error!(error = %e, chat_id = %chat_id, "Background agent tool loop failed");
         }
         Err(e) => {
-            tracing::error!(error = %e, routine_id = %routine.id, "Routine tool loop panicked");
+            tracing::error!(error = %e, chat_id = %chat_id, "Background agent tool loop panicked");
         }
     }
 
-    state.active_sessions.remove(&chat_id).await;
+    state.active_sessions.remove(chat_id).await;
     Ok(())
 }

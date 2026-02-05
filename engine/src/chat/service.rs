@@ -60,6 +60,7 @@ impl ChatService {
         }
     }
 
+
     pub fn provider_registry(&self) -> &ModelProviderRegistry {
         &self.provider_registry
     }

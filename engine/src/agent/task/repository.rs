@@ -13,4 +13,5 @@ pub trait TaskRepository: Repository<Task> {
     async fn find_by_chat_id(&self, chat_id: &str) -> Result<Option<Task>, AppError>;
     async fn find_by_source_chat_id(&self, source_chat_id: &str) -> Result<Vec<Task>, AppError>;
     async fn find_due_cron_templates(&self, now: DateTime<Utc>) -> Result<Vec<Task>, AppError>;
+    async fn find_deferred_due(&self, now: DateTime<Utc>) -> Result<Vec<Task>, AppError>;
 }

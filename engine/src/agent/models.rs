@@ -48,6 +48,10 @@ pub struct Agent {
     pub avatar: Option<String>,
     #[serde(default)]
     pub identity: BTreeMap<String, String>,
+    #[serde(default)]
+    pub heartbeat_interval: Option<u64>,
+    pub next_heartbeat_at: Option<DateTime<Utc>>,
+    pub heartbeat_chat_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

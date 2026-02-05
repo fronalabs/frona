@@ -89,6 +89,9 @@ mod tests {
             max_concurrent_tasks: None,
             avatar: None,
             identity: BTreeMap::new(),
+            heartbeat_interval: None,
+            next_heartbeat_at: None,
+            heartbeat_chat_id: None,
             created_at: now,
             updated_at: now,
         };

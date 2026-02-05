@@ -17,7 +17,6 @@ use crate::llm::ModelProviderRegistry;
 use crate::llm::config::ModelRegistryConfig;
 use crate::memory::service::MemoryService;
 use crate::prompt::PromptLoader;
-use crate::schedule::service::ScheduleService;
 use crate::space::service::SpaceService;
 use crate::agent::task::service::TaskService;
 use crate::tool::browser::config::BrowserConfig;
@@ -72,7 +71,6 @@ pub struct AppState {
     pub space_service: SpaceService,
     pub chat_service: ChatService,
     pub task_service: TaskService,
-    pub schedule_service: ScheduleService,
     pub credential_service: CredentialService,
     pub broadcast_service: BroadcastService,
     pub browser_session_manager: Arc<BrowserSessionManager>,
@@ -85,6 +83,7 @@ pub struct AppState {
     pub task_executor: Arc<OnceLock<Arc<TaskExecutor>>>,
     pub max_concurrent_tasks: usize,
     pub config: Arc<Config>,
+    pub agent_workspaces: AgentWorkspaceManager,
 }
 
 impl AppState {
@@ -136,12 +135,11 @@ impl AppState {
                 message_repo,
                 agent_repo,
                 provider_registry,
-                workspaces,
+                workspaces.clone(),
                 memory_service.clone(),
                 prompt_loader,
             ),
             task_service: TaskService::new(SurrealRepo::new(db.clone())),
-            schedule_service: ScheduleService::new(SurrealRepo::new(db.clone())),
             credential_service: CredentialService::new(SurrealRepo::new(db.clone())),
             broadcast_service: broadcast_service.clone(),
             browser_session_manager: Arc::new(BrowserSessionManager::new(browser_config)),
@@ -154,6 +152,7 @@ impl AppState {
             task_executor: Arc::new(OnceLock::new()),
             max_concurrent_tasks: config.max_concurrent_tasks,
             config: Arc::new(config.clone()),
+            agent_workspaces: workspaces,
         }
     }
 

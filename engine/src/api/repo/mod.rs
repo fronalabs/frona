@@ -5,7 +5,6 @@ pub mod insights;
 pub mod generic;
 pub mod memories;
 pub mod messages;
-pub mod schedules;
 pub mod skills;
 pub mod spaces;
 pub mod tasks;

@@ -1,3 +1,5 @@
+use chrono::{DateTime, Utc};
+
 use crate::api::repo::agents::SurrealAgentRepo;
 use crate::error::AppError;
 use crate::repository::Repository;
@@ -37,12 +39,19 @@ impl AgentService {
             max_concurrent_tasks: None,
             avatar: None,
             identity: std::collections::BTreeMap::new(),
+            heartbeat_interval: None,
+            next_heartbeat_at: None,
+            heartbeat_chat_id: None,
             created_at: now,
             updated_at: now,
         };
 
         let agent = self.repo.create(&agent).await?;
         Ok(agent.into())
+    }
+
+    pub async fn find_by_id(&self, agent_id: &str) -> Result<Option<Agent>, AppError> {
+        self.repo.find_by_id(agent_id).await
     }
 
     pub async fn get(
@@ -135,5 +144,65 @@ impl AgentService {
         }
 
         self.repo.delete(agent_id).await
+    }
+
+    pub async fn find_due_heartbeats(&self, now: DateTime<Utc>) -> Result<Vec<Agent>, AppError> {
+        self.repo.find_due_heartbeats(now).await
+    }
+
+    pub async fn update_next_heartbeat(
+        &self,
+        agent_id: &str,
+        next: Option<DateTime<Utc>>,
+    ) -> Result<Agent, AppError> {
+        let mut agent = self
+            .repo
+            .find_by_id(agent_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Agent not found".into()))?;
+
+        agent.next_heartbeat_at = next;
+        agent.updated_at = chrono::Utc::now();
+        self.repo.update(&agent).await
+    }
+
+    pub async fn update_heartbeat_chat(
+        &self,
+        agent_id: &str,
+        chat_id: &str,
+    ) -> Result<Agent, AppError> {
+        let mut agent = self
+            .repo
+            .find_by_id(agent_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Agent not found".into()))?;
+
+        agent.heartbeat_chat_id = Some(chat_id.to_string());
+        agent.updated_at = chrono::Utc::now();
+        self.repo.update(&agent).await
+    }
+
+    pub async fn set_heartbeat(
+        &self,
+        agent_id: &str,
+        interval_minutes: Option<u64>,
+    ) -> Result<Agent, AppError> {
+        let mut agent = self
+            .repo
+            .find_by_id(agent_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Agent not found".into()))?;
+
+        agent.heartbeat_interval = interval_minutes;
+        match interval_minutes {
+            Some(mins) if mins > 0 => {
+                agent.next_heartbeat_at = Some(Utc::now() + chrono::Duration::minutes(mins as i64));
+            }
+            _ => {
+                agent.next_heartbeat_at = None;
+            }
+        }
+        agent.updated_at = Utc::now();
+        self.repo.update(&agent).await
     }
 }

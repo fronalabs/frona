@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use crate::agent::models::Agent;
 use crate::agent::repository::AgentRepository;
 use crate::error::AppError;
@@ -44,5 +45,23 @@ impl AgentRepository for SurrealRepo<Agent> {
             .map_err(|e| AppError::Database(e.to_string()))?;
 
         Ok(agent)
+    }
+
+    async fn find_due_heartbeats(&self, now: DateTime<Utc>) -> Result<Vec<Agent>, AppError> {
+        let query = format!(
+            "{SELECT_CLAUSE} FROM agent WHERE heartbeat_interval IS NOT NONE AND next_heartbeat_at IS NOT NONE AND next_heartbeat_at <= $now AND enabled = true"
+        );
+        let mut result = self
+            .db()
+            .query(&query)
+            .bind(("now", now))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let agents: Vec<Agent> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        Ok(agents)
     }
 }

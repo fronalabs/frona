@@ -48,6 +48,7 @@ impl TaskService {
             description: req.description.unwrap_or_default(),
             status: TaskStatus::Pending,
             kind,
+            run_at: req.run_at,
             result_summary: None,
             error_message: None,
             created_at: now,
@@ -229,6 +230,7 @@ impl TaskService {
         next_run_at: DateTime<Utc>,
         source_agent_id: Option<String>,
         source_chat_id: Option<String>,
+        run_at: Option<DateTime<Utc>>,
     ) -> Result<Task, AppError> {
         let now = chrono::Utc::now();
         let task = Task {
@@ -246,6 +248,7 @@ impl TaskService {
                 source_agent_id,
                 source_chat_id,
             },
+            run_at,
             result_summary: None,
             error_message: None,
             created_at: now,
@@ -278,29 +281,8 @@ impl TaskService {
         self.repo.update(&task).await
     }
 
-    pub async fn create_cron_run(
-        &self,
-        template: &Task,
-    ) -> Result<Task, AppError> {
-        let now = chrono::Utc::now();
-        let task = Task {
-            id: uuid::Uuid::new_v4().to_string(),
-            user_id: template.user_id.clone(),
-            agent_id: template.agent_id.clone(),
-            space_id: template.space_id.clone(),
-            chat_id: template.chat_id.clone(),
-            title: format!("{} (run)", template.title),
-            description: template.description.clone(),
-            status: TaskStatus::Pending,
-            kind: TaskKind::CronRun {
-                template_task_id: template.id.clone(),
-            },
-            result_summary: None,
-            error_message: None,
-            created_at: now,
-            updated_at: now,
-        };
-        self.repo.create(&task).await
+    pub async fn find_deferred_due(&self) -> Result<Vec<Task>, AppError> {
+        self.repo.find_deferred_due(chrono::Utc::now()).await
     }
 
     pub async fn find_due_cron_templates(&self) -> Result<Vec<Task>, AppError> {

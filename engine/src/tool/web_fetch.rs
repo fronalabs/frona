@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::error::AppError;
-use crate::tool::{AgentTool, ToolDefinition, ToolOutput};
+use crate::tool::{AgentTool, ToolContext, ToolDefinition, ToolOutput};
 
 use super::browser::session::BrowserSessionManager;
 
@@ -49,7 +49,7 @@ impl AgentTool for WebFetchTool {
         }]
     }
 
-    async fn execute(&self, _tool_name: &str, arguments: Value) -> Result<ToolOutput, AppError> {
+    async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let url = arguments
             .get("url")
             .and_then(|v| v.as_str())

@@ -5,7 +5,7 @@ use crate::error::AppError;
 use crate::llm::config::ModelGroup;
 use crate::memory::service::MemoryService;
 
-use super::{AgentTool, ToolDefinition, ToolOutput};
+use super::{AgentTool, ToolContext, ToolDefinition, ToolOutput};
 
 pub struct RememberTool {
     memory_service: MemoryService,
@@ -62,7 +62,7 @@ Set overrides to true when the new insight contradicts or updates a previously s
         }]
     }
 
-    async fn execute(&self, _tool_name: &str, arguments: Value) -> Result<ToolOutput, AppError> {
+    async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let fact = arguments
             .get("fact")
             .and_then(|v| v.as_str())
@@ -164,7 +164,7 @@ Set overrides to true when the new fact contradicts or updates a previously stor
         }]
     }
 
-    async fn execute(&self, _tool_name: &str, arguments: Value) -> Result<ToolOutput, AppError> {
+    async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let fact = arguments
             .get("fact")
             .and_then(|v| v.as_str())

@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::error::AppError;
 
-use super::{AgentTool, ToolDefinition, ToolOutput, ToolType};
+use super::{AgentTool, ToolContext, ToolDefinition, ToolOutput, ToolType};
 
 pub struct AgentToolRegistry {
     tools: HashMap<String, Arc<dyn AgentTool>>,
@@ -53,7 +53,7 @@ impl AgentToolRegistry {
         self.tools.insert(owner_name, tool);
     }
 
-    pub async fn execute(&self, tool_name: &str, arguments: Value) -> Result<ToolOutput, AppError> {
+    pub async fn execute(&self, tool_name: &str, arguments: Value, ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let owner = self
             .tool_name_to_owner
             .get(tool_name)
@@ -64,7 +64,7 @@ impl AgentToolRegistry {
             .get(owner)
             .ok_or_else(|| AppError::Tool(format!("Tool owner not found: {owner}")))?;
 
-        tool.execute(tool_name, arguments).await
+        tool.execute(tool_name, arguments, ctx).await
     }
 
     pub async fn cleanup(&self) -> Result<(), AppError> {
@@ -110,8 +110,52 @@ mod tests {
             }]
         }
 
-        async fn execute(&self, tool_name: &str, _arguments: Value) -> Result<ToolOutput, AppError> {
+        async fn execute(&self, tool_name: &str, _arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
             Ok(ToolOutput::text(format!("executed {tool_name}")))
+        }
+    }
+
+    fn mock_context() -> ToolContext {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        ToolContext {
+            user: crate::models::user::User {
+                id: "test-user".into(),
+                email: "test@test.com".into(),
+                name: "Test".into(),
+                password_hash: String::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+            agent: crate::agent::models::Agent {
+                id: "test-agent".into(),
+                user_id: Some("test-user".into()),
+                name: "Test Agent".into(),
+                description: String::new(),
+                model_group: "primary".into(),
+                enabled: true,
+                tools: vec![],
+                sandbox_config: None,
+                max_concurrent_tasks: None,
+                avatar: None,
+                identity: Default::default(),
+                heartbeat_interval: None,
+                next_heartbeat_at: None,
+                heartbeat_chat_id: None,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+            chat: crate::chat::models::Chat {
+                id: "test-chat".into(),
+                user_id: "test-user".into(),
+                space_id: None,
+                task_id: None,
+                agent_id: "test-agent".into(),
+                title: None,
+                archived_at: None,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+            event_tx: tx,
         }
     }
 
@@ -124,8 +168,9 @@ mod tests {
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].name, "mock_action");
 
+        let ctx = mock_context();
         let output = registry
-            .execute("mock_action", serde_json::json!({}))
+            .execute("mock_action", serde_json::json!({}), &ctx)
             .await
             .unwrap();
         assert_eq!(output.text_content(), "executed mock_action");
@@ -134,7 +179,8 @@ mod tests {
     #[tokio::test]
     async fn test_registry_unknown_tool() {
         let registry = AgentToolRegistry::new();
-        let result = registry.execute("nonexistent", serde_json::json!({})).await;
+        let ctx = mock_context();
+        let result = registry.execute("nonexistent", serde_json::json!({}), &ctx).await;
         assert!(result.is_err());
     }
 }

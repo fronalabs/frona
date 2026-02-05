@@ -12,7 +12,6 @@ pub mod memory;
 pub mod models;
 pub mod prompt;
 pub mod repository;
-pub mod schedule;
 pub mod scheduler;
 pub mod space;
 pub mod tool;

@@ -161,8 +161,6 @@ impl AppState {
             self.task_service.clone(),
             self.chat_service.clone(),
             self.broadcast_service.clone(),
-            self.memory_service.clone(),
-            self.skill_resolver.clone(),
             self.clone(),
             self.max_concurrent_tasks,
         );

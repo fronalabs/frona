@@ -11,7 +11,6 @@ use tracing_subscriber::EnvFilter;
 use frona::agent::workspace::AgentWorkspaceManager;
 use frona::api::config::Config;
 use frona::api::db;
-use frona::api::repo::generic::SurrealRepo;
 use frona::api::routes;
 use frona::api::state::AppState;
 use frona::scheduler::Scheduler;
@@ -47,18 +46,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_model_group("compaction")
         .or_else(|_| state.chat_service.provider_registry().get_model_group("primary"))
     {
-        let scheduler = Arc::new(Scheduler::new(
-            state.memory_service.clone(),
-            SurrealRepo::new(surreal.clone()),
-            SurrealRepo::new(surreal.clone()),
-            SurrealRepo::new(surreal.clone()),
-            compaction_group.clone(),
-            std::time::Duration::from_secs(3600),
-            state.task_service.clone(),
-            state.clone(),
-        ));
+        let scheduler = Arc::new(Scheduler::new(state.clone(), compaction_group.clone()));
         scheduler.start();
-        info!("Scheduler started (space compaction: 1h, insight compaction: 2h, cron+heartbeats: 60s)");
+        info!(
+            space_secs = config.scheduler_space_compaction_secs,
+            insight_secs = config.scheduler_insight_compaction_secs,
+            poll_secs = config.scheduler_poll_secs,
+            "Scheduler started"
+        );
     }
 
     let cors = CorsLayer::new()

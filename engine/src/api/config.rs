@@ -13,6 +13,9 @@ pub struct Config {
     pub skills_config_dir: String,
     pub prompts_override_dir: String,
     pub max_concurrent_tasks: usize,
+    pub scheduler_space_compaction_secs: u64,
+    pub scheduler_insight_compaction_secs: u64,
+    pub scheduler_poll_secs: u64,
 }
 
 impl Config {
@@ -46,6 +49,18 @@ impl Config {
                 .unwrap_or_else(|_| "10".into())
                 .parse()
                 .expect("MAX_CONCURRENT_TASKS must be a number"),
+            scheduler_space_compaction_secs: std::env::var("SCHEDULER_SPACE_COMPACTION_SECS")
+                .unwrap_or_else(|_| "3600".into())
+                .parse()
+                .expect("SCHEDULER_SPACE_COMPACTION_SECS must be a number"),
+            scheduler_insight_compaction_secs: std::env::var("SCHEDULER_INSIGHT_COMPACTION_SECS")
+                .unwrap_or_else(|_| "7200".into())
+                .parse()
+                .expect("SCHEDULER_INSIGHT_COMPACTION_SECS must be a number"),
+            scheduler_poll_secs: std::env::var("SCHEDULER_POLL_SECS")
+                .unwrap_or_else(|_| "60".into())
+                .parse()
+                .expect("SCHEDULER_POLL_SECS must be a number"),
         }
     }
 }

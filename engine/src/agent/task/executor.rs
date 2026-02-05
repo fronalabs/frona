@@ -4,13 +4,12 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::execution;
 use crate::agent::task::models::{Task, TaskKind, TaskStatus};
 use crate::chat::dto::CreateChatRequest;
 use crate::chat::message::models::MessageTool;
 use crate::error::AppError;
-use crate::repository::Repository;
-use crate::llm::convert::to_rig_messages;
-use crate::llm::tool_loop::{self, ToolLoopEvent, ToolLoopEventKind, ToolLoopOutcome};
+use crate::llm::tool_loop::ToolLoopOutcome;
 
 use super::service::TaskService;
 
@@ -24,8 +23,6 @@ pub struct TaskExecutor {
 struct ExecutorState {
     chat_service: crate::chat::service::ChatService,
     broadcast_service: crate::chat::broadcast::BroadcastService,
-    memory_service: crate::memory::service::MemoryService,
-    skill_resolver: crate::agent::skill::resolver::SkillResolver,
     app_state: crate::api::state::AppState,
 }
 
@@ -34,8 +31,6 @@ impl TaskExecutor {
         task_service: TaskService,
         chat_service: crate::chat::service::ChatService,
         broadcast_service: crate::chat::broadcast::BroadcastService,
-        memory_service: crate::memory::service::MemoryService,
-        skill_resolver: crate::agent::skill::resolver::SkillResolver,
         app_state: crate::api::state::AppState,
         max_global_concurrent: usize,
     ) -> Self {
@@ -44,8 +39,6 @@ impl TaskExecutor {
             state: Arc::new(ExecutorState {
                 chat_service,
                 broadcast_service,
-                memory_service,
-                skill_resolver,
                 app_state,
             }),
             active_tasks: Mutex::new(HashMap::new()),
@@ -217,125 +210,29 @@ impl TaskExecutor {
                 .await?;
         }
 
-        let agent_config = self
-            .state
-            .chat_service
-            .resolve_agent_config(&agent_id)
-            .await?;
-
-        let skill_summaries: Vec<(String, String)> = self
-            .state
-            .skill_resolver
-            .list(&agent_id)
-            .await
-            .into_iter()
-            .map(|s| (s.name, s.description))
-            .collect();
-
-        let agent_summaries = crate::api::routes::messages::build_agent_summaries_from_state(
-            &self.state.app_state,
-            &user_id,
-            &agent_id,
-            &agent_config.tools,
-        )
-        .await;
-
-        let system_prompt = self
-            .state
-            .memory_service
-            .build_augmented_system_prompt(
-                &agent_config.system_prompt,
-                &agent_id,
-                &user_id,
-                task.space_id.as_deref(),
-                &skill_summaries,
-                &agent_summaries,
-                &agent_config.identity,
-            )
-            .await
-            .unwrap_or(agent_config.system_prompt.clone());
-
-        let model_group = self
-            .state
-            .chat_service
-            .provider_registry()
-            .resolve_model_group(&agent_config.model_group)
-            .map_err(|e| AppError::Llm(e.to_string()))?;
-
-        let registry = self.state.chat_service.provider_registry().clone();
-
-        let stored_messages = self.state.chat_service.get_stored_messages(&chat_id).await;
-        let rig_history = to_rig_messages(&stored_messages, &agent_id);
-
-        let (tool_event_tx, mut tool_event_rx) = tokio::sync::mpsc::channel::<ToolLoopEvent>(32);
-
-        let tool_registry = crate::api::routes::messages::build_tool_registry(
+        let result = execution::run_agent_loop(
             &self.state.app_state,
             &agent_id,
             &user_id,
             &chat_id,
-            &agent_config.tools,
-            agent_config.sandbox_config.as_ref(),
+            task.space_id.as_deref(),
+            cancel_token,
         )
         .await;
 
-        let chat_obj = self.state.chat_service.find_chat(&chat_id).await?
-            .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
-        let user = self.state.app_state.user_repo.find_by_id(&user_id).await?
-            .ok_or_else(|| AppError::NotFound("User not found".into()))?;
-        let agent_obj = self.state.app_state.agent_service.find_by_id(&agent_id).await?
-            .ok_or_else(|| AppError::NotFound("Agent not found".into()))?;
-        let tool_ctx = crate::tool::ToolContext {
-            user,
-            agent: agent_obj,
-            chat: chat_obj,
-            event_tx: tool_event_tx.clone(),
-        };
-
-        let tool_handle = {
-            let registry = registry.clone();
-            let model_group = model_group.clone();
-            let system_prompt = system_prompt.clone();
-            let cancel_token = cancel_token.clone();
-            tokio::spawn(async move {
-                tool_loop::run_tool_loop(
-                    &registry,
-                    &model_group,
-                    &system_prompt,
-                    rig_history,
-                    &tool_registry,
-                    tool_event_tx,
-                    cancel_token,
-                    &tool_ctx,
-                )
-                .await
-            })
-        };
-
-        let mut accumulated = String::new();
-        let mut last_segment = String::new();
-        while let Some(event) = tool_event_rx.recv().await {
-            match event.kind {
-                ToolLoopEventKind::Text(text) => {
-                    accumulated.push_str(&text);
-                    last_segment.push_str(&text);
-                }
-                ToolLoopEventKind::ToolCall { .. } | ToolLoopEventKind::ToolResult { .. } => {
-                    last_segment.clear();
-                }
-                _ => {}
-            }
-        }
-
-        match tool_handle.await {
-            Ok(Ok(outcome)) => match outcome {
-                ToolLoopOutcome::Completed { text: _, attachments } => {
-                    if !accumulated.is_empty() {
+        match result {
+            Ok(execution::AgentLoopOutcome {
+                tool_loop_outcome,
+                accumulated_text,
+                last_segment,
+            }) => match tool_loop_outcome {
+                ToolLoopOutcome::Completed { attachments, .. } => {
+                    if !accumulated_text.is_empty() {
                         let _ = self
                             .state
                             .chat_service
                             .save_assistant_message_with_tool_calls(
-                                &chat_id, accumulated.clone(), None, attachments,
+                                &chat_id, accumulated_text.clone(), None, attachments,
                             )
                             .await;
                     }
@@ -357,7 +254,7 @@ impl TaskExecutor {
                             "Task has incomplete children, staying InProgress"
                         );
                     } else {
-                        let result_text = if last_segment.is_empty() { &accumulated } else { &last_segment };
+                        let result_text = if last_segment.is_empty() { &accumulated_text } else { &last_segment };
                         let summary = if result_text.is_empty() {
                             None
                         } else {
@@ -379,11 +276,11 @@ impl TaskExecutor {
                     }
                 }
                 ToolLoopOutcome::Cancelled(_) => {
-                    if !accumulated.is_empty() {
+                    if !accumulated_text.is_empty() {
                         let _ = self
                             .state
                             .chat_service
-                            .save_assistant_message(&chat_id, accumulated)
+                            .save_assistant_message(&chat_id, accumulated_text)
                             .await;
                     }
 
@@ -391,7 +288,7 @@ impl TaskExecutor {
                     self.broadcast_task_status(&task, "cancelled");
                 }
                 ToolLoopOutcome::ExternalToolPending {
-                    accumulated_text,
+                    accumulated_text: ext_text,
                     tool_calls_json,
                     tool_results,
                     external_tool,
@@ -401,7 +298,7 @@ impl TaskExecutor {
                         .chat_service
                         .save_assistant_message_with_tool_calls(
                             &chat_id,
-                            accumulated_text,
+                            ext_text,
                             Some(tool_calls_json),
                             vec![],
                         )
@@ -444,18 +341,9 @@ impl TaskExecutor {
                         .await;
                 }
             },
-            Ok(Err(e)) => {
+            Err(e) => {
                 let error_msg = format!("Task execution error: {}", e);
                 tracing::error!(error = %e, task_id = %task_id, "Task execution failed");
-                self.task_service
-                    .mark_failed(&task_id, error_msg)
-                    .await?;
-                self.deliver_error_to_source(&task, &e.to_string()).await;
-                self.broadcast_task_status(&task, "failed");
-            }
-            Err(e) => {
-                let error_msg = format!("Task panicked: {}", e);
-                tracing::error!(error = %e, task_id = %task_id, "Task execution panicked");
                 self.task_service
                     .mark_failed(&task_id, error_msg)
                     .await?;

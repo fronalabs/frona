@@ -3,111 +3,69 @@ use std::time::Duration;
 
 use chrono::Utc;
 
+use crate::agent::execution::{self, AgentLoopOutcome};
 use crate::agent::models::Agent;
 use crate::agent::task::models::TaskKind;
-use crate::agent::task::service::TaskService;
-use crate::api::repo::chats::SurrealChatRepo;
+use crate::api::repo::generic::SurrealRepo;
 use crate::api::repo::insights::SurrealInsightRepo;
-use crate::api::repo::spaces::SurrealSpaceRepo;
 use crate::api::state::AppState;
 use crate::chat::dto::CreateChatRequest;
 use crate::chat::repository::ChatRepository;
 use crate::error::AppError;
 use crate::llm::config::ModelGroup;
-use crate::llm::convert::to_rig_messages;
-use crate::llm::tool_loop::{self, ToolLoopEvent, ToolLoopEventKind, ToolLoopOutcome};
-use crate::repository::Repository;
+use crate::llm::tool_loop::ToolLoopOutcome;
 use crate::memory::insight::repository::InsightRepository;
 use crate::memory::models::MemorySourceType;
-use crate::memory::service::MemoryService;
 use crate::space::repository::SpaceRepository;
 use crate::tool::schedule::next_cron_occurrence;
 
 pub struct Scheduler {
-    memory_service: MemoryService,
-    space_repo: SurrealSpaceRepo,
-    chat_repo: SurrealChatRepo,
-    insight_repo: SurrealInsightRepo,
-    compaction_model_group: ModelGroup,
-    interval: Duration,
-    task_service: TaskService,
     app_state: AppState,
+    compaction_model_group: ModelGroup,
+}
+
+macro_rules! spawn_periodic {
+    ($scheduler:expr, $interval:expr, $name:expr, $method:ident) => {{
+        let s = $scheduler.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep($interval).await;
+                if let Err(e) = s.$method().await {
+                    tracing::warn!(error = %e, task = $name, "Scheduled task failed");
+                }
+            }
+        });
+    }};
 }
 
 impl Scheduler {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        memory_service: MemoryService,
-        space_repo: SurrealSpaceRepo,
-        chat_repo: SurrealChatRepo,
-        insight_repo: SurrealInsightRepo,
-        compaction_model_group: ModelGroup,
-        interval: Duration,
-        task_service: TaskService,
-        app_state: AppState,
-    ) -> Self {
+    pub fn new(app_state: AppState, compaction_model_group: ModelGroup) -> Self {
         Self {
-            memory_service,
-            space_repo,
-            chat_repo,
-            insight_repo,
-            compaction_model_group,
-            interval,
-            task_service,
             app_state,
+            compaction_model_group,
         }
     }
 
     pub fn start(self: Arc<Self>) {
-        let scheduler = self.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(scheduler.interval).await;
-                if let Err(e) = scheduler.run_space_compaction().await {
-                    tracing::warn!(error = %e, "Scheduled space compaction failed");
-                }
-            }
-        });
+        let cfg = &self.app_state.config;
+        let space = Duration::from_secs(cfg.scheduler_space_compaction_secs);
+        let insight = Duration::from_secs(cfg.scheduler_insight_compaction_secs);
+        let poll = Duration::from_secs(cfg.scheduler_poll_secs);
 
-        let scheduler = self.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(7200)).await;
-                if let Err(e) = scheduler.run_insight_compaction().await {
-                    tracing::warn!(error = %e, "Scheduled insight compaction failed");
-                }
-            }
-        });
+        spawn_periodic!(self, space, "space_compaction", run_space_compaction);
+        spawn_periodic!(self, insight, "insight_compaction", run_insight_compaction);
+        spawn_periodic!(self, insight, "user_insight_compaction", run_user_insight_compaction);
+        spawn_periodic!(self, poll, "poll_tasks", run_poll_tasks);
+    }
 
-        let scheduler = self.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(7200)).await;
-                if let Err(e) = scheduler.run_user_insight_compaction().await {
-                    tracing::warn!(error = %e, "Scheduled user insight compaction failed");
-                }
-            }
-        });
-
-        let scheduler = self.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                if let Err(e) = scheduler.run_cron_tasks().await {
-                    tracing::warn!(error = %e, "Cron task check failed");
-                }
-                if let Err(e) = scheduler.run_deferred_tasks().await {
-                    tracing::warn!(error = %e, "Deferred task check failed");
-                }
-                if let Err(e) = scheduler.run_heartbeats().await {
-                    tracing::warn!(error = %e, "Heartbeat check failed");
-                }
-            }
-        });
+    async fn run_poll_tasks(&self) -> Result<(), AppError> {
+        self.run_cron_tasks().await?;
+        self.run_deferred_tasks().await?;
+        self.run_heartbeats().await
     }
 
     async fn run_cron_tasks(&self) -> Result<(), AppError> {
-        let templates = self.task_service.find_due_cron_templates().await?;
+        let templates = self.app_state.task_service.find_due_cron_templates().await?;
         if templates.is_empty() {
             return Ok(());
         }
@@ -125,7 +83,7 @@ impl Scheduler {
             );
 
             let app_state = self.app_state.clone();
-            let task_service = self.task_service.clone();
+            let task_service = self.app_state.task_service.clone();
             let cron_expr = cron_expression.clone();
             let task_clone = template.clone();
 
@@ -157,7 +115,7 @@ impl Scheduler {
     }
 
     async fn run_deferred_tasks(&self) -> Result<(), AppError> {
-        let tasks = self.task_service.find_deferred_due().await?;
+        let tasks = self.app_state.task_service.find_deferred_due().await?;
         if tasks.is_empty() {
             return Ok(());
         }
@@ -244,10 +202,15 @@ impl Scheduler {
     }
 
     async fn run_space_compaction(&self) -> Result<(), AppError> {
-        let spaces = self.space_repo.find_all().await?;
+        let space_repo: SurrealRepo<crate::space::models::Space> =
+            SurrealRepo::new(self.app_state.db.clone());
+        let chat_repo: SurrealRepo<crate::chat::models::Chat> =
+            SurrealRepo::new(self.app_state.db.clone());
+
+        let spaces = space_repo.find_all().await?;
 
         for space in spaces {
-            let chats = self.chat_repo.find_by_space_id(&space.id).await?;
+            let chats = chat_repo.find_by_space_id(&space.id).await?;
             if chats.is_empty() {
                 continue;
             }
@@ -257,6 +220,7 @@ impl Scheduler {
                 let title = chat.title.clone().unwrap_or_else(|| "Untitled".to_string());
 
                 let memory = self
+                    .app_state
                     .memory_service
                     .get_memory(MemorySourceType::Chat, &chat.id)
                     .await?;
@@ -271,6 +235,7 @@ impl Scheduler {
             }
 
             if let Err(e) = self
+                .app_state
                 .memory_service
                 .compact_space(&space.id, summaries, &self.compaction_model_group)
                 .await
@@ -287,54 +252,44 @@ impl Scheduler {
     }
 
     async fn run_insight_compaction(&self) -> Result<(), AppError> {
-        let agent_ids = self.insight_repo.find_distinct_agent_ids().await?;
-
-        tracing::info!(
-            agent_count = agent_ids.len(),
-            "Starting scheduled insight compaction"
-        );
-
-        for agent_id in &agent_ids {
-            tracing::info!(agent_id = %agent_id, "Running scheduled insight compaction for agent");
-            if let Err(e) = self
-                .memory_service
-                .compact_insights_if_needed(agent_id, &self.compaction_model_group)
-                .await
-            {
-                tracing::warn!(
-                    agent_id = %agent_id,
-                    error = %e,
-                    "Failed to compact insights for agent"
-                );
-            }
-        }
-
-        Ok(())
+        let repo: SurrealInsightRepo = SurrealRepo::new(self.app_state.db.clone());
+        let ids = repo.find_distinct_agent_ids().await?;
+        self.run_insight_compaction_for("agent", ids).await
     }
 
     async fn run_user_insight_compaction(&self) -> Result<(), AppError> {
-        let user_ids = self.insight_repo.find_distinct_user_ids().await?;
+        let repo: SurrealInsightRepo = SurrealRepo::new(self.app_state.db.clone());
+        let ids = repo.find_distinct_user_ids().await?;
+        self.run_insight_compaction_for("user", ids).await
+    }
 
-        tracing::info!(
-            user_count = user_ids.len(),
-            "Starting scheduled user insight compaction"
-        );
-
-        for user_id in &user_ids {
-            tracing::info!(user_id = %user_id, "Running scheduled user insight compaction");
-            if let Err(e) = self
-                .memory_service
-                .compact_user_insights_if_needed(user_id, &self.compaction_model_group)
-                .await
-            {
-                tracing::warn!(
-                    user_id = %user_id,
-                    error = %e,
-                    "Failed to compact insights for user"
-                );
+    async fn run_insight_compaction_for(
+        &self,
+        kind: &str,
+        ids: Vec<String>,
+    ) -> Result<(), AppError> {
+        tracing::info!(count = ids.len(), kind = kind, "Starting scheduled insight compaction");
+        for id in &ids {
+            tracing::info!(%id, kind = kind, "Running scheduled insight compaction");
+            let result = match kind {
+                "agent" => {
+                    self.app_state
+                        .memory_service
+                        .compact_insights_if_needed(id, &self.compaction_model_group)
+                        .await
+                }
+                "user" => {
+                    self.app_state
+                        .memory_service
+                        .compact_user_insights_if_needed(id, &self.compaction_model_group)
+                        .await
+                }
+                _ => Ok(()),
+            };
+            if let Err(e) = result {
+                tracing::warn!(%id, kind = kind, error = %e, "Failed to compact insights");
             }
         }
-
         Ok(())
     }
 }
@@ -424,118 +379,28 @@ async fn execute_background_agent(
         .create_stream_user_message(user_id, chat_id, message_content, vec![])
         .await?;
 
-    let agent_config = state
-        .chat_service
-        .resolve_agent_config(agent_id)
-        .await?;
-
-    let skill_summaries: Vec<(String, String)> = state
-        .skill_resolver
-        .list(agent_id)
-        .await
-        .into_iter()
-        .map(|s| (s.name, s.description))
-        .collect();
-
-    let agent_summaries = crate::api::routes::messages::build_agent_summaries_from_state(
-        state, user_id, agent_id, &agent_config.tools,
-    )
-    .await;
-
-    let system_prompt = state
-        .memory_service
-        .build_augmented_system_prompt(
-            &agent_config.system_prompt,
-            agent_id,
-            user_id,
-            None,
-            &skill_summaries,
-            &agent_summaries,
-            &agent_config.identity,
-        )
-        .await
-        .unwrap_or(agent_config.system_prompt.clone());
-
-    let model_group = state
-        .chat_service
-        .provider_registry()
-        .resolve_model_group(&agent_config.model_group)
-        .map_err(|e| AppError::Llm(e.to_string()))?;
-
-    let registry = state.chat_service.provider_registry().clone();
-
-    let stored_messages = state.chat_service.get_stored_messages(chat_id).await;
-    let rig_history = to_rig_messages(&stored_messages, agent_id);
-
-    let (tool_event_tx, mut tool_event_rx) = tokio::sync::mpsc::channel::<ToolLoopEvent>(32);
-
-    let tool_registry = crate::api::routes::messages::build_tool_registry(
-        state,
-        agent_id,
-        user_id,
-        chat_id,
-        &agent_config.tools,
-        agent_config.sandbox_config.as_ref(),
-    )
-    .await;
-
-    let user = state.user_repo.find_by_id(user_id).await?
-        .ok_or_else(|| AppError::NotFound("User not found".into()))?;
-    let agent = state.agent_service.find_by_id(agent_id).await?
-        .ok_or_else(|| AppError::NotFound("Agent not found".into()))?;
-    let chat = state.chat_service.find_chat(chat_id).await?
-        .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
-    let tool_ctx = crate::tool::ToolContext {
-        user,
-        agent,
-        chat,
-        event_tx: tool_event_tx.clone(),
-    };
-
     let cancel_token = state.active_sessions.register(chat_id).await;
 
-    let tool_handle = {
-        let cancel_token = cancel_token.clone();
-        tokio::spawn(async move {
-            tool_loop::run_tool_loop(
-                &registry,
-                &model_group,
-                &system_prompt,
-                rig_history,
-                &tool_registry,
-                tool_event_tx,
-                cancel_token,
-                &tool_ctx,
-            )
-            .await
-        })
-    };
+    let result = execution::run_agent_loop(
+        state, agent_id, user_id, chat_id, None, cancel_token,
+    )
+    .await;
 
-    let mut accumulated = String::new();
-    while let Some(event) = tool_event_rx.recv().await {
-        if let ToolLoopEventKind::Text(text) = event.kind {
-            accumulated.push_str(&text);
-        }
-    }
-
-    match tool_handle.await {
-        Ok(Ok(outcome)) => {
-            if let ToolLoopOutcome::Completed { text: _, attachments } = outcome
-                && !accumulated.is_empty()
+    match result {
+        Ok(AgentLoopOutcome { tool_loop_outcome, accumulated_text, .. }) => {
+            if let ToolLoopOutcome::Completed { attachments, .. } = tool_loop_outcome
+                && !accumulated_text.is_empty()
             {
                 let _ = state
                     .chat_service
                     .save_assistant_message_with_tool_calls(
-                        chat_id, accumulated, None, attachments,
+                        chat_id, accumulated_text, None, attachments,
                     )
                     .await;
             }
         }
-        Ok(Err(e)) => {
-            tracing::error!(error = %e, chat_id = %chat_id, "Background agent tool loop failed");
-        }
         Err(e) => {
-            tracing::error!(error = %e, chat_id = %chat_id, "Background agent tool loop panicked");
+            tracing::error!(error = %e, chat_id = %chat_id, "Background agent tool loop failed");
         }
     }
 

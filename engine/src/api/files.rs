@@ -165,6 +165,9 @@ mod tests {
             skills_config_dir: "engine/config".into(),
             prompts_override_dir: "data/config/prompts".into(),
             max_concurrent_tasks: 10,
+            scheduler_space_compaction_secs: 3600,
+            scheduler_insight_compaction_secs: 7200,
+            scheduler_poll_secs: 60,
         }
     }
 

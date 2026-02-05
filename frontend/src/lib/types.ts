@@ -96,8 +96,6 @@ export type MessageToolStatus = "pending" | "resolved";
 export type MessageTool =
   | { type: "HumanInTheLoop"; data: { reason: string; debugger_url: string; status: MessageToolStatus; response: string | null } }
   | { type: "Question"; data: { question: string; options: string[]; status: MessageToolStatus; response: string | null } }
-  | { type: "Warning"; data: { message: string } }
-  | { type: "Info"; data: { message: string } }
   | { type: "TaskCompletion"; data: { task_id: string; chat_id: string | null; status: string } };
 
 export interface MessageResponse {
@@ -127,6 +125,7 @@ export interface TaskResponse {
   description: string;
   status: string;
   kind: TaskKind;
+  run_at: string | null;
   result_summary: string | null;
   error_message: string | null;
   created_at: string;
@@ -141,6 +140,7 @@ export interface CreateTaskRequest {
   description?: string;
   source_agent_id?: string;
   source_chat_id?: string;
+  run_at?: string;
 }
 
 export interface TaskUpdateEvent {
@@ -150,6 +150,22 @@ export interface TaskUpdateEvent {
   chat_id: string | null;
   source_chat_id: string | null;
   result_summary: string | null;
+}
+
+// Agent display name defaults
+const DEFAULT_AGENT_NAMES: Record<string, string> = {
+  system: "Assistant",
+  researcher: "Researcher",
+  developer: "Developer",
+};
+
+export function agentDisplayName(
+  agentId: string | undefined,
+  agentName?: string,
+): string {
+  if (agentName && agentName !== agentId) return agentName;
+  if (!agentId) return "Assistant";
+  return DEFAULT_AGENT_NAMES[agentId] ?? agentId;
 }
 
 // Tool call types

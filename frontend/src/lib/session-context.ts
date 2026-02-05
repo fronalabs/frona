@@ -245,7 +245,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
           updateChatTitle(activeChatId, title);
         },
         onToolCall: (name, _args, description) => {
-          if (name === "ask_human_question" || name === "request_human_takeover") return;
+          if (name === "ask_user_question" || name === "request_user_takeover") return;
           const entry: ToolCallStatus = {
             name,
             description: description ?? null,

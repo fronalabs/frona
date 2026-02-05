@@ -1,7 +1,8 @@
 "use client";
 
-import { useRef, useState, useEffect } from "react";
-import { PaperAirplaneIcon, StopIcon, PaperClipIcon, FolderIcon, XMarkIcon } from "@heroicons/react/24/solid";
+import { useRef, useState, useEffect, useCallback } from "react";
+import { PaperAirplaneIcon, StopIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/solid";
+import { ArrowUpTrayIcon, CloudIcon } from "@heroicons/react/24/outline";
 import { useSession } from "@/lib/session-context";
 import { uploadFile } from "@/lib/api-client";
 import type { Attachment } from "@/lib/types";
@@ -23,9 +24,11 @@ export function MessageInput() {
   const [text, setText] = useState("");
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const folderInputRef = useRef<HTMLInputElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (canSend && !sending) {
@@ -34,7 +37,21 @@ export function MessageInput() {
     }
   }, [canSend, sending, pendingAgentId, activeChatId]);
 
-  const handleFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        menuRef.current && !menuRef.current.contains(e.target as Node) &&
+        menuButtonRef.current && !menuButtonRef.current.contains(e.target as Node)
+      ) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [menuOpen]);
+
+  const handleFilesSelected = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
     const newFiles: PendingFile[] = Array.from(files).map((file) => ({
@@ -43,7 +60,7 @@ export function MessageInput() {
     }));
     setPendingFiles((prev) => [...prev, ...newFiles]);
     e.target.value = "";
-  };
+  }, []);
 
   const removePendingFile = (index: number) => {
     setPendingFiles((prev) => prev.filter((_, i) => i !== index));
@@ -107,7 +124,7 @@ export function MessageInput() {
           ))}
         </div>
       )}
-      <div className="flex items-center gap-2 rounded-xl border border-border bg-surface-secondary px-3 py-2 focus-within:border-accent transition-colors">
+      <div className="rounded-2xl border border-border bg-surface-secondary p-4 focus-within:border-accent transition-colors">
         <input
           ref={fileInputRef}
           type="file"
@@ -115,32 +132,6 @@ export function MessageInput() {
           className="hidden"
           onChange={handleFilesSelected}
         />
-        <input
-          ref={folderInputRef}
-          type="file"
-          // @ts-expect-error webkitdirectory is a non-standard attribute
-          webkitdirectory=""
-          className="hidden"
-          onChange={handleFilesSelected}
-        />
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={isDisabled}
-          className="shrink-0 rounded-lg p-1 text-text-tertiary hover:text-text-secondary disabled:opacity-30 transition"
-          title="Attach files"
-        >
-          <PaperClipIcon className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          onClick={() => folderInputRef.current?.click()}
-          disabled={isDisabled}
-          className="shrink-0 rounded-lg p-1 text-text-tertiary hover:text-text-secondary disabled:opacity-30 transition"
-          title="Attach folder"
-        >
-          <FolderIcon className="h-4 w-4" />
-        </button>
         <textarea
           ref={textareaRef}
           value={text}
@@ -148,26 +139,66 @@ export function MessageInput() {
           onKeyDown={handleKeyDown}
           placeholder="Send a message..."
           rows={1}
-          className="flex-1 resize-none bg-transparent text-sm leading-5 text-text-primary placeholder:text-text-tertiary focus:outline-none m-0 p-0"
+          className="w-full resize-none bg-transparent text-sm leading-5 text-text-primary placeholder:text-text-tertiary focus:outline-none"
           disabled={isDisabled}
         />
-        {sending ? (
-          <button
-            type="button"
-            onClick={stopGeneration}
-            className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary transition"
-          >
-            <StopIcon className="h-5 w-5" />
-          </button>
-        ) : (
-          <button
-            type="submit"
-            disabled={(!text.trim() && pendingFiles.length === 0) || !canSend || uploading}
-            className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary disabled:opacity-30 transition"
-          >
-            <PaperAirplaneIcon className="h-5 w-5" />
-          </button>
-        )}
+        <div className="flex items-center justify-between pt-2">
+          <div className="relative">
+            <button
+              ref={menuButtonRef}
+              type="button"
+              onClick={() => setMenuOpen((v) => !v)}
+              disabled={isDisabled}
+              className="rounded-lg p-1 text-text-tertiary hover:text-text-secondary hover:bg-surface-tertiary disabled:opacity-30 transition"
+              title="Attach"
+            >
+              <PlusIcon className="h-5 w-5" />
+            </button>
+            {menuOpen && (
+              <div
+                ref={menuRef}
+                className="absolute bottom-full left-0 mb-1 w-max rounded-lg border border-border bg-surface-secondary py-1 shadow-lg"
+              >
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:bg-surface-tertiary transition-colors"
+                  onClick={() => {
+                    fileInputRef.current?.click();
+                    setMenuOpen(false);
+                  }}
+                >
+                  <ArrowUpTrayIcon className="h-4 w-4" />
+                  Upload files
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-sm text-text-tertiary cursor-default"
+                  onClick={() => setMenuOpen(false)}
+                >
+                  <CloudIcon className="h-4 w-4" />
+                  Connect to Google Drive
+                </button>
+              </div>
+            )}
+          </div>
+          {sending ? (
+            <button
+              type="button"
+              onClick={stopGeneration}
+              className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary transition"
+            >
+              <StopIcon className="h-5 w-5" />
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={(!text.trim() && pendingFiles.length === 0) || !canSend || uploading}
+              className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary disabled:opacity-30 transition"
+            >
+              <PaperAirplaneIcon className="h-5 w-5" />
+            </button>
+          )}
+        </div>
       </div>
     </form>
   );

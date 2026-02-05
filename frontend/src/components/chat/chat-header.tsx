@@ -10,6 +10,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { useSession } from "@/lib/session-context";
 import { useNavigation, neighborRoute } from "@/lib/navigation-context";
+import { agentDisplayName } from "@/lib/types";
 import { DeleteConfirmDialog } from "@/components/nav/delete-confirm-dialog";
 
 export function ChatHeader() {
@@ -36,8 +37,7 @@ export function ChatHeader() {
   if (!agentId) return null;
 
   const agent = agents.find((a) => a.id === agentId);
-  const agentName =
-    agent?.name ?? (agentId === "system" ? "Frona" : agentId);
+  const agentName = agentDisplayName(agentId, agent?.name);
   const isArchived = !!activeChat?.archived_at;
 
   const handleArchive = async () => {

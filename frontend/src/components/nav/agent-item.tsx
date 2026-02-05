@@ -7,7 +7,7 @@ import {
   CodeBracketIcon,
   BeakerIcon,
 } from "@heroicons/react/24/outline";
-import type { Agent } from "@/lib/types";
+import { agentDisplayName, type Agent } from "@/lib/types";
 
 function RobotIcon({ className }: { className?: string }) {
   return (
@@ -68,7 +68,7 @@ export function AgentItem({ agent }: AgentItemProps) {
       className="w-full flex items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-text-secondary hover:bg-surface-secondary transition"
     >
       <AgentIcon agent={agent} />
-      <span className="truncate flex-1">{agent.name}</span>
+      <span className="truncate flex-1">{agentDisplayName(agent.id, agent.name)}</span>
       <span
         className={`ml-2 h-2 w-2 shrink-0 rounded-full ${
           agent.enabled ? "bg-green-500" : "bg-text-tertiary"

@@ -4,6 +4,7 @@ import { useEffect, useRef, useMemo } from "react";
 import { ChatBubbleLeftIcon } from "@heroicons/react/24/outline";
 import { useSession } from "@/lib/session-context";
 import { useNavigation } from "@/lib/navigation-context";
+import { agentDisplayName } from "@/lib/types";
 import { MessageBubble } from "./message-bubble";
 import { StreamingBubble } from "./streaming-bubble";
 import { ToolMessage } from "./tool-message";
@@ -13,8 +14,7 @@ export function MessageList() {
   const { agents } = useNavigation();
 
   const agent = agents.find((a) => a.id === activeChat?.agent_id);
-  const agentName =
-    agent?.name ?? (activeChat?.agent_id === "system" ? "Frona" : activeChat?.agent_id ?? "Assistant");
+  const agentName = agentDisplayName(activeChat?.agent_id, agent?.name);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const visibleMessages = useMemo(

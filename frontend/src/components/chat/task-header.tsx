@@ -10,6 +10,7 @@ import {
 import { cancelTask } from "@/lib/api-client";
 import { useSession } from "@/lib/session-context";
 import { useNavigation, neighborRoute } from "@/lib/navigation-context";
+import { agentDisplayName } from "@/lib/types";
 import { DeleteConfirmDialog } from "@/components/nav/delete-confirm-dialog";
 
 const statusColors: Record<string, string> = {
@@ -53,8 +54,7 @@ export function TaskHeader() {
   if (!activeTask) return null;
 
   const agent = agents.find((a) => a.id === activeTask.agent_id);
-  const agentName =
-    agent?.name ?? (activeTask.agent_id === "system" ? "Frona" : activeTask.agent_id);
+  const agentName = agentDisplayName(activeTask.agent_id, agent?.name);
   const colorClass = statusColors[activeTask.status] ?? "bg-surface-tertiary text-text-secondary";
   const label = statusLabels[activeTask.status] ?? activeTask.status;
   const canCancel = activeStatuses.has(activeTask.status);

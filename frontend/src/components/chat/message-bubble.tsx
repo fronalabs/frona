@@ -1,6 +1,6 @@
 "use client";
 
-import type { MessageResponse, Attachment } from "@/lib/types";
+import { agentDisplayName, type MessageResponse, type Attachment } from "@/lib/types";
 import { useNavigation } from "@/lib/navigation-context";
 import { fileDownloadUrl } from "@/lib/api-client";
 import { MarkdownContent } from "./markdown-content";
@@ -49,10 +49,11 @@ export function MessageBubble({ message, agentName }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const { agents } = useNavigation();
 
+  const msgAgent = message.agent_id ? agents.find((a) => a.id === message.agent_id) : undefined;
   const displayName = isUser
     ? "You"
     : message.agent_id
-      ? (agents.find((a) => a.id === message.agent_id)?.name ?? agentName)
+      ? agentDisplayName(message.agent_id, msgAgent?.name)
       : agentName;
 
   const attachments = message.attachments ?? [];

@@ -135,24 +135,6 @@ function HumanInTheLoopMessage({
   );
 }
 
-function WarningMessage({ message }: { message: MessageResponse }) {
-  if (!message.tool || message.tool.type !== "Warning") return null;
-  return (
-    <div className="flex items-center gap-3 rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-3 text-sm text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
-      <span className="flex-1">{message.tool.data.message}</span>
-    </div>
-  );
-}
-
-function InfoMessage({ message }: { message: MessageResponse }) {
-  if (!message.tool || message.tool.type !== "Info") return null;
-  return (
-    <div className="flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200">
-      <span className="flex-1">{message.tool.data.message}</span>
-    </div>
-  );
-}
-
 function TaskCompletionMessage({ message }: { message: MessageResponse }) {
   if (!message.tool || message.tool.type !== "TaskCompletion") return null;
 
@@ -186,10 +168,6 @@ export function ToolMessage({
       return <QuestionMessage message={message} agentName={agentName} />;
     case "HumanInTheLoop":
       return <HumanInTheLoopMessage message={message} agentName={agentName} />;
-    case "Warning":
-      return <WarningMessage message={message} />;
-    case "Info":
-      return <InfoMessage message={message} />;
     case "TaskCompletion":
       return <TaskCompletionMessage message={message} />;
     default:

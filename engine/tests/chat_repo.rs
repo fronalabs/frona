@@ -10,7 +10,7 @@ use frona::chat::message::models::{Message, MessageRole};
 use frona::chat::message::repository::MessageRepository;
 use frona::chat::models::Chat;
 use frona::chat::repository::ChatRepository;
-use frona::repository::Repository;
+use frona::core::repository::Repository;
 use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
 

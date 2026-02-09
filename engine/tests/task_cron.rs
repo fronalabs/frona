@@ -3,7 +3,7 @@ use frona::agent::task::models::{Task, TaskKind, TaskStatus};
 use frona::agent::task::service::TaskService;
 use frona::api::db;
 use frona::api::repo::generic::SurrealRepo;
-use frona::repository::Repository;
+use frona::core::repository::Repository;
 use frona::tool::schedule::next_cron_occurrence;
 use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;

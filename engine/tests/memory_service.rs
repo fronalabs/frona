@@ -9,8 +9,8 @@ use frona::memory::models::{Memory, MemorySourceType};
 use frona::memory::repository::MemoryRepository;
 use frona::agent::workspace::AgentWorkspaceManager;
 use frona::memory::service::MemoryService;
-use frona::prompt::PromptLoader;
-use frona::repository::Repository;
+use frona::agent::prompt::PromptLoader;
+use frona::core::repository::Repository;
 use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
 

@@ -4,7 +4,7 @@ use frona::api::repo::generic::SurrealRepo;
 use frona::api::repo::insights::SurrealInsightRepo;
 use frona::memory::insight::models::Insight;
 use frona::memory::insight::repository::InsightRepository;
-use frona::repository::Repository;
+use frona::core::repository::Repository;
 use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
 

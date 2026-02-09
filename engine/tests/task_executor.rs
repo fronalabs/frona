@@ -4,12 +4,12 @@ use chrono::Utc;
 use frona::agent::task::executor::TaskExecutor;
 use frona::agent::task::models::{Task, TaskKind, TaskStatus};
 use frona::agent::workspace::AgentWorkspaceManager;
-use frona::api::config::Config;
+use frona::core::config::Config;
 use frona::api::db;
 use frona::api::repo::generic::SurrealRepo;
-use frona::api::state::AppState;
+use frona::core::state::AppState;
 use frona::chat::broadcast::BroadcastEvent;
-use frona::repository::Repository;
+use frona::core::repository::Repository;
 use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
 
@@ -32,8 +32,7 @@ fn test_config(tmp: &tempfile::TempDir) -> Config {
         workspaces_base_path: format!("{base}/workspaces"),
         files_base_path: format!("{base}/files"),
         tools_config_path: format!("{base}/tools.json"),
-        skills_config_dir: format!("{base}/skills"),
-        prompts_override_dir: format!("{base}/prompts"),
+        shared_config_dir: format!("{base}/config"),
         max_concurrent_tasks: 10,
         scheduler_space_compaction_secs: 3600,
         scheduler_insight_compaction_secs: 7200,
@@ -211,7 +210,7 @@ async fn handle_error_marks_failed_and_delivers() {
     let repo: SurrealRepo<Task> = SurrealRepo::new(state.db.clone());
     repo.create(&task).await.unwrap();
 
-    let error = frona::error::AppError::Internal("something broke".to_string());
+    let error = frona::core::error::AppError::Internal("something broke".to_string());
     executor.handle_error(&task, &error).await.unwrap();
 
     let updated = repo.find_by_id(&task.id).await.unwrap().unwrap();

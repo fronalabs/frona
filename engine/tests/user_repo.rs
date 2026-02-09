@@ -2,8 +2,8 @@ use chrono::Utc;
 use frona::api::db;
 use frona::api::repo::users::SurrealUserRepo;
 use frona::auth::UserRepository;
-use frona::repository::Repository;
-use frona::models::User;
+use frona::core::repository::Repository;
+use frona::core::models::User;
 use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
 

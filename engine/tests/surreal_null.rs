@@ -9,7 +9,7 @@ use frona::api::repo::chats::SurrealChatRepo;
 use frona::api::repo::skills::SurrealSkillRepo;
 use frona::chat::models::Chat;
 use frona::chat::repository::ChatRepository;
-use frona::repository::Repository;
+use frona::core::repository::Repository;
 use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
 

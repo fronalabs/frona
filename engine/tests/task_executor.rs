@@ -190,7 +190,7 @@ async fn handle_error_marks_failed_and_delivers() {
         .chat_service
         .create_chat(
             "user-1",
-            frona::chat::dto::CreateChatRequest {
+            frona::chat::models::CreateChatRequest {
                 space_id: None,
                 task_id: None,
                 agent_id: "agent-1".to_string(),
@@ -233,7 +233,7 @@ async fn handle_completed_marks_done() {
         .chat_service
         .create_chat(
             "user-1",
-            frona::chat::dto::CreateChatRequest {
+            frona::chat::models::CreateChatRequest {
                 space_id: None,
                 task_id: None,
                 agent_id: "agent-1".to_string(),
@@ -336,7 +336,7 @@ async fn deliver_to_source_sends_to_delegation() {
         .chat_service
         .create_chat(
             "user-1",
-            frona::chat::dto::CreateChatRequest {
+            frona::chat::models::CreateChatRequest {
                 space_id: None,
                 task_id: None,
                 agent_id: "agent-1".to_string(),

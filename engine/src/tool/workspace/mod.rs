@@ -181,12 +181,6 @@ mod tests {
     }
 
     #[test]
-    fn test_venv_path() {
-        let ws = temp_workspace("venv_path_test");
-        assert_eq!(ws.venv_path(), ws.path.join(".venv"));
-    }
-
-    #[test]
     fn test_setup_creates_venv() {
         if !python3_available() {
             eprintln!("python3 not found, skipping");

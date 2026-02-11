@@ -91,7 +91,7 @@ impl ChatService {
         Ok(chat.into())
     }
 
-    pub async fn get_chat(&self, user_id: &str, chat_id: &str) -> Result<ChatResponse, AppError> {
+    pub async fn get_chat(&self, user_id: &str, chat_id: &str) -> Result<Chat, AppError> {
         let chat = self
             .chat_repo
             .find_by_id(chat_id)
@@ -102,7 +102,7 @@ impl ChatService {
             return Err(AppError::Forbidden("Not your chat".into()));
         }
 
-        Ok(chat.into())
+        Ok(chat)
     }
 
     pub async fn list_chats(&self, user_id: &str) -> Result<Vec<ChatResponse>, AppError> {
@@ -116,15 +116,7 @@ impl ChatService {
         chat_id: &str,
         req: UpdateChatRequest,
     ) -> Result<ChatResponse, AppError> {
-        let mut chat = self
-            .chat_repo
-            .find_by_id(chat_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
-
-        if chat.user_id != user_id {
-            return Err(AppError::Forbidden("Not your chat".into()));
-        }
+        let mut chat = self.get_chat(user_id, chat_id).await?;
 
         if let Some(title) = req.title {
             chat.title = Some(title);
@@ -139,16 +131,7 @@ impl ChatService {
     }
 
     pub async fn delete_chat(&self, user_id: &str, chat_id: &str) -> Result<(), AppError> {
-        let chat = self
-            .chat_repo
-            .find_by_id(chat_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
-
-        if chat.user_id != user_id {
-            return Err(AppError::Forbidden("Not your chat".into()));
-        }
-
+        self.get_chat(user_id, chat_id).await?;
         self.chat_repo.delete(chat_id).await
     }
 
@@ -157,15 +140,7 @@ impl ChatService {
         user_id: &str,
         chat_id: &str,
     ) -> Result<ChatResponse, AppError> {
-        let mut chat = self
-            .chat_repo
-            .find_by_id(chat_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
-
-        if chat.user_id != user_id {
-            return Err(AppError::Forbidden("Not your chat".into()));
-        }
+        let mut chat = self.get_chat(user_id, chat_id).await?;
 
         chat.archived_at = Some(chrono::Utc::now());
         chat.updated_at = chrono::Utc::now();
@@ -178,15 +153,7 @@ impl ChatService {
         user_id: &str,
         chat_id: &str,
     ) -> Result<ChatResponse, AppError> {
-        let mut chat = self
-            .chat_repo
-            .find_by_id(chat_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
-
-        if chat.user_id != user_id {
-            return Err(AppError::Forbidden("Not your chat".into()));
-        }
+        let mut chat = self.get_chat(user_id, chat_id).await?;
 
         chat.archived_at = None;
         chat.updated_at = chrono::Utc::now();
@@ -208,15 +175,7 @@ impl ChatService {
         chat_id: &str,
         req: SendMessageRequest,
     ) -> Result<Vec<MessageResponse>, AppError> {
-        let chat = self
-            .chat_repo
-            .find_by_id(chat_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
-
-        if chat.user_id != user_id {
-            return Err(AppError::Forbidden("Not your chat".into()));
-        }
+        let chat = self.get_chat(user_id, chat_id).await?;
 
         let title_handle = if chat.title.is_none() {
             let svc = self.clone();
@@ -235,20 +194,7 @@ impl ChatService {
             None
         };
 
-        let now = chrono::Utc::now();
-
-        let user_message = Message {
-            id: uuid::Uuid::new_v4().to_string(),
-            chat_id: chat_id.to_string(),
-            role: MessageRole::User,
-            content: req.content.clone(),
-            agent_id: None,
-            tool_calls: None,
-            tool_call_id: None,
-            tool: None,
-            attachments: vec![],
-            created_at: now,
-        };
+        let user_message = Message::builder(chat_id, MessageRole::User, req.content.clone()).build();
         let user_message = self.message_repo.create(&user_message).await?;
 
         let agent_config = self.resolve_agent_config(&chat.agent_id).await?;
@@ -270,18 +216,9 @@ impl ChatService {
         )
         .await?;
 
-        let assistant_message = Message {
-            id: uuid::Uuid::new_v4().to_string(),
-            chat_id: chat_id.to_string(),
-            role: MessageRole::Agent,
-            content: response_text,
-            agent_id: Some(chat.agent_id.clone()),
-            tool_calls: None,
-            tool_call_id: None,
-            tool: None,
-            attachments: vec![],
-            created_at: chrono::Utc::now(),
-        };
+        let assistant_message = Message::builder(chat_id, MessageRole::Agent, response_text)
+            .agent_id(chat.agent_id.clone())
+            .build();
         let assistant_message = self.message_repo.create(&assistant_message).await?;
 
         if let Some(handle) = title_handle {
@@ -296,15 +233,7 @@ impl ChatService {
         user_id: &str,
         chat_id: &str,
     ) -> Result<Vec<MessageResponse>, AppError> {
-        let chat = self
-            .chat_repo
-            .find_by_id(chat_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
-
-        if chat.user_id != user_id {
-            return Err(AppError::Forbidden("Not your chat".into()));
-        }
+        self.get_chat(user_id, chat_id).await?;
 
         let messages = self.message_repo.find_by_chat_id(chat_id).await?;
         Ok(messages.into_iter().map(Into::into).collect())
@@ -317,29 +246,16 @@ impl ChatService {
         content: &str,
         attachments: Vec<crate::api::files::Attachment>,
     ) -> Result<MessageResponse, AppError> {
-        let chat = self
-            .chat_repo
-            .find_by_id(chat_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
+        self.get_chat(user_id, chat_id).await?;
 
-        if chat.user_id != user_id {
-            return Err(AppError::Forbidden("Not your chat".into()));
-        }
+        let msg = Message::builder(chat_id, MessageRole::User, content.to_string())
+            .attachments(attachments)
+            .build();
+        self.save_message(msg).await
+    }
 
-        let user_message = Message {
-            id: uuid::Uuid::new_v4().to_string(),
-            chat_id: chat_id.to_string(),
-            role: MessageRole::User,
-            content: content.to_string(),
-            agent_id: None,
-            tool_calls: None,
-            tool_call_id: None,
-            tool: None,
-            attachments,
-            created_at: chrono::Utc::now(),
-        };
-        let saved = self.message_repo.create(&user_message).await?;
+    async fn save_message(&self, message: Message) -> Result<MessageResponse, AppError> {
+        let saved = self.message_repo.create(&message).await?;
         Ok(saved.into())
     }
 
@@ -361,20 +277,13 @@ impl ChatService {
         let chat = self.chat_repo.find_by_id(chat_id).await?.ok_or_else(|| {
             AppError::NotFound("Chat not found".into())
         })?;
-        let assistant_message = Message {
-            id: uuid::Uuid::new_v4().to_string(),
-            chat_id: chat_id.to_string(),
-            role: MessageRole::Agent,
-            content,
-            agent_id: Some(chat.agent_id),
-            tool_calls,
-            tool_call_id: None,
-            tool: None,
-            attachments,
-            created_at: chrono::Utc::now(),
-        };
-        let saved = self.message_repo.create(&assistant_message).await?;
-        Ok(saved.into())
+        let mut builder = Message::builder(chat_id, MessageRole::Agent, content)
+            .agent_id(chat.agent_id)
+            .attachments(attachments);
+        if let Some(tc) = tool_calls {
+            builder = builder.tool_calls(tc);
+        }
+        self.save_message(builder.build()).await
     }
 
     pub async fn save_agent_message(
@@ -383,29 +292,10 @@ impl ChatService {
         agent_id: &str,
         content: String,
     ) -> Result<MessageResponse, AppError> {
-        let message = Message {
-            id: uuid::Uuid::new_v4().to_string(),
-            chat_id: chat_id.to_string(),
-            role: MessageRole::Agent,
-            content,
-            agent_id: Some(agent_id.to_string()),
-            tool_calls: None,
-            tool_call_id: None,
-            tool: None,
-            attachments: vec![],
-            created_at: chrono::Utc::now(),
-        };
-        let saved = self.message_repo.create(&message).await?;
-        Ok(saved.into())
-    }
-
-    pub async fn save_tool_result_message(
-        &self,
-        chat_id: &str,
-        tool_call_id: &str,
-        content: String,
-    ) -> Result<MessageResponse, AppError> {
-        self.save_tool_result_message_with_tool(chat_id, tool_call_id, content, None).await
+        let msg = Message::builder(chat_id, MessageRole::Agent, content)
+            .agent_id(agent_id.to_string())
+            .build();
+        self.save_message(msg).await
     }
 
     pub async fn save_tool_result_message_with_tool(
@@ -415,20 +305,12 @@ impl ChatService {
         content: String,
         tool: Option<MessageTool>,
     ) -> Result<MessageResponse, AppError> {
-        let message = Message {
-            id: uuid::Uuid::new_v4().to_string(),
-            chat_id: chat_id.to_string(),
-            role: MessageRole::ToolResult,
-            content,
-            agent_id: None,
-            tool_calls: None,
-            tool_call_id: Some(tool_call_id.to_string()),
-            tool,
-            attachments: vec![],
-            created_at: chrono::Utc::now(),
-        };
-        let saved = self.message_repo.create(&message).await?;
-        Ok(saved.into())
+        let mut builder = Message::builder(chat_id, MessageRole::ToolResult, content)
+            .tool_call_id(tool_call_id.to_string());
+        if let Some(t) = tool {
+            builder = builder.tool(t);
+        }
+        self.save_message(builder.build()).await
     }
 
     pub async fn resolve_tool_message(
@@ -471,20 +353,12 @@ impl ChatService {
         tool: MessageTool,
         attachments: Vec<crate::api::files::Attachment>,
     ) -> Result<MessageResponse, AppError> {
-        let message = Message {
-            id: uuid::Uuid::new_v4().to_string(),
-            chat_id: chat_id.to_string(),
-            role: MessageRole::TaskCompletion,
-            content,
-            agent_id: Some(agent_id.to_string()),
-            tool_calls: None,
-            tool_call_id: None,
-            tool: Some(tool),
-            attachments,
-            created_at: chrono::Utc::now(),
-        };
-        let saved = self.message_repo.create(&message).await?;
-        Ok(saved.into())
+        let msg = Message::builder(chat_id, MessageRole::TaskCompletion, content)
+            .agent_id(agent_id.to_string())
+            .tool(tool)
+            .attachments(attachments)
+            .build();
+        self.save_message(msg).await
     }
 
     pub async fn save_external_tool_pending(
@@ -579,49 +453,12 @@ impl ChatService {
             .ok_or_else(|| AppError::Internal("No title generation prompt found".into()))?;
         let parsed = parse_frontmatter(&content);
 
-        let model_group_name = match parsed.metadata.get("model") {
-            Some(m) if m.contains('/') => {
-                let model_ref = ModelRef::parse(m)
-                    .map_err(|e| AppError::Internal(e.to_string()))?;
-                let model_group = crate::llm::config::ModelGroup {
-                    main: model_ref,
-                    fallbacks: vec![],
-                    max_tokens: Some(100),
-                    temperature: Some(0.7),
-                    context_window: None,
-                    retry: Default::default(),
-                };
-                let user_msg = RigMessage::user(user_content);
-                let result = inference_with_fallback(
-                    &self.provider_registry,
-                    &model_group,
-                    &parsed.template,
-                    vec![],
-                    user_msg,
-                )
-                .await?;
-                let title = parse_title_response(&result, user_content);
-                self.update_chat_title(chat_id, &title).await?;
-                return Ok(title);
-            }
-            Some(group) if !group.is_empty() => group.clone(),
-            _ => "primary".to_string(),
-        };
-
-        let model_group = self.provider_registry.get_model_group(&model_group_name)?;
-        let title_group = crate::llm::config::ModelGroup {
-            main: model_group.main.clone(),
-            fallbacks: model_group.fallbacks.clone(),
-            max_tokens: Some(100),
-            temperature: Some(0.7),
-            context_window: None,
-            retry: model_group.retry.clone(),
-        };
+        let model_group = self.build_title_model_group(parsed.metadata.get("model").map(|s| s.as_str()))?;
 
         let user_msg = RigMessage::user(user_content);
         let result = inference_with_fallback(
             &self.provider_registry,
-            &title_group,
+            &model_group,
             &parsed.template,
             vec![],
             user_msg,
@@ -631,6 +468,35 @@ impl ChatService {
         let title = parse_title_response(&result, user_content);
         self.update_chat_title(chat_id, &title).await?;
         Ok(title)
+    }
+
+    fn build_title_model_group(&self, model_specifier: Option<&str>) -> Result<crate::llm::config::ModelGroup, AppError> {
+        let base = match model_specifier {
+            Some(m) if m.contains('/') => {
+                let model_ref = ModelRef::parse(m)
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
+                return Ok(crate::llm::config::ModelGroup {
+                    main: model_ref,
+                    fallbacks: vec![],
+                    max_tokens: Some(100),
+                    temperature: Some(0.7),
+                    context_window: None,
+                    retry: Default::default(),
+                });
+            }
+            Some(group) if !group.is_empty() => {
+                self.provider_registry.get_model_group(group)?
+            }
+            _ => self.provider_registry.get_model_group("primary")?,
+        };
+        Ok(crate::llm::config::ModelGroup {
+            main: base.main.clone(),
+            fallbacks: base.fallbacks.clone(),
+            max_tokens: Some(100),
+            temperature: Some(0.7),
+            context_window: None,
+            retry: base.retry.clone(),
+        })
     }
 
     async fn update_chat_title(&self, chat_id: &str, title: &str) -> Result<(), AppError> {

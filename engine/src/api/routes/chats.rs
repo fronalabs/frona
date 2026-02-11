@@ -42,7 +42,7 @@ async fn get_chat(
     Path(id): Path<String>,
 ) -> Result<Json<ChatResponse>, ApiError> {
     let chat = state.chat_service.get_chat(&auth.user_id, &id).await?;
-    Ok(Json(chat))
+    Ok(Json(chat.into()))
 }
 
 async fn update_chat(

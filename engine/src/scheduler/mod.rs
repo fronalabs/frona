@@ -325,7 +325,7 @@ async fn execute_cron(
         chat.id
     };
 
-    execute_background_agent(state, agent_id, user_id, &chat_id, &task.description).await
+    execute_background_agent(state, user_id, &chat_id, &task.description).await
 }
 
 async fn execute_heartbeat(
@@ -364,12 +364,11 @@ async fn execute_heartbeat(
         "Heartbeat: review and act on your checklist.\n\n{}",
         heartbeat_content
     );
-    execute_background_agent(state, agent_id, user_id, &chat_id, &message).await
+    execute_background_agent(state, user_id, &chat_id, &message).await
 }
 
 async fn execute_background_agent(
     state: &AppState,
-    agent_id: &str,
     user_id: &str,
     chat_id: &str,
     message_content: &str,
@@ -382,7 +381,7 @@ async fn execute_background_agent(
     let cancel_token = state.active_sessions.register(chat_id).await;
 
     let result = execution::run_agent_loop(
-        state, agent_id, user_id, chat_id, None, cancel_token,
+        state, user_id, chat_id, cancel_token,
     )
     .await;
 

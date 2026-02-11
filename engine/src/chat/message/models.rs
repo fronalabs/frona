@@ -62,6 +62,74 @@ pub struct Message {
     pub created_at: DateTime<Utc>,
 }
 
+impl Message {
+    pub fn builder(chat_id: &str, role: MessageRole, content: String) -> MessageBuilder {
+        MessageBuilder {
+            chat_id: chat_id.to_string(),
+            role,
+            content,
+            agent_id: None,
+            tool_calls: None,
+            tool_call_id: None,
+            tool: None,
+            attachments: vec![],
+        }
+    }
+}
+
+pub struct MessageBuilder {
+    chat_id: String,
+    role: MessageRole,
+    content: String,
+    agent_id: Option<String>,
+    tool_calls: Option<serde_json::Value>,
+    tool_call_id: Option<String>,
+    tool: Option<MessageTool>,
+    attachments: Vec<Attachment>,
+}
+
+impl MessageBuilder {
+    pub fn agent_id(mut self, id: String) -> Self {
+        self.agent_id = Some(id);
+        self
+    }
+
+    pub fn tool_calls(mut self, tc: serde_json::Value) -> Self {
+        self.tool_calls = Some(tc);
+        self
+    }
+
+    pub fn tool_call_id(mut self, id: String) -> Self {
+        self.tool_call_id = Some(id);
+        self
+    }
+
+    pub fn tool(mut self, t: MessageTool) -> Self {
+        self.tool = Some(t);
+        self
+    }
+
+    pub fn attachments(mut self, a: Vec<Attachment>) -> Self {
+        self.attachments = a;
+        self
+    }
+
+    pub fn build(self) -> Message {
+        Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            chat_id: self.chat_id,
+            role: self.role,
+            content: self.content,
+            agent_id: self.agent_id,
+            tool_calls: self.tool_calls,
+            tool_call_id: self.tool_call_id,
+            tool: self.tool,
+            attachments: self.attachments,
+            created_at: chrono::Utc::now(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SendMessageRequest {
     pub content: String,

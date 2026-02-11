@@ -34,7 +34,6 @@ use crate::tool::time::TimeTool;
 use crate::tool::update_entity::UpdateEntityTool;
 use crate::tool::update_identity::UpdateIdentityTool;
 use crate::tool::ToolContext;
-use crate::core::repository::Repository;
 
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
@@ -91,7 +90,7 @@ async fn cancel_generation(
     State(state): State<AppState>,
     Path(chat_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let _chat = state
+    state
         .chat_service
         .get_chat(&auth.user_id, &chat_id)
         .await
@@ -275,7 +274,7 @@ async fn resolve_tool_message(
     Path((chat_id, message_id)): Path<(String, String)>,
     Json(req): Json<ResolveToolRequest>,
 ) -> Result<Json<MessageResponse>, ApiError> {
-    let _chat = state
+    state
         .chat_service
         .get_chat(&auth.user_id, &chat_id)
         .await
@@ -322,18 +321,11 @@ async fn stream_message(
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
     use crate::chat::message::models::{MessageTool, ToolStatus};
 
-    let _chat = state
+    let chat = state
         .chat_service
         .get_chat(&auth.user_id, &chat_id)
         .await
         .map_err(ApiError::from)?;
-
-    let chat = state
-        .chat_service
-        .find_chat(&chat_id)
-        .await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::from(crate::core::error::AppError::NotFound("Chat not found".into())))?;
 
     let stored_messages = state.chat_service.get_stored_messages(&chat_id).await;
     let pending_tool_id = stored_messages.iter().rev().find_map(|m| match &m.tool {
@@ -344,57 +336,21 @@ async fn stream_message(
         _ => None,
     });
 
-    let agent_config = state
-        .chat_service
-        .resolve_agent_config(&chat.agent_id)
-        .await?;
-    let base_system_prompt = agent_config.system_prompt;
-    let model_group_name = agent_config.model_group;
-
-    let skill_summaries: Vec<(String, String)> = state
-        .skill_resolver
-        .list(&chat.agent_id)
-        .await
-        .into_iter()
-        .map(|s| (s.name, s.description))
-        .collect();
-
-    let agent_summaries = build_agent_summaries_from_state(&state, &auth.user_id, &chat.agent_id, &agent_config.tools).await;
-
-    let system_prompt = match state
-        .memory_service
-        .build_augmented_system_prompt(
-            &base_system_prompt,
-            &chat.agent_id,
-            &auth.user_id,
-            chat.space_id.as_deref(),
-            &skill_summaries,
-            &agent_summaries,
-            &agent_config.identity,
-        )
-        .await
-    {
-        Ok(prompt) => prompt,
-        Err(e) => {
-            tracing::warn!(error = %e, agent_id = %chat.agent_id, "Failed to build augmented system prompt, using base");
-            base_system_prompt
-        }
-    };
-
-    let model_group = state
-        .chat_service
-        .provider_registry()
-        .resolve_model_group(&model_group_name)
-        .map_err(|e| ApiError::from(crate::core::error::AppError::from(e)))?;
+    let (tool_event_tx, tool_event_rx) = tokio::sync::mpsc::channel::<ToolLoopEvent>(32);
+    let mut ctx = crate::chat::session::ChatSessionContext::build(
+        &state, &auth.user_id, chat, tool_event_tx, tool_event_rx,
+    )
+    .await
+    .map_err(ApiError::from)?;
 
     if let Some(compaction_group) = get_compaction_model_group(&state) {
-        let max_output = model_group.max_tokens.unwrap_or(8192) as usize;
+        let max_output = ctx.model_group.max_tokens.unwrap_or(8192) as usize;
         if let Err(e) = state.memory_service.compact_chat_if_needed(
             &chat_id,
-            &chat.agent_id,
-            &system_prompt,
-            &model_group.main.model_id,
-            model_group.context_window,
+            &ctx.chat.agent_id,
+            &ctx.system_prompt,
+            &ctx.model_group.main.model_id,
+            ctx.model_group.context_window,
             max_output,
             &compaction_group,
         ).await {
@@ -417,29 +373,22 @@ async fn stream_message(
             "Understood. I have context from our previous conversation. How can I help?",
         ));
     }
-    rig_history.extend(to_rig_messages(&context_messages, &chat.agent_id));
-
-    let registry = state.chat_service.provider_registry().clone();
-    let (tool_event_tx, mut tool_event_rx) = tokio::sync::mpsc::channel::<ToolLoopEvent>(32);
-    let tool_registry = build_tool_registry(&state, &chat.agent_id, &auth.user_id, &chat_id, &agent_config.tools, agent_config.sandbox_config.as_ref()).await;
-
-    let user = state.user_repo.find_by_id(&auth.user_id).await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::from(crate::core::error::AppError::NotFound("User not found".into())))?;
-    let agent = state.agent_service.find_by_id(&chat.agent_id).await
-        .map_err(ApiError::from)?
-        .ok_or_else(|| ApiError::from(crate::core::error::AppError::NotFound("Agent not found".into())))?;
-    let tool_ctx = ToolContext { user, agent, chat: chat.clone(), event_tx: tool_event_tx.clone() };
+    rig_history.extend(to_rig_messages(&context_messages, &ctx.chat.agent_id));
+    ctx.rig_history = rig_history;
 
     let user_content = req.content;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(32);
 
     let chat_service = state.chat_service.clone();
-    let agent_id = chat.agent_id.clone();
-    let needs_title = chat.title.is_none();
+    let agent_id = ctx.chat.agent_id.clone();
+    let needs_title = ctx.chat.title.is_none();
     let active_sessions = state.active_sessions.clone();
-    let cancel_token = active_sessions.register(&chat_id).await;
+
+    let crate::chat::session::ChatSessionContext {
+        system_prompt, model_group, rig_history, registry, tool_registry,
+        tool_ctx, cancel_token, tool_event_tx, mut tool_event_rx, ..
+    } = ctx;
     if let Some(pending_id) = pending_tool_id {
         let user_response = state
             .chat_service
@@ -476,25 +425,10 @@ async fn stream_message(
             let stored_messages = chat_service.get_stored_messages(&chat_id).await;
             let rig_history = to_rig_messages(&stored_messages, &agent_id);
 
-            let tool_handle = {
-                let registry = registry.clone();
-                let model_group = model_group.clone();
-                let system_prompt = system_prompt.clone();
-                let cancel_token = cancel_token.clone();
-                tokio::spawn(async move {
-                    tool_loop::run_tool_loop(
-                        &registry,
-                        &model_group,
-                        &system_prompt,
-                        rig_history,
-                        &tool_registry,
-                        tool_event_tx,
-                        cancel_token,
-                        &tool_ctx,
-                    )
-                    .await
-                })
-            };
+            let tool_handle = spawn_tool_loop(
+                registry.clone(), model_group.clone(), system_prompt.clone(),
+                rig_history, tool_registry, tool_event_tx, cancel_token.clone(), tool_ctx,
+            );
 
             stream_tool_loop_events(&tx, &mut tool_event_rx, tool_handle, &chat_service, &chat_id).await;
             active_sessions.remove(&chat_id_clone).await;
@@ -547,25 +481,10 @@ async fn stream_message(
                 let mut full_history = rig_history;
                 full_history.push(user_rig_msg);
 
-                let tool_handle = {
-                    let registry = registry.clone();
-                    let model_group = model_group.clone();
-                    let system_prompt = system_prompt.clone();
-                    let cancel_token = cancel_token.clone();
-                    tokio::spawn(async move {
-                        tool_loop::run_tool_loop(
-                            &registry,
-                            &model_group,
-                            &system_prompt,
-                            full_history,
-                            &tool_registry,
-                            tool_event_tx,
-                            cancel_token,
-                            &tool_ctx,
-                        )
-                        .await
-                    })
-                };
+                let tool_handle = spawn_tool_loop(
+                    registry.clone(), model_group.clone(), system_prompt.clone(),
+                    full_history, tool_registry, tool_event_tx, cancel_token.clone(), tool_ctx,
+                );
 
                 stream_tool_loop_events(&tx, &mut tool_event_rx, tool_handle, &chat_service, &chat_id).await;
             } else {
@@ -655,6 +574,32 @@ async fn stream_message(
 
     let stream = ReceiverStream::new(rx);
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_tool_loop(
+    registry: crate::llm::ModelProviderRegistry,
+    model_group: crate::llm::config::ModelGroup,
+    system_prompt: String,
+    rig_history: Vec<RigMessage>,
+    tool_registry: AgentToolRegistry,
+    tool_event_tx: tokio::sync::mpsc::Sender<ToolLoopEvent>,
+    cancel_token: tokio_util::sync::CancellationToken,
+    tool_ctx: ToolContext,
+) -> tokio::task::JoinHandle<Result<ToolLoopOutcome, crate::core::error::AppError>> {
+    tokio::spawn(async move {
+        tool_loop::run_tool_loop(
+            &registry,
+            &model_group,
+            &system_prompt,
+            rig_history,
+            &tool_registry,
+            tool_event_tx,
+            cancel_token,
+            &tool_ctx,
+        )
+        .await
+    })
 }
 
 async fn stream_tool_loop_events(
@@ -793,7 +738,7 @@ async fn stream_tool_loop_events(
     }
 }
 
-async fn resume_tool_loop(
+pub async fn resume_tool_loop(
     state: &AppState,
     user_id: &str,
     chat_id: &str,
@@ -801,86 +746,21 @@ async fn resume_tool_loop(
     let chat = state.chat_service.find_chat(chat_id).await?
         .ok_or_else(|| crate::core::error::AppError::NotFound("Chat not found".into()))?;
 
-    let agent_config = state.chat_service.resolve_agent_config(&chat.agent_id).await?;
-    let base_system_prompt = agent_config.system_prompt;
-    let model_group_name = agent_config.model_group;
-
-    let skill_summaries: Vec<(String, String)> = state
-        .skill_resolver
-        .list(&chat.agent_id)
-        .await
-        .into_iter()
-        .map(|s| (s.name, s.description))
-        .collect();
-
-    let agent_summaries = build_agent_summaries_from_state(state, user_id, &chat.agent_id, &agent_config.tools).await;
-
-    let system_prompt = match state
-        .memory_service
-        .build_augmented_system_prompt(
-            &base_system_prompt,
-            &chat.agent_id,
-            user_id,
-            chat.space_id.as_deref(),
-            &skill_summaries,
-            &agent_summaries,
-            &agent_config.identity,
-        )
-        .await
-    {
-        Ok(prompt) => prompt,
-        Err(e) => {
-            tracing::warn!(error = %e, agent_id = %chat.agent_id, "Failed to build augmented system prompt, using base");
-            base_system_prompt
-        }
-    };
-
-    let stored_messages = state.chat_service.get_stored_messages(chat_id).await;
-    let rig_history = to_rig_messages(&stored_messages, &chat.agent_id);
-
-    let model_group = state.chat_service.provider_registry()
-        .resolve_model_group(&model_group_name)?;
-
-    let registry = state.chat_service.provider_registry().clone();
-    let (tool_event_tx, mut tool_event_rx) = tokio::sync::mpsc::channel::<ToolLoopEvent>(32);
-    let tool_registry = build_tool_registry(
-        state,
-        &chat.agent_id,
-        user_id,
-        chat_id,
-        &agent_config.tools,
-        agent_config.sandbox_config.as_ref(),
-    ).await;
-
-    let user = state.user_repo.find_by_id(user_id).await?
-        .ok_or_else(|| crate::core::error::AppError::NotFound("User not found".into()))?;
-    let agent = state.agent_service.find_by_id(&chat.agent_id).await?
-        .ok_or_else(|| crate::core::error::AppError::NotFound("Agent not found".into()))?;
-    let tool_ctx = ToolContext { user, agent, chat: chat.clone(), event_tx: tool_event_tx.clone() };
-
-    let cancel_token = state.active_sessions.register(chat_id).await;
+    let (tool_event_tx, tool_event_rx) = tokio::sync::mpsc::channel::<ToolLoopEvent>(32);
+    let crate::chat::session::ChatSessionContext {
+        system_prompt, model_group, rig_history, registry,
+        tool_registry, tool_ctx, cancel_token, tool_event_tx,
+        mut tool_event_rx, ..
+    } = crate::chat::session::ChatSessionContext::build(
+        state, user_id, chat, tool_event_tx, tool_event_rx,
+    ).await?;
 
     let chat_id_owned = chat_id.to_string();
     let user_id_owned = user_id.to_string();
-    let tool_handle = {
-        let registry = registry.clone();
-        let model_group = model_group.clone();
-        let system_prompt = system_prompt.clone();
-        let cancel_token = cancel_token.clone();
-        tokio::spawn(async move {
-            tool_loop::run_tool_loop(
-                &registry,
-                &model_group,
-                &system_prompt,
-                rig_history,
-                &tool_registry,
-                tool_event_tx,
-                cancel_token,
-                &tool_ctx,
-            )
-            .await
-        })
-    };
+    let tool_handle = spawn_tool_loop(
+        registry.clone(), model_group.clone(), system_prompt.clone(),
+        rig_history, tool_registry, tool_event_tx, cancel_token.clone(), tool_ctx,
+    );
 
     let mut accumulated = String::new();
     while let Some(event) = tool_event_rx.recv().await {
@@ -950,14 +830,6 @@ async fn resume_tool_loop(
 
     state.active_sessions.remove(&chat_id_owned).await;
     Ok(())
-}
-
-pub async fn resume_tool_loop_background(
-    state: &AppState,
-    user_id: &str,
-    chat_id: &str,
-) -> Result<(), crate::core::error::AppError> {
-    resume_tool_loop(state, user_id, chat_id).await
 }
 
 pub async fn build_agent_summaries_from_state(

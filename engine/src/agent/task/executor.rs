@@ -161,10 +161,8 @@ impl TaskExecutor {
 
         let result = execution::run_agent_loop(
             &self.app_state,
-            &task.agent_id,
             &task.user_id,
             &chat_id,
-            task.space_id.as_deref(),
             cancel_token,
         )
         .await;
@@ -438,7 +436,7 @@ impl TaskExecutor {
         let chat_id = source_chat_id.to_string();
         tokio::spawn(async move {
             if let Err(e) =
-                crate::api::routes::messages::resume_tool_loop_background(&state, &user_id, &chat_id)
+                crate::api::routes::messages::resume_tool_loop(&state, &user_id, &chat_id)
                     .await
             {
                 tracing::error!(error = %e, chat_id = %chat_id, "Failed to resume parent tool loop");

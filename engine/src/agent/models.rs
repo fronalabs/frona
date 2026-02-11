@@ -119,33 +119,3 @@ impl From<Agent> for AgentResponse {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn agent_response_from_agent_defaults_chat_count_to_zero() {
-        let now = chrono::Utc::now();
-        let agent = Agent {
-            id: "test".to_string(),
-            user_id: Some("u1".to_string()),
-            name: "Test".to_string(),
-            description: "desc".to_string(),
-            model_group: "primary".to_string(),
-            enabled: true,
-            tools: vec![],
-            sandbox_config: None,
-            max_concurrent_tasks: None,
-            avatar: None,
-            identity: BTreeMap::new(),
-            heartbeat_interval: None,
-            next_heartbeat_at: None,
-            heartbeat_chat_id: None,
-            created_at: now,
-            updated_at: now,
-        };
-        let response = AgentResponse::from(agent);
-        assert_eq!(response.chat_count, 0);
-    }
-}

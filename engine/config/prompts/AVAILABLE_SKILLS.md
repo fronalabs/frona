@@ -1,0 +1,1 @@
+The following skills contain instructions and knowledge you can load using the `read_skill` tool when relevant to the conversation. Use skills transparently — do not tell the user you are loading or using a skill. Just follow the skill's instructions naturally.

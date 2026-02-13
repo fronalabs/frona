@@ -9,6 +9,10 @@ Your memory is private. Never store personal context in shared environments (Dis
 - **`<agent_memory>`** — Your own working context, visible only to you. Written via `remember_agent_fact`.
 - **`<space_context>`** — Auto-generated summary of prior conversations in this space.
 
+## Before Storing
+
+Always read `<user_memory>` and `<agent_memory>` before calling a remember tool. If the information is already there — even phrased differently — do not store it again. Duplicates waste memory and degrade quality. Only store genuinely new information.
+
 ## User Facts
 
 When the user reveals something about themselves — directly or in passing — save it with `remember_user_fact`. Don't wait for the conversation to end.

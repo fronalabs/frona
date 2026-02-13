@@ -1,17 +1,19 @@
-use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use crate::inference::config::ModelGroup;
 use crate::memory::service::MemoryService;
+use frona_derive::agent_tool;
 
-use super::{AgentTool, ToolContext, ToolDefinition, ToolOutput};
+use super::{ToolContext, ToolOutput};
 
 pub struct RememberTool {
     memory_service: MemoryService,
     agent_id: String,
     chat_id: String,
     compaction_group: Option<ModelGroup>,
+    prompts: PromptLoader,
 }
 
 impl RememberTool {
@@ -20,49 +22,20 @@ impl RememberTool {
         agent_id: String,
         chat_id: String,
         compaction_group: Option<ModelGroup>,
+        prompts: PromptLoader,
     ) -> Self {
         Self {
             memory_service,
             agent_id,
             chat_id,
             compaction_group,
+            prompts,
         }
     }
 }
 
-#[async_trait]
-impl AgentTool for RememberTool {
-    fn name(&self) -> &str {
-        "remember_agent_fact"
-    }
-
-    fn definitions(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: "remember_agent_fact".to_string(),
-            description: "Store an insight for this agent's long-term memory. \
-IMPORTANT: Before calling, carefully review <agent_memory>. Do NOT call this tool if the insight — \
-or something very similar — is already listed there, even if worded differently. \
-Each insight should be a short, atomic statement — working context, project details, \
-decisions, or anything relevant to this agent's work. \
-Set overrides to true ONLY when the new insight contradicts or updates a previously stored one.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "fact": {
-                        "type": "string",
-                        "description": "A short, atomic fact about the user to remember"
-                    },
-                    "overrides": {
-                        "type": "boolean",
-                        "description": "Set to true if this fact contradicts or supersedes a previously stored fact",
-                        "default": false
-                    }
-                },
-                "required": ["fact"]
-            }),
-        }]
-    }
-
+#[agent_tool(name = "remember_agent_fact")]
+impl RememberTool {
     async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let fact = arguments
             .get("fact")
@@ -115,6 +88,7 @@ pub struct RememberUserFactTool {
     user_id: String,
     chat_id: String,
     compaction_group: Option<ModelGroup>,
+    prompts: PromptLoader,
 }
 
 impl RememberUserFactTool {
@@ -123,50 +97,20 @@ impl RememberUserFactTool {
         user_id: String,
         chat_id: String,
         compaction_group: Option<ModelGroup>,
+        prompts: PromptLoader,
     ) -> Self {
         Self {
             memory_service,
             user_id,
             chat_id,
             compaction_group,
+            prompts,
         }
     }
 }
 
-#[async_trait]
-impl AgentTool for RememberUserFactTool {
-    fn name(&self) -> &str {
-        "remember_user_fact"
-    }
-
-    fn definitions(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: "remember_user_fact".to_string(),
-            description: "Store a fact about the user that persists across ALL agents. \
-Call this whenever the user shares something genuinely new about themselves — \
-name, location, job, hobbies, preferences, relationships, goals, opinions. \
-IMPORTANT: Before calling, carefully review <user_memory>. Do NOT call this tool if the fact — \
-or something very similar — is already listed there, even if worded differently. \
-Only call when you have genuinely new information. \
-Set overrides to true ONLY when the new fact contradicts or updates a previously stored one.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "fact": {
-                        "type": "string",
-                        "description": "A short, atomic fact about the user to remember across all agents"
-                    },
-                    "overrides": {
-                        "type": "boolean",
-                        "description": "Set to true if this fact contradicts or supersedes a previously stored fact",
-                        "default": false
-                    }
-                },
-                "required": ["fact"]
-            }),
-        }]
-    }
-
+#[agent_tool]
+impl RememberUserFactTool {
     async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let fact = arguments
             .get("fact")

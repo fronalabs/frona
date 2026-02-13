@@ -9,7 +9,6 @@ pub struct Config {
     pub browser_profiles_path: String,
     pub workspaces_base_path: String,
     pub files_base_path: String,
-    pub tools_config_path: String,
     pub shared_config_dir: String,
     pub max_concurrent_tasks: usize,
     pub scheduler_space_compaction_secs: u64,
@@ -38,8 +37,6 @@ impl Config {
                 .unwrap_or_else(|_| "data/workspaces".into()),
             files_base_path: std::env::var("FILES_BASE_PATH")
                 .unwrap_or_else(|_| "data/files".into()),
-            tools_config_path: std::env::var("FRONA_TOOLS_CONFIG")
-                .unwrap_or_else(|_| "data/tools.json".into()),
             shared_config_dir: std::env::var("FRONA_SHARED_CONFIG")
                 .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/config").into()),
             max_concurrent_tasks: std::env::var("MAX_CONCURRENT_TASKS")

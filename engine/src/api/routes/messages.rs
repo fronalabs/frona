@@ -119,17 +119,21 @@ pub async fn build_tool_registry(
 
     let credential_id = credential.as_ref().map(|c| c.id.clone());
 
-    registry.register(Arc::new(TimeTool));
-    registry.register(Arc::new(NotifyHumanTool::new(credential_id)));
+    let prompts = state.prompts.clone();
+
+    registry.register(Arc::new(TimeTool::new(prompts.clone())));
+    registry.register(Arc::new(NotifyHumanTool::new(credential_id, prompts.clone())));
 
     registry.register(Arc::new(ReadFileTool::new(
         state.config.as_ref().clone(),
+        prompts.clone(),
     )));
 
     let workspace_path = std::path::Path::new(&state.config.workspaces_base_path).join(agent_id);
     registry.register(Arc::new(ProduceFileTool::new(
         agent_id.to_string(),
         workspace_path,
+        prompts.clone(),
     )));
 
     registry.register(Arc::new(UpdateEntityTool::new(
@@ -144,6 +148,7 @@ pub async fn build_tool_registry(
         state.db.clone(),
         agent_id,
         user_id,
+        prompts.clone(),
     )));
 
     registry.register(Arc::new(RememberTool::new(
@@ -151,6 +156,7 @@ pub async fn build_tool_registry(
         agent_id.to_string(),
         chat_id.to_string(),
         get_compaction_model_group(state),
+        prompts.clone(),
     )));
 
     registry.register(Arc::new(RememberUserFactTool::new(
@@ -158,11 +164,13 @@ pub async fn build_tool_registry(
         user_id.to_string(),
         chat_id.to_string(),
         get_compaction_model_group(state),
+        prompts.clone(),
     )));
 
     registry.register(Arc::new(SkillTool::new(
         state.skill_resolver.clone(),
         agent_id.to_string(),
+        prompts.clone(),
     )));
 
     if allowed_tools.iter().any(|t| t == "browser")
@@ -179,11 +187,12 @@ pub async fn build_tool_registry(
         registry.register(Arc::new(WebFetchTool::new(
             state.browser_session_manager.clone(),
             user_id.to_string(),
+            prompts.clone(),
         )));
     }
 
     if allowed_tools.iter().any(|t| t == "web_search") {
-        registry.register(Arc::new(WebSearchTool::new(state.search_provider.clone())));
+        registry.register(Arc::new(WebSearchTool::new(state.search_provider.clone(), prompts.clone())));
     }
 
     let agent_repo: Arc<dyn crate::agent::repository::AgentRepository> =
@@ -203,6 +212,7 @@ pub async fn build_tool_registry(
             agent_id.to_string(),
             chat_id.to_string(),
             space_id,
+            prompts.clone(),
         )));
     }
 
@@ -213,6 +223,7 @@ pub async fn build_tool_registry(
             user_id.to_string(),
             agent_id.to_string(),
             chat_id.to_string(),
+            prompts.clone(),
         )));
     }
 
@@ -221,6 +232,7 @@ pub async fn build_tool_registry(
             state.agent_service.clone(),
             state.agent_workspaces.clone(),
             agent_id.to_string(),
+            prompts.clone(),
         )));
     }
 

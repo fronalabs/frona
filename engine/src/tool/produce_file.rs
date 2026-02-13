@@ -1,54 +1,32 @@
 use std::path::PathBuf;
 
-use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::agent::prompt::PromptLoader;
 use crate::api::files::{detect_content_type, make_agent_path};
 use crate::core::error::AppError;
+use frona_derive::agent_tool;
 
-use super::{AgentTool, ToolContext, ToolDefinition, ToolOutput};
+use super::{ToolContext, ToolOutput};
 
 pub struct ProduceFileTool {
     agent_id: String,
     workspace_path: PathBuf,
+    prompts: PromptLoader,
 }
 
 impl ProduceFileTool {
-    pub fn new(agent_id: String, workspace_path: PathBuf) -> Self {
+    pub fn new(agent_id: String, workspace_path: PathBuf, prompts: PromptLoader) -> Self {
         Self {
             agent_id,
             workspace_path,
+            prompts,
         }
     }
 }
 
-#[async_trait]
-impl AgentTool for ProduceFileTool {
-    fn name(&self) -> &str {
-        "produce_file"
-    }
-
-    fn definitions(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: "produce_file".to_string(),
-            description: "Register a file from your workspace as a produced output. \
-                The file must already exist in your workspace. \
-                This makes the file available for the user to download \
-                and propagates it to parent agents when completing delegated tasks."
-                .to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path relative to your workspace (e.g. output.csv or subdir/report.pdf)"
-                    }
-                },
-                "required": ["path"]
-            }),
-        }]
-    }
-
+#[agent_tool]
+impl ProduceFileTool {
     async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let relative_path = arguments
             .get("path")

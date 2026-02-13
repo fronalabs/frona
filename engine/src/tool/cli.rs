@@ -1,15 +1,15 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 
 use super::workspace::WorkspaceManager;
-use super::{AgentTool, ToolContext, ToolDefinition, ToolOutput};
+use super::{AgentTool, ToolContext, ToolDefinition, ToolOutput, parse_frontmatter};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CliToolConfig {
@@ -175,45 +175,71 @@ impl AgentTool for CliTool {
     }
 }
 
-const EMBEDDED_TOOLS_JSON: &str = include_str!("../../config/tools.json");
+pub fn load_cli_tool_config(prompts: &PromptLoader, path: &str) -> Option<CliToolConfig> {
+    let raw = prompts.read(path)?;
+    let (yaml, body) = parse_frontmatter(&raw)?;
 
-pub fn load_cli_tool_configs(user_config_path: &str) -> Vec<CliToolConfig> {
-    let path = Path::new(user_config_path);
-    if path.exists() {
-        match std::fs::read_to_string(path) {
-            Ok(content) => match serde_json::from_str(&content) {
-                Ok(configs) => {
-                    tracing::info!(path = %user_config_path, "Loaded tools config from user file");
-                    return configs;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        path = %user_config_path,
-                        error = %e,
-                        "Failed to parse user tools config, falling back to embedded"
-                    );
-                }
-            },
-            Err(e) => {
-                tracing::warn!(
-                    path = %user_config_path,
-                    error = %e,
-                    "Failed to read user tools config, falling back to embedded"
-                );
-            }
+    let name = yaml.get("name")?.as_str()?.to_string();
+    let program = yaml.get("program")?.as_str()?.to_string();
+
+    let args: Vec<String> = yaml
+        .get("args")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let stdin = yaml.get("stdin").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let timeout_secs = yaml.get("timeout_secs").and_then(|v| v.as_u64());
+
+    let parameters: HashMap<String, Value> = yaml
+        .get("parameters")
+        .and_then(|v| v.as_object())
+        .map(|map| {
+            map.iter()
+                .map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap_or(Value::Null)))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let required: Vec<String> = yaml
+        .get("required")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(CliToolConfig {
+        name,
+        description: body,
+        program,
+        args,
+        stdin,
+        parameters,
+        required,
+        timeout_secs,
+    })
+}
+
+pub fn load_cli_tool_configs(prompts: &PromptLoader) -> Vec<CliToolConfig> {
+    let files = prompts.list_dir("tools");
+    let mut configs = Vec::new();
+
+    for path in &files {
+        if let Some(config) = load_cli_tool_config(prompts, path) {
+            configs.push(config);
+            tracing::info!(path = %path, "Loaded CLI tool config");
         }
     }
 
-    match serde_json::from_str(EMBEDDED_TOOLS_JSON) {
-        Ok(configs) => {
-            tracing::info!("Loaded embedded default tools config");
-            configs
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to parse embedded tools config");
-            Vec::new()
-        }
-    }
+    tracing::info!(count = configs.len(), "Loaded CLI tool configs");
+    configs
 }
 
 #[cfg(test)]
@@ -238,10 +264,11 @@ mod tests {
 
     #[test]
     fn test_load_embedded_config() {
-        let configs = load_cli_tool_configs("/nonexistent/path");
+        let prompts = PromptLoader::new("/nonexistent");
+        let configs = load_cli_tool_configs(&prompts);
         assert_eq!(configs.len(), 2);
-        assert_eq!(configs[0].name, "shell");
-        assert_eq!(configs[1].name, "python");
+        assert!(configs.iter().any(|c| c.name == "shell"));
+        assert!(configs.iter().any(|c| c.name == "python"));
     }
 
     #[test]

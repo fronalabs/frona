@@ -1,48 +1,30 @@
-use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::agent::prompt::PromptLoader;
 use crate::agent::skill::resolver::SkillResolver;
 use crate::core::error::AppError;
+use frona_derive::agent_tool;
 
-use super::{AgentTool, ToolContext, ToolDefinition, ToolOutput};
+use super::{ToolContext, ToolOutput};
 
 pub struct SkillTool {
     skill_resolver: SkillResolver,
     agent_id: String,
+    prompts: PromptLoader,
 }
 
 impl SkillTool {
-    pub fn new(skill_resolver: SkillResolver, agent_id: String) -> Self {
+    pub fn new(skill_resolver: SkillResolver, agent_id: String, prompts: PromptLoader) -> Self {
         Self {
             skill_resolver,
             agent_id,
+            prompts,
         }
     }
 }
 
-#[async_trait]
-impl AgentTool for SkillTool {
-    fn name(&self) -> &str {
-        "skill"
-    }
-
-    fn definitions(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: "read_skill".to_string(),
-            description: "Load the full content of a skill by name. Use this when the conversation is relevant to one of the available skills. Do not tell the user you are reading a skill — just silently load it and follow its instructions.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "The name of the skill to read"
-                    }
-                },
-                "required": ["name"]
-            }),
-        }]
-    }
-
+#[agent_tool(files("read_skill"))]
+impl SkillTool {
     async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let name = arguments
             .get("name")

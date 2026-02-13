@@ -85,6 +85,7 @@ pub struct AppState {
     pub max_concurrent_tasks: usize,
     pub config: Arc<Config>,
     pub agent_workspaces: AgentWorkspaceManager,
+    pub prompts: PromptLoader,
 }
 
 impl AppState {
@@ -104,14 +105,15 @@ impl AppState {
             connection_timeout_ms: 30000,
         };
 
-        let cli_tools_config = load_cli_tool_configs(&config.tools_config_path);
-        crate::tool::init_configurable_tools(&cli_tools_config);
-        let cli_tools_config = Arc::new(cli_tools_config);
         let workspace_manager = Arc::new(WorkspaceManager::new(&config.workspaces_base_path));
         let search_provider = create_search_provider();
 
         let provider_registry_arc = Arc::new(provider_registry.clone());
         let prompt_loader = PromptLoader::new(PathBuf::from(&config.shared_config_dir).join("prompts"));
+
+        let cli_tools_config = load_cli_tool_configs(&prompt_loader);
+        crate::tool::init_configurable_tools(&cli_tools_config);
+        let cli_tools_config = Arc::new(cli_tools_config);
 
         let memory_service = MemoryService::new(
             SurrealRepo::new(db.clone()),
@@ -138,7 +140,7 @@ impl AppState {
                 provider_registry,
                 workspaces.clone(),
                 memory_service.clone(),
-                prompt_loader,
+                prompt_loader.clone(),
             ),
             task_service: TaskService::new(SurrealRepo::new(db.clone())),
             credential_service: CredentialService::new(SurrealRepo::new(db.clone())),
@@ -154,6 +156,7 @@ impl AppState {
             max_concurrent_tasks: config.max_concurrent_tasks,
             config: Arc::new(config.clone()),
             agent_workspaces: workspaces,
+            prompts: prompt_loader,
         }
     }
 

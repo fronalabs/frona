@@ -29,6 +29,7 @@ use crate::core::error::AppError;
 use crate::inference::tool_loop::ToolLoopEvent;
 use crate::core::models::user::User;
 
+use crate::agent::prompt::PromptLoader;
 use self::cli::CliToolConfig;
 
 static CONFIGURABLE_TOOLS: OnceLock<Vec<String>> = OnceLock::new();
@@ -138,4 +139,62 @@ pub trait AgentTool: Send + Sync {
     async fn cleanup(&self) -> Result<(), AppError> {
         Ok(())
     }
+}
+
+fn parse_frontmatter(raw: &str) -> Option<(Value, String)> {
+    let trimmed = raw.trim_start();
+    if !trimmed.starts_with("---") {
+        return None;
+    }
+    let after_first = &trimmed[3..];
+    let end = after_first.find("---")?;
+    let yaml_str = &after_first[..end];
+    let body = after_first[end + 3..].trim().to_string();
+    let yaml: Value = serde_yaml::from_str(yaml_str).ok()?;
+    Some((yaml, body))
+}
+
+fn build_parameters_json(yaml: &Value) -> Value {
+    let params = yaml.get("parameters").cloned().unwrap_or(Value::Null);
+    let required = yaml.get("required").cloned().unwrap_or(Value::Null);
+
+    let properties: Value = if let Value::Object(map) = &params {
+        let mut props = serde_json::Map::new();
+        for (key, schema) in map {
+            props.insert(key.clone(), serde_json::to_value(schema).unwrap_or(Value::Null));
+        }
+        Value::Object(props)
+    } else {
+        Value::Object(serde_json::Map::new())
+    };
+
+    let mut result = serde_json::json!({
+        "type": "object",
+        "properties": properties,
+    });
+
+    if let Value::Array(arr) = &required {
+        let req: Vec<Value> = arr.iter().map(|v| {
+            if let Value::String(s) = v {
+                Value::String(s.clone())
+            } else {
+                v.clone()
+            }
+        }).collect();
+        result["required"] = Value::Array(req);
+    }
+
+    result
+}
+
+pub fn load_tool_definition(prompts: &PromptLoader, path: &str) -> Option<ToolDefinition> {
+    let raw = prompts.read(path)?;
+    let (yaml, body) = parse_frontmatter(&raw)?;
+    let name = yaml.get("name")?.as_str()?.to_string();
+    let parameters = build_parameters_json(&yaml);
+    Some(ToolDefinition {
+        name,
+        description: body,
+        parameters,
+    })
 }

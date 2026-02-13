@@ -622,7 +622,10 @@ impl MemoryService {
         }
 
         if !skill_summaries.is_empty() {
-            result.push_str("\n\n<available_skills>\nThe following skills contain instructions and knowledge you can load using the `read_skill` tool when relevant to the conversation. Use skills transparently — do not tell the user you are loading or using a skill. Just follow the skill's instructions naturally.\n");
+            let header = self.prompts.read("AVAILABLE_SKILLS.md").unwrap_or_default();
+            result.push_str("\n\n<available_skills>\n");
+            result.push_str(header.trim());
+            result.push('\n');
             for (name, description) in skill_summaries {
                 result.push_str(&format!("- {name}: {description}\n"));
             }
@@ -630,7 +633,10 @@ impl MemoryService {
         }
 
         if !agent_summaries.is_empty() {
-            result.push_str("\n\n<available_agents>\nYou can delegate tasks to the following agents using `delegate_task` (fire-and-forget) or `run_subtask` (resume with result).\nUse delegation when the task requires specialized capabilities that another agent has.\n");
+            let header = self.prompts.read("AVAILABLE_AGENTS.md").unwrap_or_default();
+            result.push_str("\n\n<available_agents>\n");
+            result.push_str(header.trim());
+            result.push('\n');
             for (name, description) in agent_summaries {
                 result.push_str(&format!("- {name}: {description}\n"));
             }

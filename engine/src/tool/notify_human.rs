@@ -1,76 +1,36 @@
-use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 
 use crate::chat::message::models::{MessageTool, ToolStatus};
+use frona_derive::agent_tool;
 
-use super::{AgentTool, ToolContext, ToolDefinition, ToolOutput, ToolType};
+use super::{ToolContext, ToolOutput, ToolType};
 
 const EXTERNAL_TOOLS: &[&str] = &["ask_user_question", "request_user_takeover"];
 
 pub struct NotifyHumanTool {
     debugger_url: Option<String>,
+    prompts: PromptLoader,
 }
 
 impl NotifyHumanTool {
-    pub fn new(credential_id: Option<String>) -> Self {
+    pub fn new(credential_id: Option<String>, prompts: PromptLoader) -> Self {
         let debugger_url =
             credential_id.map(|id| format!("/api/browser/debugger/{id}"));
-        Self { debugger_url }
+        Self { debugger_url, prompts }
     }
 }
 
-#[async_trait]
-impl AgentTool for NotifyHumanTool {
-    fn name(&self) -> &str {
-        "notify_human"
-    }
-
+#[agent_tool(files("request_user_takeover", "ask_user_question"))]
+impl NotifyHumanTool {
     fn tool_type(&self, tool_name: &str) -> ToolType {
         if EXTERNAL_TOOLS.contains(&tool_name) {
             ToolType::External
         } else {
             ToolType::Internal
         }
-    }
-
-    fn definitions(&self) -> Vec<ToolDefinition> {
-        vec![
-            ToolDefinition {
-                name: "request_user_takeover".to_string(),
-                description: "Request the user to take over the browser session (e.g. for CAPTCHA, 2FA, login). The debugger URL is automatically generated from the last browser profile used. Creates a notification and returns immediately.".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "reason": {
-                            "type": "string",
-                            "description": "Why user intervention is needed"
-                        }
-                    },
-                    "required": ["reason"]
-                }),
-            },
-            ToolDefinition {
-                name: "ask_user_question".to_string(),
-                description: "Ask the user a question and wait for their response. Creates a notification and returns immediately.".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "question": {
-                            "type": "string",
-                            "description": "The question to ask"
-                        },
-                        "options": {
-                            "type": "array",
-                            "items": { "type": "string" },
-                            "description": "Available answer options"
-                        }
-                    },
-                    "required": ["question", "options"]
-                }),
-            },
-        ]
     }
 
     async fn execute(&self, tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {

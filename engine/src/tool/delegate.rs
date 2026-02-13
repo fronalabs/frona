@@ -1,15 +1,16 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::agent::prompt::PromptLoader;
 use crate::agent::repository::AgentRepository;
 use crate::agent::task::models::CreateTaskRequest;
 use crate::agent::task::executor::TaskExecutor;
 use crate::agent::task::service::TaskService;
 use crate::core::error::AppError;
+use frona_derive::agent_tool;
 
-use super::{AgentTool, ToolContext, ToolDefinition, ToolOutput};
+use super::{ToolContext, ToolOutput};
 
 pub struct DelegateTaskTool {
     task_service: TaskService,
@@ -19,9 +20,11 @@ pub struct DelegateTaskTool {
     agent_id: String,
     chat_id: String,
     space_id: Option<String>,
+    prompts: PromptLoader,
 }
 
 impl DelegateTaskTool {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         task_service: TaskService,
         agent_repo: Arc<dyn AgentRepository>,
@@ -30,6 +33,7 @@ impl DelegateTaskTool {
         agent_id: String,
         chat_id: String,
         space_id: Option<String>,
+        prompts: PromptLoader,
     ) -> Self {
         Self {
             task_service,
@@ -39,62 +43,13 @@ impl DelegateTaskTool {
             agent_id,
             chat_id,
             space_id,
+            prompts,
         }
     }
 }
 
-#[async_trait]
-impl AgentTool for DelegateTaskTool {
-    fn name(&self) -> &str {
-        "delegate"
-    }
-
-    fn definitions(&self) -> Vec<ToolDefinition> {
-        let delegate_params = serde_json::json!({
-            "type": "object",
-            "properties": {
-                "target_agent": {
-                    "type": "string",
-                    "description": "The name of the agent to delegate the task to (from <available_agents>)"
-                },
-                "title": {
-                    "type": "string",
-                    "description": "A short title for the task"
-                },
-                "instruction": {
-                    "type": "string",
-                    "description": "Detailed instructions for the target agent"
-                },
-                "run_at": {
-                    "type": "string",
-                    "description": "Optional ISO 8601 datetime to defer execution (e.g., '2026-03-15T14:00:00Z'). If omitted, the task runs immediately."
-                }
-            },
-            "required": ["target_agent", "title", "instruction"]
-        });
-
-        vec![
-            ToolDefinition {
-                name: "delegate_task".to_string(),
-                description: "Fire-and-forget: delegate a one-off task to another agent. The result \
-                    is posted directly to this chat for the user — your tool loop is NOT resumed. \
-                    Returns immediately with a task ID. Optionally set run_at to defer execution. \
-                    For recurring scheduled work, use schedule_task. For periodic autonomous \
-                    check-ins, use set_heartbeat. To get the result back and continue processing, \
-                    use run_subtask instead.".to_string(),
-                parameters: delegate_params.clone(),
-            },
-            ToolDefinition {
-                name: "run_subtask".to_string(),
-                description: "Run a subtask on another agent and resume when it completes. Unlike \
-                    delegate_task, the result is returned to YOU (the calling agent) so you can \
-                    process it further. Use this when you need the sub-agent's output to continue \
-                    your work. Optionally set run_at to defer execution.".to_string(),
-                parameters: delegate_params,
-            },
-        ]
-    }
-
+#[agent_tool(name = "delegate", files("delegate_task", "run_subtask"))]
+impl DelegateTaskTool {
     async fn execute(&self, tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let deliver_directly = tool_name == "delegate_task";
 
@@ -188,4 +143,3 @@ impl AgentTool for DelegateTaskTool {
         }).to_string()))
     }
 }
-

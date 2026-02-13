@@ -1,53 +1,24 @@
-use async_trait::async_trait;
 use chrono::{Datelike, Duration, Months, SecondsFormat, Utc};
 use serde_json::Value;
 
+use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
+use frona_derive::agent_tool;
 
-use super::{AgentTool, ToolContext, ToolDefinition, ToolOutput};
+use super::{ToolContext, ToolOutput};
 
-pub struct TimeTool;
+pub struct TimeTool {
+    prompts: PromptLoader,
+}
 
-#[async_trait]
-impl AgentTool for TimeTool {
-    fn name(&self) -> &str {
-        "time"
+impl TimeTool {
+    pub fn new(prompts: PromptLoader) -> Self {
+        Self { prompts }
     }
+}
 
-    fn definitions(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: "get_time".to_string(),
-            description: "Get the current UTC time, or compute a future/past time by adding \
-                offsets. Call with no arguments to get the current time."
-                .to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "add_minutes": {
-                        "type": "integer",
-                        "description": "Minutes to add (negative to subtract)"
-                    },
-                    "add_hours": {
-                        "type": "integer",
-                        "description": "Hours to add (negative to subtract)"
-                    },
-                    "add_days": {
-                        "type": "integer",
-                        "description": "Days to add (negative to subtract)"
-                    },
-                    "add_weeks": {
-                        "type": "integer",
-                        "description": "Weeks to add (negative to subtract)"
-                    },
-                    "add_months": {
-                        "type": "integer",
-                        "description": "Months to add (negative to subtract)"
-                    }
-                }
-            }),
-        }]
-    }
-
+#[agent_tool(files("get_time"))]
+impl TimeTool {
     async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let mut dt = Utc::now();
 
@@ -90,6 +61,7 @@ impl AgentTool for TimeTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool::{AgentTool, ToolContext};
 
     fn mock_context() -> ToolContext {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
@@ -120,7 +92,7 @@ mod tests {
 
     #[tokio::test]
     async fn utc_format_uses_z_suffix_without_subseconds() {
-        let tool = TimeTool;
+        let tool = TimeTool::new(PromptLoader::new("/nonexistent"));
         let ctx = mock_context();
         let result = tool.execute("get_time", serde_json::json!({}), &ctx).await.unwrap();
         let parsed: Value = serde_json::from_str(result.text_content()).unwrap();

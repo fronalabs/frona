@@ -1,20 +1,22 @@
 use std::collections::BTreeMap;
 
-use async_trait::async_trait;
 use serde_json::Value;
 use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
 use surrealdb::types::RecordId;
 
+use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use crate::inference::tool_loop::{ToolLoopEvent, ToolLoopEventKind};
+use frona_derive::agent_tool;
 
-use super::{AgentTool, ToolContext, ToolDefinition, ToolOutput};
+use super::{ToolContext, ToolOutput};
 
 pub struct UpdateIdentityTool {
     db: Surreal<Db>,
     agent_id: String,
     user_id: String,
+    prompts: PromptLoader,
 }
 
 impl UpdateIdentityTool {
@@ -22,44 +24,19 @@ impl UpdateIdentityTool {
         db: Surreal<Db>,
         agent_id: impl Into<String>,
         user_id: impl Into<String>,
+        prompts: PromptLoader,
     ) -> Self {
         Self {
             db,
             agent_id: agent_id.into(),
             user_id: user_id.into(),
+            prompts,
         }
     }
 }
 
-#[async_trait]
-impl AgentTool for UpdateIdentityTool {
-    fn name(&self) -> &str {
-        "update_identity"
-    }
-
-    fn definitions(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: "update_identity".to_string(),
-            description: "Update your identity attributes. Use this to save self-descriptive \
-                traits you discover during conversation — name, personality, style, \
-                communication preferences, emoji, creature type, vibe, or anything \
-                that defines who you are or how you behave. When the user tells you \
-                to change your tone, humor, or style, save it here. Check \
-                <agent_identity> first to see what's already set."
-                .to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "attributes": {
-                        "type": "object",
-                        "description": "Key-value pairs of identity attributes to set. Use an empty string value to remove an attribute."
-                    }
-                },
-                "required": ["attributes"]
-            }),
-        }]
-    }
-
+#[agent_tool]
+impl UpdateIdentityTool {
     async fn execute(&self, _tool_name: &str, arguments: Value, ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let attrs = arguments
             .get("attributes")

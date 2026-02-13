@@ -1,17 +1,19 @@
-use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use serde_json::Value;
 
+use crate::agent::prompt::PromptLoader;
 use crate::agent::service::AgentService;
 use crate::agent::workspace::AgentWorkspaceManager;
 use crate::core::error::AppError;
+use frona_derive::agent_tool;
 
-use super::{AgentTool, ToolContext, ToolDefinition, ToolOutput};
+use super::{ToolContext, ToolOutput};
 
 pub struct HeartbeatTool {
     agent_service: AgentService,
     agent_workspaces: AgentWorkspaceManager,
     agent_id: String,
+    prompts: PromptLoader,
 }
 
 impl HeartbeatTool {
@@ -19,41 +21,19 @@ impl HeartbeatTool {
         agent_service: AgentService,
         agent_workspaces: AgentWorkspaceManager,
         agent_id: String,
+        prompts: PromptLoader,
     ) -> Self {
         Self {
             agent_service,
             agent_workspaces,
             agent_id,
+            prompts,
         }
     }
 }
 
-#[async_trait]
-impl AgentTool for HeartbeatTool {
-    fn name(&self) -> &str {
-        "heartbeat"
-    }
-
-    fn definitions(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: "set_heartbeat".to_string(),
-            description: "Set how often this agent wakes up for a heartbeat check. During each \
-                heartbeat, the agent reads its HEARTBEAT.md workspace file and acts on whatever \
-                is written there. Set interval_minutes to 0 to disable. Write your heartbeat \
-                checklist to HEARTBEAT.md using workspace file tools.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "interval_minutes": {
-                        "type": "integer",
-                        "description": "Minutes between heartbeat wake-ups. Set to 0 to disable."
-                    }
-                },
-                "required": ["interval_minutes"]
-            }),
-        }]
-    }
-
+#[agent_tool(files("set_heartbeat"))]
+impl HeartbeatTool {
     async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let interval_minutes = arguments
             .get("interval_minutes")

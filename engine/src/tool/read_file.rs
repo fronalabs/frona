@@ -1,64 +1,30 @@
 use std::path::PathBuf;
 
-use async_trait::async_trait;
 use serde_json::Value;
 
+use crate::agent::prompt::PromptLoader;
 use crate::core::config::Config;
 use crate::api::files::{
     detect_content_type, is_image_content_type, is_text_content_type, resolve_virtual_path,
 };
 use crate::core::error::AppError;
+use frona_derive::agent_tool;
 
-use super::{AgentTool, ImageData, ToolContext, ToolDefinition, ToolOutput};
+use super::{ImageData, ToolContext, ToolOutput};
 
 pub struct ReadFileTool {
     config: Config,
+    prompts: PromptLoader,
 }
 
 impl ReadFileTool {
-    pub fn new(config: Config) -> Self {
-        Self { config }
+    pub fn new(config: Config, prompts: PromptLoader) -> Self {
+        Self { config, prompts }
     }
 }
 
-#[async_trait]
-impl AgentTool for ReadFileTool {
-    fn name(&self) -> &str {
-        "read_file"
-    }
-
-    fn definitions(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: "read_file".to_string(),
-            description: "Read a file from the virtual filesystem. \
-                Accepts paths like user://user-id/filename or agent://agent-id/path. \
-                For text files, returns the content with optional offset and limit. \
-                For images, returns the image for visual analysis. \
-                For binary files, returns file metadata."
-                .to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Virtual file path (e.g. user://uid/report.pdf or agent://dev/output.csv)"
-                    },
-                    "offset": {
-                        "type": "integer",
-                        "description": "Line offset to start reading from (text files only, default 0)",
-                        "default": 0
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of lines to read (text files only, default 500)",
-                        "default": 500
-                    }
-                },
-                "required": ["path"]
-            }),
-        }]
-    }
-
+#[agent_tool]
+impl ReadFileTool {
     async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let path = arguments
             .get("path")

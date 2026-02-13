@@ -7,8 +7,10 @@ use backon::{ExponentialBuilder, Retryable};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
-use crate::tool::{AgentTool, ToolContext, ToolDefinition, ToolOutput};
+use crate::tool::{ToolContext, ToolOutput};
+use frona_derive::agent_tool;
 
 #[derive(Debug, Clone)]
 pub struct SearchResult {
@@ -237,11 +239,12 @@ impl SearchProvider for SearxngProvider {
 
 pub struct WebSearchTool {
     provider: Option<Arc<dyn SearchProvider>>,
+    prompts: PromptLoader,
 }
 
 impl WebSearchTool {
-    pub fn new(provider: Option<Arc<dyn SearchProvider>>) -> Self {
-        Self { provider }
+    pub fn new(provider: Option<Arc<dyn SearchProvider>>, prompts: PromptLoader) -> Self {
+        Self { provider, prompts }
     }
 }
 
@@ -258,33 +261,8 @@ fn format_results(results: &[SearchResult]) -> String {
         .join("\n\n")
 }
 
-#[async_trait]
-impl AgentTool for WebSearchTool {
-    fn name(&self) -> &str {
-        "web_search"
-    }
-
-    fn definitions(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: "web_search".to_string(),
-            description: "Search the web and return structured results with titles, URLs, and snippets.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The search query"
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum number of results to return (default: 5, max: 20)"
-                    }
-                },
-                "required": ["query"]
-            }),
-        }]
-    }
-
+#[agent_tool]
+impl WebSearchTool {
     async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &ToolContext) -> Result<ToolOutput, AppError> {
         let provider = self.provider.as_ref().ok_or_else(|| {
             AppError::Tool(
@@ -365,6 +343,7 @@ pub fn create_search_provider() -> Option<Arc<dyn SearchProvider>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tool::AgentTool;
 
     struct MockProvider {
         results: Vec<SearchResult>,
@@ -438,7 +417,7 @@ mod tests {
         let provider = Arc::new(MockProvider {
             results: sample_results(),
         });
-        let tool = WebSearchTool::new(Some(provider));
+        let tool = WebSearchTool::new(Some(provider), PromptLoader::new("/nonexistent"));
         let ctx = mock_context();
 
         let args = serde_json::json!({ "query": "rust" });
@@ -453,7 +432,7 @@ mod tests {
         let provider = Arc::new(MockProvider {
             results: sample_results(),
         });
-        let tool = WebSearchTool::new(Some(provider));
+        let tool = WebSearchTool::new(Some(provider), PromptLoader::new("/nonexistent"));
         let ctx = mock_context();
 
         let args = serde_json::json!({ "query": "rust", "max_results": 1 });
@@ -468,7 +447,7 @@ mod tests {
         let provider = Arc::new(MockProvider {
             results: vec![],
         });
-        let tool = WebSearchTool::new(Some(provider));
+        let tool = WebSearchTool::new(Some(provider), PromptLoader::new("/nonexistent"));
         let ctx = mock_context();
 
         let args = serde_json::json!({});
@@ -481,7 +460,7 @@ mod tests {
         let provider = Arc::new(MockProvider {
             results: sample_results(),
         });
-        let tool = WebSearchTool::new(Some(provider));
+        let tool = WebSearchTool::new(Some(provider), PromptLoader::new("/nonexistent"));
         let ctx = mock_context();
 
         let args = serde_json::json!({ "query": "rust", "max_results": 100 });
@@ -491,7 +470,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_web_search_tool_no_provider() {
-        let tool = WebSearchTool::new(None);
+        let tool = WebSearchTool::new(None, PromptLoader::new("/nonexistent"));
         let ctx = mock_context();
         let args = serde_json::json!({ "query": "rust" });
         let result = tool.execute("web_search", args, &ctx).await;

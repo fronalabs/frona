@@ -161,7 +161,6 @@ mod tests {
             browser_profiles_path: "/profiles".into(),
             workspaces_base_path: "data/workspaces".into(),
             files_base_path: "data/files".into(),
-            tools_config_path: "data/tools.json".into(),
             shared_config_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/config").into(),
             max_concurrent_tasks: 10,
             scheduler_space_compaction_secs: 3600,

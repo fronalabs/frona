@@ -40,10 +40,11 @@ impl AgentTool for RememberTool {
         vec![ToolDefinition {
             name: "remember_agent_fact".to_string(),
             description: "Store an insight for this agent's long-term memory. \
-Before calling this tool, check <agent_memory> to avoid storing duplicates. \
+IMPORTANT: Before calling, carefully review <agent_memory>. Do NOT call this tool if the insight — \
+or something very similar — is already listed there, even if worded differently. \
 Each insight should be a short, atomic statement — working context, project details, \
 decisions, or anything relevant to this agent's work. \
-Set overrides to true when the new insight contradicts or updates a previously stored one.".to_string(),
+Set overrides to true ONLY when the new insight contradicts or updates a previously stored one.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -142,10 +143,12 @@ impl AgentTool for RememberUserFactTool {
         vec![ToolDefinition {
             name: "remember_user_fact".to_string(),
             description: "Store a fact about the user that persists across ALL agents. \
-Call this whenever the user shares something about themselves — \
+Call this whenever the user shares something genuinely new about themselves — \
 name, location, job, hobbies, preferences, relationships, goals, opinions. \
-Before calling, check <user_memory> to avoid storing duplicates. \
-Set overrides to true when the new fact contradicts or updates a previously stored one.".to_string(),
+IMPORTANT: Before calling, carefully review <user_memory>. Do NOT call this tool if the fact — \
+or something very similar — is already listed there, even if worded differently. \
+Only call when you have genuinely new information. \
+Set overrides to true ONLY when the new fact contradicts or updates a previously stored one.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {

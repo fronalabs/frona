@@ -22,3 +22,36 @@ services:
     volumes:
       - ./data/searxng:/etc/searxng
     restart: unless-stopped
+
+  frona-dev:
+    profiles: [dev]
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3001:3001"
+      - "3000:3000"
+    volumes:
+      - ./engine:/app/engine
+      - ./Cargo.toml:/app/Cargo.toml
+      - ./Cargo.lock:/app/Cargo.lock
+      - cargo-cache:/app/target
+      - node-modules:/app/frontend/node_modules
+      - ./frontend:/app/frontend
+      - ./data:/app/data
+    environment:
+      - ANTHROPIC_API_KEY
+      - JWT_SECRET=dev-secret-change-in-production
+      - RUST_LOG=frona=debug,tower_http=debug
+      - BROWSERLESS_WS_URL=ws://browserless:3333
+      - SEARXNG_BASE_URL=http://searxng:8080
+      - SURREAL_PATH=data/db
+      - PORT=3001
+      - NEXT_PUBLIC_API_URL=http://localhost:3001
+      - CARGO_BUILD_JOBS=4
+    depends_on: [browserless, searxng]
+    restart: unless-stopped
+
+volumes:
+  cargo-cache:
+  node-modules:

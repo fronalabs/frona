@@ -6,4 +6,5 @@ frontend/out/
 .git/
 .env
 .env.local
-*.md
+CLAUDE.md
+README.md

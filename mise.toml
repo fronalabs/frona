@@ -67,5 +67,13 @@ description = "Run all tests"
 run = "cargo test --workspace"
 
 [tasks.docker]
-description = "Build Docker image"
+description = "Build production Docker image"
 run = "docker build -t frona ."
+
+[tasks."docker:dev"]
+description = "Run full dev stack in Docker (with hot-reload)"
+run = "docker compose --profile dev up --build"
+
+[tasks."docker:dev:down"]
+description = "Stop dev Docker stack"
+run = "docker compose --profile dev down"

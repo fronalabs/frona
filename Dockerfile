@@ -6,20 +6,48 @@ RUN npm ci
 COPY frontend/ .
 RUN npm run build
 
-# Stage 2: Build backend
-FROM rust:latest AS backend-builder
+# Stage 2: Build backend (cargo-chef for dependency caching)
+FROM rust:1.89-bookworm AS planner
+RUN cargo install cargo-chef
 WORKDIR /app
-COPY Cargo.toml Cargo.lock* ./
-COPY crates/ crates/
-RUN cargo build --release -p frona-api
+COPY Cargo.toml Cargo.lock ./
+COPY engine/ engine/
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Stage 3: Runtime
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+FROM rust:1.89-bookworm AS backend-builder
+RUN apt-get update && apt-get install -y --no-install-recommends libclang-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN cargo install cargo-chef
+WORKDIR /app
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+COPY Cargo.toml Cargo.lock ./
+COPY engine/ engine/
+RUN cargo build --release -p frona
+
+# Stage 3: Build Python packages
+FROM python:3.12-slim-bookworm AS python-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ gfortran libopenblas-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir --prefix=/install \
+    pandas numpy scipy matplotlib seaborn scikit-learn requests beautifulsoup4
+
+# Stage 4: Runtime
+FROM python:3.12-slim-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libgfortran5 libopenblas0 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -g 1000 frona && useradd -u 1000 -g frona -d /app -s /bin/bash frona
+RUN mkdir -p /app /data && chown -R frona:frona /app /data
+
 WORKDIR /app
 
-COPY --from=backend-builder /app/target/release/frona-api /app/frona-api
-COPY --from=frontend-builder /app/frontend/out /app/static
+COPY --from=python-builder /install /usr/local
+COPY --chown=frona:frona --from=backend-builder /app/target/release/frona /app/frona
+COPY --chown=frona:frona --from=frontend-builder /app/frontend/out /app/static
+COPY --chown=frona:frona engine/config /app/engine/config
 
 ENV STATIC_DIR=/app/static
 ENV SURREAL_PATH=/data/db
@@ -28,4 +56,5 @@ ENV PORT=3001
 VOLUME /data
 EXPOSE 3001
 
-CMD ["/app/frona-api"]
+USER frona
+CMD ["/app/frona"]

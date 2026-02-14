@@ -31,7 +31,6 @@ fn test_config(tmp: &tempfile::TempDir) -> Config {
         browser_profiles_path: format!("{base}/profiles"),
         workspaces_base_path: format!("{base}/workspaces"),
         files_base_path: format!("{base}/files"),
-        tools_config_path: format!("{base}/tools.json"),
         shared_config_dir: format!("{base}/config"),
         max_concurrent_tasks: 10,
         scheduler_space_compaction_secs: 3600,

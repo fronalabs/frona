@@ -291,7 +291,7 @@ mod tests {
             timeout_secs: Some(30),
         };
 
-        let wm = Arc::new(WorkspaceManager::new("/tmp/test"));
+        let wm = Arc::new(WorkspaceManager::new("/tmp/test", false));
         let tool = CliTool::new(config, wm, "agent-1".to_string(), false, vec![]);
         let defs = tool.definitions();
 
@@ -366,7 +366,7 @@ mod tests {
         let tmp = std::env::temp_dir().join("frona_test_cli_tool");
         let _ = std::fs::create_dir_all(&tmp);
 
-        let wm = Arc::new(WorkspaceManager::new(&tmp));
+        let wm = Arc::new(WorkspaceManager::new(&tmp, false));
         let tool = CliTool::new(config, wm, "test-agent".to_string(), false, vec![]);
         let ctx = mock_context();
 

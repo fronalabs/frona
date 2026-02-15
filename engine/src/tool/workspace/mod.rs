@@ -8,12 +8,14 @@ use self::sandbox::{SandboxConfig, SandboxOutput, create_sandbox, execute_sandbo
 
 pub struct WorkspaceManager {
     base_path: PathBuf,
+    sandbox_disabled: bool,
 }
 
 impl WorkspaceManager {
-    pub fn new(base_path: impl Into<PathBuf>) -> Self {
+    pub fn new(base_path: impl Into<PathBuf>, sandbox_disabled: bool) -> Self {
         Self {
             base_path: base_path.into(),
+            sandbox_disabled,
         }
     }
 
@@ -27,7 +29,7 @@ impl WorkspaceManager {
         let path = self.base_path.join(&sanitized);
         Workspace {
             path,
-            sandbox: create_sandbox(),
+            sandbox: create_sandbox(self.sandbox_disabled),
             network_access,
             allowed_network_destinations,
             skill_dirs: Vec::new(),
@@ -173,7 +175,7 @@ mod tests {
         let dir = std::env::temp_dir().join("frona_test_workspace").join(name);
         Workspace {
             path: dir,
-            sandbox: create_sandbox(),
+            sandbox: create_sandbox(false),
             network_access: false,
             allowed_network_destinations: Vec::new(),
             skill_dirs: Vec::new(),
@@ -211,7 +213,7 @@ mod tests {
 
         let ws = Workspace {
             path: rel_path.clone(),
-            sandbox: create_sandbox(),
+            sandbox: create_sandbox(false),
             network_access: false,
             allowed_network_destinations: Vec::new(),
             skill_dirs: Vec::new(),

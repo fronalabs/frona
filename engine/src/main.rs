@@ -14,6 +14,7 @@ use frona::api::routes;
 use frona::core::config::Config;
 use frona::core::state::AppState;
 use frona::scheduler::Scheduler;
+use frona::tool::workspace::sandbox::verify_sandbox;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,6 +23,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let config = Config::from_env();
+
+    verify_sandbox(&config.workspaces_base_path, config.sandbox_disabled)
+        .expect("Sandbox verification failed — filesystem may not support sandboxing. Set SANDBOX_DISABLED=true to bypass.");
 
     let cors_origin = std::env::var("CORS_ORIGIN")
         .unwrap_or_else(|_| "http://localhost:3000".into());

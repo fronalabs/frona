@@ -10,6 +10,7 @@ pub struct Config {
     pub workspaces_base_path: String,
     pub files_base_path: String,
     pub shared_config_dir: String,
+    pub sandbox_disabled: bool,
     pub max_concurrent_tasks: usize,
     pub scheduler_space_compaction_secs: u64,
     pub scheduler_insight_compaction_secs: u64,
@@ -39,6 +40,9 @@ impl Config {
                 .unwrap_or_else(|_| "data/files".into()),
             shared_config_dir: std::env::var("FRONA_SHARED_CONFIG")
                 .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/config").into()),
+            sandbox_disabled: std::env::var("SANDBOX_DISABLED")
+                .map(|v| v == "true" || v == "1")
+                .unwrap_or(false),
             max_concurrent_tasks: std::env::var("MAX_CONCURRENT_TASKS")
                 .unwrap_or_else(|_| "10".into())
                 .parse()

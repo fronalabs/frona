@@ -48,13 +48,13 @@ impl Sandbox for LandlockSandbox {
 #[cfg(target_os = "linux")]
 fn apply_landlock(workspace_dir: &str, network_access: bool, additional_read_paths: &[String]) -> Result<(), String> {
     use landlock::{
-        Access, AccessFs, AccessNet, NetPort, PathBeneath, PathFd, Ruleset, RulesetAttr,
+        Access, AccessFs, AccessNet, PathBeneath, PathFd, Ruleset, RulesetAttr,
         RulesetCreatedAttr, ABI,
     };
 
     let abi = ABI::V5;
 
-    let mut fs_access = AccessFs::from_all(abi);
+    let fs_access = AccessFs::from_all(abi);
     let read_access = AccessFs::from_read(abi);
 
     let mut ruleset = Ruleset::default()
@@ -67,30 +67,31 @@ fn apply_landlock(workspace_dir: &str, network_access: bool, additional_read_pat
             .map_err(|e| format!("Landlock network access failed: {e}"))?;
     }
 
-    let ruleset = ruleset
+    let mut ruleset = ruleset
         .create()
         .map_err(|e| format!("Landlock ruleset create failed: {e}"))?;
 
     let read_only_paths = ["/usr", "/lib", "/lib64", "/etc", "/bin", "/sbin"];
     let read_write_paths = [workspace_dir, "/tmp"];
 
-    let mut ruleset = ruleset;
-
     for path in &read_only_paths {
         if let Ok(fd) = PathFd::new(path) {
-            let _ = ruleset.add_rule(PathBeneath::new(fd, read_access));
+            ruleset = ruleset.add_rule(PathBeneath::new(fd, read_access))
+                .map_err(|e| format!("Landlock add_rule failed for {path}: {e}"))?;
         }
     }
 
     for path in additional_read_paths {
         if let Ok(fd) = PathFd::new(path) {
-            let _ = ruleset.add_rule(PathBeneath::new(fd, read_access));
+            ruleset = ruleset.add_rule(PathBeneath::new(fd, read_access))
+                .map_err(|e| format!("Landlock add_rule failed for {path}: {e}"))?;
         }
     }
 
     for path in &read_write_paths {
         if let Ok(fd) = PathFd::new(path) {
-            let _ = ruleset.add_rule(PathBeneath::new(fd, fs_access));
+            ruleset = ruleset.add_rule(PathBeneath::new(fd, fs_access))
+                .map_err(|e| format!("Landlock add_rule failed for {path}: {e}"))?;
         }
     }
 

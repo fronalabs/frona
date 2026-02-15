@@ -105,7 +105,10 @@ impl AppState {
             connection_timeout_ms: 30000,
         };
 
-        let workspace_manager = Arc::new(WorkspaceManager::new(&config.workspaces_base_path));
+        let workspace_manager = Arc::new(WorkspaceManager::new(
+            &config.workspaces_base_path,
+            config.sandbox_disabled,
+        ));
         let search_provider = create_search_provider();
 
         let provider_registry_arc = Arc::new(provider_registry.clone());

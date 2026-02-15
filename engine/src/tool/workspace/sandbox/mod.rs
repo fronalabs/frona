@@ -49,7 +49,10 @@ pub trait Sandbox: Send + Sync {
     ) -> Result<Command, AppError>;
 }
 
-pub fn create_sandbox() -> Box<dyn Sandbox> {
+pub fn create_sandbox(disabled: bool) -> Box<dyn Sandbox> {
+    if disabled {
+        return Box::new(noop::NoopSandbox);
+    }
     #[cfg(target_os = "macos")]
     {
         Box::new(macos::MacOsSandbox)
@@ -62,6 +65,95 @@ pub fn create_sandbox() -> Box<dyn Sandbox> {
     {
         Box::new(noop::NoopSandbox)
     }
+}
+
+pub fn verify_sandbox(workspace_base: &str, disabled: bool) -> Result<(), String> {
+    if disabled {
+        tracing::warn!("Sandbox disabled by SANDBOX_DISABLED env var");
+        return Ok(());
+    }
+
+    let probe_dir = std::path::Path::new(workspace_base).join(".sandbox_probe");
+    if let Err(e) = std::fs::create_dir_all(&probe_dir) {
+        return Err(format!(
+            "Cannot create probe directory {}: {e}",
+            probe_dir.display()
+        ));
+    }
+
+    let rt = tokio::runtime::Handle::try_current();
+    let result = match rt {
+        Ok(handle) => {
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    handle.block_on(run_sandbox_probe(&probe_dir))
+                }).join().unwrap()
+            })
+        }
+        Err(_) => {
+            let rt = tokio::runtime::Runtime::new()
+                .map_err(|e| format!("Failed to create runtime: {e}"))?;
+            rt.block_on(run_sandbox_probe(&probe_dir))
+        }
+    };
+
+    let _ = std::fs::remove_dir_all(&probe_dir);
+    result
+}
+
+async fn run_sandbox_probe(probe_dir: &std::path::Path) -> Result<(), String> {
+    let sandbox = create_sandbox(false);
+    let canonical = std::fs::canonicalize(probe_dir)
+        .unwrap_or_else(|_| probe_dir.to_path_buf());
+
+    let config = SandboxConfig {
+        workspace_dir: canonical.to_string_lossy().into_owned(),
+        timeout_secs: 10,
+        ..Default::default()
+    };
+
+    let write_ok = execute_sandboxed(
+        &*sandbox,
+        "bash",
+        &["-c", "echo ok > probe.txt && cat probe.txt"],
+        None,
+        &config,
+    )
+    .await
+    .map_err(|e| format!("Sandbox probe spawn failed: {e}"))?;
+
+    if write_ok.exit_code != Some(0) {
+        return Err(format!(
+            "Sandbox blocks writes to workspace — filesystem may not support sandboxing. \
+             stderr: {}",
+            write_ok.stderr
+        ));
+    }
+
+    let forbidden_path = format!(
+        "/root/.sandbox_probe_{}",
+        std::process::id()
+    );
+    let forbidden_cmd = format!("echo hacked > {forbidden_path}");
+    let forbidden_result = execute_sandboxed(
+        &*sandbox,
+        "bash",
+        &["-c", &forbidden_cmd],
+        None,
+        &config,
+    )
+    .await
+    .map_err(|e| format!("Sandbox probe spawn failed: {e}"))?;
+
+    if forbidden_result.exit_code == Some(0) {
+        return Err(
+            "Sandbox is not enforcing restrictions — writes to forbidden paths are allowed"
+                .to_string(),
+        );
+    }
+
+    tracing::info!("Sandbox verified: enforcement is active");
+    Ok(())
 }
 
 pub async fn execute_sandboxed(

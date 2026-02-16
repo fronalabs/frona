@@ -14,13 +14,15 @@ services:
     restart: unless-stopped
 
   searxng:
-    image: searxng/searxng:latest
+    image: searxng/searxng:2026.2.16-8e824017d
     ports:
       - "3400:8080"
     environment:
       - SEARXNG_BASE_URL=http://localhost:3400
-    volumes:
-      - ./data/searxng:/etc/searxng
+      - SEARXNG_ADDITIONAL_FORMATS=json
+      - SEARXNG_SETTINGS__plugins__Limiter__enabled=false
+    #volumes:
+    #  - ./data/searxng:/etc/searxng
     restart: unless-stopped
 
   frona-dev:

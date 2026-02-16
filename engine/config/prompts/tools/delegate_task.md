@@ -18,4 +18,4 @@ required:
   - title
   - instruction
 ---
-Fire-and-forget: delegate a one-off task to another agent. The result is posted directly to this chat for the user — your tool loop is NOT resumed. Returns immediately with a task ID. Optionally set run_at to defer execution. For recurring scheduled work, use schedule_task. For periodic autonomous check-ins, use set_heartbeat. To get the result back and continue processing, use run_subtask instead.
+The default delegation tool. Delegate a task to another agent — fire-and-forget. The result is posted directly to this chat for the user; your tool loop is NOT resumed. Returns immediately with a task ID. Optionally set run_at to defer execution. For recurring scheduled work, use schedule_task. For periodic autonomous check-ins, use set_heartbeat.

@@ -18,4 +18,4 @@ required:
   - title
   - instruction
 ---
-Run a subtask on another agent and resume when it completes. Unlike delegate_task, the result is returned to YOU (the calling agent) so you can process it further. Use this when you need the sub-agent's output to continue your work. Optionally set run_at to defer execution.
+Run a subtask on another agent and resume when it completes. Unlike delegate_task, the result is returned to YOU (the calling agent) so you can process it further. Only use this when you must transform, combine, or act on the sub-agent's output to complete your own task. If the user can consume the result directly, use delegate_task instead. Optionally set run_at to defer execution.

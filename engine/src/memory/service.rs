@@ -592,22 +592,28 @@ impl MemoryService {
         // --- Static: base prompt + shared prompt files ---
         let mut result = base_prompt.to_string();
 
-        const AGENT_PROMPTS: &[&str] = &["WORKSPACE.md", "TOOLS.md", "MEMORY.md", "SCHEDULING.md"];
-        for name in AGENT_PROMPTS {
-            if let Some(content) = self.prompts.read(name) {
-                result.push_str("\n\n");
-                result.push_str(&content);
-            }
-        }
+        append_tagged_section(
+            &mut result,
+            "available_skills",
+            self.prompts.read("AVAILABLE_SKILLS.md").as_deref(),
+            skill_summaries,
+        );
 
-        // --- Almost-static: identity, skills, agents ---
-        if !identity.is_empty() {
-            result.push_str("\n\n<agent_identity>\n");
-            for (key, value) in identity {
-                result.push_str(&format!("{key}: {value}\n"));
-            }
-            result.push_str("</agent_identity>");
-        }
+        append_tagged_section(
+            &mut result,
+            "available_agents",
+            self.prompts.read("AVAILABLE_AGENTS.md").as_deref(),
+            agent_summaries,
+        );
+
+        let identity_pairs: Vec<(String, String)> =
+            identity.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        append_tagged_section(
+            &mut result,
+            "agent_identity",
+            None,
+            &identity_pairs,
+        );
 
         const CORE_IDENTITY_KEYS: &[&str] = &["name", "creature", "vibe"];
         let has_core_identity = CORE_IDENTITY_KEYS
@@ -621,26 +627,12 @@ impl MemoryService {
             result.push_str(&identity_prompt);
         }
 
-        if !skill_summaries.is_empty() {
-            let header = self.prompts.read("AVAILABLE_SKILLS.md").unwrap_or_default();
-            result.push_str("\n\n<available_skills>\n");
-            result.push_str(header.trim());
-            result.push('\n');
-            for (name, description) in skill_summaries {
-                result.push_str(&format!("- {name}: {description}\n"));
+        const AGENT_PROMPTS: &[&str] = &["WORKSPACE.md", "TOOLS.md", "MEMORY.md", "SCHEDULING.md"];
+        for name in AGENT_PROMPTS {
+            if let Some(content) = self.prompts.read(name) {
+                result.push_str("\n\n");
+                result.push_str(&content);
             }
-            result.push_str("</available_skills>");
-        }
-
-        if !agent_summaries.is_empty() {
-            let header = self.prompts.read("AVAILABLE_AGENTS.md").unwrap_or_default();
-            result.push_str("\n\n<available_agents>\n");
-            result.push_str(header.trim());
-            result.push('\n');
-            for (name, description) in agent_summaries {
-                result.push_str(&format!("- {name}: {description}\n"));
-            }
-            result.push_str("</available_agents>");
         }
 
         // --- Dynamic: space context, user memory, agent memory ---
@@ -756,4 +748,27 @@ impl MemoryService {
 
         Ok(result)
     }
+}
+
+fn append_tagged_section(
+    result: &mut String,
+    tag: &str,
+    header: Option<&str>,
+    items: &[(String, String)],
+) {
+    if items.is_empty() {
+        return;
+    }
+    result.push_str(&format!("\n\n<{tag}>\n"));
+    if let Some(h) = header {
+        let trimmed = h.trim();
+        if !trimmed.is_empty() {
+            result.push_str(trimmed);
+            result.push('\n');
+        }
+    }
+    for (key, value) in items {
+        result.push_str(&format!("- {key}: {value}\n"));
+    }
+    result.push_str(&format!("</{tag}>"));
 }

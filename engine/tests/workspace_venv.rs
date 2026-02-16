@@ -12,7 +12,7 @@ fn test_manager() -> WorkspaceManager {
     let base = std::env::temp_dir()
         .join("frona_test_venv_integration")
         .join(uuid::Uuid::new_v4().to_string());
-    WorkspaceManager::new(base)
+    WorkspaceManager::new(base, false)
 }
 
 #[tokio::test]

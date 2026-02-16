@@ -32,6 +32,7 @@ fn test_config(tmp: &tempfile::TempDir) -> Config {
         workspaces_base_path: format!("{base}/workspaces"),
         files_base_path: format!("{base}/files"),
         shared_config_dir: format!("{base}/config"),
+        sandbox_disabled: false,
         max_concurrent_tasks: 10,
         scheduler_space_compaction_secs: 3600,
         scheduler_insight_compaction_secs: 7200,

@@ -314,6 +314,64 @@ async fn test_sandbox_python_write_to_workspace() {
     let _ = std::fs::remove_dir_all(ws.path());
 }
 
+#[tokio::test]
+async fn test_sandbox_blocks_read_etc_shadow() {
+    let mgr = test_manager();
+    let ws = mgr.get_workspace("landlock-etc-shadow", false, vec![]);
+
+    let output = ws
+        .execute("cat", &["/etc/shadow"], None, 10)
+        .await
+        .unwrap();
+
+    assert_ne!(
+        output.exit_code,
+        Some(0),
+        "should NOT be able to read /etc/shadow"
+    );
+
+    let _ = std::fs::remove_dir_all(ws.path());
+}
+
+#[tokio::test]
+async fn test_sandbox_blocks_read_etc_passwd() {
+    let mgr = test_manager();
+    let ws = mgr.get_workspace("landlock-etc-passwd", false, vec![]);
+
+    let output = ws
+        .execute("cat", &["/etc/passwd"], None, 10)
+        .await
+        .unwrap();
+
+    assert_ne!(
+        output.exit_code,
+        Some(0),
+        "should NOT be able to read /etc/passwd"
+    );
+
+    let _ = std::fs::remove_dir_all(ws.path());
+}
+
+#[tokio::test]
+async fn test_sandbox_allows_read_etc_ssl() {
+    let mgr = test_manager();
+    let ws = mgr.get_workspace("landlock-etc-ssl", false, vec![]);
+
+    let output = ws
+        .execute("ls", &["/etc/ssl"], None, 10)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        output.exit_code,
+        Some(0),
+        "should be able to read /etc/ssl: stderr={}",
+        output.stderr
+    );
+
+    let _ = std::fs::remove_dir_all(ws.path());
+}
+
 /// Verifies that the sandbox gracefully falls back (allows writes) when the
 /// workspace is on a filesystem that doesn't support landlock enforcement
 /// (e.g. Docker Desktop's VirtioFS fakeowner mounts).

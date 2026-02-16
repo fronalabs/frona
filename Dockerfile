@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ gfortran libopenblas-dev \
     && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir --prefix=/install \
-    pandas numpy scipy matplotlib seaborn scikit-learn requests beautifulsoup4
+    pandas numpy scipy matplotlib seaborn scikit-learn requests beautifulsoup4 reportlab
 
 # Stage 4: Runtime
 FROM python:3.12-slim-bookworm

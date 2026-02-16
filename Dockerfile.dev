@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Python data science packages
 RUN pip install --no-cache-dir --break-system-packages \
-    pandas numpy scipy matplotlib seaborn scikit-learn requests beautifulsoup4
+    pandas numpy scipy matplotlib seaborn scikit-learn requests beautifulsoup4 reportlab
 
 # Install cargo-watch
 RUN cargo install cargo-watch

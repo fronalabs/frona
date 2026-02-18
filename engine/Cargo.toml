@@ -40,6 +40,8 @@ http-body-util = "0.1"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 backon = { workspace = true }
 cron = "0.15"
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.16", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"

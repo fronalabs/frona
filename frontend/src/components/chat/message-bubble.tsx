@@ -1,8 +1,9 @@
 "use client";
 
+import { useState, useCallback } from "react";
 import { agentDisplayName, type MessageResponse, type Attachment } from "@/lib/types";
 import { useNavigation } from "@/lib/navigation-context";
-import { fileDownloadUrl } from "@/lib/api-client";
+import { fileDownloadUrl, presignFile } from "@/lib/api-client";
 import { MarkdownContent } from "./markdown-content";
 
 function formatFileSize(bytes: number): string {
@@ -12,8 +13,13 @@ function formatFileSize(bytes: number): string {
 }
 
 function AttachmentItem({ attachment }: { attachment: Attachment }) {
-  const url = fileDownloadUrl(attachment.path);
+  const fallbackUrl = fileDownloadUrl(attachment.path);
+  const [url, setUrl] = useState(attachment.url ?? fallbackUrl);
   const isImage = attachment.content_type.startsWith("image/");
+
+  const handleImageError = useCallback(() => {
+    presignFile(attachment.path).then(setUrl).catch(() => {});
+  }, [attachment.path]);
 
   if (isImage) {
     return (
@@ -22,6 +28,7 @@ function AttachmentItem({ attachment }: { attachment: Attachment }) {
           src={url}
           alt={attachment.filename}
           className="max-w-xs max-h-48 rounded-md border border-border"
+          onError={handleImageError}
         />
       </a>
     );

@@ -7,4 +7,4 @@ parameters:
 required:
   - path
 ---
-Register a file from your workspace as a produced output. The file must already exist in your workspace. This makes the file available for the user to download and propagates it to parent agents when completing delegated tasks.
+Register a file you created as a produced output so the user can download it. **You must call this for every file you generate for the user** — images, charts, documents, exports, code files, archives, etc. The file must already exist in your workspace. Without this call, the user cannot access the file.

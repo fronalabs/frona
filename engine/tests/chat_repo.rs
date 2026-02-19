@@ -387,11 +387,12 @@ async fn test_cascade_delete_task_removes_chat_and_messages() {
 // Attachment integration tests
 // ---------------------------------------------------------------------------
 
-fn test_attachment(filename: &str, path: &str) -> Attachment {
+fn test_attachment(filename: &str, owner: &str, path: &str) -> Attachment {
     Attachment {
         filename: filename.to_string(),
         content_type: "text/plain".to_string(),
         size_bytes: 100,
+        owner: owner.to_string(),
         path: path.to_string(),
         url: None,
     }
@@ -407,7 +408,7 @@ async fn test_message_with_attachments_round_trips_through_db() {
     chat_repo.create(&chat).await.unwrap();
 
     let mut msg = test_message(&chat.id, "check this file");
-    msg.attachments = vec![test_attachment("report.pdf", "user://uid/report.pdf")];
+    msg.attachments = vec![test_attachment("report.pdf", "user:uid", "report.pdf")];
 
     msg_repo.create(&msg).await.unwrap();
 
@@ -415,7 +416,8 @@ async fn test_message_with_attachments_round_trips_through_db() {
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].attachments.len(), 1);
     assert_eq!(found[0].attachments[0].filename, "report.pdf");
-    assert_eq!(found[0].attachments[0].path, "user://uid/report.pdf");
+    assert_eq!(found[0].attachments[0].owner, "user:uid");
+    assert_eq!(found[0].attachments[0].path, "report.pdf");
 }
 
 #[tokio::test]
@@ -445,12 +447,12 @@ async fn test_find_attachments_by_chat_id_flat_list() {
     chat_repo.create(&chat).await.unwrap();
 
     let mut m1 = test_message(&chat.id, "first");
-    m1.attachments = vec![test_attachment("a.txt", "user://uid/a.txt")];
+    m1.attachments = vec![test_attachment("a.txt", "user:uid", "a.txt")];
 
     let mut m2 = test_message(&chat.id, "second");
     m2.attachments = vec![
-        test_attachment("b.txt", "agent://dev/b.txt"),
-        test_attachment("c.csv", "agent://dev/c.csv"),
+        test_attachment("b.txt", "agent:dev", "b.txt"),
+        test_attachment("c.csv", "agent:dev", "c.csv"),
     ];
 
     msg_repo.create(&m1).await.unwrap();
@@ -493,10 +495,10 @@ async fn test_find_attachments_scoped_to_chat() {
     chat_repo.create(&chat_b).await.unwrap();
 
     let mut m_a = test_message(&chat_a.id, "in chat a");
-    m_a.attachments = vec![test_attachment("a.txt", "user://uid/a.txt")];
+    m_a.attachments = vec![test_attachment("a.txt", "user:uid", "a.txt")];
 
     let mut m_b = test_message(&chat_b.id, "in chat b");
-    m_b.attachments = vec![test_attachment("b.txt", "user://uid/b.txt")];
+    m_b.attachments = vec![test_attachment("b.txt", "user:uid", "b.txt")];
 
     msg_repo.create(&m_a).await.unwrap();
     msg_repo.create(&m_b).await.unwrap();

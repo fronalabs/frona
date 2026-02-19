@@ -21,11 +21,12 @@ fn keypair_service(db: &Surreal<Db>) -> KeyPairService {
     KeyPairService::new("test-jwt-secret", Arc::new(SurrealRepo::new(db.clone())))
 }
 
-fn make_attachment(path: &str) -> Attachment {
+fn make_attachment(owner: &str, path: &str) -> Attachment {
     Attachment {
         filename: "photo.png".to_string(),
         content_type: "image/png".to_string(),
         size_bytes: 1024,
+        owner: owner.to_string(),
         path: path.to_string(),
         url: None,
     }
@@ -56,8 +57,8 @@ async fn presign_attachment_populates_url() {
     let kp_svc = keypair_service(&db);
     let jwt_svc = JwtService::new();
 
-    let mut att = make_attachment("user://uid-1/photo.png");
-    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-1", "http://localhost:3001", 86400)
+    let mut att = make_attachment("user:uid-1", "photo.png");
+    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-1", "uid-1", "http://localhost:3001", 86400)
         .await
         .unwrap();
 
@@ -71,10 +72,10 @@ async fn presign_attachment_agent_path() {
     let kp_svc = keypair_service(&db);
     let jwt_svc = JwtService::new();
 
-    let mut att = make_attachment("agent://dev/output.csv");
+    let mut att = make_attachment("agent:dev", "output.csv");
     att.filename = "output.csv".to_string();
     att.content_type = "text/csv".to_string();
-    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-1", "https://app.example.com", 3600)
+    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-1", "uid-1", "https://app.example.com", 3600)
         .await
         .unwrap();
 
@@ -88,8 +89,8 @@ async fn presign_attachment_skips_invalid_scheme() {
     let kp_svc = keypair_service(&db);
     let jwt_svc = JwtService::new();
 
-    let mut att = make_attachment("invalid://x/y");
-    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-1", "http://localhost:3001", 86400)
+    let mut att = make_attachment("invalid:x", "y");
+    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-1", "uid-1", "http://localhost:3001", 86400)
         .await
         .unwrap();
 
@@ -106,8 +107,8 @@ async fn presign_token_verifies_successfully() {
     let kp_svc = keypair_service(&db);
     let jwt_svc = JwtService::new();
 
-    let mut att = make_attachment("user://uid-1/photo.png");
-    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-1", "http://localhost:3001", 86400)
+    let mut att = make_attachment("user:uid-1", "photo.png");
+    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-1", "uid-1", "http://localhost:3001", 86400)
         .await
         .unwrap();
 
@@ -120,7 +121,8 @@ async fn presign_token_verifies_successfully() {
 
     let claims = jwt_svc.verify::<PresignClaims>(token, &decoding_key).unwrap();
     assert_eq!(claims.sub, "uid-1");
-    assert_eq!(claims.path, "user://uid-1/photo.png");
+    assert_eq!(claims.owner, "user:uid-1");
+    assert_eq!(claims.path, "photo.png");
     assert!(claims.exp > Utc::now().timestamp() as usize);
 }
 
@@ -135,7 +137,8 @@ async fn presign_token_rejected_when_expired() {
 
     let expired_claims = PresignClaims {
         sub: "uid-1".to_string(),
-        path: "user://uid-1/photo.png".to_string(),
+        owner: "user:uid-1".to_string(),
+        path: "photo.png".to_string(),
         exp: 1, // epoch second 1 — long expired
     };
     let token = jwt_svc.sign(&expired_claims, &encoding_key, &kid).unwrap();
@@ -151,8 +154,8 @@ async fn presign_token_cannot_be_used_as_auth_token() {
     let kp_svc = keypair_service(&db);
     let jwt_svc = JwtService::new();
 
-    let mut att = make_attachment("user://uid-1/photo.png");
-    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-1", "http://localhost:3001", 86400)
+    let mut att = make_attachment("user:uid-1", "photo.png");
+    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-1", "uid-1", "http://localhost:3001", 86400)
         .await
         .unwrap();
 
@@ -175,8 +178,8 @@ async fn presign_token_wrong_key_rejected() {
     let kp_svc = keypair_service(&db);
     let jwt_svc = JwtService::new();
 
-    let mut att = make_attachment("user://uid-1/photo.png");
-    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-1", "http://localhost:3001", 86400)
+    let mut att = make_attachment("user:uid-1", "photo.png");
+    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-1", "uid-1", "http://localhost:3001", 86400)
         .await
         .unwrap();
 
@@ -203,13 +206,13 @@ async fn presign_message_presigns_all_attachments() {
     let jwt_svc = JwtService::new();
 
     let mut msg = make_message_response(vec![
-        make_attachment("user://uid-1/a.png"),
-        make_attachment("user://uid-1/b.jpg"),
+        make_attachment("user:uid-1", "a.png"),
+        make_attachment("user:uid-1", "b.jpg"),
     ]);
     msg.attachments[1].filename = "b.jpg".to_string();
     msg.attachments[1].content_type = "image/jpeg".to_string();
 
-    presign_message(&mut msg, &kp_svc, &jwt_svc, "uid-1", "http://localhost:3001", 86400).await;
+    presign_message(&mut msg, &kp_svc, &jwt_svc, "uid-1", "uid-1", "http://localhost:3001", 86400).await;
 
     for att in &msg.attachments {
         assert!(att.url.is_some(), "each attachment should have a presigned URL");
@@ -224,7 +227,7 @@ async fn presign_message_no_attachments_is_noop() {
     let jwt_svc = JwtService::new();
 
     let mut msg = make_message_response(vec![]);
-    presign_message(&mut msg, &kp_svc, &jwt_svc, "uid-1", "http://localhost:3001", 86400).await;
+    presign_message(&mut msg, &kp_svc, &jwt_svc, "uid-1", "uid-1", "http://localhost:3001", 86400).await;
     assert!(msg.attachments.is_empty());
 }
 
@@ -247,7 +250,8 @@ async fn signing_key_cache_returns_same_key() {
     // Both keys should produce tokens that verify with the same decoding key
     let claims = PresignClaims {
         sub: "x".into(),
-        path: "user://x/f".into(),
+        owner: "user:x".into(),
+        path: "f".into(),
         exp: (Utc::now().timestamp() + 3600) as usize,
     };
 
@@ -270,7 +274,8 @@ async fn verifying_key_cache_returns_same_key() {
 
     let claims = PresignClaims {
         sub: "x".into(),
-        path: "user://x/f".into(),
+        owner: "user:x".into(),
+        path: "f".into(),
         exp: (Utc::now().timestamp() + 3600) as usize,
     };
     let token = jwt_svc.sign(&claims, &enc_key, &kid).unwrap();
@@ -299,7 +304,8 @@ async fn generic_jwt_sign_verify_with_presign_claims() {
 
     let claims = PresignClaims {
         sub: "uid-42".into(),
-        path: "user://uid-42/doc.pdf".into(),
+        owner: "user:uid-42".into(),
+        path: "doc.pdf".into(),
         exp: (Utc::now().timestamp() + 3600) as usize,
     };
 
@@ -308,7 +314,8 @@ async fn generic_jwt_sign_verify_with_presign_claims() {
     let verified = jwt_svc.verify::<PresignClaims>(&token, &dec_key).unwrap();
 
     assert_eq!(verified.sub, "uid-42");
-    assert_eq!(verified.path, "user://uid-42/doc.pdf");
+    assert_eq!(verified.owner, "user:uid-42");
+    assert_eq!(verified.path, "doc.pdf");
 }
 
 #[tokio::test]
@@ -322,6 +329,7 @@ async fn generic_jwt_still_works_with_auth_claims() {
 
     let claims = Claims {
         sub: "uid-99".to_string(),
+        username: "testuser".to_string(),
         email: "test@example.com".to_string(),
         exp: (Utc::now().timestamp() + 3600) as usize,
         iat: Utc::now().timestamp() as usize,
@@ -353,11 +361,12 @@ async fn presigned_url_contains_correct_path_segment() {
         filename: "report.pdf".into(),
         content_type: "application/pdf".into(),
         size_bytes: 2048,
-        path: "user://uid-5/sub/dir/report.pdf".into(),
+        owner: "user:uid-5".into(),
+        path: "sub/dir/report.pdf".into(),
         url: None,
     };
 
-    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-5", "https://example.com", 3600)
+    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-5", "uid-5", "https://example.com", 3600)
         .await
         .unwrap();
 
@@ -371,13 +380,13 @@ async fn presign_different_users_get_different_tokens() {
     let kp_svc = keypair_service(&db);
     let jwt_svc = JwtService::new();
 
-    let mut att1 = make_attachment("user://user-a/file.png");
-    let mut att2 = make_attachment("user://user-b/file.png");
+    let mut att1 = make_attachment("user:user-a", "file.png");
+    let mut att2 = make_attachment("user:user-b", "file.png");
 
-    presign_attachment(&mut att1, &kp_svc, &jwt_svc, "user-a", "http://localhost", 86400)
+    presign_attachment(&mut att1, &kp_svc, &jwt_svc, "user-a", "user-a", "http://localhost", 86400)
         .await
         .unwrap();
-    presign_attachment(&mut att2, &kp_svc, &jwt_svc, "user-b", "http://localhost", 86400)
+    presign_attachment(&mut att2, &kp_svc, &jwt_svc, "user-b", "user-b", "http://localhost", 86400)
         .await
         .unwrap();
 

@@ -17,6 +17,7 @@ fn test_user() -> User {
     let now = Utc::now();
     User {
         id: uuid::Uuid::new_v4().to_string(),
+        username: "testuser".to_string(),
         email: "test@example.com".to_string(),
         name: "Test User".to_string(),
         password_hash: "hashed_password".to_string(),
@@ -58,6 +59,28 @@ async fn test_find_by_email() {
     assert_eq!(found.id, user.id);
     assert_eq!(found.email, user.email);
     assert_eq!(found.created_at, user.created_at);
+}
+
+#[tokio::test]
+async fn test_find_by_username() {
+    let db = test_db().await;
+    let repo = SurrealUserRepo::new(db);
+    let user = test_user();
+
+    repo.create(&user).await.unwrap();
+
+    let found = repo.find_by_username("testuser").await.unwrap().unwrap();
+    assert_eq!(found.id, user.id);
+    assert_eq!(found.username, "testuser");
+}
+
+#[tokio::test]
+async fn test_find_by_username_not_found() {
+    let db = test_db().await;
+    let repo = SurrealUserRepo::new(db);
+
+    let found = repo.find_by_username("nonexistent").await.unwrap();
+    assert!(found.is_none());
 }
 
 #[tokio::test]

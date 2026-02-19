@@ -23,6 +23,7 @@ fn test_user() -> User {
     let now = Utc::now();
     User {
         id: uuid::Uuid::new_v4().to_string(),
+        username: "testuser".to_string(),
         email: "test@example.com".to_string(),
         name: "Test User".to_string(),
         password_hash: "$argon2id$v=19$m=19456,t=2,p=1$test$test".to_string(),
@@ -76,6 +77,7 @@ async fn test_keypair_signing_and_verifying() {
     let jwt_svc = JwtService::new();
     let claims = frona::auth::models::Claims {
         sub: "test-456".to_string(),
+        username: "testuser".to_string(),
         email: "test@example.com".to_string(),
         exp: (Utc::now().timestamp() + 3600) as usize,
         iat: Utc::now().timestamp() as usize,
@@ -288,6 +290,7 @@ async fn test_register_and_login_flow() {
             &keypair_svc,
             &token_svc,
             frona::auth::models::RegisterRequest {
+                username: "newuser".to_string(),
                 email: "new@example.com".to_string(),
                 name: "New User".to_string(),
                 password: "password123".to_string(),
@@ -314,7 +317,7 @@ async fn test_register_and_login_flow() {
             &keypair_svc,
             &token_svc,
             frona::auth::models::LoginRequest {
-                email: "new@example.com".to_string(),
+                identifier: "new@example.com".to_string(),
                 password: "password123".to_string(),
             },
         )
@@ -339,6 +342,7 @@ async fn test_login_wrong_password() {
             &keypair_svc,
             &token_svc,
             frona::auth::models::RegisterRequest {
+                username: "wrongpwtest".to_string(),
                 email: "test@example.com".to_string(),
                 name: "Test".to_string(),
                 password: "correct".to_string(),
@@ -354,7 +358,7 @@ async fn test_login_wrong_password() {
             &keypair_svc,
             &token_svc,
             frona::auth::models::LoginRequest {
-                email: "test@example.com".to_string(),
+                identifier: "test@example.com".to_string(),
                 password: "wrong".to_string(),
             },
         )
@@ -371,6 +375,7 @@ async fn test_duplicate_registration() {
     let auth_svc = AuthService::new();
 
     let req = frona::auth::models::RegisterRequest {
+        username: "dupuser".to_string(),
         email: "dup@example.com".to_string(),
         name: "User".to_string(),
         password: "pass".to_string(),
@@ -382,6 +387,7 @@ async fn test_duplicate_registration() {
         .unwrap();
 
     let req2 = frona::auth::models::RegisterRequest {
+        username: "dupuser2".to_string(),
         email: "dup@example.com".to_string(),
         name: "User 2".to_string(),
         password: "pass2".to_string(),

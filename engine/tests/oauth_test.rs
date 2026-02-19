@@ -119,6 +119,7 @@ async fn test_email_matching_flow() {
     let now = Utc::now();
     let user = User {
         id: uuid::Uuid::new_v4().to_string(),
+        username: "existinguser".to_string(),
         email: "existing@example.com".to_string(),
         name: "Existing User".to_string(),
         password_hash: "hash".to_string(),

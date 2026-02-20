@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::Utc;
 
 use crate::auth::token::models::ApiToken;
 use crate::auth::token::repository::TokenRepository;
@@ -32,13 +33,14 @@ impl TokenRepository for SurrealRepo<ApiToken> {
 
     async fn find_active_by_id(&self, id: &str) -> Result<Option<ApiToken>, AppError> {
         let query = format!(
-            "{SELECT_CLAUSE} FROM api_token WHERE id = $id AND expires_at > time::now() LIMIT 1"
+            "{SELECT_CLAUSE} FROM api_token WHERE id = $id AND expires_at > $now LIMIT 1"
         );
         let thing = surrealdb::types::RecordId::new("api_token", id);
         let mut result = self
             .db()
             .query(&query)
             .bind(("id", thing))
+            .bind(("now", Utc::now()))
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
 
@@ -69,8 +71,9 @@ impl TokenRepository for SurrealRepo<ApiToken> {
 
     async fn update_last_used(&self, id: &str) -> Result<(), AppError> {
         self.db()
-            .query("UPDATE type::record('api_token', $id) SET last_used_at = time::now()")
+            .query("UPDATE type::record('api_token', $id) SET last_used_at = $now")
             .bind(("id", id.to_string()))
+            .bind(("now", Utc::now()))
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
@@ -79,7 +82,8 @@ impl TokenRepository for SurrealRepo<ApiToken> {
     async fn delete_expired(&self) -> Result<u64, AppError> {
         let mut result = self
             .db()
-            .query("DELETE FROM api_token WHERE expires_at <= time::now()")
+            .query("DELETE FROM api_token WHERE expires_at <= $now")
+            .bind(("now", Utc::now()))
             .await
             .map_err(|e| AppError::Database(e.to_string()))?;
 

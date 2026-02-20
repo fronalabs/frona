@@ -87,6 +87,16 @@ impl ModelProviderRegistry {
     pub fn has_model_group(&self, group_name: &str) -> bool {
         self.model_groups.contains_key(group_name)
     }
+
+    pub fn for_testing(
+        providers: HashMap<String, Arc<dyn ModelProvider>>,
+        model_groups: HashMap<String, ModelGroup>,
+    ) -> Self {
+        Self {
+            providers: Arc::new(providers),
+            model_groups: Arc::new(model_groups),
+        }
+    }
 }
 
 macro_rules! init_api_key_provider {

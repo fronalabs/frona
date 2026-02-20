@@ -597,3 +597,169 @@ fn extract_text_from_choice(
 
     Ok(text_parts.join(""))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rig::completion::message::{ToolCall, ToolFunction};
+
+    #[test]
+    fn test_is_word_boundary_start_of_string() {
+        assert!(is_word_boundary("hello", 0));
+        assert!(is_word_boundary("", 0));
+    }
+
+    #[test]
+    fn test_is_word_boundary_after_space() {
+        assert!(is_word_boundary("a b", 2));
+        assert!(is_word_boundary(" x", 1));
+        assert!(is_word_boundary("\tx", 1));
+    }
+
+    #[test]
+    fn test_is_word_boundary_after_alphanumeric() {
+        assert!(!is_word_boundary("ab", 1));
+        assert!(!is_word_boundary("a1b", 2));
+        assert!(!is_word_boundary("9x", 1));
+    }
+
+    #[test]
+    fn test_is_word_boundary_after_underscore() {
+        assert!(!is_word_boundary("a_b", 2));
+        assert!(!is_word_boundary("_x", 1));
+    }
+
+    #[test]
+    fn test_is_word_boundary_after_punctuation() {
+        assert!(is_word_boundary("a.b", 2));
+        assert!(is_word_boundary("a\nb", 2));
+        assert!(is_word_boundary("a,b", 2));
+        assert!(is_word_boundary("a:b", 2));
+    }
+
+    #[test]
+    fn test_extract_tool_calls_simple() {
+        let text = r#"mytool {"key": "value"}"#;
+        let results = try_extract_tool_calls_from_text(text, &["mytool"]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].tool_name, "mytool");
+        assert_eq!(results[0].arguments, serde_json::json!({"key": "value"}));
+        assert_eq!(results[0].start, 0);
+        assert_eq!(results[0].end, text.len());
+    }
+
+    #[test]
+    fn test_extract_tool_calls_multiple() {
+        let text = r#"tool_a {"a": 1} some text tool_b {"b": 2}"#;
+        let results = try_extract_tool_calls_from_text(text, &["tool_a", "tool_b"]);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].tool_name, "tool_a");
+        assert_eq!(results[1].tool_name, "tool_b");
+    }
+
+    #[test]
+    fn test_extract_tool_calls_nested_json() {
+        let text = r#"mytool {"outer": {"inner": [1, 2]}}"#;
+        let results = try_extract_tool_calls_from_text(text, &["mytool"]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].arguments,
+            serde_json::json!({"outer": {"inner": [1, 2]}})
+        );
+    }
+
+    #[test]
+    fn test_extract_tool_calls_no_match() {
+        let text = "just some regular text without any tool calls";
+        let results = try_extract_tool_calls_from_text(text, &["mytool"]);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_extract_tool_calls_invalid_json() {
+        let text = r#"mytool {invalid json here}"#;
+        let results = try_extract_tool_calls_from_text(text, &["mytool"]);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_extract_tool_calls_no_json_after_name() {
+        let text = "mytool has no json";
+        let results = try_extract_tool_calls_from_text(text, &["mytool"]);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_extract_tool_calls_non_word_boundary() {
+        let text = r#"notatool_mytool {"key": "value"}"#;
+        let results = try_extract_tool_calls_from_text(text, &["mytool"]);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_extract_tool_calls_whitespace_gap() {
+        let text = "mytool  \t  {\"key\": \"value\"}";
+        let results = try_extract_tool_calls_from_text(text, &["mytool"]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].tool_name, "mytool");
+    }
+
+    #[test]
+    fn test_extract_tool_calls_non_whitespace_gap() {
+        let text = r#"mytool::: {"key": "value"}"#;
+        let results = try_extract_tool_calls_from_text(text, &["mytool"]);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_recover_tool_calls_modifies_text() {
+        let mut text = r#"Here is the result: search_web {"query": "rust"}"#.to_string();
+        let mut contents: Vec<AssistantContent> = vec![];
+        let tool_names = vec!["search_web".to_string()];
+
+        recover_tool_calls_from_text(&mut text, &mut contents, &tool_names, "test-model");
+
+        assert_eq!(text, "Here is the result:");
+        assert_eq!(contents.len(), 1);
+        match &contents[0] {
+            AssistantContent::ToolCall(tc) => {
+                assert_eq!(tc.function.name, "search_web");
+                assert_eq!(tc.function.arguments, serde_json::json!({"query": "rust"}));
+            }
+            _ => panic!("Expected ToolCall content"),
+        }
+    }
+
+    #[test]
+    fn test_extract_text_from_choice_text_only() {
+        let choice = rig::OneOrMany::one(AssistantContent::text("hello world"));
+        let result = extract_text_from_choice(&choice).unwrap();
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn test_extract_text_from_choice_mixed() {
+        let items = vec![
+            AssistantContent::text("part1"),
+            AssistantContent::ToolCall(ToolCall::new(
+                "id1".to_string(),
+                ToolFunction::new("tool".to_string(), serde_json::json!({})),
+            )),
+            AssistantContent::text("part2"),
+        ];
+        let choice = rig::OneOrMany::many(items).unwrap();
+        let result = extract_text_from_choice(&choice).unwrap();
+        assert_eq!(result, "part1part2");
+    }
+
+    #[test]
+    fn test_extract_text_from_choice_no_text() {
+        let items = vec![AssistantContent::ToolCall(ToolCall::new(
+            "id1".to_string(),
+            ToolFunction::new("tool".to_string(), serde_json::json!({})),
+        ))];
+        let choice = rig::OneOrMany::many(items).unwrap();
+        let result = extract_text_from_choice(&choice);
+        assert!(result.is_err());
+    }
+}

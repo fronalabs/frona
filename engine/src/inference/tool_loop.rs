@@ -56,6 +56,7 @@ pub struct ToolCallResult {
     pub tool_data: Option<MessageTool>,
 }
 
+#[derive(Debug)]
 pub enum ToolLoopOutcome {
     Completed {
         text: String,

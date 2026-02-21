@@ -31,6 +31,7 @@ async-stream = { workspace = true }
 serde-aux = { workspace = true }
 base64 = { workspace = true }
 serde_yaml = "0.9"
+config = { version = "0.14", features = ["yaml"] }
 include_dir = "0.7"
 browser-use = { version = "0.2", default-features = false }
 tokio-util = "0.7"

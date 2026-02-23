@@ -41,6 +41,15 @@ async fn create_task(
     Json(req): Json<CreateTaskRequest>,
 ) -> Result<Json<TaskResponse>, ApiError> {
     let response = state.task_service.create(&auth.user_id, req).await?;
+    state.broadcast_service.broadcast_task_update(
+        &auth.user_id,
+        &response.id,
+        "pending",
+        &response.title,
+        response.chat_id.as_deref(),
+        None,
+        None,
+    );
     Ok(Json(response))
 }
 

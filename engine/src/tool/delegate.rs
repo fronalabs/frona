@@ -7,6 +7,7 @@ use crate::agent::repository::AgentRepository;
 use crate::agent::task::models::CreateTaskRequest;
 use crate::agent::task::executor::TaskExecutor;
 use crate::agent::task::service::TaskService;
+use crate::chat::broadcast::BroadcastService;
 use crate::core::error::AppError;
 use frona_derive::agent_tool;
 
@@ -16,6 +17,7 @@ pub struct DelegateTaskTool {
     task_service: TaskService,
     agent_repo: Arc<dyn AgentRepository>,
     task_executor: Arc<TaskExecutor>,
+    broadcast_service: BroadcastService,
     user_id: String,
     agent_id: String,
     chat_id: String,
@@ -29,6 +31,7 @@ impl DelegateTaskTool {
         task_service: TaskService,
         agent_repo: Arc<dyn AgentRepository>,
         task_executor: Arc<TaskExecutor>,
+        broadcast_service: BroadcastService,
         user_id: String,
         agent_id: String,
         chat_id: String,
@@ -39,6 +42,7 @@ impl DelegateTaskTool {
             task_service,
             agent_repo,
             task_executor,
+            broadcast_service,
             user_id,
             agent_id,
             chat_id,
@@ -107,6 +111,16 @@ impl DelegateTaskTool {
 
         let task_response = self.task_service.create(&self.user_id, req).await?;
         let task_id = task_response.id.clone();
+
+        self.broadcast_service.broadcast_task_update(
+            &self.user_id,
+            &task_id,
+            "pending",
+            &task_response.title,
+            task_response.chat_id.as_deref(),
+            Some(&self.chat_id),
+            None,
+        );
 
         if run_at.is_none() {
             let task = self

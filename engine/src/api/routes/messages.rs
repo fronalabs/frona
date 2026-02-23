@@ -227,6 +227,7 @@ pub async fn build_tool_registry(
             state.task_service.clone(),
             agent_repo.clone(),
             executor,
+            state.broadcast_service.clone(),
             user_id.to_string(),
             agent_id.to_string(),
             chat_id.to_string(),

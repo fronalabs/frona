@@ -22,34 +22,29 @@ async fn test_db() -> Surreal<Db> {
 fn test_config(tmp: &tempfile::TempDir) -> Config {
     let base = tmp.path().to_string_lossy().to_string();
     Config {
-        port: 0,
-        jwt_secret: "test-secret".to_string(),
-        surreal_path: format!("{base}/db"),
-        static_dir: format!("{base}/static"),
-        models_config_path: format!("{base}/models.json"),
-        browserless_ws_url: "ws://localhost:0".to_string(),
-        browser_profiles_path: format!("{base}/profiles"),
-        workspaces_base_path: format!("{base}/workspaces"),
-        files_base_path: format!("{base}/files"),
-        shared_config_dir: format!("{base}/config"),
-        sandbox_disabled: false,
-        max_concurrent_tasks: 10,
-        scheduler_space_compaction_secs: 3600,
-        scheduler_insight_compaction_secs: 7200,
-        scheduler_poll_secs: 60,
-        issuer_url: "http://localhost:3001".to_string(),
-        access_token_expiry_secs: 900,
-        refresh_token_expiry_secs: 604800,
-        sso_enabled: false,
-        sso_authority: None,
-        sso_client_id: None,
-        sso_client_secret: None,
-        sso_scopes: "email profile offline_access".to_string(),
-        sso_allow_unknown_email_verification: false,
-        sso_client_cache_expiration: 0,
-        sso_only: false,
-        sso_signups_match_email: true,
-        presign_expiry_secs: 86400,
+        server: frona::core::config::ServerConfig {
+            port: 0,
+            static_dir: format!("{base}/static"),
+            max_concurrent_tasks: 10,
+            ..Default::default()
+        },
+        auth: frona::core::config::AuthConfig {
+            encryption_secret: "test-secret".to_string(),
+            ..Default::default()
+        },
+        database: frona::core::config::DatabaseConfig {
+            path: format!("{base}/db"),
+        },
+        browser: frona::core::config::BrowserSettings {
+            ws_url: "ws://localhost:0".to_string(),
+            profiles_path: format!("{base}/profiles"),
+        },
+        storage: frona::core::config::StorageConfig {
+            workspaces_path: format!("{base}/workspaces"),
+            files_path: format!("{base}/files"),
+            shared_config_dir: format!("{base}/config"),
+        },
+        ..Default::default()
     }
 }
 
@@ -59,7 +54,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
     let config = test_config(&tmp);
     let workspaces = AgentWorkspaceManager::new(tmp.path().join("workspaces"));
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
-    let state = AppState::new(db, &config, workspaces, metrics_handle);
+    let state = AppState::new(db, &config, None, workspaces, metrics_handle);
     (state, tmp)
 }
 

@@ -25,7 +25,6 @@ use crate::memory::service::MemoryService;
 use crate::agent::prompt::PromptLoader;
 use crate::space::service::SpaceService;
 use crate::agent::task::service::TaskService;
-use crate::tool::browser::config::BrowserConfig;
 use crate::tool::browser::session::BrowserSessionManager;
 use crate::tool::cli::{CliToolConfig, load_cli_tool_configs};
 use crate::tool::web_search::{SearchProvider, create_search_provider};
@@ -114,17 +113,11 @@ impl AppState {
         let chat_repo = SurrealRepo::new(db.clone());
         let message_repo = SurrealRepo::new(db.clone());
 
-        let browser_config = BrowserConfig {
-            browserless_ws_url: config.browser.ws_url.clone(),
-            profiles_base_path: config.browser.profiles_path.clone(),
-            connection_timeout_ms: 30000,
-        };
-
         let workspace_manager = Arc::new(WorkspaceManager::new(
             &config.storage.workspaces_path,
             config.server.sandbox_disabled,
         ));
-        let search_provider = create_search_provider();
+        let search_provider = create_search_provider(&config.search);
 
         let provider_registry_arc = Arc::new(provider_registry.clone());
         let prompt_loader = PromptLoader::new(PathBuf::from(&config.storage.shared_config_dir).join("prompts"));
@@ -187,7 +180,7 @@ impl AppState {
             task_service: TaskService::new(SurrealRepo::new(db.clone())),
             credential_service: CredentialService::new(SurrealRepo::new(db.clone())),
             broadcast_service: broadcast_service.clone(),
-            browser_session_manager: Arc::new(BrowserSessionManager::new(browser_config)),
+            browser_session_manager: Arc::new(BrowserSessionManager::new(config.browser.clone())),
             active_sessions: ActiveSessions::default(),
             memory_service,
             workspace_manager,

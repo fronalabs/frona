@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 
 use crate::core::error::AppError;
 
-use super::config::BrowserConfig;
+use crate::core::config::BrowserConfig;
 
 #[derive(serde::Deserialize)]
 struct BrowserlessSession {
@@ -65,7 +65,7 @@ impl BrowserSessionManager {
             .await;
 
         let ws_url = self.config.ws_url_for_profile(user_id, provider);
-        tracing::debug!(ws_url = %ws_url, browserless_ws_url = %self.config.browserless_ws_url, "Connecting to browser");
+        tracing::debug!(ws_url = %ws_url, browserless_ws_url = %self.config.ws_url, "Connecting to browser");
 
         let options = browser_use::ConnectionOptions::new(&ws_url)
             .timeout(self.config.connection_timeout_ms);

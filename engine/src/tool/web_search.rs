@@ -305,8 +305,8 @@ impl WebSearchTool {
 
 // --- Factory ---
 
-pub fn create_search_provider() -> Option<Arc<dyn SearchProvider>> {
-    if let Ok(provider_name) = env::var("SEARCH_PROVIDER") {
+pub fn create_search_provider(settings: &crate::core::config::SearchConfig) -> Option<Arc<dyn SearchProvider>> {
+    if let Some(provider_name) = settings.provider.as_deref() {
         return match provider_name.to_lowercase().as_str() {
             "tavily" => {
                 let api_key = env::var("TAVILY_API_KEY").ok()?;
@@ -317,7 +317,7 @@ pub fn create_search_provider() -> Option<Arc<dyn SearchProvider>> {
                 Some(Arc::new(BraveProvider::new(api_key)))
             }
             "searxng" => {
-                let base_url = env::var("SEARXNG_BASE_URL").ok()?;
+                let base_url = settings.searxng_base_url.clone()?;
                 Some(Arc::new(SearxngProvider::new(base_url)))
             }
             other => {
@@ -333,7 +333,7 @@ pub fn create_search_provider() -> Option<Arc<dyn SearchProvider>> {
     if let Ok(api_key) = env::var("BRAVE_API_KEY") {
         return Some(Arc::new(BraveProvider::new(api_key)));
     }
-    if let Ok(base_url) = env::var("SEARXNG_BASE_URL") {
+    if let Some(base_url) = settings.searxng_base_url.clone() {
         return Some(Arc::new(SearxngProvider::new(base_url)));
     }
 
@@ -466,6 +466,39 @@ mod tests {
         let args = serde_json::json!({ "query": "rust", "max_results": 100 });
         let output = tool.execute("web_search", args, &ctx).await.unwrap();
         assert!(output.text_content().contains("Rust Programming"));
+    }
+
+    #[test]
+    fn create_search_provider_returns_none_with_empty_config() {
+        let settings = crate::core::config::SearchConfig::default();
+        assert!(create_search_provider(&settings).is_none());
+    }
+
+    #[test]
+    fn create_search_provider_searxng_from_config() {
+        let settings = crate::core::config::SearchConfig {
+            provider: Some("searxng".into()),
+            searxng_base_url: Some("http://localhost:3400".into()),
+        };
+        assert!(create_search_provider(&settings).is_some());
+    }
+
+    #[test]
+    fn create_search_provider_searxng_autodetect() {
+        let settings = crate::core::config::SearchConfig {
+            provider: None,
+            searxng_base_url: Some("http://localhost:3400".into()),
+        };
+        assert!(create_search_provider(&settings).is_some());
+    }
+
+    #[test]
+    fn create_search_provider_unknown_returns_none() {
+        let settings = crate::core::config::SearchConfig {
+            provider: Some("nonexistent".into()),
+            searxng_base_url: None,
+        };
+        assert!(create_search_provider(&settings).is_none());
     }
 
     #[tokio::test]

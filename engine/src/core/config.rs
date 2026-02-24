@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use serde::Deserialize;
 use serde_aux::field_attributes::deserialize_bool_from_anything;
@@ -91,18 +92,54 @@ impl Default for DatabaseConfig {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
-pub struct BrowserSettings {
+pub struct BrowserConfig {
     pub ws_url: String,
     pub profiles_path: String,
+    pub connection_timeout_ms: u64,
 }
 
-impl Default for BrowserSettings {
+impl Default for BrowserConfig {
     fn default() -> Self {
         Self {
             ws_url: "ws://localhost:3333".into(),
             profiles_path: "/profiles".into(),
+            connection_timeout_ms: 30000,
         }
     }
+}
+
+impl BrowserConfig {
+    pub fn ws_url_for_profile(&self, username: &str, provider: &str) -> String {
+        let user_data_dir = self.profile_path(username, provider);
+        format!(
+            "{}?--user-data-dir={}",
+            self.ws_url,
+            user_data_dir.display()
+        )
+    }
+
+    pub fn http_base_url(&self) -> String {
+        self.ws_url
+            .replace("ws://", "http://")
+            .replace("wss://", "https://")
+    }
+
+    pub fn debugger_url_for_credential(&self, credential_id: &str) -> String {
+        format!("/api/browser/debugger/{credential_id}")
+    }
+
+    pub fn profile_path(&self, username: &str, provider: &str) -> PathBuf {
+        PathBuf::from(&self.profiles_path)
+            .join(username)
+            .join(provider)
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct SearchConfig {
+    pub provider: Option<String>,
+    pub searxng_base_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -203,7 +240,8 @@ pub struct Config {
     pub auth: AuthConfig,
     pub sso: SsoConfig,
     pub database: DatabaseConfig,
-    pub browser: BrowserSettings,
+    pub browser: BrowserConfig,
+    pub search: SearchConfig,
     pub storage: StorageConfig,
     pub scheduler: SchedulerConfig,
     #[serde(default)]
@@ -263,6 +301,9 @@ impl Config {
             "SURREAL_PATH" => "database.path",
             "BROWSERLESS_WS_URL" => "browser.ws_url",
             "BROWSER_PROFILES_PATH" => "browser.profiles_path",
+            "BROWSER_CONNECTION_TIMEOUT_MS" => "browser.connection_timeout_ms",
+            "SEARCH_PROVIDER" => "search.provider",
+            "SEARXNG_BASE_URL" => "search.searxng_base_url",
             "WORKSPACES_BASE_PATH" => "storage.workspaces_path",
             "FILES_BASE_PATH" => "storage.files_path",
             "FRONA_SHARED_CONFIG" => "storage.shared_config_dir",
@@ -349,5 +390,35 @@ mod tests {
         assert_eq!(config.scheduler.space_compaction_secs, 3600);
         assert!(!config.sso.enabled);
         assert!(config.sso.signups_match_email);
+        assert_eq!(config.browser.ws_url, "ws://localhost:3333");
+        assert_eq!(config.browser.profiles_path, "/profiles");
+        assert_eq!(config.browser.connection_timeout_ms, 30000);
+        assert!(config.search.provider.is_none());
+        assert!(config.search.searxng_base_url.is_none());
+    }
+
+    #[test]
+    fn browser_config_ws_url_for_profile() {
+        let config = BrowserConfig::default();
+        let url = config.ws_url_for_profile("alice", "google");
+        assert!(url.starts_with("ws://localhost:3333?--user-data-dir="));
+        assert!(url.contains("alice"));
+        assert!(url.contains("google"));
+    }
+
+    #[test]
+    fn browser_config_http_base_url() {
+        let config = BrowserConfig::default();
+        assert_eq!(config.http_base_url(), "http://localhost:3333");
+    }
+
+    #[test]
+    fn browser_config_profile_path() {
+        let config = BrowserConfig {
+            profiles_path: "/data/profiles".into(),
+            ..Default::default()
+        };
+        let path = config.profile_path("bob", "github");
+        assert_eq!(path, PathBuf::from("/data/profiles/bob/github"));
     }
 }

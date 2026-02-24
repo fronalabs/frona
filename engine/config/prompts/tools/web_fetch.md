@@ -7,4 +7,4 @@ parameters:
 required:
   - url
 ---
-Fetch a web page and return its content as markdown.
+Fetch a web page using a full browser with JavaScript rendering and return its content as markdown. Prefer this over curl for web pages, as it executes JavaScript and captures dynamically loaded content.

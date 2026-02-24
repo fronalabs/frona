@@ -157,8 +157,8 @@ impl ModelProvider for MockModelProvider {
     ) -> Result<Vec<AssistantContent>, InferenceError> {
         match self.next_response() {
             MockResponse::Text(t) => {
-                let _ = token_tx.send(t).await;
-                Ok(vec![])
+                let _ = token_tx.send(t.clone()).await;
+                Ok(vec![AssistantContent::text(t)])
             }
             MockResponse::ToolCalls(calls) => {
                 let contents = calls

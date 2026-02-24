@@ -205,7 +205,7 @@ pub async fn build_tool_registry(
     if allowed_tools.iter().any(|t| t == "web_fetch") {
         registry.register(Arc::new(WebFetchTool::new(
             state.browser_session_manager.clone(),
-            user_id.to_string(),
+            username.to_string(),
             prompts.clone(),
         )));
     }

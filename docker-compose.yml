@@ -16,13 +16,11 @@ services:
   searxng:
     image: searxng/searxng:2026.2.16-8e824017d
     ports:
-      - "3400:8080"
+      - "8080:8080"
     environment:
-      - SEARXNG_BASE_URL=http://localhost:3400
-      - SEARXNG_ADDITIONAL_FORMATS=json
-      - SEARXNG_SETTINGS__plugins__Limiter__enabled=false
-    #volumes:
-    #  - ./data/searxng:/etc/searxng
+      - SEARXNG_BASE_URL=http://localhost:8080
+    volumes:
+      - ./data/searxng:/etc/searxng
     restart: unless-stopped
 
   frona-dev:
@@ -41,6 +39,7 @@ services:
       - node-modules:/app/frontend/node_modules
       - ./frontend:/app/frontend
       - ./data:/app/data
+      - ./data/browser_profiles:/profiles
     environment:
       - ANTHROPIC_API_KEY
       - JWT_SECRET=dev-secret-change-in-production

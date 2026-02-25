@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-pub use crate::core::config::{ModelGroupConfig, ModelProviderConfig, RetryConfig};
+pub use crate::core::config::{InferenceConfig, ModelGroupConfig, ModelProviderConfig, RetryConfig};
 
 use super::error::InferenceError;
 use super::provider::ModelRef;
@@ -14,6 +14,7 @@ pub struct ModelGroup {
     pub temperature: Option<f64>,
     pub context_window: Option<usize>,
     pub retry: RetryConfig,
+    pub inference: InferenceConfig,
 }
 
 #[derive(Debug)]
@@ -69,7 +70,8 @@ impl ModelRegistryConfig {
             );
         }
 
-        let models = build_default_model_groups(&providers);
+        let inference = InferenceConfig::default();
+        let models = build_default_model_groups(&providers, &inference);
 
         Self { providers, models }
     }
@@ -81,7 +83,7 @@ impl ModelRegistryConfig {
         }
     }
 
-    pub fn parse_model_groups(&self) -> Result<HashMap<String, ModelGroup>, InferenceError> {
+    pub fn parse_model_groups(&self, inference: &InferenceConfig) -> Result<HashMap<String, ModelGroup>, InferenceError> {
         let mut groups = HashMap::new();
 
         for (name, config) in &self.models {
@@ -102,6 +104,7 @@ impl ModelRegistryConfig {
                     temperature: config.temperature,
                     context_window: config.context_window,
                     retry: config.retry.clone(),
+                    inference: inference.clone(),
                 },
             );
         }
@@ -127,6 +130,7 @@ fn default_model_for_provider(provider: &str) -> &str {
 
 fn build_default_model_groups(
     providers: &HashMap<String, ModelProviderConfig>,
+    inference: &InferenceConfig,
 ) -> HashMap<String, ModelGroupConfig> {
     let mut models = HashMap::new();
 
@@ -138,7 +142,7 @@ fn build_default_model_groups(
             ModelGroupConfig {
                 main,
                 fallbacks: vec![],
-                max_tokens: Some(8192),
+                max_tokens: Some(inference.default_max_tokens),
                 temperature: None,
                 context_window: None,
                 retry: RetryConfig::default(),

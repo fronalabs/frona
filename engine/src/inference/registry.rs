@@ -8,7 +8,7 @@ use rig::providers::{
 };
 
 use crate::chat::broadcast::BroadcastService;
-use super::config::{ModelGroup, ModelRegistryConfig, ModelProviderConfig, RetryConfig};
+use super::config::{InferenceConfig, ModelGroup, ModelRegistryConfig, ModelProviderConfig, RetryConfig};
 use super::error::InferenceError;
 use super::provider::{InferenceCounter, ModelProvider, ModelRef, RigProvider};
 
@@ -16,11 +16,12 @@ use super::provider::{InferenceCounter, ModelProvider, ModelRef, RigProvider};
 pub struct ModelProviderRegistry {
     providers: Arc<HashMap<String, Arc<dyn ModelProvider>>>,
     model_groups: Arc<HashMap<String, ModelGroup>>,
+    inference: InferenceConfig,
 }
 
 impl ModelProviderRegistry {
-    pub fn from_config(config: ModelRegistryConfig, broadcast: BroadcastService) -> Result<Self, InferenceError> {
-        let model_groups = config.parse_model_groups()?;
+    pub fn from_config(config: ModelRegistryConfig, broadcast: BroadcastService, inference: &InferenceConfig) -> Result<Self, InferenceError> {
+        let model_groups = config.parse_model_groups(inference)?;
         let mut providers: HashMap<String, Arc<dyn ModelProvider>> = HashMap::new();
         let counter = InferenceCounter::new(broadcast);
 
@@ -48,6 +49,7 @@ impl ModelProviderRegistry {
         Ok(Self {
             providers: Arc::new(providers),
             model_groups: Arc::new(model_groups),
+            inference: inference.clone(),
         })
     }
 
@@ -71,10 +73,11 @@ impl ModelProviderRegistry {
                 name: name_or_ref.to_string(),
                 main: model_ref,
                 fallbacks: vec![],
-                max_tokens: Some(8192),
+                max_tokens: Some(self.inference.default_max_tokens),
                 temperature: None,
                 context_window: None,
                 retry: RetryConfig::default(),
+                inference: self.inference.clone(),
             })
         } else {
             match self.get_model_group(name_or_ref) {
@@ -95,6 +98,7 @@ impl ModelProviderRegistry {
         Self {
             providers: Arc::new(providers),
             model_groups: Arc::new(model_groups),
+            inference: InferenceConfig::default(),
         }
     }
 }

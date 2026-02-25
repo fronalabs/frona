@@ -486,6 +486,7 @@ impl ChatService {
                     temperature: Some(0.7),
                     context_window: None,
                     retry: Default::default(),
+                    inference: Default::default(),
                 });
             }
             Some(group) if !group.is_empty() => {
@@ -501,6 +502,7 @@ impl ChatService {
             temperature: Some(0.7),
             context_window: None,
             retry: base.retry.clone(),
+            inference: base.inference.clone(),
         })
     }
 

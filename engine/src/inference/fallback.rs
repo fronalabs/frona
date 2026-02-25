@@ -24,7 +24,8 @@ pub async fn inference_with_fallback(
     let mut errors = Vec::new();
     let max_tokens = model_group.max_tokens;
     let temperature = model_group.temperature;
-    let max_output = max_tokens.unwrap_or(8192) as usize;
+    let max_output = max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize;
+    let truncation_pct = model_group.inference.history_truncation_pct;
 
     let truncated = truncate_history(
         history,
@@ -32,6 +33,7 @@ pub async fn inference_with_fallback(
         &model_group.main.model_id,
         model_group.context_window,
         max_output,
+        truncation_pct,
     );
 
     let ref_str = model_group.main.as_str();
@@ -87,6 +89,7 @@ pub async fn inference_with_fallback(
             &fallback.model_id,
             model_group.context_window,
             max_output,
+            truncation_pct,
         );
         let start = Instant::now();
         match retry_with_backoff(&model_group.retry, fallback, || async {
@@ -148,7 +151,8 @@ pub async fn stream_inference_with_fallback(
     let mut errors = Vec::new();
     let max_tokens = model_group.max_tokens;
     let temperature = model_group.temperature;
-    let max_output = max_tokens.unwrap_or(8192) as usize;
+    let max_output = max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize;
+    let truncation_pct = model_group.inference.history_truncation_pct;
 
     let truncated = truncate_history(
         history,
@@ -156,6 +160,7 @@ pub async fn stream_inference_with_fallback(
         &model_group.main.model_id,
         model_group.context_window,
         max_output,
+        truncation_pct,
     );
 
     let ref_str = model_group.main.as_str();
@@ -212,6 +217,7 @@ pub async fn stream_inference_with_fallback(
             &fallback.model_id,
             model_group.context_window,
             max_output,
+            truncation_pct,
         );
         let start = Instant::now();
         match retry_with_backoff(&model_group.retry, fallback, || async {

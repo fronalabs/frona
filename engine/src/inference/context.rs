@@ -85,11 +85,12 @@ pub fn needs_compaction(
     model_id: &str,
     context_window: Option<usize>,
     max_output_tokens: usize,
+    compaction_trigger_pct: usize,
 ) -> bool {
     let window = resolve_context_window(model_id, context_window);
     let used = estimate_messages_tokens(messages, system_prompt);
     let available = window.saturating_sub(max_output_tokens);
-    used > available * 80 / 100
+    used > available * compaction_trigger_pct / 100
 }
 
 pub fn truncate_history(
@@ -98,13 +99,14 @@ pub fn truncate_history(
     model_id: &str,
     context_window: Option<usize>,
     max_output_tokens: usize,
+    history_truncation_pct: usize,
 ) -> Vec<RigMessage> {
     let window = resolve_context_window(model_id, context_window);
     let system_tokens = estimate_tokens(system_prompt);
     let budget = window
         .saturating_sub(max_output_tokens)
         .saturating_sub(system_tokens);
-    let budget = budget * 90 / 100;
+    let budget = budget * history_truncation_pct / 100;
 
     let total: usize = history.iter().map(estimate_message_tokens).sum();
     if total <= budget {
@@ -156,13 +158,13 @@ mod tests {
     #[test]
     fn test_needs_compaction() {
         let short_msg = vec![RigMessage::user("hello")];
-        assert!(!needs_compaction(&short_msg, "system", "claude-sonnet-4-5", None, 8192));
+        assert!(!needs_compaction(&short_msg, "system", "claude-sonnet-4-5", None, 8192, 80));
     }
 
     #[test]
     fn test_truncate_history_within_budget() {
         let msgs = vec![RigMessage::user("hello"), RigMessage::user("world")];
-        let result = truncate_history(msgs.clone(), "system", "claude-sonnet-4-5", None, 8192);
+        let result = truncate_history(msgs.clone(), "system", "claude-sonnet-4-5", None, 8192, 90);
         assert_eq!(result.len(), 2);
     }
 
@@ -173,7 +175,7 @@ mod tests {
             RigMessage::user(&long),
             RigMessage::user("keep this"),
         ];
-        let result = truncate_history(msgs, "system", "claude-sonnet-4-5", None, 8192);
+        let result = truncate_history(msgs, "system", "claude-sonnet-4-5", None, 8192, 90);
         assert!(result.len() <= 2);
     }
 }

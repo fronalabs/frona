@@ -19,7 +19,6 @@ use super::config::ModelGroup;
 use super::provider::ModelProvider;
 use super::registry::ModelProviderRegistry;
 
-const MAX_TOOL_TURNS: usize = 20;
 pub struct ToolLoopEvent {
     pub kind: ToolLoopEventKind,
 }
@@ -450,20 +449,22 @@ pub async fn run_tool_loop(
     let mut accumulated_text = String::new();
     let mut all_attachments: Vec<crate::api::files::Attachment> = Vec::new();
 
-    for turn in 0..MAX_TOOL_TURNS {
+    let max_tool_turns = model_group.inference.max_tool_turns;
+    for turn in 0..max_tool_turns {
         if let Some(outcome) = check_cancellation(&cancel_token, &event_tx, &accumulated_text).await {
             return Ok(outcome);
         }
 
         tracing::debug!(turn, "Tool loop turn");
 
-        let max_output = model_group.max_tokens.unwrap_or(8192) as usize;
+        let max_output = model_group.max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize;
         chat_history = crate::inference::context::truncate_history(
             chat_history,
             system_prompt,
             &model_group.main.model_id,
             model_group.context_window,
             max_output,
+            model_group.inference.history_truncation_pct,
         );
 
         let contents = match stream_with_rate_limit_retry(
@@ -527,7 +528,7 @@ pub async fn run_tool_loop(
             });
         }
 
-        if turn == MAX_TOOL_TURNS - 1 {
+        if turn == max_tool_turns - 1 {
             let _ = event_tx
                 .send(ToolLoopEvent {
                     kind: ToolLoopEventKind::Error(

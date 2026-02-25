@@ -199,10 +199,10 @@ impl RetryConfig {
 impl Default for RetryConfig {
     fn default() -> Self {
         Self {
-            max_retries: 3,
-            initial_backoff_ms: 500,
+            max_retries: 10,
+            initial_backoff_ms: 1_000,
             backoff_multiplier: 2.0,
-            max_backoff_ms: 30_000,
+            max_backoff_ms: 60_000,
         }
     }
 }
@@ -233,6 +233,26 @@ pub struct ModelProviderConfig {
     pub enabled: bool,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub struct InferenceConfig {
+    pub max_tool_turns: usize,
+    pub default_max_tokens: u64,
+    pub compaction_trigger_pct: usize,
+    pub history_truncation_pct: usize,
+}
+
+impl Default for InferenceConfig {
+    fn default() -> Self {
+        Self {
+            max_tool_turns: 200,
+            default_max_tokens: 8192,
+            compaction_trigger_pct: 80,
+            history_truncation_pct: 90,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
@@ -244,6 +264,7 @@ pub struct Config {
     pub search: SearchConfig,
     pub storage: StorageConfig,
     pub scheduler: SchedulerConfig,
+    pub inference: InferenceConfig,
     #[serde(default)]
     pub models: HashMap<String, ModelGroupConfig>,
     #[serde(default)]
@@ -309,7 +330,11 @@ impl Config {
             "FRONA_SHARED_CONFIG" => "storage.shared_config_dir",
             "SCHEDULER_SPACE_COMPACTION_SECS" => "scheduler.space_compaction_secs",
             "SCHEDULER_INSIGHT_COMPACTION_SECS" => "scheduler.insight_compaction_secs",
-            "SCHEDULER_POLL_SECS" => "scheduler.poll_secs"
+            "SCHEDULER_POLL_SECS" => "scheduler.poll_secs",
+            "INFERENCE_MAX_TOOL_TURNS" => "inference.max_tool_turns",
+            "INFERENCE_DEFAULT_MAX_TOKENS" => "inference.default_max_tokens",
+            "INFERENCE_COMPACTION_TRIGGER_PCT" => "inference.compaction_trigger_pct",
+            "INFERENCE_HISTORY_TRUNCATION_PCT" => "inference.history_truncation_pct"
         });
 
         let built = builder.build().expect("Failed to build config");
@@ -395,6 +420,10 @@ mod tests {
         assert_eq!(config.browser.connection_timeout_ms, 30000);
         assert!(config.search.provider.is_none());
         assert!(config.search.searxng_base_url.is_none());
+        assert_eq!(config.inference.max_tool_turns, 200);
+        assert_eq!(config.inference.default_max_tokens, 8192);
+        assert_eq!(config.inference.compaction_trigger_pct, 80);
+        assert_eq!(config.inference.history_truncation_pct, 90);
     }
 
     #[test]

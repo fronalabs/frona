@@ -12,6 +12,7 @@ pub struct ServerConfig {
     pub issuer_url: String,
     pub max_concurrent_tasks: usize,
     pub sandbox_disabled: bool,
+    pub cors_origins: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -22,6 +23,7 @@ impl Default for ServerConfig {
             issuer_url: "http://localhost:3001".into(),
             max_concurrent_tasks: 10,
             sandbox_disabled: false,
+            cors_origins: None,
         }
     }
 }
@@ -306,6 +308,7 @@ impl Config {
             "ISSUER_URL" => "server.issuer_url",
             "MAX_CONCURRENT_TASKS" => "server.max_concurrent_tasks",
             "SANDBOX_DISABLED" => "server.sandbox_disabled",
+            "CORS_ORIGIN" => "server.cors_origins",
             "JWT_SECRET" => "auth.encryption_secret",
             "ACCESS_TOKEN_EXPIRY_SECS" => "auth.access_token_expiry_secs",
             "REFRESH_TOKEN_EXPIRY_SECS" => "auth.refresh_token_expiry_secs",
@@ -418,6 +421,7 @@ mod tests {
         assert_eq!(config.browser.ws_url, "ws://localhost:3333");
         assert_eq!(config.browser.profiles_path, "/profiles");
         assert_eq!(config.browser.connection_timeout_ms, 30000);
+        assert!(config.server.cors_origins.is_none());
         assert!(config.search.provider.is_none());
         assert!(config.search.searxng_base_url.is_none());
         assert_eq!(config.inference.max_tool_turns, 200);

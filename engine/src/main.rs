@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::http::{HeaderName, Method};
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -29,9 +29,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     verify_sandbox(&config.storage.workspaces_path, config.server.sandbox_disabled)
         .expect("Sandbox verification failed — filesystem may not support sandboxing. Set SANDBOX_DISABLED=true to bypass.");
-
-    let cors_origin = std::env::var("CORS_ORIGIN")
-        .unwrap_or_else(|_| "http://localhost:3000".into());
 
     let workspaces = AgentWorkspaceManager::new(&config.storage.workspaces_path);
 
@@ -65,22 +62,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let cors = CorsLayer::new()
-        .allow_origin(cors_origin.parse::<axum::http::HeaderValue>()?)
-        .allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PUT,
-            Method::DELETE,
-            Method::OPTIONS,
-        ])
-        .allow_headers([
-            HeaderName::from_static("content-type"),
-            HeaderName::from_static("authorization"),
-        ])
-        .allow_credentials(true);
+    let cors = config.server.cors_origins.as_deref().map(|origins_str| {
+        let origins: Vec<String> = origins_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect();
+        info!(?origins, "CORS enabled");
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::predicate(move |origin, _| {
+                let origin = origin.to_str().unwrap_or_default();
+                origins.iter().any(|allowed| allowed == origin)
+            }))
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
+            .allow_headers([
+                HeaderName::from_static("content-type"),
+                HeaderName::from_static("authorization"),
+            ])
+            .allow_credentials(true)
+    });
 
-    let api = axum::Router::new()
+    let mut api = axum::Router::new()
         .merge(routes::auth::router())
         .merge(routes::well_known::router())
         .merge(routes::agents::router())
@@ -94,8 +101,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(routes::tools::router())
         .merge(routes::files::router())
         .merge(routes::metrics::router())
-        .layer(axum::middleware::from_fn(track_http_metrics))
-        .layer(cors)
+        .layer(axum::middleware::from_fn(track_http_metrics));
+    if let Some(cors) = cors {
+        api = api.layer(cors);
+    }
+    let api = api
         .layer(TraceLayer::new_for_http())
         .with_state(state)
         .fallback_service(ServeDir::new(&config.server.static_dir));

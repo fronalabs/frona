@@ -42,13 +42,14 @@ services:
       - ./data/browser_profiles:/profiles
     environment:
       - ANTHROPIC_API_KEY
+      - CORS_ORIGIN
+      - NEXT_PUBLIC_API_URL
       - JWT_SECRET=dev-secret-change-in-production
       - RUST_LOG=frona=debug,tower_http=debug
       - BROWSERLESS_WS_URL=ws://browserless:3333
       - SEARXNG_BASE_URL=http://searxng:8080
       - SURREAL_PATH=data/db
       - PORT=3001
-      - NEXT_PUBLIC_API_URL=http://localhost:3001
       - CARGO_BUILD_JOBS=4
     depends_on: [browserless, searxng]
     restart: unless-stopped

@@ -11,6 +11,7 @@ RUST_LOG = "frona=debug,tower_http=debug"
 NEXT_PUBLIC_API_URL = "http://localhost:3001"
 PORT = "3001"
 ANTHROPIC_API_KEY = { required = true }
+CORS_ORIGIN = "http://localhost:3000"
 BROWSERLESS_WS_URL = "ws://localhost:3333"
 BROWSER_PROFILES_PATH = "/profiles"
 

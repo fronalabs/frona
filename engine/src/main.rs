@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = loaded.config;
 
     verify_sandbox(&config.storage.workspaces_path, config.server.sandbox_disabled)
-        .expect("Sandbox verification failed — filesystem may not support sandboxing. Set SANDBOX_DISABLED=true to bypass.");
+        .expect("Sandbox verification failed — filesystem may not support sandboxing. Set FRONA_SERVER_SANDBOX_DISABLED=true to bypass.");
 
     let workspaces = AgentWorkspaceManager::new(&config.storage.workspaces_path);
 

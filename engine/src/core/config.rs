@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_aux::field_attributes::deserialize_bool_from_anything;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ServerConfig {
     pub port: u16,
@@ -20,7 +20,7 @@ impl Default for ServerConfig {
         Self {
             port: 3001,
             static_dir: "frontend/out".into(),
-            issuer_url: "http://localhost:3001".into(),
+            issuer_url: String::new(),
             max_concurrent_tasks: 10,
             sandbox_disabled: false,
             cors_origins: None,
@@ -28,7 +28,7 @@ impl Default for ServerConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AuthConfig {
     pub encryption_secret: String,
@@ -48,7 +48,7 @@ impl Default for AuthConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SsoConfig {
     pub enabled: bool,
@@ -78,7 +78,7 @@ impl Default for SsoConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct DatabaseConfig {
     pub path: String,
@@ -92,7 +92,7 @@ impl Default for DatabaseConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct BrowserConfig {
     pub ws_url: String,
@@ -103,7 +103,7 @@ pub struct BrowserConfig {
 impl Default for BrowserConfig {
     fn default() -> Self {
         Self {
-            ws_url: "ws://localhost:3333".into(),
+            ws_url: String::new(),
             profiles_path: "/profiles".into(),
             connection_timeout_ms: 30000,
         }
@@ -137,14 +137,13 @@ impl BrowserConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct SearchConfig {
     pub provider: Option<String>,
     pub searxng_base_url: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct StorageConfig {
     pub workspaces_path: String,
@@ -162,7 +161,7 @@ impl Default for StorageConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SchedulerConfig {
     pub space_compaction_secs: u64,
@@ -180,7 +179,7 @@ impl Default for SchedulerConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RetryConfig {
     pub max_retries: u32,
     pub initial_backoff_ms: u64,
@@ -209,7 +208,7 @@ impl Default for RetryConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ModelGroupConfig {
     pub main: String,
     #[serde(default)]
@@ -224,7 +223,7 @@ pub struct ModelGroupConfig {
     pub retry: RetryConfig,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ModelProviderConfig {
     pub api_key: Option<String>,
     pub base_url: Option<String>,
@@ -235,7 +234,7 @@ pub struct ModelProviderConfig {
     pub enabled: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct InferenceConfig {
     pub max_tool_turns: usize,
@@ -255,14 +254,14 @@ impl Default for InferenceConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Default)]
+#[derive(Clone, Debug, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct Config {
     pub server: ServerConfig,
     pub auth: AuthConfig,
     pub sso: SsoConfig,
     pub database: DatabaseConfig,
-    pub browser: BrowserConfig,
+    pub browser: Option<BrowserConfig>,
     pub search: SearchConfig,
     pub storage: StorageConfig,
     pub scheduler: SchedulerConfig,
@@ -276,14 +275,6 @@ pub struct Config {
 pub struct LoadedConfig {
     pub config: Config,
     pub models: Option<crate::inference::config::ModelRegistryConfig>,
-}
-
-macro_rules! env_override {
-    ($builder:ident { $($env:expr => $key:expr),* $(,)? }) => {
-        $( if let Ok(v) = std::env::var($env) {
-            $builder = $builder.set_override($key, v).expect(concat!("override ", $key));
-        } )*
-    };
 }
 
 impl Config {
@@ -302,43 +293,27 @@ impl Config {
             );
         }
 
-        env_override!(builder {
-            "PORT" => "server.port",
-            "STATIC_DIR" => "server.static_dir",
-            "ISSUER_URL" => "server.issuer_url",
-            "MAX_CONCURRENT_TASKS" => "server.max_concurrent_tasks",
-            "SANDBOX_DISABLED" => "server.sandbox_disabled",
-            "CORS_ORIGIN" => "server.cors_origins",
-            "JWT_SECRET" => "auth.encryption_secret",
-            "ACCESS_TOKEN_EXPIRY_SECS" => "auth.access_token_expiry_secs",
-            "REFRESH_TOKEN_EXPIRY_SECS" => "auth.refresh_token_expiry_secs",
-            "PRESIGN_EXPIRY_SECS" => "auth.presign_expiry_secs",
-            "SSO_ENABLED" => "sso.enabled",
-            "SSO_AUTHORITY" => "sso.authority",
-            "SSO_CLIENT_ID" => "sso.client_id",
-            "SSO_CLIENT_SECRET" => "sso.client_secret",
-            "SSO_SCOPES" => "sso.scopes",
-            "SSO_ALLOW_UNKNOWN_EMAIL_VERIFICATION" => "sso.allow_unknown_email_verification",
-            "SSO_CLIENT_CACHE_EXPIRATION" => "sso.client_cache_expiration",
-            "SSO_ONLY" => "sso.only",
-            "SSO_SIGNUPS_MATCH_EMAIL" => "sso.signups_match_email",
-            "SURREAL_PATH" => "database.path",
-            "BROWSERLESS_WS_URL" => "browser.ws_url",
-            "BROWSER_PROFILES_PATH" => "browser.profiles_path",
-            "BROWSER_CONNECTION_TIMEOUT_MS" => "browser.connection_timeout_ms",
-            "SEARCH_PROVIDER" => "search.provider",
-            "SEARXNG_BASE_URL" => "search.searxng_base_url",
-            "WORKSPACES_BASE_PATH" => "storage.workspaces_path",
-            "FILES_BASE_PATH" => "storage.files_path",
-            "FRONA_SHARED_CONFIG" => "storage.shared_config_dir",
-            "SCHEDULER_SPACE_COMPACTION_SECS" => "scheduler.space_compaction_secs",
-            "SCHEDULER_INSIGHT_COMPACTION_SECS" => "scheduler.insight_compaction_secs",
-            "SCHEDULER_POLL_SECS" => "scheduler.poll_secs",
-            "INFERENCE_MAX_TOOL_TURNS" => "inference.max_tool_turns",
-            "INFERENCE_DEFAULT_MAX_TOKENS" => "inference.default_max_tokens",
-            "INFERENCE_COMPACTION_TRIGGER_PCT" => "inference.compaction_trigger_pct",
-            "INFERENCE_HISTORY_TRUNCATION_PCT" => "inference.history_truncation_pct"
-        });
+        // Collect FRONA_* env vars and remap the key so the section separator
+        // becomes "__" while field-name underscores are preserved.
+        // e.g. FRONA_BROWSER_WS_URL → browser__ws_url → browser.ws_url
+        let frona_env: HashMap<String, String> = std::env::vars()
+            .filter(|(k, _)| k.starts_with("FRONA_") && k != "FRONA_CONFIG")
+            .map(|(k, v)| {
+                let stripped = k["FRONA_".len()..].to_lowercase();
+                let mapped = match stripped.find('_') {
+                    Some(pos) => format!("{}__{}", &stripped[..pos], &stripped[pos + 1..]),
+                    None => stripped,
+                };
+                (mapped, v)
+            })
+            .collect();
+
+        builder = builder.add_source(
+            config::Environment::default()
+                .source(Some(frona_env))
+                .separator("__")
+                .try_parsing(true),
+        );
 
         let built = builder.build().expect("Failed to build config");
 
@@ -361,7 +336,34 @@ impl Config {
             tracing::info!("No config file found, using defaults and env vars");
         }
 
+        if let Ok(mut v) = serde_json::to_value(&config) {
+            redact(&mut v, &["auth", "encryption_secret"]);
+            redact(&mut v, &["sso", "client_secret"]);
+            if let Some(providers) = v.get_mut("providers").and_then(|p| p.as_object_mut()) {
+                for provider in providers.values_mut() {
+                    redact(provider, &["api_key"]);
+                }
+            }
+            tracing::debug!("Effective config:\n{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+        }
+
         LoadedConfig { config, models }
+    }
+}
+
+fn redact(value: &mut serde_json::Value, path: &[&str]) {
+    match path {
+        [] => {}
+        [key] => {
+            if let Some(v) = value.get_mut(*key) && !v.is_null() {
+                *v = serde_json::Value::String("[redacted]".into());
+            }
+        }
+        [key, rest @ ..] => {
+            if let Some(child) = value.get_mut(*key) {
+                redact(child, rest);
+            }
+        }
     }
 }
 
@@ -418,9 +420,7 @@ mod tests {
         assert_eq!(config.scheduler.space_compaction_secs, 3600);
         assert!(!config.sso.enabled);
         assert!(config.sso.signups_match_email);
-        assert_eq!(config.browser.ws_url, "ws://localhost:3333");
-        assert_eq!(config.browser.profiles_path, "/profiles");
-        assert_eq!(config.browser.connection_timeout_ms, 30000);
+        assert!(config.browser.is_none());
         assert!(config.server.cors_origins.is_none());
         assert!(config.search.provider.is_none());
         assert!(config.search.searxng_base_url.is_none());
@@ -431,8 +431,42 @@ mod tests {
     }
 
     #[test]
+    fn env_var_overrides_multi_word_field() {
+        // The key remapping (replace first _ with __) means FRONA_BROWSER_WS_URL
+        // becomes browser__ws_url, which separator("__") resolves to browser.ws_url.
+        unsafe { std::env::set_var("FRONA_BROWSER_WS_URL", "ws://custom:9999") };
+        let loaded = Config::load();
+        assert_eq!(loaded.config.browser.as_ref().unwrap().ws_url, "ws://custom:9999");
+        unsafe { std::env::remove_var("FRONA_BROWSER_WS_URL") };
+    }
+
+    #[test]
+    fn env_var_overrides_server_port() {
+        unsafe { std::env::set_var("FRONA_SERVER_PORT", "9999") };
+        let loaded = Config::load();
+        assert_eq!(loaded.config.server.port, 9999);
+        unsafe { std::env::remove_var("FRONA_SERVER_PORT") };
+    }
+
+    #[test]
+    fn env_var_overrides_database_path() {
+        unsafe { std::env::set_var("FRONA_DATABASE_PATH", "/tmp/testdb") };
+        let loaded = Config::load();
+        assert_eq!(loaded.config.database.path, "/tmp/testdb");
+        unsafe { std::env::remove_var("FRONA_DATABASE_PATH") };
+    }
+
+    #[test]
+    fn env_var_overrides_sso_enabled() {
+        unsafe { std::env::set_var("FRONA_SSO_ENABLED", "true") };
+        let loaded = Config::load();
+        assert!(loaded.config.sso.enabled);
+        unsafe { std::env::remove_var("FRONA_SSO_ENABLED") };
+    }
+
+    #[test]
     fn browser_config_ws_url_for_profile() {
-        let config = BrowserConfig::default();
+        let config = BrowserConfig { ws_url: "ws://localhost:3333".into(), ..Default::default() };
         let url = config.ws_url_for_profile("alice", "google");
         assert!(url.starts_with("ws://localhost:3333?--user-data-dir="));
         assert!(url.contains("alice"));
@@ -441,7 +475,7 @@ mod tests {
 
     #[test]
     fn browser_config_http_base_url() {
-        let config = BrowserConfig::default();
+        let config = BrowserConfig { ws_url: "ws://localhost:3333".into(), ..Default::default() };
         assert_eq!(config.http_base_url(), "http://localhost:3333");
     }
 

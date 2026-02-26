@@ -206,12 +206,14 @@ impl AuthService {
         }
 
         // Rename browser profiles directory
-        let old_profiles_dir = std::path::Path::new(&config.browser.profiles_path).join(&old_username);
-        let new_profiles_dir = std::path::Path::new(&config.browser.profiles_path).join(&req.username);
-        if old_profiles_dir.exists() {
-            tokio::fs::rename(&old_profiles_dir, &new_profiles_dir)
-                .await
-                .map_err(|e| AppError::Internal(format!("Failed to rename profiles directory: {e}")))?;
+        if let Some(browser) = &config.browser {
+            let old_profiles_dir = std::path::Path::new(&browser.profiles_path).join(&old_username);
+            let new_profiles_dir = std::path::Path::new(&browser.profiles_path).join(&req.username);
+            if old_profiles_dir.exists() {
+                tokio::fs::rename(&old_profiles_dir, &new_profiles_dir)
+                    .await
+                    .map_err(|e| AppError::Internal(format!("Failed to rename profiles directory: {e}")))?;
+            }
         }
 
         // Revoke all active tokens (force re-login)

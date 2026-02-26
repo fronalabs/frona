@@ -27,20 +27,20 @@ struct ManagedSession {
 
 #[derive(Clone)]
 pub struct BrowserSessionManager {
-    config: BrowserConfig,
+    config: Option<BrowserConfig>,
     sessions: Arc<RwLock<HashMap<String, ManagedSession>>>,
 }
 
 impl BrowserSessionManager {
-    pub fn new(config: BrowserConfig) -> Self {
+    pub fn new(config: Option<BrowserConfig>) -> Self {
         Self {
             config,
             sessions: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    pub fn config(&self) -> &BrowserConfig {
-        &self.config
+    pub fn config(&self) -> Option<&BrowserConfig> {
+        self.config.as_ref()
     }
 
     fn profile_key(user_id: &str, provider: &str) -> String {
@@ -61,14 +61,18 @@ impl BrowserSessionManager {
             }
         }
 
+        let config = self.config.as_ref().ok_or_else(|| {
+            AppError::Browser("Browser is not configured (FRONA_BROWSER_WS_URL not set)".into())
+        })?;
+
         self.kill_browserless_sessions_for_profile(user_id, provider)
             .await;
 
-        let ws_url = self.config.ws_url_for_profile(user_id, provider);
-        tracing::debug!(ws_url = %ws_url, browserless_ws_url = %self.config.ws_url, "Connecting to browser");
+        let ws_url = config.ws_url_for_profile(user_id, provider);
+        tracing::debug!(ws_url = %ws_url, browserless_ws_url = %config.ws_url, "Connecting to browser");
 
         let options = browser_use::ConnectionOptions::new(&ws_url)
-            .timeout(self.config.connection_timeout_ms);
+            .timeout(config.connection_timeout_ms);
 
         let session = browser_use::BrowserSession::connect(options)
             .map_err(|e| AppError::Browser(format!("Failed to connect to browser: {e}")))?;
@@ -80,7 +84,8 @@ impl BrowserSessionManager {
     }
 
     async fn list_browserless_sessions(&self) -> Vec<BrowserlessSession> {
-        let http_base = self.config.http_base_url();
+        let Some(config) = self.config.as_ref() else { return vec![] };
+        let http_base = config.http_base_url();
         let client = Client::builder(TokioExecutor::new()).build_http::<Body>();
 
         let sessions_url = format!("{http_base}/sessions");
@@ -121,7 +126,8 @@ impl BrowserSessionManager {
         if browser_ids.is_empty() {
             return;
         }
-        let http_base = self.config.http_base_url();
+        let Some(config) = self.config.as_ref() else { return };
+        let http_base = config.http_base_url();
         let client = Client::builder(TokioExecutor::new()).build_http::<Body>();
 
         for id in browser_ids {
@@ -141,7 +147,8 @@ impl BrowserSessionManager {
     }
 
     async fn kill_browserless_sessions_for_profile(&self, user_id: &str, provider: &str) {
-        let profile_path = self.config.profile_path(user_id, provider);
+        let Some(config) = self.config.as_ref() else { return };
+        let profile_path = config.profile_path(user_id, provider);
         let profile_str = profile_path.to_string_lossy();
 
         let sessions = self.list_browserless_sessions().await;

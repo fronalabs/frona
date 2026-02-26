@@ -269,8 +269,8 @@ impl WebSearchTool {
                 "No search provider configured. Set one of the following environment variables:\n\
                  - TAVILY_API_KEY (for Tavily search)\n\
                  - BRAVE_API_KEY (for Brave search)\n\
-                 - SEARXNG_BASE_URL (for SearXNG, e.g. http://localhost:3400)\n\
-                 You can also set SEARCH_PROVIDER explicitly to: tavily, brave, or searxng"
+                 - FRONA_SEARCH_SEARXNG_BASE_URL (for SearXNG, e.g. http://localhost:3400)\n\
+                 You can also set FRONA_SEARCH_PROVIDER explicitly to: tavily, brave, or searxng"
                     .into(),
             )
         })?;

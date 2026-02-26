@@ -38,13 +38,13 @@ impl OAuthService {
             .authority
             .clone()
             .ok_or_else(|| {
-                AppError::Validation("SSO_AUTHORITY is required when SSO is enabled".into())
+                AppError::Validation("FRONA_SSO_AUTHORITY is required when SSO is enabled".into())
             })?;
         let client_id = config.sso.client_id.clone().ok_or_else(|| {
-            AppError::Validation("SSO_CLIENT_ID is required when SSO is enabled".into())
+            AppError::Validation("FRONA_SSO_CLIENT_ID is required when SSO is enabled".into())
         })?;
         let client_secret = config.sso.client_secret.clone().ok_or_else(|| {
-            AppError::Validation("SSO_CLIENT_SECRET is required when SSO is enabled".into())
+            AppError::Validation("FRONA_SSO_CLIENT_SECRET is required when SSO is enabled".into())
         })?;
 
         let scopes: Vec<String> = config

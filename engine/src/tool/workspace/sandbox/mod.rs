@@ -118,7 +118,7 @@ pub fn create_sandbox(disabled: bool) -> Box<dyn Sandbox> {
 
 pub fn verify_sandbox(workspace_base: &str, disabled: bool) -> Result<(), String> {
     if disabled {
-        tracing::warn!("Sandbox disabled by SANDBOX_DISABLED env var");
+        tracing::warn!("Sandbox disabled by FRONA_SERVER_SANDBOX_DISABLED env var");
         return Ok(());
     }
 

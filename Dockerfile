@@ -49,9 +49,9 @@ COPY --chown=frona:frona --from=backend-builder /app/target/release/frona /app/f
 COPY --chown=frona:frona --from=frontend-builder /app/frontend/out /app/static
 COPY --chown=frona:frona engine/config /app/engine/config
 
-ENV STATIC_DIR=/app/static
-ENV SURREAL_PATH=/data/db
-ENV PORT=3001
+ENV FRONA_SERVER_STATIC_DIR=/app/static
+ENV FRONA_DATABASE_PATH=/data/db
+ENV FRONA_SERVER_PORT=3001
 
 VOLUME /data
 EXPOSE 3001

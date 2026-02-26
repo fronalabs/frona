@@ -10,11 +10,10 @@ import {
   useRef,
 } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { api, streamMessage, cancelGeneration, getTask, getAccessToken } from "./api-client";
+import { api, streamMessage, streamSession, cancelGeneration, getTask } from "./api-client";
 import { useNavigation } from "./navigation-context";
 import type { ChatResponse, MessageResponse, CreateChatRequest, ToolCallStatus, TaskResponse, Attachment } from "./types";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
 interface SessionContextValue {
   activeChatId: string | null;
@@ -85,73 +84,46 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    const token = getAccessToken();
-    if (!token) return;
-    const url = `${API_URL}/api/stream?token=${encodeURIComponent(token)}`;
-    const es = new EventSource(url);
+    const controller = new AbortController();
 
-    es.addEventListener("chat_message", (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        const chatId = data.chat_id as string;
-        const message = data.message as MessageResponse;
-        if (chatId !== activeChatIdRef.current) return;
-        setMessages((prev) => {
-          if (prev.some((m) => m.id === message.id)) return prev;
-          return [...prev, message];
-        });
-      } catch {
-        // skip malformed data
-      }
-    });
-
-    es.addEventListener("task_update", (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        const taskId = data.task_id as string;
-        const status = data.status as string;
-        const sourceChatId = data.source_chat_id as string | null;
-        updateTaskInList(taskId, {
-          status,
-          title: data.title as string,
-          chat_id: data.chat_id as string | null,
-          result_summary: data.result_summary as string | null,
-        });
-        if (
-          sourceChatId &&
-          sourceChatId === activeChatIdRef.current &&
-          (status === "completed" || status === "failed")
-        ) {
-          api
-            .get<MessageResponse[]>(
-              `/api/chats/${sourceChatId}/messages`,
-            )
-            .then((msgs) => setMessages(msgs))
-            .catch(() => {});
-        }
-        if (taskId && activeTaskIdRef.current && taskId === activeTaskIdRef.current) {
-          getTask(taskId)
-            .then((t) => setActiveTask(t))
-            .catch(() => {});
-        }
-      } catch {
-        // skip malformed data
-      }
-    });
-
-    es.addEventListener("inference_count", (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        setInferring(data.count > 0);
-      } catch {
-        // skip malformed data
-      }
-    });
+    streamSession(
+      {
+        onChatMessage: (chatId, message) => {
+          if (chatId !== activeChatIdRef.current) return;
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === message.id)) return prev;
+            return [...prev, message];
+          });
+        },
+        onTaskUpdate: (taskId, status, sourceChatId, title, chatId, resultSummary) => {
+          updateTaskInList(taskId, { status, title, chat_id: chatId, result_summary: resultSummary });
+          if (
+            sourceChatId &&
+            sourceChatId === activeChatIdRef.current &&
+            (status === "completed" || status === "failed")
+          ) {
+            api
+              .get<MessageResponse[]>(`/api/chats/${sourceChatId}/messages`)
+              .then((msgs) => setMessages(msgs))
+              .catch(() => {});
+          }
+          if (taskId && activeTaskIdRef.current && taskId === activeTaskIdRef.current) {
+            getTask(taskId)
+              .then((t) => setActiveTask(t))
+              .catch(() => {});
+          }
+        },
+        onInferenceCount: (count) => {
+          setInferring(count > 0);
+        },
+      },
+      controller.signal,
+    );
 
     return () => {
-      es.close();
+      controller.abort();
     };
-  }, []);
+  }, [updateTaskInList]);
 
   useEffect(() => {
     if (!activeChatId) {

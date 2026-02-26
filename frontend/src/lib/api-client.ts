@@ -286,6 +286,82 @@ export async function streamMessage(
   }
 }
 
+export async function streamSession(
+  callbacks: {
+    onChatMessage: (chatId: string, message: MessageResponse) => void;
+    onTaskUpdate: (taskId: string, status: string, sourceChatId: string | null, title: string, chatId: string | null, resultSummary: string | null) => void;
+    onInferenceCount: (count: number) => void;
+  },
+  signal?: AbortSignal,
+): Promise<void> {
+  const token = await ensureAccessToken();
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}/api/stream`, { headers, signal });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") return;
+    return;
+  }
+
+  if (!res.ok) return;
+
+  const reader = res.body?.getReader();
+  if (!reader) return;
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let currentEvent = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (line.startsWith("event: ")) {
+          currentEvent = line.slice(7).trim();
+        } else if (line.startsWith("data: ")) {
+          try {
+            const parsed = JSON.parse(line.slice(6));
+            switch (currentEvent) {
+              case "chat_message":
+                callbacks.onChatMessage(parsed.chat_id as string, parsed.message as MessageResponse);
+                break;
+              case "task_update":
+                callbacks.onTaskUpdate(
+                  parsed.task_id as string,
+                  parsed.status as string,
+                  parsed.source_chat_id as string | null,
+                  parsed.title as string,
+                  parsed.chat_id as string | null,
+                  parsed.result_summary as string | null,
+                );
+                break;
+              case "inference_count":
+                callbacks.onInferenceCount(parsed.count as number);
+                break;
+            }
+          } catch {
+            // skip malformed JSON
+          }
+          currentEvent = "";
+        }
+      }
+    }
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") return;
+  }
+}
+
 export async function cancelGeneration(chatId: string): Promise<void> {
   const token = await ensureAccessToken();
   const headers: Record<string, string> = { "Content-Type": "application/json" };

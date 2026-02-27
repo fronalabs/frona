@@ -51,6 +51,7 @@ services:
       - FRONA_DATABASE_PATH=data/db
       - FRONA_SERVER_PORT=3001
       - CARGO_BUILD_JOBS=4
+      - WATCHPACK_POLLING=true
     depends_on: [browserless, searxng]
     restart: unless-stopped
 

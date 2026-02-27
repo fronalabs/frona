@@ -99,6 +99,25 @@ export interface Attachment {
   url?: string;
 }
 
+// Contact types
+export interface Contact {
+  id: string;
+  user_id: string;
+  name: string;
+  phone?: string;
+  email?: string;
+  company?: string;
+  job_title?: string;
+  notes?: string;
+  avatar?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export function indexContactsById(contacts: Contact[]): Record<string, Contact> {
+  return Object.fromEntries(contacts.map((c) => [c.id, c]));
+}
+
 // Message types
 export type MessageToolStatus = "pending" | "resolved";
 
@@ -110,13 +129,14 @@ export type MessageTool =
 export interface MessageResponse {
   id: string;
   chat_id: string;
-  role: "user" | "agent" | "toolresult" | "taskcompletion";
+  role: "user" | "agent" | "toolresult" | "taskcompletion" | "contact" | "livecall";
   content: string;
   agent_id?: string;
   tool_calls?: unknown[];
   tool_call_id?: string;
   tool?: MessageTool;
   attachments?: Attachment[];
+  contact_id?: string;
   created_at: string;
 }
 

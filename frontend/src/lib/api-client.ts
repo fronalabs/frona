@@ -402,6 +402,10 @@ export function getArchivedChats() {
   return request<import("./types").ChatResponse[]>("/api/chats/archived");
 }
 
+export function getContacts() {
+  return request<import("./types").Contact[]>("/api/contacts");
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body: unknown) =>

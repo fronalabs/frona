@@ -8,13 +8,15 @@ import {
   useCallback,
   createElement,
 } from "react";
-import { api, archiveChat as apiArchiveChat, unarchiveChat as apiUnarchiveChat, deleteChat as apiDeleteChat, deleteTask as apiDeleteTask, getArchivedChats, getTask } from "./api-client";
+import { api, archiveChat as apiArchiveChat, unarchiveChat as apiUnarchiveChat, deleteChat as apiDeleteChat, deleteTask as apiDeleteTask, getArchivedChats, getContacts, getTask } from "./api-client";
 import type {
   SpaceWithChats,
   ChatResponse,
   TaskResponse,
   Agent,
+  Contact,
 } from "./types";
+import { indexContactsById } from "./types";
 
 type ActiveTab = "chat" | "tasks" | "agents";
 
@@ -23,6 +25,7 @@ interface NavigationContextValue {
   standaloneChats: ChatResponse[];
   tasks: TaskResponse[];
   agents: Agent[];
+  contacts: Record<string, Contact>;
   archivedChats: ChatResponse[];
   showArchived: boolean;
   setShowArchived: (show: boolean) => void;
@@ -56,6 +59,7 @@ export function NavigationProvider({
   const [standaloneChats, setStandaloneChats] = useState<ChatResponse[]>([]);
   const [tasks, setTasks] = useState<TaskResponse[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [contacts, setContacts] = useState<Record<string, Contact>>({});
   const [archivedChats, setArchivedChats] = useState<ChatResponse[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>("chat");
@@ -63,15 +67,17 @@ export function NavigationProvider({
 
   const refresh = useCallback(async () => {
     try {
-      const [nav, tasksData, agentsData] = await Promise.all([
+      const [nav, tasksData, agentsData, contactsData] = await Promise.all([
         api.get<NavigationResponse>("/api/navigation"),
         api.get<TaskResponse[]>("/api/tasks"),
         api.get<Agent[]>("/api/agents"),
+        getContacts(),
       ]);
       setSpaces(nav.spaces);
       setStandaloneChats(nav.standalone_chats);
       setTasks(tasksData);
       setAgents(agentsData);
+      setContacts(indexContactsById(contactsData));
     } catch {
       // silently fail - auth guard will redirect if needed
     } finally {
@@ -191,6 +197,7 @@ export function NavigationProvider({
         standaloneChats,
         tasks,
         agents,
+        contacts,
         archivedChats,
         showArchived,
         setShowArchived,

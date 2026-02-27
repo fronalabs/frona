@@ -55,15 +55,20 @@ interface MessageBubbleProps {
 
 export function MessageBubble({ message, agentName }: MessageBubbleProps) {
   const isUser = message.role === "user";
-  const { agents } = useNavigation();
+  const isContact = message.role === "contact" || message.role === "livecall";
+  const { agents, contacts } = useNavigation();
   const { user } = useAuth();
 
   const msgAgent = message.agent_id ? agents.find((a) => a.id === message.agent_id) : undefined;
+  const contact = isContact && message.contact_id ? contacts[message.contact_id] : undefined;
+
   const displayName = isUser
     ? "You"
-    : message.agent_id
-      ? agentDisplayName(message.agent_id, msgAgent?.name)
-      : agentName;
+    : isContact
+      ? (contact?.name ?? "Contact")
+      : message.agent_id
+        ? agentDisplayName(message.agent_id, msgAgent?.name)
+        : agentName;
 
   const attachments = message.attachments ?? [];
 
@@ -74,10 +79,12 @@ export function MessageBubble({ message, agentName }: MessageBubbleProps) {
           className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-medium ${
             isUser
               ? "bg-accent text-surface"
-              : "bg-surface-tertiary text-text-secondary"
+              : isContact
+                ? "bg-surface-secondary text-text-primary"
+                : "bg-surface-tertiary text-text-secondary"
           }`}
         >
-          {isUser ? "U" : displayName.charAt(0).toUpperCase()}
+          {displayName.charAt(0).toUpperCase()}
         </div>
         <div className="min-w-0 pt-0.5">
           <p className="text-[11px] font-medium text-text-tertiary mb-0.5">

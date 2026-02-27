@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useMemo } from "react";
+import { useEffect, useRef, useMemo, useCallback } from "react";
 import { ChatBubbleLeftIcon } from "@heroicons/react/24/outline";
 import { useSession } from "@/lib/session-context";
 import { useNavigation } from "@/lib/navigation-context";
+import { useRouter } from "next/navigation";
 import { agentDisplayName } from "@/lib/types";
 import { MessageBubble } from "./message-bubble";
 import { StreamingBubble } from "./streaming-bubble";
@@ -11,7 +12,13 @@ import { ToolMessage } from "./tool-message";
 
 export function MessageList() {
   const { messages, streamingContent, activeToolCalls, activeChat } = useSession();
-  const { agents } = useNavigation();
+  const { agents, setActiveTab } = useNavigation();
+  const router = useRouter();
+
+  const openTask = useCallback((taskId: string) => {
+    setActiveTab("tasks");
+    router.push(`/chat?task=${taskId}`);
+  }, [setActiveTab, router]);
 
   const agent = agents.find((a) => a.id === activeChat?.agent_id);
   const agentName = agentDisplayName(activeChat?.agent_id, agent?.name);
@@ -42,13 +49,13 @@ export function MessageList() {
               <MessageBubble message={msg} agentName={agentName} />
               {task_id && (
                 <div className="pl-9.5 pt-1">
-                  <a
-                    href={`/chat?task=${task_id}`}
+                  <button
+                    onClick={() => openTask(task_id)}
                     className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-text-secondary transition hover:border-accent hover:text-accent"
                   >
                     <ChatBubbleLeftIcon className="h-3.5 w-3.5" />
                     Ask Follow-up Questions
-                  </a>
+                  </button>
                 </div>
               )}
             </div>

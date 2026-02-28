@@ -1,0 +1,9 @@
+use_default_settings: true
+
+server:
+  secret_key: "change-me-to-something-random"
+
+search:
+  formats:
+    - html
+    - json

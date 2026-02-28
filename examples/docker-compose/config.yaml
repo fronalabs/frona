@@ -1,0 +1,138 @@
+# Frona Configuration
+# All settings below show their defaults. Uncomment and modify as needed.
+# Environment variables (FRONA_*) override values set here.
+
+# server:
+#   port: 3001
+#   static_dir: frontend/out
+#   issuer_url: ""
+#   max_concurrent_tasks: 10
+#   sandbox_disabled: false
+#   max_body_size_bytes: 104857600        # 100 MB
+#   base_url: "https://your-domain.com"   # public URL (optional)
+#   cors_origins: "https://your-domain.com"
+
+# auth:
+#   encryption_secret: change-me          # set via FRONA_AUTH_ENCRYPTION_SECRET in .env
+#   access_token_expiry_secs: 900         # 15 minutes
+#   refresh_token_expiry_secs: 604800     # 7 days
+#   presign_expiry_secs: 86400            # 24 hours
+
+# sso:
+#   enabled: false
+#   authority: "https://accounts.google.com"
+#   client_id: "your-client-id"
+#   client_secret: "your-client-secret"
+#   scopes: "email profile offline_access"
+#   allow_unknown_email_verification: false
+#   client_cache_expiration: 0
+#   only: false                           # if true, SSO is the only login method
+#   signups_match_email: true
+
+# database:
+#   path: data/db
+
+# browser:
+#   ws_url: ws://browserless:3333         # set automatically via docker-compose
+#   profiles_path: /profiles
+#   connection_timeout_ms: 30000
+
+# search:
+#   provider: searxng                     # or: tavily, brave
+#   searxng_base_url: http://searxng:8080 # set automatically via docker-compose
+
+# storage:
+#   workspaces_path: data/workspaces
+#   files_path: data/files
+#   shared_config_dir: resources
+
+# scheduler:
+#   space_compaction_secs: 3600           # 1 hour
+#   insight_compaction_secs: 7200         # 2 hours
+#   poll_secs: 60
+
+# inference:
+#   max_tool_turns: 200
+#   default_max_tokens: 8192
+#   compaction_trigger_pct: 80
+#   history_truncation_pct: 90
+
+# voice:
+#   provider: twilio
+#   twilio_account_sid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+#   twilio_auth_token: "your-auth-token"
+#   twilio_from_number: "+15551234567"
+#   twilio_voice_id: "your-voice-id"
+#   twilio_speech_model: "your-speech-model"
+#   callback_base_url: "https://your-public-url.com"
+
+# API keys are read from environment variables via ${VAR} expansion.
+# Only configure providers whose API keys you've set in .env.
+
+# providers:
+#  anthropic:
+#    api_key: "${ANTHROPIC_API_KEY}"
+#  openai:
+#    api_key: "${OPENAI_API_KEY}"
+#  groq:
+#    api_key: "${GROQ_API_KEY}"
+#  openrouter:
+#    api_key: "${OPENROUTER_API_KEY}"
+#  deepseek:
+#    api_key: "${DEEPSEEK_API_KEY}"
+#  gemini:
+#    api_key: "${GEMINI_API_KEY}"
+#  cohere:
+#    api_key: "${COHERE_API_KEY}"
+#  mistral:
+#    api_key: "${MISTRAL_API_KEY}"
+#  perplexity:
+#    api_key: "${PERPLEXITY_API_KEY}"
+#  together:
+#    api_key: "${TOGETHER_API_KEY}"
+#  xai:
+#    api_key: "${XAI_API_KEY}"
+#  hyperbolic:
+#    api_key: "${HYPERBOLIC_API_KEY}"
+#  moonshot:
+#    api_key: "${MOONSHOT_API_KEY}"
+#  mira:
+#    api_key: "${MIRA_API_KEY}"
+#  galadriel:
+#    api_key: "${GALADRIEL_API_KEY}"
+#  huggingface:
+#    api_key: "${HUGGINGFACE_API_KEY}"
+#  ollama:
+#    base_url: "${OLLAMA_API_BASE_URL}"
+
+# Provider options:
+#   api_key: API key string or ${ENV_VAR} reference
+#   base_url: Custom API endpoint (useful for Ollama, proxies)
+#   enabled: true/false (default: true)
+
+# Define named model groups. Agents reference these by name.
+
+models:
+  primary:
+    main: anthropic/claude-sonnet-4-6
+    fallbacks:
+      - anthropic/claude-haiku-4-5
+    max_tokens: 64000
+#  coding:
+#    main: anthropic/claude-opus-4-6
+#    max_tokens: 100000
+#  reasoning:
+#    main: anthropic/claude-opus-4-6
+#    max_tokens: 100000
+
+# Model group options:
+#   main: provider/model-id (required)
+#   fallbacks: list of provider/model-id to try if main fails
+#   max_tokens: max output tokens
+#   temperature: 0.0-2.0
+#   context_window: override context window size
+#   retry:
+#     max_retries: 10
+#     initial_backoff_ms: 1000
+#     backoff_multiplier: 2.0
+#     max_backoff_ms: 60000

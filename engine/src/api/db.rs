@@ -81,7 +81,7 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
 }
 
 pub async fn seed_config_agents(db: &Surreal<Db>, workspaces: &AgentWorkspaceManager) -> Result<(), surrealdb::Error> {
-    let agent_ids: Vec<String> = workspaces.builtin_agent_ids().into_iter().map(String::from).collect();
+    let agent_ids = workspaces.builtin_agent_ids();
     info!(agents = ?agent_ids, "Builtin agent IDs from config");
     for agent_id in agent_ids {
         let rid = RecordId::new("agent", agent_id.as_str());

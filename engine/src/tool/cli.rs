@@ -264,7 +264,11 @@ mod tests {
 
     #[test]
     fn test_load_embedded_config() {
-        let prompts = PromptLoader::new("/nonexistent");
+        let shared_prompts = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("resources")
+            .join("prompts");
+        let prompts = PromptLoader::new(shared_prompts);
         let configs = load_cli_tool_configs(&prompts);
         assert_eq!(configs.len(), 2);
         assert!(configs.iter().any(|c| c.name == "shell"));

@@ -32,7 +32,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
         },
         ..Default::default()
     };
-    let workspaces = AgentWorkspaceManager::new(&config.storage.workspaces_path);
+    let workspaces = AgentWorkspaceManager::new(&config.storage.workspaces_path, format!("{base}/agents"));
     let metrics = setup_metrics_recorder();
     let state = AppState::new(db, &config, None, workspaces, metrics);
     (state, tmp)
@@ -125,7 +125,7 @@ async fn twilio_callback_valid_token_returns_xml() {
     };
     let token = jwt_svc.sign(&claims, &enc_key, &kid).unwrap();
 
-    let workspaces = AgentWorkspaceManager::new(&config.storage.workspaces_path);
+    let workspaces = AgentWorkspaceManager::new(&config.storage.workspaces_path, format!("{base}/agents"));
     let metrics = setup_metrics_recorder();
     let state = AppState::new(db, &config, None, workspaces, metrics);
 

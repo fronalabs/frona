@@ -160,7 +160,7 @@ impl Default for StorageConfig {
         Self {
             workspaces_path: "data/workspaces".into(),
             files_path: "data/files".into(),
-            shared_config_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/config").into(),
+            shared_config_dir: "resources".into(),
         }
     }
 }

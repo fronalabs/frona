@@ -1,46 +1,53 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use include_dir::{Dir, include_dir};
-
 use crate::core::error::AppError;
 use super::prompt::PromptLoader;
-
-static BUILTIN_AGENTS: Dir = include_dir!("$CARGO_MANIFEST_DIR/config/agents");
 
 #[derive(Clone)]
 pub struct AgentWorkspaceManager {
     workspace_base: PathBuf,
+    shared_agents_dir: PathBuf,
 }
 
 impl AgentWorkspaceManager {
-    pub fn new(workspace_base: impl Into<PathBuf>) -> Self {
+    pub fn new(workspace_base: impl Into<PathBuf>, shared_agents_dir: impl Into<PathBuf>) -> Self {
         Self {
             workspace_base: workspace_base.into(),
+            shared_agents_dir: shared_agents_dir.into(),
         }
     }
 
     pub fn get(&self, agent_id: &str) -> AgentWorkspace {
         let sanitized = agent_id.replace(['/', '\\', ':', '\0'], "_");
         let workspace_path = self.workspace_base.join(&sanitized);
+        let shared_path = self.shared_agents_dir.join(&sanitized);
 
         AgentWorkspace {
             layers: vec![workspace_path],
-            agent_id: sanitized,
+            shared_dir: shared_path,
         }
     }
 
-    pub fn builtin_agent_ids(&self) -> Vec<&str> {
-        BUILTIN_AGENTS
-            .dirs()
-            .filter_map(|d| d.path().file_name()?.to_str())
-            .collect()
+    pub fn builtin_agent_ids(&self) -> Vec<String> {
+        let mut ids = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&self.shared_agents_dir) {
+            for entry in entries.flatten() {
+                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                    && let Some(name) = entry.file_name().to_str()
+                {
+                    ids.push(name.to_string());
+                }
+            }
+        }
+        ids.sort();
+        ids
     }
 }
 
 pub struct AgentWorkspace {
     layers: Vec<PathBuf>,
-    agent_id: String,
+    shared_dir: PathBuf,
 }
 
 impl AgentWorkspace {
@@ -52,11 +59,8 @@ impl AgentWorkspace {
             }
         }
 
-        let builtin_path = format!("{}/{}", self.agent_id, path);
-        BUILTIN_AGENTS
-            .get_file(&builtin_path)
-            .and_then(|f| f.contents_utf8())
-            .map(|s| s.to_string())
+        let shared_path = self.shared_dir.join(path);
+        std::fs::read_to_string(&shared_path).ok()
     }
 
     pub fn write(&self, path: &str, content: &str) -> Result<(), AppError> {
@@ -78,9 +82,7 @@ impl AgentWorkspace {
             }
         }
 
-        let builtin_path = format!("{}/{}", self.agent_id, path);
-        BUILTIN_AGENTS.get_file(&builtin_path).is_some()
-            || BUILTIN_AGENTS.get_dir(&builtin_path).is_some()
+        self.shared_dir.join(path).exists()
     }
 
     pub fn read_dir(&self, path: &str) -> Vec<String> {
@@ -96,17 +98,11 @@ impl AgentWorkspace {
             }
         }
 
-        let builtin_path = format!("{}/{}", self.agent_id, path);
-        if let Some(dir) = BUILTIN_AGENTS.get_dir(&builtin_path) {
-            for entry in dir.files() {
-                if let Some(name) = entry.path().file_name() {
-                    seen.insert(name.to_string_lossy().to_string());
-                }
-            }
-            for entry in dir.dirs() {
-                if let Some(name) = entry.path().file_name() {
-                    seen.insert(name.to_string_lossy().to_string());
-                }
+        let shared_path = self.shared_dir.join(path);
+        if let Ok(entries) = std::fs::read_dir(&shared_path) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                seen.insert(name);
             }
         }
 
@@ -152,8 +148,14 @@ impl<'a> AgentPromptLoader<'a> {
 mod tests {
     use super::*;
 
+    fn shared_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("resources")
+    }
+
     fn test_manager(tmp: &std::path::Path) -> AgentWorkspaceManager {
-        AgentWorkspaceManager::new(tmp.join("workspaces"))
+        AgentWorkspaceManager::new(tmp.join("workspaces"), shared_dir().join("agents"))
     }
 
     #[test]
@@ -162,7 +164,7 @@ mod tests {
         let mgr = test_manager(&tmp);
         let ws = mgr.get("system");
         let content = ws.read("AGENT.md");
-        assert!(content.is_some(), "Should read AGENT.md from built-in layer");
+        assert!(content.is_some(), "Should read AGENT.md from shared layer");
         assert!(content.unwrap().contains("You're not a chatbot"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -253,7 +255,7 @@ mod tests {
 
         ws.write("CUSTOM.md", "custom").unwrap();
         let entries = ws.read_dir("");
-        assert!(entries.contains(&"AGENT.md".to_string()), "Should contain built-in AGENT.md");
+        assert!(entries.contains(&"AGENT.md".to_string()), "Should contain shared AGENT.md");
         assert!(entries.contains(&"CUSTOM.md".to_string()), "Should contain data layer CUSTOM.md");
         let unique_count = entries.len();
         let deduped: std::collections::HashSet<_> = entries.iter().collect();
@@ -283,7 +285,7 @@ mod tests {
         let mgr = test_manager(&tmp);
         let ws = mgr.get("system");
         let resolved = ws.resolve_path("AGENT.md");
-        assert!(resolved.is_none(), "resolve_path should not return built-in files");
+        assert!(resolved.is_none(), "resolve_path should not return shared files");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -292,8 +294,8 @@ mod tests {
         let tmp = std::env::temp_dir().join("frona_ws_test_builtin_ids");
         let mgr = test_manager(&tmp);
         let ids = mgr.builtin_agent_ids();
-        assert!(ids.contains(&"system"), "Should include 'system' agent");
-        assert!(ids.contains(&"researcher"), "Should include 'researcher' agent");
+        assert!(ids.contains(&"system".to_string()), "Should include 'system' agent");
+        assert!(ids.contains(&"researcher".to_string()), "Should include 'researcher' agent");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -304,7 +306,7 @@ mod tests {
         let mgr = test_manager(&tmp);
         let ws = mgr.get("system");
 
-        let global = PromptLoader::new("/nonexistent");
+        let global = PromptLoader::new(shared_dir().join("prompts"));
         let loader = AgentPromptLoader::new(&ws, &global);
         let content = loader.read("TITLE.md");
         assert!(content.is_some(), "Should read TITLE.md from agent workspace");
@@ -318,7 +320,7 @@ mod tests {
         let mgr = test_manager(&tmp);
         let ws = mgr.get("nonexistent_agent");
 
-        let global = PromptLoader::new("/nonexistent");
+        let global = PromptLoader::new(shared_dir().join("prompts"));
         let loader = AgentPromptLoader::new(&ws, &global);
         let content = loader.read("CHAT_COMPACTION.md");
         assert!(content.is_some(), "Should fall back to global prompt");
@@ -336,7 +338,7 @@ mod tests {
 
         ws.write("prompts/CHAT_COMPACTION.md", "Agent-specific compaction").unwrap();
 
-        let global = PromptLoader::new("/nonexistent");
+        let global = PromptLoader::new(shared_dir().join("prompts"));
         let loader = AgentPromptLoader::new(&ws, &global);
         let content = loader.read("CHAT_COMPACTION.md").unwrap();
         assert_eq!(content, "Agent-specific compaction");
@@ -353,7 +355,7 @@ mod tests {
 
         ws.write("TOOLS.md", "Root-level prompt").unwrap();
 
-        let global = PromptLoader::new("/nonexistent");
+        let global = PromptLoader::new(shared_dir().join("prompts"));
         let loader = AgentPromptLoader::new(&ws, &global);
         let content = loader.read("TOOLS.md");
         assert!(content.is_some(), "Should read TOOLS.md from agent workspace root");
@@ -372,7 +374,7 @@ mod tests {
         ws.write("MY_PROMPT.md", "From root").unwrap();
         ws.write("prompts/MY_PROMPT.md", "From prompts dir").unwrap();
 
-        let global = PromptLoader::new("/nonexistent");
+        let global = PromptLoader::new(shared_dir().join("prompts"));
         let loader = AgentPromptLoader::new(&ws, &global);
         let content = loader.read("MY_PROMPT.md").unwrap();
         assert_eq!(content, "From root", "Root should shadow prompts/ dir");

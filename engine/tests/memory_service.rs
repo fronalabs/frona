@@ -34,8 +34,13 @@ fn make_memory_service(db: Surreal<Db>) -> MemoryService {
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db),
         Arc::new(provider_registry),
-        PromptLoader::new("/nonexistent"),
-        AgentWorkspaceManager::new("/nonexistent"),
+        PromptLoader::new(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("resources")
+                .join("prompts"),
+        ),
+        AgentWorkspaceManager::new("/nonexistent", "/nonexistent"),
     )
 }
 

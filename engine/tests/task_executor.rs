@@ -53,7 +53,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
     let db = test_db().await;
     let tmp = tempfile::tempdir().unwrap();
     let config = test_config(&tmp);
-    let workspaces = AgentWorkspaceManager::new(tmp.path().join("workspaces"));
+    let workspaces = AgentWorkspaceManager::new(tmp.path().join("workspaces"), tmp.path().join("shared/agents"));
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
     let state = AppState::new(db, &config, None, workspaces, metrics_handle);
     (state, tmp)

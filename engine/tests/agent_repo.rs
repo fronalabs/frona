@@ -130,7 +130,8 @@ async fn test_seed_config_agents_visible_in_find_by_user_id() {
     use frona::agent::workspace::AgentWorkspaceManager;
 
     let db = test_db().await;
-    let workspaces = AgentWorkspaceManager::new("/tmp/frona_test_seed_visible");
+    let shared_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("resources");
+    let workspaces = AgentWorkspaceManager::new("/tmp/frona_test_seed_visible", shared_dir.join("agents"));
 
     db::seed_config_agents(&db, &workspaces).await.unwrap();
 

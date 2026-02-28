@@ -7,7 +7,7 @@ rust-analyzer = "latest"
 [env]
 FRONA_AUTH_ENCRYPTION_SECRET = "dev-secret-change-in-production"
 FRONA_DATABASE_PATH = "data/db"
-RUST_LOG = "frona=debug,tower_http=debug"
+FRONA_LOG_LEVEL = "debug"
 NEXT_PUBLIC_API_URL = "http://localhost:3001"
 FRONA_SERVER_PORT = "3001"
 ANTHROPIC_API_KEY = { required = true }
@@ -78,6 +78,14 @@ run = "docker compose --profile dev up --build"
 [tasks."docker:dev:down"]
 description = "Stop dev Docker stack"
 run = "docker compose --profile dev down"
+
+[tasks."docker:prod"]
+description = "Run production stack in Docker"
+run = "docker compose --profile prod up --build"
+
+[tasks."docker:prod:down"]
+description = "Stop production Docker stack"
+run = "docker compose --profile prod down"
 
 [tasks.clean]
 description = "Remove build artifacts and generated files"

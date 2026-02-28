@@ -45,13 +45,37 @@ services:
       - FRONA_SERVER_CORS_ORIGINS
       - NEXT_PUBLIC_API_URL
       - FRONA_AUTH_ENCRYPTION_SECRET=dev-secret-change-in-production
-      - RUST_LOG=frona=debug,tower_http=debug
+      - FRONA_LOG_LEVEL=debug
       - FRONA_BROWSER_WS_URL=ws://browserless:3333
       - FRONA_SEARCH_SEARXNG_BASE_URL=http://searxng:8080
       - FRONA_DATABASE_PATH=data/db
       - FRONA_SERVER_PORT=3001
       - CARGO_BUILD_JOBS=4
       - WATCHPACK_POLLING=true
+      - FRONA_VOICE_CALLBACK_BASE_URL
+      - FRONA_VOICE_TWILIO_ACCOUNT_SID
+      - FRONA_VOICE_TWILIO_AUTH_TOKEN
+      - FRONA_VOICE_TWILIO_FROM_NUMBER
+      - FRONA_VOICE_TWILIO_VOICE_ID
+      - FRONA_VOICE_TWILIO_SPEECH_MODEL
+    depends_on: [browserless, searxng]
+    restart: unless-stopped
+
+  frona:
+    profiles: [prod]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./data:/data
+      - ./data/browser_profiles:/profiles
+    environment:
+      - ANTHROPIC_API_KEY
+      - FRONA_AUTH_ENCRYPTION_SECRET
+      - FRONA_BROWSER_WS_URL=ws://browserless:3333
+      - FRONA_SEARCH_SEARXNG_BASE_URL=http://searxng:8080
       - FRONA_VOICE_CALLBACK_BASE_URL
       - FRONA_VOICE_TWILIO_ACCOUNT_SID
       - FRONA_VOICE_TWILIO_AUTH_TOKEN

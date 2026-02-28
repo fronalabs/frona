@@ -318,7 +318,7 @@ impl Config {
         // becomes "__" while field-name underscores are preserved.
         // e.g. FRONA_BROWSER_WS_URL → browser__ws_url → browser.ws_url
         let frona_env: HashMap<String, String> = std::env::vars()
-            .filter(|(k, _)| k.starts_with("FRONA_") && k != "FRONA_CONFIG")
+            .filter(|(k, _)| k.starts_with("FRONA_") && !matches!(k.as_str(), "FRONA_CONFIG" | "FRONA_LOG_CONFIG" | "FRONA_LOG_LEVEL"))
             .map(|(k, v)| {
                 let stripped = k["FRONA_".len()..].to_lowercase();
                 let mapped = match stripped.find('_') {

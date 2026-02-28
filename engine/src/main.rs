@@ -1,8 +1,10 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
-use axum::http::{HeaderName, HeaderValue, Method};
+use axum::http::{HeaderName, HeaderValue, Method, StatusCode, Uri};
+use axum::response::{Html, IntoResponse};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -22,8 +24,12 @@ use frona::tool::workspace::sandbox::verify_sandbox;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let log_filter = std::env::var("FRONA_LOG_CONFIG").unwrap_or_else(|_| {
+        let level = std::env::var("FRONA_LOG_LEVEL").unwrap_or_else(|_| "info".into());
+        format!("frona={level},tower_http={level}")
+    });
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(EnvFilter::new(&log_filter))
         .init();
 
     let loaded = Config::load();
@@ -133,7 +139,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
-        .fallback_service(ServeDir::new(&config.server.static_dir));
+        .fallback_service(ServeDir::new(&config.server.static_dir).fallback(
+            axum::routing::get({
+                let static_dir = PathBuf::from(&config.server.static_dir);
+                move |uri: Uri| {
+                    let static_dir = static_dir.clone();
+                    async move { html_fallback(static_dir, uri.path().to_owned()).await }
+                }
+            }),
+        ));
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));
     info!("Server starting on {addr}");
@@ -142,4 +156,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, api.into_make_service_with_connect_info::<SocketAddr>()).await?;
 
     Ok(())
+}
+
+async fn html_fallback(static_dir: PathBuf, path: String) -> impl IntoResponse {
+    let path = path.trim_start_matches('/').trim_end_matches('/');
+    let html_path = static_dir.join(format!("{path}.html"));
+    if let Ok(contents) = tokio::fs::read_to_string(&html_path).await {
+        return Html(contents).into_response();
+    }
+    let not_found = static_dir.join("404.html");
+    match tokio::fs::read_to_string(&not_found).await {
+        Ok(contents) => (StatusCode::NOT_FOUND, Html(contents)).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
 }

@@ -52,6 +52,7 @@ COPY --chown=frona:frona engine/config /app/engine/config
 ENV FRONA_SERVER_STATIC_DIR=/app/static
 ENV FRONA_DATABASE_PATH=/data/db
 ENV FRONA_SERVER_PORT=3001
+ENV FRONA_LOG_LEVEL=info
 
 VOLUME /data
 EXPOSE 3001

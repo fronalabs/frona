@@ -16,14 +16,15 @@ use crate::tool::registry::AgentToolRegistry;
 use crate::tool::{ToolContext, ToolDefinition};
 
 use super::config::ModelGroup;
-use super::provider::ModelProvider;
 use super::registry::ModelProviderRegistry;
+use super::retry::StreamResult;
+use super::retry::stream_with_retry_and_fallback;
 
-pub struct ToolLoopEvent {
-    pub kind: ToolLoopEventKind,
+pub struct InferenceEvent {
+    pub kind: InferenceEventKind,
 }
 
-pub enum ToolLoopEventKind {
+pub enum InferenceEventKind {
     Text(String),
     ToolCall {
         name: String,
@@ -82,13 +83,13 @@ fn to_rig_tool_definitions(defs: &[ToolDefinition]) -> Vec<RigToolDefinition> {
 
 async fn check_cancellation(
     cancel_token: &CancellationToken,
-    event_tx: &mpsc::Sender<ToolLoopEvent>,
+    event_tx: &mpsc::Sender<InferenceEvent>,
     accumulated_text: &str,
 ) -> Option<ToolLoopOutcome> {
     if cancel_token.is_cancelled() {
         let _ = event_tx
-            .send(ToolLoopEvent {
-                kind: ToolLoopEventKind::Cancelled(accumulated_text.to_string()),
+            .send(InferenceEvent {
+                kind: InferenceEventKind::Cancelled(accumulated_text.to_string()),
             })
             .await;
         Some(ToolLoopOutcome::Cancelled(accumulated_text.to_string()))
@@ -97,152 +98,10 @@ async fn check_cancellation(
     }
 }
 
-enum StreamResult {
-    Contents(Vec<AssistantContent>),
-    Cancelled,
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn stream_with_rate_limit_retry(
-    provider: &dyn ModelProvider,
-    model_group: &ModelGroup,
-    system_prompt: &str,
-    chat_history: &[RigMessage],
-    rig_tools: &[RigToolDefinition],
-    event_tx: &mpsc::Sender<ToolLoopEvent>,
-    cancel_token: &CancellationToken,
-    accumulated_text: &mut String,
-    metrics_ctx: &InferenceMetricsContext,
-) -> Result<StreamResult, AppError> {
-    let mut rate_limit_attempt: usize = 0;
-
-    loop {
-        let (text_tx, text_rx) = mpsc::channel::<String>(32);
-
-        let event_tx_clone = event_tx.clone();
-        let forward_handle = tokio::spawn(async move {
-            let mut text_rx = text_rx;
-            let mut text = String::new();
-            while let Some(token) = text_rx.recv().await {
-                text.push_str(&token);
-                let _ = event_tx_clone
-                    .send(ToolLoopEvent {
-                        kind: ToolLoopEventKind::Text(token),
-                    })
-                    .await;
-            }
-            text
-        });
-
-        let start = Instant::now();
-        let contents_result = tokio::select! {
-            result = provider.stream_inference_with_tools(
-                &model_group.main.model_id,
-                system_prompt,
-                chat_history.to_vec(),
-                rig_tools.to_vec(),
-                text_tx,
-                model_group.max_tokens,
-                model_group.temperature,
-            ) => Some(result),
-            _ = cancel_token.cancelled() => None,
-        };
-        let duration = start.elapsed();
-
-        let turn_text = forward_handle.await.unwrap_or_default();
-        accumulated_text.push_str(&turn_text);
-
-        let Some(result) = contents_result else {
-            return Ok(StreamResult::Cancelled);
-        };
-
-        let should_retry = match result {
-            Ok(ref contents) if contents.is_empty() => {
-                metrics::record_inference_request(
-                    metrics_ctx,
-                    &model_group.main.model_id,
-                    &model_group.main.provider,
-                    duration,
-                    None,
-                    "empty_response",
-                );
-                true
-            }
-            Ok(contents) => {
-                metrics::record_inference_request(
-                    metrics_ctx,
-                    &model_group.main.model_id,
-                    &model_group.main.provider,
-                    duration,
-                    None,
-                    "success",
-                );
-                return Ok(StreamResult::Contents(contents));
-            }
-            Err(ref e) if e.is_rate_limited() => {
-                metrics::record_inference_request(
-                    metrics_ctx,
-                    &model_group.main.model_id,
-                    &model_group.main.provider,
-                    duration,
-                    None,
-                    "rate_limited",
-                );
-                true
-            }
-            Err(e) => {
-                tracing::error!(
-                    error = ?e,
-                    model = %model_group.main.model_id,
-                    provider = %model_group.main.provider,
-                    "Inference request failed"
-                );
-                metrics::record_inference_request(
-                    metrics_ctx,
-                    &model_group.main.model_id,
-                    &model_group.main.provider,
-                    duration,
-                    None,
-                    "error",
-                );
-                return Err(AppError::Inference(e.to_string()));
-            }
-        };
-
-        if should_retry {
-            let retry = &model_group.retry;
-            if rate_limit_attempt >= retry.max_retries as usize {
-                return Err(AppError::Inference(
-                    "Inference retry limit exceeded".to_string(),
-                ));
-            }
-
-            let delay_ms = (retry.initial_backoff_ms as f64
-                * retry.backoff_multiplier.powi(rate_limit_attempt as i32))
-                as u64;
-            let delay_ms = delay_ms.min(retry.max_backoff_ms);
-
-            tracing::warn!(
-                retry_after_ms = delay_ms,
-                attempt = rate_limit_attempt + 1,
-                "Retryable inference issue, backing off"
-            );
-            let _ = event_tx
-                .send(ToolLoopEvent {
-                    kind: ToolLoopEventKind::RateLimitRetry {
-                        retry_after_ms: delay_ms,
-                    },
-                })
-                .await;
-            rate_limit_attempt += 1;
-            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-        }
-    }
-}
 
 async fn process_model_response(
     contents: &[AssistantContent],
-    event_tx: &mpsc::Sender<ToolLoopEvent>,
+    event_tx: &mpsc::Sender<InferenceEvent>,
     chat_history: &mut Vec<RigMessage>,
 ) -> bool {
     let mut has_tool_calls = false;
@@ -257,8 +116,8 @@ async fn process_model_response(
                 .and_then(|obj| obj.remove("description"))
                 .and_then(|v| v.as_str().map(String::from));
             let _ = event_tx
-                .send(ToolLoopEvent {
-                    kind: ToolLoopEventKind::ToolCall {
+                .send(InferenceEvent {
+                    kind: InferenceEventKind::ToolCall {
                         name: tool_call.function.name.clone(),
                         arguments: args,
                         description,
@@ -322,7 +181,7 @@ async fn execute_tool_calls(
     contents: &[AssistantContent],
     tool_registry: &AgentToolRegistry,
     ctx: &ToolContext,
-    event_tx: &mpsc::Sender<ToolLoopEvent>,
+    event_tx: &mpsc::Sender<InferenceEvent>,
     chat_history: &mut Vec<RigMessage>,
     all_attachments: &mut Vec<crate::api::files::Attachment>,
     metrics_ctx: &InferenceMetricsContext,
@@ -379,8 +238,8 @@ async fn execute_tool_calls(
         };
 
         let _ = event_tx
-            .send(ToolLoopEvent {
-                kind: ToolLoopEventKind::ToolResult {
+            .send(InferenceEvent {
+                kind: InferenceEventKind::ToolResult {
                     name: tool_name.clone(),
                     result: text.clone(),
                 },
@@ -449,17 +308,13 @@ pub async fn run_tool_loop(
     system_prompt: &str,
     mut chat_history: Vec<RigMessage>,
     tool_registry: &AgentToolRegistry,
-    event_tx: mpsc::Sender<ToolLoopEvent>,
+    event_tx: mpsc::Sender<InferenceEvent>,
     cancel_token: CancellationToken,
     ctx: &ToolContext,
     metrics_ctx: &InferenceMetricsContext,
 ) -> Result<ToolLoopOutcome, AppError> {
     let tool_defs = &tool_registry.definitions;
     let rig_tools = to_rig_tool_definitions(tool_defs);
-
-    let provider = registry
-        .get_provider(&model_group.main.provider)
-        .map_err(|e| AppError::Inference(e.to_string()))?;
 
     let mut accumulated_text = String::new();
     let mut all_attachments: Vec<crate::api::files::Attachment> = Vec::new();
@@ -483,8 +338,17 @@ pub async fn run_tool_loop(
             model_group.inference.history_truncation_pct,
         );
 
-        let contents = match stream_with_rate_limit_retry(
-            provider,
+        // Drop leading orphaned tool_results whose tool_use was truncated away
+        while let Some(RigMessage::User { content }) = chat_history.first() {
+            if content.iter().any(|c| matches!(c, UserContent::ToolResult(_))) {
+                chat_history.remove(0);
+            } else {
+                break;
+            }
+        }
+
+        let contents = match stream_with_retry_and_fallback(
+            registry,
             model_group,
             &current_system_prompt,
             &chat_history,
@@ -499,8 +363,8 @@ pub async fn run_tool_loop(
             StreamResult::Contents(c) => c,
             StreamResult::Cancelled => {
                 let _ = event_tx
-                    .send(ToolLoopEvent {
-                        kind: ToolLoopEventKind::Cancelled(accumulated_text.clone()),
+                    .send(InferenceEvent {
+                        kind: InferenceEventKind::Cancelled(accumulated_text.clone()),
                     })
                     .await;
                 return Ok(ToolLoopOutcome::Cancelled(accumulated_text));
@@ -512,8 +376,8 @@ pub async fn run_tool_loop(
 
         if !has_tool_calls {
             let _ = event_tx
-                .send(ToolLoopEvent {
-                    kind: ToolLoopEventKind::Done(accumulated_text.clone()),
+                .send(InferenceEvent {
+                    kind: InferenceEventKind::Done(accumulated_text.clone()),
                 })
                 .await;
             break;
@@ -537,6 +401,11 @@ pub async fn run_tool_loop(
         if exec_result.has_external {
             let external_tool = exec_result.external_tool_result.unwrap();
             let system_prompt_injection = external_tool.system_prompt.clone();
+            let _ = event_tx
+                .send(InferenceEvent {
+                    kind: InferenceEventKind::Done(accumulated_text.clone()),
+                })
+                .await;
             return Ok(ToolLoopOutcome::ExternalToolPending {
                 accumulated_text,
                 tool_calls_json: build_tool_calls_json(&contents),
@@ -553,8 +422,8 @@ pub async fn run_tool_loop(
 
         if turn == max_tool_turns - 1 {
             let _ = event_tx
-                .send(ToolLoopEvent {
-                    kind: ToolLoopEventKind::Error(
+                .send(InferenceEvent {
+                    kind: InferenceEventKind::Error(
                         "Max tool turns reached".to_string(),
                     ),
                 })

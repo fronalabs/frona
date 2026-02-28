@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 use crate::agent::models::Agent;
 use crate::chat::models::Chat;
 use crate::core::error::AppError;
-use crate::inference::tool_loop::ToolLoopEvent;
+use crate::inference::tool_loop::InferenceEvent;
 use crate::core::models::user::User;
 
 use crate::agent::prompt::PromptLoader;
@@ -138,7 +138,7 @@ pub struct ToolContext {
     pub user: User,
     pub agent: Agent,
     pub chat: Chat,
-    pub event_tx: mpsc::Sender<ToolLoopEvent>,
+    pub event_tx: mpsc::Sender<InferenceEvent>,
 }
 
 #[async_trait]

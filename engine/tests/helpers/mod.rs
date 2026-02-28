@@ -56,73 +56,18 @@ impl ModelProvider for MockModelProvider {
         _model_id: &str,
         _system_prompt: &str,
         _chat_history: Vec<RigMessage>,
-        _user_message: RigMessage,
-        _max_tokens: Option<u64>,
-        _temperature: Option<f64>,
-    ) -> Result<(String, Usage), InferenceError> {
-        match self.next_response() {
-            MockResponse::Text(t) => Ok((
-                t,
-                Usage {
-                    input_tokens: 10,
-                    output_tokens: 5,
-                    total_tokens: 15,
-                    cached_input_tokens: 0,
-                },
-            )),
-            MockResponse::ToolCalls(_) => Ok((
-                "unexpected tool call response".into(),
-                Usage {
-                    input_tokens: 10,
-                    output_tokens: 5,
-                    total_tokens: 15,
-                    cached_input_tokens: 0,
-                },
-            )),
-            MockResponse::Error(e) => Err(e),
-        }
-    }
-
-    async fn stream_inference(
-        &self,
-        _model_id: &str,
-        _system_prompt: &str,
-        _chat_history: Vec<RigMessage>,
-        _user_message: RigMessage,
-        token_tx: mpsc::Sender<Result<String, InferenceError>>,
-        _max_tokens: Option<u64>,
-        _temperature: Option<f64>,
-    ) -> Result<(), InferenceError> {
-        match self.next_response() {
-            MockResponse::Text(t) => {
-                let _ = token_tx.send(Ok(t)).await;
-                Ok(())
-            }
-            MockResponse::Error(e) => Err(e),
-            _ => Ok(()),
-        }
-    }
-
-    async fn inference_with_tools(
-        &self,
-        _model_id: &str,
-        _system_prompt: &str,
-        chat_history: Vec<RigMessage>,
         _tools: Vec<RigToolDefinition>,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
-    ) -> Result<(Vec<AssistantContent>, Vec<RigMessage>, Usage), InferenceError> {
+    ) -> Result<(Vec<AssistantContent>, Usage), InferenceError> {
+        let usage = Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            cached_input_tokens: 0,
+        };
         match self.next_response() {
-            MockResponse::Text(t) => Ok((
-                vec![AssistantContent::text(&t)],
-                chat_history,
-                Usage {
-                    input_tokens: 10,
-                    output_tokens: 5,
-                    total_tokens: 15,
-                    cached_input_tokens: 0,
-                },
-            )),
+            MockResponse::Text(t) => Ok((vec![AssistantContent::text(&t)], usage)),
             MockResponse::ToolCalls(calls) => {
                 let contents = calls
                     .into_iter()
@@ -130,22 +75,13 @@ impl ModelProvider for MockModelProvider {
                         AssistantContent::ToolCall(ToolCall::new(id, ToolFunction::new(name, args)))
                     })
                     .collect();
-                Ok((
-                    contents,
-                    chat_history,
-                    Usage {
-                        input_tokens: 10,
-                        output_tokens: 5,
-                        total_tokens: 15,
-                        cached_input_tokens: 0,
-                    },
-                ))
+                Ok((contents, usage))
             }
             MockResponse::Error(e) => Err(e),
         }
     }
 
-    async fn stream_inference_with_tools(
+    async fn stream_inference(
         &self,
         _model_id: &str,
         _system_prompt: &str,

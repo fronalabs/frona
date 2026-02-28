@@ -146,33 +146,12 @@ pub trait ModelProvider: Send + Sync {
         model_id: &str,
         system_prompt: &str,
         chat_history: Vec<RigMessage>,
-        user_message: RigMessage,
-        max_tokens: Option<u64>,
-        temperature: Option<f64>,
-    ) -> Result<(String, Usage), InferenceError>;
-
-    async fn stream_inference(
-        &self,
-        model_id: &str,
-        system_prompt: &str,
-        chat_history: Vec<RigMessage>,
-        user_message: RigMessage,
-        token_tx: mpsc::Sender<Result<String, InferenceError>>,
-        max_tokens: Option<u64>,
-        temperature: Option<f64>,
-    ) -> Result<(), InferenceError>;
-
-    async fn inference_with_tools(
-        &self,
-        model_id: &str,
-        system_prompt: &str,
-        chat_history: Vec<RigMessage>,
         tools: Vec<RigToolDefinition>,
         max_tokens: Option<u64>,
         temperature: Option<f64>,
-    ) -> Result<(Vec<AssistantContent>, Vec<RigMessage>, Usage), InferenceError>;
+    ) -> Result<(Vec<AssistantContent>, Usage), InferenceError>;
 
-    async fn stream_inference_with_tools(
+    async fn stream_inference(
         &self,
         model_id: &str,
         system_prompt: &str,
@@ -208,109 +187,11 @@ where
         &self,
         model_id: &str,
         system_prompt: &str,
-        mut chat_history: Vec<RigMessage>,
-        user_message: RigMessage,
-        max_tokens: Option<u64>,
-        temperature: Option<f64>,
-    ) -> Result<(String, Usage), InferenceError> {
-        use rig::completion::CompletionModel as _;
-
-        let _guard = self.counter.guard();
-        let model = self.client.completion_model(model_id);
-
-        chat_history.push(user_message);
-
-        tracing::debug!(
-            model = %model_id,
-            messages = ?chat_history,
-            "LLM request"
-        );
-
-        let request = CompletionRequestBuilder::new(system_prompt, chat_history)
-            .max_tokens(max_tokens)
-            .temperature(temperature)
-            .build();
-
-        let response = model
-            .completion(request)
-            .await
-            .map_err(InferenceError::CompletionFailed)?;
-
-        let text = extract_text_from_choice(&response.choice)?;
-        let usage = response.usage;
-
-        tracing::debug!(
-            model = %model_id,
-            response = %text,
-            "LLM response"
-        );
-
-        Ok((text, usage))
-    }
-
-    async fn stream_inference(
-        &self,
-        model_id: &str,
-        system_prompt: &str,
-        mut chat_history: Vec<RigMessage>,
-        user_message: RigMessage,
-        token_tx: mpsc::Sender<Result<String, InferenceError>>,
-        max_tokens: Option<u64>,
-        temperature: Option<f64>,
-    ) -> Result<(), InferenceError> {
-        use futures::StreamExt;
-        use rig::completion::CompletionModel as _;
-
-        let _guard = self.counter.guard();
-        let model = self.client.completion_model(model_id);
-
-        chat_history.push(user_message);
-
-        tracing::debug!(
-            model = %model_id,
-            messages = ?chat_history,
-            "LLM stream request"
-        );
-
-        let request = CompletionRequestBuilder::new(system_prompt, chat_history)
-            .max_tokens(max_tokens)
-            .temperature(temperature)
-            .build();
-
-        let mut stream = model
-            .stream(request)
-            .await
-            .map_err(InferenceError::CompletionFailed)?;
-
-        while let Some(chunk) = stream.next().await {
-            match chunk {
-                Ok(rig::streaming::StreamedAssistantContent::Text(text)) => {
-                    if token_tx.send(Ok(text.text)).await.is_err() {
-                        break;
-                    }
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    let _ = token_tx
-                        .send(Err(InferenceError::CompletionFailed(e)))
-                        .await;
-                    break;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn inference_with_tools(
-        &self,
-        model_id: &str,
-        system_prompt: &str,
         chat_history: Vec<RigMessage>,
         tools: Vec<RigToolDefinition>,
         max_tokens: Option<u64>,
         temperature: Option<f64>,
-    ) -> Result<(Vec<AssistantContent>, Vec<RigMessage>, Usage), InferenceError> {
+    ) -> Result<(Vec<AssistantContent>, Usage), InferenceError> {
         use rig::completion::CompletionModel as _;
 
         let _guard = self.counter.guard();
@@ -320,10 +201,10 @@ where
             model = %model_id,
             messages = ?chat_history,
             tool_count = tools.len(),
-            "LLM tool request"
+            "LLM request"
         );
 
-        let request = CompletionRequestBuilder::new(system_prompt, chat_history.clone())
+        let request = CompletionRequestBuilder::new(system_prompt, chat_history)
             .tools(tools)
             .max_tokens(max_tokens)
             .temperature(temperature)
@@ -340,13 +221,13 @@ where
         tracing::debug!(
             model = %model_id,
             response = ?contents,
-            "LLM tool response"
+            "LLM response"
         );
 
-        Ok((contents, chat_history, usage))
+        Ok((contents, usage))
     }
 
-    async fn stream_inference_with_tools(
+    async fn stream_inference(
         &self,
         model_id: &str,
         system_prompt: &str,
@@ -364,7 +245,7 @@ where
         tracing::debug!(
             model = %model_id,
             tool_count = tools.len(),
-            "LLM streaming tool request"
+            "LLM streaming request"
         );
         tracing::debug!(system_prompt = %system_prompt, "LLM system prompt");
         tracing::debug!(chat_history = ?chat_history, "LLM chat history");
@@ -405,7 +286,7 @@ where
         tracing::debug!(
             model = %model_id,
             response = ?contents,
-            "LLM streaming tool response"
+            "LLM streaming response"
         );
 
         Ok(contents)
@@ -578,12 +459,12 @@ fn try_extract_tool_calls_from_text(
     results
 }
 
-fn extract_text_from_choice(
-    choice: &rig::OneOrMany<AssistantContent>,
+pub fn extract_text_from_choice(
+    contents: &[AssistantContent],
 ) -> Result<String, InferenceError> {
     let mut text_parts = Vec::new();
 
-    for item in choice.iter() {
+    for item in contents {
         if let AssistantContent::Text(t) = item {
             text_parts.push(t.text.clone());
         }
@@ -732,14 +613,14 @@ mod tests {
 
     #[test]
     fn test_extract_text_from_choice_text_only() {
-        let choice = rig::OneOrMany::one(AssistantContent::text("hello world"));
-        let result = extract_text_from_choice(&choice).unwrap();
+        let contents = vec![AssistantContent::text("hello world")];
+        let result = extract_text_from_choice(&contents).unwrap();
         assert_eq!(result, "hello world");
     }
 
     #[test]
     fn test_extract_text_from_choice_mixed() {
-        let items = vec![
+        let contents = vec![
             AssistantContent::text("part1"),
             AssistantContent::ToolCall(ToolCall::new(
                 "id1".to_string(),
@@ -747,19 +628,17 @@ mod tests {
             )),
             AssistantContent::text("part2"),
         ];
-        let choice = rig::OneOrMany::many(items).unwrap();
-        let result = extract_text_from_choice(&choice).unwrap();
+        let result = extract_text_from_choice(&contents).unwrap();
         assert_eq!(result, "part1part2");
     }
 
     #[test]
     fn test_extract_text_from_choice_no_text() {
-        let items = vec![AssistantContent::ToolCall(ToolCall::new(
+        let contents = vec![AssistantContent::ToolCall(ToolCall::new(
             "id1".to_string(),
             ToolFunction::new("tool".to_string(), serde_json::json!({})),
         ))];
-        let choice = rig::OneOrMany::many(items).unwrap();
-        let result = extract_text_from_choice(&choice);
+        let result = extract_text_from_choice(&contents);
         assert!(result.is_err());
     }
 }

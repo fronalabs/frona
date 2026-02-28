@@ -178,4 +178,5 @@ mod tests {
         let result = truncate_history(msgs, "system", "claude-sonnet-4-5", None, 8192, 90);
         assert!(result.len() <= 2);
     }
+
 }

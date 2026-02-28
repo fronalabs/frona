@@ -14,7 +14,7 @@ use crate::core::metrics::InferenceMetricsContext;
 use crate::inference::config::ModelGroup;
 use crate::inference::context::{estimate_tokens, resolve_context_window};
 use crate::inference::convert::to_rig_messages;
-use crate::inference::fallback::inference_with_fallback;
+use crate::inference::text_inference;
 use crate::inference::ModelProviderRegistry;
 use crate::memory::insight::models::Insight;
 use crate::memory::insight::repository::InsightRepository;
@@ -138,15 +138,13 @@ impl MemoryService {
             compaction_input.push_str(&format!("{role_str}: {}\n", msg.content));
         }
 
-        let user_msg = RigMessage::user(&compaction_input);
         let prompt = self.load_prompt("CHAT_COMPACTION.md", None)
             .expect("built-in CHAT_COMPACTION.md missing");
-        let summary = inference_with_fallback(
+        let summary = text_inference(
             &self.provider_registry,
             compaction_model_group,
             &prompt,
-            vec![],
-            user_msg,
+            vec![RigMessage::user(&compaction_input)],
             &InferenceMetricsContext::default(),
         )
         .await
@@ -329,15 +327,13 @@ impl MemoryService {
             compaction_input.push_str(&format!("- {}\n", insight.content));
         }
 
-        let user_msg = RigMessage::user(&compaction_input);
         let prompt = self.load_prompt("INSIGHT_COMPACTION.md", None)
             .expect("built-in INSIGHT_COMPACTION.md missing");
-        let summary = inference_with_fallback(
+        let summary = text_inference(
             &self.provider_registry,
             compaction_model_group,
             &prompt,
-            vec![],
-            user_msg,
+            vec![RigMessage::user(&compaction_input)],
             &InferenceMetricsContext::default(),
         )
         .await
@@ -416,16 +412,14 @@ impl MemoryService {
             compaction_input.push_str(&format!("- {}\n", insight.content));
         }
 
-        let user_msg = RigMessage::user(&compaction_input);
         let agent_id = if source_type == MemorySourceType::Agent { Some(source_id) } else { None };
         let prompt = self.load_prompt("INSIGHT_COMPACTION.md", agent_id)
             .expect("built-in INSIGHT_COMPACTION.md missing");
-        let summary = inference_with_fallback(
+        let summary = text_inference(
             &self.provider_registry,
             compaction_model_group,
             &prompt,
-            vec![],
-            user_msg,
+            vec![RigMessage::user(&compaction_input)],
             &InferenceMetricsContext::default(),
         )
         .await
@@ -489,15 +483,13 @@ impl MemoryService {
             input.push_str(&format!("## {title}\n{summary}\n\n"));
         }
 
-        let user_msg = RigMessage::user(&input);
         let prompt = self.load_prompt("SPACE_COMPACTION.md", None)
             .expect("built-in SPACE_COMPACTION.md missing");
-        let summary = inference_with_fallback(
+        let summary = text_inference(
             &self.provider_registry,
             compaction_model_group,
             &prompt,
-            vec![],
-            user_msg,
+            vec![RigMessage::user(&input)],
             &InferenceMetricsContext::default(),
         )
         .await

@@ -14,7 +14,7 @@ use crate::agent::execution::run_agent_loop;
 use crate::auth::jwt::JwtService;
 use crate::core::error::AppError;
 use crate::core::state::AppState;
-use crate::inference::tool_loop::ToolLoopOutcome;
+use crate::inference::InferenceResponse;
 use crate::tool::voice::{VoiceCallbackClaims, VoiceSessionClaims};
 use tokio_util::sync::CancellationToken;
 
@@ -362,8 +362,8 @@ async fn handle_voice_turn(
     loop {
         let outcome = run_agent_loop(state, user_id, chat_id, cancel_token.clone()).await?;
 
-        match outcome.tool_loop_outcome {
-            ToolLoopOutcome::ExternalToolPending {
+        match outcome.response {
+            InferenceResponse::ExternalToolPending {
                 accumulated_text,
                 tool_calls_json,
                 tool_results,
@@ -418,7 +418,7 @@ async fn handle_voice_turn(
                     .ok();
                 // Continue loop — run_agent_loop will see the full history
             }
-            ToolLoopOutcome::ExternalToolPending {
+            InferenceResponse::ExternalToolPending {
                 accumulated_text,
                 tool_calls_json,
                 tool_results,
@@ -472,7 +472,7 @@ async fn handle_voice_turn(
 
                 return Ok((accumulated_text, true));
             }
-            ToolLoopOutcome::Completed { .. } => {
+            InferenceResponse::Completed { .. } => {
                 let text = outcome.last_segment;
                 if !text.is_empty() {
                     state

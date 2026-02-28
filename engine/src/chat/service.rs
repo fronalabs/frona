@@ -7,7 +7,7 @@ use crate::core::error::AppError;
 use crate::core::metrics::InferenceMetricsContext;
 use crate::inference::ModelProviderRegistry;
 use crate::inference::convert::to_rig_messages;
-use crate::inference::fallback::inference_with_fallback;
+use crate::inference::text_inference;
 use crate::inference::provider::ModelRef;
 use crate::memory::service::MemoryService;
 use crate::agent::prompt::PromptLoader;
@@ -203,17 +203,16 @@ impl ChatService {
         let model_group_name = agent_config.model_group;
 
         let stored_messages = self.message_repo.find_by_chat_id(chat_id).await?;
-        let rig_history = to_rig_messages(&stored_messages, &chat.agent_id);
+        let mut rig_history = to_rig_messages(&stored_messages, &chat.agent_id);
 
         let model_group = self.provider_registry.get_model_group(&model_group_name)?;
 
-        let user_rig_msg = RigMessage::user(&req.content);
-        let response_text = inference_with_fallback(
+        rig_history.push(RigMessage::user(&req.content));
+        let response_text = text_inference(
             &self.provider_registry,
             model_group,
             &system_prompt,
             rig_history,
-            user_rig_msg,
             &InferenceMetricsContext::default(),
         )
         .await?;
@@ -503,13 +502,11 @@ impl ChatService {
 
         let model_group = self.build_title_model_group(parsed.metadata.get("model").map(|s| s.as_str()))?;
 
-        let user_msg = RigMessage::user(user_content);
-        let result = inference_with_fallback(
+        let result = text_inference(
             &self.provider_registry,
             &model_group,
             &parsed.template,
-            vec![],
-            user_msg,
+            vec![RigMessage::user(user_content)],
             &InferenceMetricsContext::default(),
         )
         .await?;

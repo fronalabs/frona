@@ -9,7 +9,7 @@ use crate::core::repository::Repository;
 use crate::core::state::AppState;
 use crate::inference::config::ModelGroup;
 use crate::inference::convert::to_rig_messages;
-use crate::inference::tool_loop::ToolLoopEvent;
+use crate::inference::tool_loop::InferenceEvent;
 use crate::inference::ModelProviderRegistry;
 use crate::tool::registry::AgentToolRegistry;
 use crate::tool::ToolContext;
@@ -24,8 +24,8 @@ pub struct ChatSessionContext {
     pub tool_registry: AgentToolRegistry,
     pub tool_ctx: ToolContext,
     pub cancel_token: CancellationToken,
-    pub tool_event_tx: Sender<ToolLoopEvent>,
-    pub tool_event_rx: tokio::sync::mpsc::Receiver<ToolLoopEvent>,
+    pub tool_event_tx: Sender<InferenceEvent>,
+    pub tool_event_rx: tokio::sync::mpsc::Receiver<InferenceEvent>,
 }
 
 impl ChatSessionContext {
@@ -34,8 +34,8 @@ impl ChatSessionContext {
         user_id: &str,
         chat: Chat,
         cancel_token: CancellationToken,
-        tool_event_tx: Sender<ToolLoopEvent>,
-        tool_event_rx: tokio::sync::mpsc::Receiver<ToolLoopEvent>,
+        tool_event_tx: Sender<InferenceEvent>,
+        tool_event_rx: tokio::sync::mpsc::Receiver<InferenceEvent>,
     ) -> Result<Self, AppError> {
         let agent_config = state
             .chat_service

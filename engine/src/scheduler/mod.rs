@@ -13,7 +13,7 @@ use crate::chat::models::CreateChatRequest;
 use crate::chat::repository::ChatRepository;
 use crate::core::error::AppError;
 use crate::inference::config::ModelGroup;
-use crate::inference::tool_loop::ToolLoopOutcome;
+use crate::inference::InferenceResponse;
 use crate::memory::insight::repository::InsightRepository;
 use crate::memory::models::MemorySourceType;
 use crate::space::repository::SpaceRepository;
@@ -395,8 +395,8 @@ async fn execute_background_agent(
     .await;
 
     match result {
-        Ok(AgentLoopOutcome { tool_loop_outcome, accumulated_text, .. }) => {
-            if let ToolLoopOutcome::Completed { attachments, .. } = tool_loop_outcome
+        Ok(AgentLoopOutcome { response, accumulated_text, .. }) => {
+            if let InferenceResponse::Completed { attachments, .. } = response
                 && !accumulated_text.is_empty()
             {
                 let _ = state

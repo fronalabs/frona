@@ -7,7 +7,7 @@ use surrealdb::types::RecordId;
 
 use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
-use crate::inference::tool_loop::{ToolLoopEvent, ToolLoopEventKind};
+use crate::inference::tool_loop::{InferenceEvent, InferenceEventKind};
 use frona_derive::agent_tool;
 
 use super::{ToolContext, ToolOutput};
@@ -116,8 +116,8 @@ impl UpdateIdentityTool {
 
         let _ = ctx
             .event_tx
-            .send(ToolLoopEvent {
-                kind: ToolLoopEventKind::EntityUpdated {
+            .send(InferenceEvent {
+                kind: InferenceEventKind::EntityUpdated {
                     table: "agent".to_string(),
                     record_id: self.agent_id.clone(),
                     fields: Value::Object(entity_fields),

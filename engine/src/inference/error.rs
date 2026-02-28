@@ -26,6 +26,12 @@ pub enum InferenceError {
     #[error("Rate limited: retry after {retry_after_secs}s")]
     RateLimited { retry_after_secs: u64 },
 
+    #[error("Empty response from model")]
+    EmptyResponse,
+
+    #[error("Cancelled")]
+    Cancelled(String),
+
     #[error("Config error: {0}")]
     ConfigError(String),
 }
@@ -37,7 +43,8 @@ fn provider_error_contains_status(msg: &str, codes: &[u16]) -> bool {
 impl InferenceError {
     pub fn is_retryable(&self) -> bool {
         match self {
-            InferenceError::RateLimited { .. } => true,
+            InferenceError::RateLimited { .. } | InferenceError::EmptyResponse => true,
+            InferenceError::Cancelled(_) => false,
             InferenceError::CompletionFailed(rig::completion::CompletionError::HttpError(http_err)) => {
                     use rig::http_client::Error;
                     match http_err {

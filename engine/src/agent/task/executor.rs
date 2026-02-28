@@ -11,7 +11,7 @@ use crate::core::state::AppState;
 use crate::chat::models::CreateChatRequest;
 use crate::chat::message::models::MessageTool;
 use crate::core::error::AppError;
-use crate::inference::tool_loop::ToolLoopOutcome;
+use crate::inference::InferenceResponse;
 
 pub struct TaskExecutor {
     app_state: AppState,
@@ -169,33 +169,35 @@ impl TaskExecutor {
 
         match result {
             Ok(execution::AgentLoopOutcome {
-                tool_loop_outcome,
+                response,
                 accumulated_text,
                 last_segment,
-            }) => match tool_loop_outcome {
-                ToolLoopOutcome::Completed { attachments, .. } => {
-                    self.handle_completed(&task, &chat_id, accumulated_text, last_segment, attachments)
-                        .await?;
+            }) => {
+                match response {
+                    InferenceResponse::Completed { attachments, .. } => {
+                        self.handle_completed(&task, &chat_id, accumulated_text, last_segment, attachments)
+                            .await?;
+                    }
+                    InferenceResponse::Cancelled(_) => {
+                        self.handle_cancelled(&task, &chat_id, accumulated_text).await?;
+                    }
+                    InferenceResponse::ExternalToolPending {
+                        accumulated_text: ext_text,
+                        tool_calls_json,
+                        tool_results,
+                        external_tool,
+                        system_prompt: _,
+                    } => {
+                        let _ = self
+                            .app_state
+                            .chat_service
+                            .save_external_tool_pending(
+                                &chat_id, ext_text, tool_calls_json, &tool_results, external_tool,
+                            )
+                            .await;
+                    }
                 }
-                ToolLoopOutcome::Cancelled(_) => {
-                    self.handle_cancelled(&task, &chat_id, accumulated_text).await?;
-                }
-                ToolLoopOutcome::ExternalToolPending {
-                    accumulated_text: ext_text,
-                    tool_calls_json,
-                    tool_results,
-                    external_tool,
-                    system_prompt: _,
-                } => {
-                    let _ = self
-                        .app_state
-                        .chat_service
-                        .save_external_tool_pending(
-                            &chat_id, ext_text, tool_calls_json, &tool_results, external_tool,
-                        )
-                        .await;
-                }
-            },
+            }
             Err(e) => {
                 self.handle_error(&task, &e).await?;
             }
@@ -255,14 +257,29 @@ impl TaskExecutor {
         last_segment: String,
         attachments: Vec<Attachment>,
     ) -> Result<(), AppError> {
+        tracing::debug!(
+            task_id = %task.id,
+            chat_id = %chat_id,
+            accumulated_text_len = accumulated_text.len(),
+            last_segment_len = last_segment.len(),
+            attachments_count = attachments.len(),
+            "handle_completed: start"
+        );
+
         if !accumulated_text.is_empty() {
-            let _ = self
+            match self
                 .app_state
                 .chat_service
                 .save_assistant_message_with_tool_calls(
                     chat_id, accumulated_text.clone(), None, attachments,
                 )
-                .await;
+                .await
+            {
+                Ok(_) => tracing::debug!(task_id = %task.id, "handle_completed: saved assistant message"),
+                Err(e) => tracing::error!(task_id = %task.id, error = %e, "handle_completed: failed to save assistant message"),
+            }
+        } else {
+            tracing::warn!(task_id = %task.id, "handle_completed: accumulated_text is empty, skipping message save");
         }
 
         let children = self
@@ -292,6 +309,8 @@ impl TaskExecutor {
             Some(result_text.to_string())
         };
 
+        tracing::debug!(task_id = %task.id, has_summary = summary.is_some(), "handle_completed: marking task completed");
+
         self.app_state
             .task_service
             .mark_completed(&task.id, summary.clone())
@@ -301,6 +320,7 @@ impl TaskExecutor {
             .await;
 
         self.broadcast_task_status(task, "completed", summary.as_deref());
+        tracing::debug!(task_id = %task.id, "handle_completed: done");
         Ok(())
     }
 

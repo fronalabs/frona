@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use frona::core::error::AppError;
 use frona::inference::error::InferenceError;
-use frona::inference::fallback::{inference_with_fallback, stream_inference_with_fallback};
-use frona::inference::tool_loop::{run_tool_loop, ToolLoopEventKind, ToolLoopOutcome};
+use frona::inference::text_inference;
+use frona::inference::tool_loop::{run_tool_loop, InferenceEventKind, ToolLoopOutcome};
 use frona::tool::registry::AgentToolRegistry;
 use helpers::*;
 use rig::completion::Message as RigMessage;
@@ -56,11 +56,11 @@ async fn test_tool_loop_simple_text_response() {
     let mut saw_done = false;
     while let Ok(event) = event_rx.try_recv() {
         match event.kind {
-            ToolLoopEventKind::Text(t) => {
+            InferenceEventKind::Text(t) => {
                 assert_eq!(t, "Hello!");
                 saw_text = true;
             }
-            ToolLoopEventKind::Done(_) => saw_done = true,
+            InferenceEventKind::Done(_) => saw_done = true,
             _ => {}
         }
     }
@@ -120,11 +120,11 @@ async fn test_tool_loop_single_tool_call() {
     let mut saw_tool_result = false;
     while let Ok(event) = event_rx.try_recv() {
         match event.kind {
-            ToolLoopEventKind::ToolCall { name, .. } => {
+            InferenceEventKind::ToolCall { name, .. } => {
                 assert_eq!(name, "search");
                 saw_tool_call = true;
             }
-            ToolLoopEventKind::ToolResult { name, result } => {
+            InferenceEventKind::ToolResult { name, result } => {
                 assert_eq!(name, "search");
                 assert_eq!(result, "search results here");
                 saw_tool_result = true;
@@ -313,7 +313,7 @@ async fn test_tool_loop_cancellation_before_inference() {
 
     let mut saw_cancelled = false;
     while let Ok(event) = event_rx.try_recv() {
-        if matches!(event.kind, ToolLoopEventKind::Cancelled(_)) {
+        if matches!(event.kind, InferenceEventKind::Cancelled(_)) {
             saw_cancelled = true;
         }
     }
@@ -365,7 +365,7 @@ async fn test_tool_loop_rate_limit_retry() {
     while let Ok(event) = event_rx.try_recv() {
         if matches!(
             event.kind,
-            ToolLoopEventKind::RateLimitRetry { retry_after_ms: 1 }
+            InferenceEventKind::RateLimitRetry { retry_after_ms: 1 }
         ) {
             saw_retry = true;
         }
@@ -409,7 +409,7 @@ async fn test_tool_loop_rate_limit_exhausted() {
     assert!(result.is_err());
     match result.unwrap_err() {
         AppError::Inference(msg) => {
-            assert!(msg.contains("retry limit exceeded"), "Got: {msg}");
+            assert!(msg.contains("Rate limited"), "Got: {msg}");
         }
         other => panic!("Expected AppError::Inference, got {other:?}"),
     }
@@ -455,7 +455,7 @@ async fn test_tool_loop_tool_execution_failure() {
 
     let mut saw_error_result = false;
     while let Ok(event) = event_rx.try_recv() {
-        if let ToolLoopEventKind::ToolResult { name, result } = event.kind
+        if let InferenceEventKind::ToolResult { name, result } = event.kind
             && name == "bad_tool"
         {
             assert!(result.starts_with("Error:"), "Got: {result}");
@@ -517,12 +517,11 @@ async fn test_fallback_main_succeeds() {
     let model_group = test_model_group();
     let metrics = test_metrics_ctx();
 
-    let result = inference_with_fallback(
+    let result = text_inference(
         &registry,
         &model_group,
         "system",
-        vec![],
-        RigMessage::user("hi"),
+        vec![RigMessage::user("hi")],
         &metrics,
     )
     .await
@@ -560,12 +559,11 @@ async fn test_fallback_main_fails_fallback_succeeds() {
     let model_group = test_model_group_with_fallback("fallback", "fallback-model");
     let metrics = test_metrics_ctx();
 
-    let result = inference_with_fallback(
+    let result = text_inference(
         &registry,
         &model_group,
         "system",
-        vec![],
-        RigMessage::user("hi"),
+        vec![RigMessage::user("hi")],
         &metrics,
     )
     .await
@@ -606,12 +604,11 @@ async fn test_fallback_all_fail() {
     let model_group = test_model_group_with_fallback("fallback", "fallback-model");
     let metrics = test_metrics_ctx();
 
-    let result = inference_with_fallback(
+    let result = text_inference(
         &registry,
         &model_group,
         "system",
-        vec![],
-        RigMessage::user("hi"),
+        vec![RigMessage::user("hi")],
         &metrics,
     )
     .await;
@@ -637,12 +634,11 @@ async fn test_fallback_retryable_error_retried() {
     let model_group = test_model_group();
     let metrics = test_metrics_ctx();
 
-    let result = inference_with_fallback(
+    let result = text_inference(
         &registry,
         &model_group,
         "system",
-        vec![],
-        RigMessage::user("hi"),
+        vec![RigMessage::user("hi")],
         &metrics,
     )
     .await
@@ -680,12 +676,11 @@ async fn test_fallback_non_retryable_skips_retry() {
     let model_group = test_model_group_with_fallback("fallback", "fallback-model");
     let metrics = test_metrics_ctx();
 
-    let result = inference_with_fallback(
+    let result = text_inference(
         &registry,
         &model_group,
         "system",
-        vec![],
-        RigMessage::user("hi"),
+        vec![RigMessage::user("hi")],
         &metrics,
     )
     .await
@@ -741,12 +736,11 @@ async fn test_fallback_multiple_fallbacks_order() {
     ];
     let metrics = test_metrics_ctx();
 
-    let result = inference_with_fallback(
+    let result = text_inference(
         &registry,
         &model_group,
         "system",
-        vec![],
-        RigMessage::user("hi"),
+        vec![RigMessage::user("hi")],
         &metrics,
     )
     .await
@@ -755,126 +749,3 @@ async fn test_fallback_multiple_fallbacks_order() {
     assert_eq!(result, "fb2 ok");
 }
 
-#[tokio::test]
-async fn test_stream_fallback_main_succeeds() {
-    init_metrics();
-
-    let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
-        "streamed token".into(),
-    )]));
-    let registry = test_registry_with_provider("mock", provider);
-    let model_group = test_model_group();
-    let (token_tx, mut token_rx) = mpsc::channel(100);
-    let metrics = test_metrics_ctx();
-
-    stream_inference_with_fallback(
-        &registry,
-        &model_group,
-        "system",
-        vec![],
-        RigMessage::user("hi"),
-        token_tx,
-        &metrics,
-    )
-    .await
-    .unwrap();
-
-    let token = token_rx.recv().await.unwrap().unwrap();
-    assert_eq!(token, "streamed token");
-}
-
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn test_stream_fallback_main_fails_fallback_succeeds() {
-    init_metrics();
-
-    let main_provider = Arc::new(MockModelProvider::new(vec![MockResponse::Error(
-        InferenceError::InferenceFailed("stream error".into()),
-    )]));
-    let fallback_provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
-        "fallback stream".into(),
-    )]));
-
-    let mut providers = std::collections::HashMap::new();
-    providers.insert(
-        "mock".to_string(),
-        main_provider as Arc<dyn frona::inference::provider::ModelProvider>,
-    );
-    providers.insert(
-        "fallback".to_string(),
-        fallback_provider as Arc<dyn frona::inference::provider::ModelProvider>,
-    );
-    let registry = frona::inference::registry::ModelProviderRegistry::for_testing(
-        providers,
-        std::collections::HashMap::new(),
-    );
-
-    let model_group = test_model_group_with_fallback("fallback", "fallback-model");
-    let (token_tx, mut token_rx) = mpsc::channel(100);
-    let metrics = test_metrics_ctx();
-
-    stream_inference_with_fallback(
-        &registry,
-        &model_group,
-        "system",
-        vec![],
-        RigMessage::user("hi"),
-        token_tx,
-        &metrics,
-    )
-    .await
-    .unwrap();
-
-    let token = token_rx.recv().await.unwrap().unwrap();
-    assert_eq!(token, "fallback stream");
-}
-
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn test_stream_fallback_all_fail() {
-    init_metrics();
-
-    let main_provider = Arc::new(MockModelProvider::new(vec![
-        MockResponse::Error(InferenceError::InferenceFailed("main err".into())),
-        MockResponse::Error(InferenceError::InferenceFailed("main err retry".into())),
-    ]));
-    let fallback_provider = Arc::new(MockModelProvider::new(vec![
-        MockResponse::Error(InferenceError::InferenceFailed("fb err".into())),
-        MockResponse::Error(InferenceError::InferenceFailed("fb err retry".into())),
-    ]));
-
-    let mut providers = std::collections::HashMap::new();
-    providers.insert(
-        "mock".to_string(),
-        main_provider as Arc<dyn frona::inference::provider::ModelProvider>,
-    );
-    providers.insert(
-        "fallback".to_string(),
-        fallback_provider as Arc<dyn frona::inference::provider::ModelProvider>,
-    );
-    let registry = frona::inference::registry::ModelProviderRegistry::for_testing(
-        providers,
-        std::collections::HashMap::new(),
-    );
-
-    let model_group = test_model_group_with_fallback("fallback", "fallback-model");
-    let (token_tx, _token_rx) = mpsc::channel(100);
-    let metrics = test_metrics_ctx();
-
-    let result = stream_inference_with_fallback(
-        &registry,
-        &model_group,
-        "system",
-        vec![],
-        RigMessage::user("hi"),
-        token_tx,
-        &metrics,
-    )
-    .await;
-
-    assert!(result.is_err());
-    match result.unwrap_err() {
-        InferenceError::AllFallbacksFailed(errors) => {
-            assert_eq!(errors.len(), 2);
-        }
-        other => panic!("Expected AllFallbacksFailed, got {other:?}"),
-    }
-}

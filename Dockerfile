@@ -50,12 +50,12 @@ COPY --chown=frona:frona --from=frontend-builder /app/frontend/out /app/static
 COPY --chown=frona:frona resources /app/share
 
 ENV FRONA_SERVER_STATIC_DIR=/app/static
-ENV FRONA_DATABASE_PATH=/data/db
+ENV FRONA_SERVER_DATA_DIR=/app/data
 ENV FRONA_SERVER_PORT=3001
 ENV FRONA_STORAGE_SHARED_CONFIG_DIR=/app/share
 ENV FRONA_LOG_LEVEL=info
 
-VOLUME /data
+VOLUME /app/data
 EXPOSE 3001
 
 USER frona

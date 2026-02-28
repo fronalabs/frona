@@ -4,6 +4,15 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_aux::field_attributes::deserialize_bool_from_anything;
 
+const ENV_PREFIX: &str = "FRONA_";
+
+const EXCLUDED_ENV_VARS: &[&str] = &[
+    "FRONA_CONFIG",
+    "FRONA_LOG_CONFIG",
+    "FRONA_LOG_LEVEL",
+    "FRONA_SERVER_DATA_DIR",
+];
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ServerConfig {
@@ -300,12 +309,18 @@ pub struct LoadedConfig {
 
 impl Config {
     pub fn load() -> LoadedConfig {
+        let data_dir = std::env::var("FRONA_SERVER_DATA_DIR")
+            .unwrap_or_else(|_| "data".into());
+
         let config_path = std::env::var("FRONA_CONFIG")
-            .unwrap_or_else(|_| "data/config.yaml".into());
+            .unwrap_or_else(|_| format!("{data_dir}/config.yaml"));
 
         let yaml_content = std::fs::read_to_string(&config_path).ok();
 
-        let mut builder = config::Config::builder();
+        let mut builder = config::Config::builder()
+            .set_default("database.path", format!("{data_dir}/db")).unwrap()
+            .set_default("storage.workspaces_path", format!("{data_dir}/workspaces")).unwrap()
+            .set_default("storage.files_path", format!("{data_dir}/files")).unwrap();
 
         if let Some(ref content) = yaml_content {
             let expanded = expand_env_vars(content);
@@ -318,9 +333,9 @@ impl Config {
         // becomes "__" while field-name underscores are preserved.
         // e.g. FRONA_BROWSER_WS_URL → browser__ws_url → browser.ws_url
         let frona_env: HashMap<String, String> = std::env::vars()
-            .filter(|(k, _)| k.starts_with("FRONA_") && !matches!(k.as_str(), "FRONA_CONFIG" | "FRONA_LOG_CONFIG" | "FRONA_LOG_LEVEL"))
+            .filter(|(k, _)| k.starts_with(ENV_PREFIX) && !EXCLUDED_ENV_VARS.contains(&k.as_str()))
             .map(|(k, v)| {
-                let stripped = k["FRONA_".len()..].to_lowercase();
+                let stripped = k[ENV_PREFIX.len()..].to_lowercase();
                 let mapped = match stripped.find('_') {
                     Some(pos) => format!("{}__{}", &stripped[..pos], &stripped[pos + 1..]),
                     None => stripped,
@@ -440,6 +455,7 @@ mod tests {
         assert_eq!(config.auth.encryption_secret, "dev-secret-change-in-production");
         assert_eq!(config.database.path, "data/db");
         assert_eq!(config.storage.workspaces_path, "data/workspaces");
+        assert_eq!(config.storage.files_path, "data/files");
         assert_eq!(config.scheduler.space_compaction_secs, 3600);
         assert!(!config.sso.enabled);
         assert!(config.sso.signups_match_email);
@@ -513,4 +529,5 @@ mod tests {
         let path = config.profile_path("bob", "github");
         assert_eq!(path, PathBuf::from("/data/profiles/bob/github"));
     }
+
 }

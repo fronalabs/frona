@@ -39,7 +39,6 @@ services:
       - node-modules:/app/frontend/node_modules
       - ./frontend:/app/frontend
       - ./data:/app/data
-      - ./data/browser_profiles:/profiles
     environment:
       - ANTHROPIC_API_KEY
       - FRONA_SERVER_CORS_ORIGINS
@@ -48,7 +47,6 @@ services:
       - FRONA_LOG_LEVEL=debug
       - FRONA_BROWSER_WS_URL=ws://browserless:3333
       - FRONA_SEARCH_SEARXNG_BASE_URL=http://searxng:8080
-      - FRONA_DATABASE_PATH=data/db
       - FRONA_SERVER_PORT=3001
       - CARGO_BUILD_JOBS=4
       - WATCHPACK_POLLING=true
@@ -69,11 +67,11 @@ services:
     ports:
       - "3001:3001"
     volumes:
-      - ./data:/data
-      - ./data/browser_profiles:/profiles
+      - ./data:/app/data
     environment:
       - ANTHROPIC_API_KEY
       - FRONA_AUTH_ENCRYPTION_SECRET
+      - FRONA_LOG_LEVEL=debug
       - FRONA_BROWSER_WS_URL=ws://browserless:3333
       - FRONA_SEARCH_SEARXNG_BASE_URL=http://searxng:8080
       - FRONA_VOICE_CALLBACK_BASE_URL

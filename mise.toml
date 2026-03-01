@@ -71,6 +71,14 @@ run = "cargo test --workspace"
 description = "Build production Docker image"
 run = "docker build -t frona ."
 
+[tasks."docker:publish"]
+description = "Build production image and push to GHCR"
+run = """
+docker build -t frona .
+docker tag frona:latest ghcr.io/fronalabs/frona:latest
+docker push ghcr.io/fronalabs/frona:latest
+"""
+
 [tasks."docker:dev"]
 description = "Run full dev stack in Docker (with hot-reload)"
 run = "docker compose --profile dev up --build"

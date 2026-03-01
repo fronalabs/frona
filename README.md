@@ -4,8 +4,6 @@
     </a>
 </p>
 
-# Frona
-
 Frona is a self-hosted AI agent platform. You create autonomous agents, give them tools, and talk to them through a chat interface. Agents act on their own. They browse the web, run code, develop applications, search the internet, make phone calls, delegate work to each other, and remember context across conversations. You give them a task and they figure out how to get it done.
 
 You deploy Frona on your own infrastructure and keep full control of your data. The platform is built from the ground up with security in mind, and the engine is written in Rust. So it's fast, lightweight, and runs everything in a single process.

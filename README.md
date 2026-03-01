@@ -41,7 +41,7 @@ AI agents are powerful. They can execute code, browse websites, and access your 
 
 ## Quickstart
 
-See the [docker-compose example](examples/docker-compose) to get started, or check out the [documentation](https://docs.frona.ai) for more details.
+See the [docker-compose example](examples/docker-compose) to get started, take a look at [screenshots](https://docs.frona.ai/platform/screenshots/) to see the platform in action, or check out the [documentation](https://docs.frona.ai) for more details.
 
 ## Model Providers
 

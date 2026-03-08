@@ -10,10 +10,10 @@ import { TaskActions } from "./task-actions";
 import { DeleteConfirmDialog } from "./delete-confirm-dialog";
 
 const statusColors: Record<string, string> = {
-  pending: "bg-yellow-100 text-yellow-800",
-  inprogress: "bg-blue-100 text-blue-800",
-  completed: "bg-green-100 text-green-800",
-  failed: "bg-red-100 text-red-800",
+  pending: "bg-warning-bg text-warning-text",
+  inprogress: "bg-info-bg text-info-text",
+  completed: "bg-success-bg text-success-text",
+  failed: "bg-danger-bg text-danger-text",
   cancelled: "bg-surface-tertiary text-text-secondary",
 };
 

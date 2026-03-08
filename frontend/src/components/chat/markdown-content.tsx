@@ -26,11 +26,11 @@ function CopyButton({ code }: { code: string }) {
   return (
     <button
       onClick={handleCopy}
-      className="absolute right-2 top-2 rounded p-1 text-gray-400 opacity-0 transition-opacity hover:text-gray-200 group-hover:opacity-100"
+      className="absolute right-2 top-2 rounded p-1 text-text-tertiary opacity-0 transition-opacity hover:text-text-secondary group-hover:opacity-100"
       aria-label="Copy code"
     >
       {copied ? (
-        <CheckIcon className="h-4 w-4 text-green-400" />
+        <CheckIcon className="h-4 w-4 text-success" />
       ) : (
         <ClipboardIcon className="h-4 w-4" />
       )}

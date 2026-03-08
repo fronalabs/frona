@@ -146,8 +146,8 @@ function TaskCompletionMessage({ message }: { message: MessageResponse }) {
     <div
       className={`flex items-start gap-3 rounded-lg border px-4 py-3 text-sm ${
         isError
-          ? "border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200"
-          : "border-green-200 bg-green-50 text-green-800 dark:border-green-800 dark:bg-green-950 dark:text-green-200"
+          ? "border-danger/30 bg-danger-bg text-danger-text"
+          : "border-success/30 bg-success-bg text-success-text"
       }`}
     >
       <span className="flex-1">{message.content}</span>
@@ -251,8 +251,8 @@ function VaultApprovalMessage({
 
   if (resolved || denied) {
     const colorClasses = denied
-      ? "border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200"
-      : "border-green-200 bg-green-50 text-green-800 dark:border-green-800 dark:bg-green-950 dark:text-green-200";
+      ? "border-danger/30 bg-danger-bg text-danger-text"
+      : "border-success/30 bg-success-bg text-success-text";
     const label = denied ? "Credential request denied" : "Credential request approved";
 
     return (
@@ -386,7 +386,7 @@ function VaultApprovalMessage({
               <button
                 onClick={handleDeny}
                 disabled={loading}
-                className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-text-secondary hover:border-red-400 hover:text-red-500 transition"
+                className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-text-secondary hover:border-danger hover:text-danger transition"
               >
                 Deny
               </button>

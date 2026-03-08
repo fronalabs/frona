@@ -71,7 +71,7 @@ export function AgentItem({ agent }: AgentItemProps) {
       <span className="truncate flex-1">{agentDisplayName(agent.id, agent.name)}</span>
       <span
         className={`ml-2 h-2 w-2 shrink-0 rounded-full ${
-          agent.enabled ? "bg-green-500" : "bg-text-tertiary"
+          agent.enabled ? "bg-success" : "bg-text-tertiary"
         }`}
       />
     </button>

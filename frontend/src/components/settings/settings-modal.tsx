@@ -181,7 +181,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                     </div>
                     <button
                       onClick={() => handleDelete(cred.id)}
-                      className="shrink-0 ml-2 rounded-lg p-1 text-text-tertiary hover:text-red-500 hover:bg-surface-tertiary transition"
+                      className="shrink-0 ml-2 rounded-lg p-1 text-text-tertiary hover:text-danger hover:bg-surface-tertiary transition"
                     >
                       <TrashIcon className="h-4 w-4" />
                     </button>

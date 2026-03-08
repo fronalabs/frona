@@ -20,6 +20,7 @@ use crate::chat::broadcast::BroadcastService;
 use crate::chat::service::ChatService;
 use crate::contact::ContactService;
 use crate::credential::keypair::service::KeyPairService;
+use crate::credential::presign::PresignService;
 use crate::credential::vault::service::VaultService;
 use crate::inference::ModelProviderRegistry;
 use crate::inference::config::ModelRegistryConfig;
@@ -97,6 +98,7 @@ pub struct AppState {
     pub prompts: PromptLoader,
     pub vault_service: VaultService,
     pub keypair_service: KeyPairService,
+    pub presign_service: PresignService,
     pub token_service: TokenService,
     pub oauth_service: Option<OAuthService>,
     pub metrics_handle: PrometheusHandle,
@@ -154,6 +156,14 @@ impl AppState {
             &config.auth.encryption_secret,
             Arc::new(keypair_repo),
         );
+        let presign_user_repo: SurrealRepo<crate::core::models::User> = SurrealRepo::new(db.clone());
+        let presign_service = PresignService::new(
+            keypair_service.clone(),
+            Arc::new(presign_user_repo),
+            local_base_url.clone(),
+            config.auth.presign_expiry_secs,
+        );
+
         let voice_provider = create_voice_provider(&config.voice, &voice_base_url, keypair_service.clone());
         match &voice_provider {
             Some(p) => tracing::info!(provider = %p.name(), callback_base_url = %voice_base_url, "Voice calling enabled"),
@@ -228,6 +238,7 @@ impl AppState {
             prompts: prompt_loader,
             vault_service,
             keypair_service,
+            presign_service,
             token_service,
             oauth_service,
             metrics_handle,

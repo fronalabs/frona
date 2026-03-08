@@ -11,8 +11,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
-use crate::api::files::presign_message;
-use crate::auth::jwt::JwtService;
+use crate::credential::presign::{PresignService, presign_response, presign_response_by_user_id};
 use crate::chat::broadcast::BroadcastEvent;
 use crate::chat::message::models::{MessageResponse, ResolveToolRequest, SendMessageRequest};
 use crate::inference::convert::{format_content_with_attachments, to_rig_messages};
@@ -85,18 +84,8 @@ async fn list_messages(
         .list_messages(&auth.user_id, &chat_id)
         .await?;
 
-    let jwt_svc = JwtService::new();
     for msg in &mut messages {
-        presign_message(
-            msg,
-            &state.keypair_service,
-            &jwt_svc,
-            &auth.user_id,
-            &auth.username,
-            &state.config.server.issuer_url,
-            state.config.auth.presign_expiry_secs,
-        )
-        .await;
+        presign_response(&state.presign_service, msg, &auth.user_id, &auth.username).await;
     }
 
     Ok(Json(messages))
@@ -449,9 +438,7 @@ async fn stream_message(
         system_prompt, model_group, rig_history, registry, tool_registry,
         tool_ctx, cancel_token, mut tool_event_rx, ..
     } = ctx;
-    let presign_issuer = state.config.server.issuer_url.clone();
-    let presign_expiry = state.config.auth.presign_expiry_secs;
-    let presign_keypair = state.keypair_service.clone();
+    let presign_svc = state.presign_service.clone();
 
     if let Some(pending_id) = pending_tool_id {
         let mut user_response = state
@@ -460,16 +447,7 @@ async fn stream_message(
             .await
             .map_err(ApiError::from)?;
 
-        presign_message(
-            &mut user_response,
-            &presign_keypair,
-            &JwtService::new(),
-            &auth.user_id,
-            &auth.username,
-            &presign_issuer,
-            presign_expiry,
-        )
-        .await;
+        presign_response(&presign_svc, &mut user_response, &auth.user_id, &auth.username).await;
 
         let resolved = state
             .chat_service
@@ -477,6 +455,9 @@ async fn stream_message(
             .await
             .map_err(ApiError::from)?;
 
+        let presign_svc = presign_svc.clone();
+        let user_id = auth.user_id.clone();
+        let username = auth.username.clone();
         let chat_id_clone = chat_id.clone();
         tokio::spawn(async move {
             let user_event = Event::default()
@@ -508,7 +489,7 @@ async fn stream_message(
                 }).await
             });
 
-            stream_inference_events(&tx, &mut tool_event_rx, handle, &chat_service, &chat_id).await;
+            stream_inference_events(&tx, &mut tool_event_rx, handle, &chat_service, &chat_id, &presign_svc, &user_id, &username).await;
             active_sessions.remove(&chat_id_clone).await;
         });
     } else {
@@ -520,17 +501,11 @@ async fn stream_message(
             .await
             .map_err(ApiError::from)?;
 
-        presign_message(
-            &mut user_response,
-            &presign_keypair,
-            &JwtService::new(),
-            &auth.user_id,
-            &auth.username,
-            &presign_issuer,
-            presign_expiry,
-        )
-        .await;
+        presign_response(&presign_svc, &mut user_response, &auth.user_id, &auth.username).await;
 
+        let presign_svc = presign_svc.clone();
+        let user_id = auth.user_id.clone();
+        let username = auth.username.clone();
         let chat_id_clone = chat_id.clone();
         tokio::spawn(async move {
             let user_event = Event::default()
@@ -576,7 +551,7 @@ async fn stream_message(
                 }).await
             });
 
-            stream_inference_events(&tx, &mut tool_event_rx, handle, &chat_service, &chat_id).await;
+            stream_inference_events(&tx, &mut tool_event_rx, handle, &chat_service, &chat_id, &presign_svc, &user_id, &username).await;
             active_sessions.remove(&chat_id_clone).await;
         });
     }
@@ -585,12 +560,16 @@ async fn stream_message(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn stream_inference_events(
     tx: &tokio::sync::mpsc::Sender<Result<Event, Infallible>>,
     event_rx: &mut tokio::sync::mpsc::Receiver<InferenceEvent>,
     handle: tokio::task::JoinHandle<Result<InferenceResponse, crate::core::error::AppError>>,
     chat_service: &crate::chat::service::ChatService,
     chat_id: &str,
+    presign_svc: &PresignService,
+    user_id: &str,
+    username: &str,
 ) {
     let mut accumulated = String::new();
     while let Some(event) = event_rx.recv().await {
@@ -667,11 +646,12 @@ async fn stream_inference_events(
             match response {
                 InferenceResponse::Completed { text: _, attachments } => {
                     if !accumulated.is_empty()
-                        && let Ok(assistant_response) =
+                        && let Ok(mut assistant_response) =
                             chat_service.save_assistant_message_with_tool_calls(
                                 chat_id, accumulated, None, attachments,
                             ).await
                     {
+                        presign_response(presign_svc, &mut assistant_response, user_id, username).await;
                         let done_event = Event::default()
                             .event("done")
                             .json_data(serde_json::json!({ "message": assistant_response }))
@@ -698,7 +678,7 @@ async fn stream_inference_events(
                     external_tool,
                     system_prompt: _,
                 } => {
-                    if let Ok(tool_msg) = chat_service
+                    if let Ok(mut tool_msg) = chat_service
                         .save_external_tool_pending(
                             chat_id,
                             accumulated_text,
@@ -708,6 +688,7 @@ async fn stream_inference_events(
                         )
                         .await
                     {
+                        presign_response(presign_svc, &mut tool_msg, user_id, username).await;
                         let tool_event = Event::default()
                             .event("tool_message")
                             .json_data(&tool_msg)
@@ -761,12 +742,13 @@ pub async fn resume_tool_loop(
             match response {
                 InferenceResponse::Completed { text: _, attachments } => {
                     if !accumulated.is_empty()
-                        && let Ok(msg) = state.chat_service
+                        && let Ok(mut msg) = state.chat_service
                             .save_assistant_message_with_tool_calls(
                                 &chat_id_owned, accumulated, None, attachments,
                             )
                             .await
                     {
+                        presign_response_by_user_id(&state.presign_service, &mut msg, &user_id_owned).await;
                         state.broadcast_service.broadcast_chat_message(
                             &user_id_owned,
                             &chat_id_owned,
@@ -789,7 +771,7 @@ pub async fn resume_tool_loop(
                     system_prompt: _,
                 } => {
                     let text = if accumulated.is_empty() { accumulated_text } else { accumulated };
-                    if let Ok(tool_msg) = state.chat_service
+                    if let Ok(mut tool_msg) = state.chat_service
                         .save_external_tool_pending(
                             &chat_id_owned,
                             text,
@@ -799,6 +781,7 @@ pub async fn resume_tool_loop(
                         )
                         .await
                     {
+                        presign_response_by_user_id(&state.presign_service, &mut tool_msg, &user_id_owned).await;
                         state.broadcast_service.broadcast_chat_message(
                             &user_id_owned,
                             &chat_id_owned,

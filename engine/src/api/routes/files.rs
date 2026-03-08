@@ -12,10 +12,8 @@ use tokio::fs;
 use tokio_util::io::ReaderStream;
 
 use crate::api::files::{
-    Attachment, PresignClaims, dedup_filename, detect_content_type,
-    presign_attachment, resolve_virtual_path,
+    Attachment, dedup_filename, detect_content_type, resolve_virtual_path,
 };
-use crate::auth::jwt::JwtService;
 
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
@@ -69,14 +67,7 @@ impl FromRequestParts<AppState> for FileAuth {
             .as_deref()
             .ok_or_else(|| ApiError(crate::core::error::AppError::Auth("Missing authorization".into())))?;
 
-        let jwt_svc = JwtService::new();
-        let header = jwt_svc.decode_unverified_header(token)?;
-        let kid = header
-            .kid
-            .ok_or_else(|| ApiError(crate::core::error::AppError::Auth("Token missing kid".into())))?;
-
-        let decoding_key = state.keypair_service.get_verifying_key(&kid).await?;
-        let claims = jwt_svc.verify::<PresignClaims>(token, &decoding_key)?;
+        let claims = state.presign_service.verify(token).await?;
 
         Ok(FileAuth::Presigned {
             owner: claims.owner,
@@ -292,28 +283,13 @@ async fn presign_file(
     };
     let _ = resolve_virtual_path(&virtual_path, &state.config)?;
 
-    let jwt_svc = JwtService::new();
-    let mut att = Attachment {
-        filename: String::new(),
-        content_type: String::new(),
-        size_bytes: 0,
-        owner: req.owner,
-        path: req.path,
-        url: None,
-    };
+    let url = state
+        .presign_service
+        .sign(&req.owner, &req.path, &auth.user_id, &auth.username)
+        .await?;
 
-    presign_attachment(
-        &mut att,
-        &state.keypair_service,
-        &jwt_svc,
-        &auth.user_id,
-        &auth.username,
-        &state.config.server.issuer_url,
-        state.config.auth.presign_expiry_secs,
-    )
-    .await?;
-
-    Ok(Json(serde_json::json!({ "url": att.url })))
+    let url = if url.is_empty() { None } else { Some(url) };
+    Ok(Json(serde_json::json!({ "url": url })))
 }
 
 async fn serve_file(virtual_path: &str, state: &AppState) -> Result<Response, ApiError> {

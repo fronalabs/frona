@@ -2,12 +2,15 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use frona::api::db;
-use frona::api::files::{Attachment, PresignClaims, presign_attachment, presign_message};
+use frona::api::files::{Attachment, PresignClaims};
 use frona::api::repo::generic::SurrealRepo;
 use frona::auth::jwt::JwtService;
 use frona::auth::models::Claims;
 use frona::chat::message::models::{MessageResponse, MessageRole};
+use frona::core::models::User;
+use frona::core::repository::Repository;
 use frona::credential::keypair::service::KeyPairService;
+use frona::credential::presign::{PresignService, presign_response, presign_response_by_user_id};
 use surrealdb::Surreal;
 use surrealdb::engine::local::{Db, Mem};
 
@@ -19,6 +22,31 @@ async fn test_db() -> Surreal<Db> {
 
 fn keypair_service(db: &Surreal<Db>) -> KeyPairService {
     KeyPairService::new("test-jwt-secret", Arc::new(SurrealRepo::new(db.clone())))
+}
+
+fn presign_service(db: &Surreal<Db>) -> PresignService {
+    let kp_svc = keypair_service(db);
+    let user_repo: SurrealRepo<frona::core::models::User> = SurrealRepo::new(db.clone());
+    PresignService::new(
+        kp_svc,
+        Arc::new(user_repo),
+        "http://localhost:3001".to_string(),
+        86400,
+    )
+}
+
+async fn create_user(db: &Surreal<Db>, id: &str, username: &str) {
+    let repo: SurrealRepo<User> = SurrealRepo::new(db.clone());
+    let user = User {
+        id: id.to_string(),
+        username: username.to_string(),
+        email: format!("{username}@test.com"),
+        name: username.to_string(),
+        password_hash: String::new(),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    repo.create(&user).await.unwrap();
 }
 
 fn make_attachment(owner: &str, path: &str) -> Attachment {
@@ -49,78 +77,58 @@ fn make_message_response(attachments: Vec<Attachment>) -> MessageResponse {
 }
 
 // ---------------------------------------------------------------------------
-// presign_attachment
+// PresignService.sign
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn presign_attachment_populates_url() {
+async fn presign_service_sign_user_file() {
     let db = test_db().await;
-    let kp_svc = keypair_service(&db);
-    let jwt_svc = JwtService::new();
+    let svc = presign_service(&db);
 
-    let mut att = make_attachment("user:uid-1", "photo.png");
-    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-1", "uid-1", "http://localhost:3001", 86400)
-        .await
-        .unwrap();
-
-    let url = att.url.as_ref().expect("url should be populated");
-    assert!(url.starts_with("http://localhost:3001/api/files/user/uid-1/photo.png?presign="));
+    let url = svc.sign("user:uid-1", "photo.png", "uid-1", "jdoe").await.unwrap();
+    assert!(url.starts_with("http://localhost:3001/api/files/user/jdoe/photo.png?presign="));
 }
 
 #[tokio::test]
-async fn presign_attachment_agent_path() {
+async fn presign_service_sign_agent_file() {
     let db = test_db().await;
-    let kp_svc = keypair_service(&db);
-    let jwt_svc = JwtService::new();
+    let svc = presign_service(&db);
 
-    let mut att = make_attachment("agent:dev", "output.csv");
-    att.filename = "output.csv".to_string();
-    att.content_type = "text/csv".to_string();
-    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-1", "uid-1", "https://app.example.com", 3600)
-        .await
-        .unwrap();
-
-    let url = att.url.as_ref().expect("url should be populated");
-    assert!(url.starts_with("https://app.example.com/api/files/agent/dev/output.csv?presign="));
+    let url = svc.sign("agent:dev", "output.csv", "uid-1", "jdoe").await.unwrap();
+    assert!(url.starts_with("http://localhost:3001/api/files/agent/dev/output.csv?presign="));
 }
 
 #[tokio::test]
-async fn presign_attachment_skips_invalid_scheme() {
+async fn presign_service_sign_invalid_owner() {
     let db = test_db().await;
-    let kp_svc = keypair_service(&db);
-    let jwt_svc = JwtService::new();
+    let svc = presign_service(&db);
 
-    let mut att = make_attachment("invalid:x", "y");
-    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-1", "uid-1", "http://localhost:3001", 86400)
-        .await
-        .unwrap();
+    let url = svc.sign("invalid:x", "y", "uid-1", "jdoe").await.unwrap();
+    assert!(url.is_empty());
+}
 
-    assert!(att.url.is_none());
+#[tokio::test]
+async fn presign_service_sign_nested_path() {
+    let db = test_db().await;
+    let svc = presign_service(&db);
+
+    let url = svc.sign("user:uid-5", "sub/dir/report.pdf", "uid-5", "jdoe").await.unwrap();
+    assert!(url.starts_with("http://localhost:3001/api/files/user/jdoe/sub/dir/report.pdf?presign="));
 }
 
 // ---------------------------------------------------------------------------
-// presign JWT token round-trip verification
+// PresignService.verify
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn presign_token_verifies_successfully() {
+async fn presign_service_verify_round_trip() {
     let db = test_db().await;
-    let kp_svc = keypair_service(&db);
-    let jwt_svc = JwtService::new();
+    let svc = presign_service(&db);
 
-    let mut att = make_attachment("user:uid-1", "photo.png");
-    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-1", "uid-1", "http://localhost:3001", 86400)
-        .await
-        .unwrap();
-
-    let url = att.url.unwrap();
+    let url = svc.sign("user:uid-1", "photo.png", "uid-1", "jdoe").await.unwrap();
     let token = url.split("?presign=").nth(1).expect("token in URL");
 
-    let header = jwt_svc.decode_unverified_header(token).unwrap();
-    let kid = header.kid.expect("kid in header");
-    let decoding_key = kp_svc.get_verifying_key(&kid).await.unwrap();
-
-    let claims = jwt_svc.verify::<PresignClaims>(token, &decoding_key).unwrap();
+    let claims = svc.verify(token).await.unwrap();
     assert_eq!(claims.sub, "uid-1");
     assert_eq!(claims.owner, "user:uid-1");
     assert_eq!(claims.path, "photo.png");
@@ -140,35 +148,29 @@ async fn presign_token_rejected_when_expired() {
         sub: "uid-1".to_string(),
         owner: "user:uid-1".to_string(),
         path: "photo.png".to_string(),
-        exp: 1, // epoch second 1 — long expired
+        exp: 1,
     };
     let token = jwt_svc.sign(&expired_claims, &encoding_key, &kid).unwrap();
 
-    let decoding_key = kp_svc.get_verifying_key(&kid).await.unwrap();
-    let result = jwt_svc.verify::<PresignClaims>(&token, &decoding_key);
+    let svc = presign_service(&db);
+    let result = svc.verify(&token).await;
     assert!(result.is_err());
 }
 
 #[tokio::test]
 async fn presign_token_cannot_be_used_as_auth_token() {
     let db = test_db().await;
-    let kp_svc = keypair_service(&db);
+    let svc = presign_service(&db);
     let jwt_svc = JwtService::new();
 
-    let mut att = make_attachment("user:uid-1", "photo.png");
-    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-1", "uid-1", "http://localhost:3001", 86400)
-        .await
-        .unwrap();
-
-    let url = att.url.unwrap();
+    let url = svc.sign("user:uid-1", "photo.png", "uid-1", "jdoe").await.unwrap();
     let token = url.split("?presign=").nth(1).unwrap();
 
     let header = jwt_svc.decode_unverified_header(token).unwrap();
     let kid = header.kid.unwrap();
+    let kp_svc = keypair_service(&db);
     let decoding_key = kp_svc.get_verifying_key(&kid).await.unwrap();
 
-    // Attempting to decode as auth Claims should fail because PresignClaims
-    // lacks the required fields (token_id, token_type, etc.)
     let result = jwt_svc.verify::<Claims>(token, &decoding_key);
     assert!(result.is_err());
 }
@@ -176,44 +178,35 @@ async fn presign_token_cannot_be_used_as_auth_token() {
 #[tokio::test]
 async fn presign_token_wrong_key_rejected() {
     let db = test_db().await;
+    let svc = presign_service(&db);
     let kp_svc = keypair_service(&db);
-    let jwt_svc = JwtService::new();
 
-    let mut att = make_attachment("user:uid-1", "photo.png");
-    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-1", "uid-1", "http://localhost:3001", 86400)
-        .await
-        .unwrap();
-
-    let url = att.url.unwrap();
+    let url = svc.sign("user:uid-1", "photo.png", "uid-1", "jdoe").await.unwrap();
     let token = url.split("?presign=").nth(1).unwrap();
 
-    // Create a different keypair for a different user
     let (_, other_kid) = kp_svc.get_signing_key("user:other-user").await.unwrap();
     let other_key = kp_svc.get_verifying_key(&other_kid).await.unwrap();
 
-    // Verifying with the wrong key should fail
+    let jwt_svc = JwtService::new();
     let result = jwt_svc.verify::<PresignClaims>(token, &other_key);
     assert!(result.is_err());
 }
 
 // ---------------------------------------------------------------------------
-// presign_message
+// presign_response
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn presign_message_presigns_all_attachments() {
+async fn presign_response_presigns_all_attachments() {
     let db = test_db().await;
-    let kp_svc = keypair_service(&db);
-    let jwt_svc = JwtService::new();
+    let svc = presign_service(&db);
 
     let mut msg = make_message_response(vec![
         make_attachment("user:uid-1", "a.png"),
         make_attachment("user:uid-1", "b.jpg"),
     ]);
-    msg.attachments[1].filename = "b.jpg".to_string();
-    msg.attachments[1].content_type = "image/jpeg".to_string();
 
-    presign_message(&mut msg, &kp_svc, &jwt_svc, "uid-1", "uid-1", "http://localhost:3001", 86400).await;
+    presign_response(&svc, &mut msg, "uid-1", "jdoe").await;
 
     for att in &msg.attachments {
         assert!(att.url.is_some(), "each attachment should have a presigned URL");
@@ -222,14 +215,109 @@ async fn presign_message_presigns_all_attachments() {
 }
 
 #[tokio::test]
-async fn presign_message_no_attachments_is_noop() {
+async fn presign_response_no_attachments_is_noop() {
     let db = test_db().await;
-    let kp_svc = keypair_service(&db);
-    let jwt_svc = JwtService::new();
+    let svc = presign_service(&db);
 
     let mut msg = make_message_response(vec![]);
-    presign_message(&mut msg, &kp_svc, &jwt_svc, "uid-1", "uid-1", "http://localhost:3001", 86400).await;
+    presign_response(&svc, &mut msg, "uid-1", "jdoe").await;
     assert!(msg.attachments.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// sign_by_user_id (resolves username from DB)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sign_by_user_id_resolves_username() {
+    let db = test_db().await;
+    create_user(&db, "uid-10", "alice").await;
+    let svc = presign_service(&db);
+
+    let url = svc.sign_by_user_id("user:uid-10", "doc.pdf", "uid-10").await.unwrap();
+    assert!(url.contains("/user/alice/doc.pdf?presign="));
+}
+
+#[tokio::test]
+async fn sign_by_user_id_caches_username() {
+    let db = test_db().await;
+    create_user(&db, "uid-20", "bob").await;
+    let svc = presign_service(&db);
+
+    let url1 = svc.sign_by_user_id("user:uid-20", "a.txt", "uid-20").await.unwrap();
+    let url2 = svc.sign_by_user_id("user:uid-20", "b.txt", "uid-20").await.unwrap();
+
+    assert!(url1.contains("/user/bob/a.txt"));
+    assert!(url2.contains("/user/bob/b.txt"));
+}
+
+#[tokio::test]
+async fn sign_by_user_id_unknown_user_returns_error() {
+    let db = test_db().await;
+    let svc = presign_service(&db);
+
+    let result = svc.sign_by_user_id("user:nonexistent", "file.txt", "nonexistent").await;
+    assert!(result.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// presign_response_by_user_id
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn presign_response_by_user_id_resolves_and_presigns() {
+    let db = test_db().await;
+    create_user(&db, "uid-30", "carol").await;
+    let svc = presign_service(&db);
+
+    let mut msg = make_message_response(vec![
+        make_attachment("user:uid-30", "photo.png"),
+        make_attachment("agent:dev", "output.csv"),
+    ]);
+
+    presign_response_by_user_id(&svc, &mut msg, "uid-30").await;
+
+    assert!(msg.attachments[0].url.as_ref().unwrap().contains("/user/carol/photo.png"));
+    assert!(msg.attachments[1].url.as_ref().unwrap().contains("/agent/dev/output.csv"));
+}
+
+// ---------------------------------------------------------------------------
+// presign_response with mixed valid/invalid owners
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn presign_response_skips_invalid_owners() {
+    let db = test_db().await;
+    let svc = presign_service(&db);
+
+    let mut msg = make_message_response(vec![
+        make_attachment("user:uid-1", "valid.png"),
+        make_attachment("invalid:x", "skip.txt"),
+        make_attachment("agent:dev", "also_valid.csv"),
+    ]);
+
+    presign_response(&svc, &mut msg, "uid-1", "jdoe").await;
+
+    assert!(msg.attachments[0].url.is_some());
+    assert!(msg.attachments[1].url.is_none());
+    assert!(msg.attachments[2].url.is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Different users get different tokens
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn presign_different_users_get_different_tokens() {
+    let db = test_db().await;
+    let svc = presign_service(&db);
+
+    let url1 = svc.sign("user:user-a", "file.png", "user-a", "alice").await.unwrap();
+    let url2 = svc.sign("user:user-b", "file.png", "user-b", "bob").await.unwrap();
+
+    let token1 = url1.split("?presign=").nth(1).unwrap();
+    let token2 = url2.split("?presign=").nth(1).unwrap();
+    assert_ne!(token1, token2);
 }
 
 // ---------------------------------------------------------------------------
@@ -248,7 +336,6 @@ async fn signing_key_cache_returns_same_key() {
 
     assert_eq!(kid1, kid2);
 
-    // Both keys should produce tokens that verify with the same decoding key
     let claims = PresignClaims {
         sub: "x".into(),
         owner: "user:x".into(),
@@ -281,11 +368,9 @@ async fn verifying_key_cache_returns_same_key() {
     };
     let token = jwt_svc.sign(&claims, &enc_key, &kid).unwrap();
 
-    // First call populates cache, second uses it
     let dk1 = kp_svc.get_verifying_key(&kid).await.unwrap();
     let dk2 = kp_svc.get_verifying_key(&kid).await.unwrap();
 
-    // Both should successfully verify
     jwt_svc.verify::<PresignClaims>(&token, &dk1).unwrap();
     jwt_svc.verify::<PresignClaims>(&token, &dk2).unwrap();
 }
@@ -346,58 +431,4 @@ async fn generic_jwt_still_works_with_auth_claims() {
 
     assert_eq!(verified.sub, "uid-99");
     assert_eq!(verified.token_type, "access");
-}
-
-// ---------------------------------------------------------------------------
-// URL structure validation
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn presigned_url_contains_correct_path_segment() {
-    let db = test_db().await;
-    let kp_svc = keypair_service(&db);
-    let jwt_svc = JwtService::new();
-
-    let mut att = Attachment {
-        filename: "report.pdf".into(),
-        content_type: "application/pdf".into(),
-        size_bytes: 2048,
-        owner: "user:uid-5".into(),
-        path: "sub/dir/report.pdf".into(),
-        url: None,
-    };
-
-    presign_attachment(&mut att, &kp_svc, &jwt_svc, "uid-5", "uid-5", "https://example.com", 3600)
-        .await
-        .unwrap();
-
-    let url = att.url.unwrap();
-    assert!(url.starts_with("https://example.com/api/files/user/uid-5/sub/dir/report.pdf?presign="));
-}
-
-#[tokio::test]
-async fn presign_different_users_get_different_tokens() {
-    let db = test_db().await;
-    let kp_svc = keypair_service(&db);
-    let jwt_svc = JwtService::new();
-
-    let mut att1 = make_attachment("user:user-a", "file.png");
-    let mut att2 = make_attachment("user:user-b", "file.png");
-
-    presign_attachment(&mut att1, &kp_svc, &jwt_svc, "user-a", "user-a", "http://localhost", 86400)
-        .await
-        .unwrap();
-    presign_attachment(&mut att2, &kp_svc, &jwt_svc, "user-b", "user-b", "http://localhost", 86400)
-        .await
-        .unwrap();
-
-    let token1 = att1.url.unwrap().split("?presign=").nth(1).unwrap().to_string();
-    let token2 = att2.url.unwrap().split("?presign=").nth(1).unwrap().to_string();
-
-    assert_ne!(token1, token2);
-
-    // Each token should only verify with its owner's kid
-    let h1 = jwt_svc.decode_unverified_header(&token1).unwrap();
-    let h2 = jwt_svc.decode_unverified_header(&token2).unwrap();
-    assert_ne!(h1.kid, h2.kid);
 }

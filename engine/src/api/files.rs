@@ -3,10 +3,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
-use crate::auth::jwt::JwtService;
-use crate::chat::message::models::MessageResponse;
 use crate::core::error::AppError;
-use crate::credential::keypair::service::KeyPairService;
 
 use crate::core::config::Config;
 
@@ -56,52 +53,6 @@ pub fn attachment_url_segment(owner: &str, path: &str, username: Option<&str>) -
         owner
             .strip_prefix("agent:")
             .map(|agent_id| format!("agent/{agent_id}/{path}"))
-    }
-}
-
-pub async fn presign_attachment(
-    att: &mut Attachment,
-    keypair_svc: &KeyPairService,
-    jwt_svc: &JwtService,
-    user_id: &str,
-    username: &str,
-    issuer_url: &str,
-    expiry_secs: u64,
-) -> Result<(), AppError> {
-    let segment = match attachment_url_segment(&att.owner, &att.path, Some(username)) {
-        Some(s) => s,
-        None => return Ok(()),
-    };
-
-    let keypair_owner = format!("user:{user_id}");
-    let (encoding_key, kid) = keypair_svc.get_signing_key(&keypair_owner).await?;
-
-    let exp = (chrono::Utc::now().timestamp() as u64 + expiry_secs) as usize;
-    let claims = PresignClaims {
-        sub: user_id.to_string(),
-        owner: att.owner.clone(),
-        path: att.path.clone(),
-        exp,
-    };
-
-    let token = jwt_svc.sign(&claims, &encoding_key, &kid)?;
-    att.url = Some(format!("{issuer_url}/api/files/{segment}?presign={token}"));
-    Ok(())
-}
-
-pub async fn presign_message(
-    msg: &mut MessageResponse,
-    keypair_svc: &KeyPairService,
-    jwt_svc: &JwtService,
-    user_id: &str,
-    username: &str,
-    issuer_url: &str,
-    expiry_secs: u64,
-) {
-    for att in &mut msg.attachments {
-        if let Err(e) = presign_attachment(att, keypair_svc, jwt_svc, user_id, username, issuer_url, expiry_secs).await {
-            tracing::warn!(error = %e, path = %att.path, "Failed to presign attachment");
-        }
     }
 }
 

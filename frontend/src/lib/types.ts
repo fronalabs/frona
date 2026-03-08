@@ -119,12 +119,13 @@ export function indexContactsById(contacts: Contact[]): Record<string, Contact> 
 }
 
 // Message types
-export type MessageToolStatus = "pending" | "resolved";
+export type MessageToolStatus = "pending" | "resolved" | "denied";
 
 export type MessageTool =
   | { type: "HumanInTheLoop"; data: { reason: string; debugger_url: string; status: MessageToolStatus; response: string | null } }
   | { type: "Question"; data: { question: string; options: string[]; status: MessageToolStatus; response: string | null } }
-  | { type: "TaskCompletion"; data: { task_id: string; chat_id: string | null; status: string } };
+  | { type: "TaskCompletion"; data: { task_id: string; chat_id: string | null; status: string } }
+  | { type: "VaultApproval"; data: { query: string; reason: string; env_var_prefix: string | null; status: MessageToolStatus; response: string | null } };
 
 export interface MessageResponse {
   id: string;
@@ -207,7 +208,8 @@ export interface ToolCallStatus {
 // Credential types
 export type CredentialData =
   | { type: "BrowserProfile" }
-  | { type: "UsernamePassword"; data: { username: string } };
+  | { type: "UsernamePassword"; data: { username: string } }
+  | { type: "ApiKey" };
 
 export interface CredentialResponse {
   id: string;

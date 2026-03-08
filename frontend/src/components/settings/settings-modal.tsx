@@ -18,7 +18,7 @@ const themeModes = [
   { value: "dark" as const, label: "Dark" },
 ];
 
-type CredentialType = "BrowserProfile" | "UsernamePassword";
+type CredentialType = "BrowserProfile" | "UsernamePassword" | "ApiKey";
 
 export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const { mode, setMode } = useTheme();
@@ -28,14 +28,14 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   const [showForm, setShowForm] = useState(false);
   const [credType, setCredType] = useState<CredentialType>("BrowserProfile");
   const [name, setName] = useState("");
-  const [provider, setProvider] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [apiKey, setApiKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const fetchCredentials = useCallback(async () => {
     try {
-      const data = await api.get<CredentialResponse[]>("/api/credentials");
+      const data = await api.get<CredentialResponse[]>("/api/vaults/local/items");
       setCredentials(data);
     } catch {
       // ignore fetch errors
@@ -52,23 +52,28 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
     setShowForm(false);
     setCredType("BrowserProfile");
     setName("");
-    setProvider("");
     setUsername("");
     setPassword("");
+    setApiKey("");
   };
 
   const handleCreate = async () => {
-    if (!name.trim() || !provider.trim()) return;
+    if (!name.trim()) return;
     if (credType === "UsernamePassword" && (!username.trim() || !password.trim())) return;
+    if (credType === "ApiKey" && !apiKey.trim()) return;
 
     setSubmitting(true);
     try {
-      const data =
-        credType === "BrowserProfile"
-          ? { type: "BrowserProfile" as const }
-          : { type: "UsernamePassword" as const, data: { username, password } };
+      let body: Record<string, string>;
+      if (credType === "BrowserProfile") {
+        body = { type: "BrowserProfile", name };
+      } else if (credType === "UsernamePassword") {
+        body = { type: "UsernamePassword", name, username, password };
+      } else {
+        body = { type: "ApiKey", name, api_key: apiKey };
+      }
 
-      await api.post("/api/credentials", { name, provider, data });
+      await api.post("/api/vaults/local/items", body);
       resetForm();
       await fetchCredentials();
     } catch {
@@ -80,7 +85,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
 
   const handleDelete = async (id: string) => {
     try {
-      await api.delete(`/api/credentials/${id}`);
+      await api.delete(`/api/vaults/local/items/${id}`);
       await fetchCredentials();
     } catch {
       // ignore delete errors
@@ -88,6 +93,14 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
   };
 
   if (!open) return null;
+
+  const typeLabel = (data: CredentialResponse["data"]) => {
+    switch (data.type) {
+      case "BrowserProfile": return "Browser";
+      case "UsernamePassword": return "Password";
+      case "ApiKey": return "API Key";
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -161,7 +174,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                       <div className="flex items-center gap-2">
                         <p className="text-sm text-text-primary truncate">{cred.name}</p>
                         <span className="shrink-0 rounded bg-surface-tertiary px-1.5 py-0.5 text-[10px] font-medium text-text-tertiary">
-                          {cred.data.type === "BrowserProfile" ? "Browser" : "Password"}
+                          {typeLabel(cred.data)}
                         </span>
                       </div>
                       <p className="text-xs text-text-tertiary truncate">{cred.provider}</p>
@@ -184,7 +197,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
             {showForm && (
               <div className="mt-2 rounded-lg border border-border p-3 space-y-3">
                 <div className="flex gap-2">
-                  {(["BrowserProfile", "UsernamePassword"] as const).map((t) => (
+                  {(["BrowserProfile", "UsernamePassword", "ApiKey"] as const).map((t) => (
                     <button
                       key={t}
                       onClick={() => setCredType(t)}
@@ -194,7 +207,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                           : "bg-surface-secondary text-text-secondary hover:bg-surface-tertiary"
                       }`}
                     >
-                      {t === "BrowserProfile" ? "Browser Profile" : "Username & Password"}
+                      {t === "BrowserProfile" ? "Browser" : t === "UsernamePassword" ? "Password" : "API Key"}
                     </button>
                   ))}
                 </div>
@@ -203,13 +216,6 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                   placeholder="Name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
-                />
-                <input
-                  type="text"
-                  placeholder="Provider"
-                  value={provider}
-                  onChange={(e) => setProvider(e.target.value)}
                   className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
                 />
                 {credType === "UsernamePassword" && (
@@ -229,6 +235,15 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
                       className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
                     />
                   </>
+                )}
+                {credType === "ApiKey" && (
+                  <input
+                    type="password"
+                    placeholder="API Key"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+                  />
                 )}
                 <div className="flex gap-2 justify-end">
                   <button

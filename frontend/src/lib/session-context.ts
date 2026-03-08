@@ -97,7 +97,12 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         onChatMessage: (chatId, message) => {
           if (chatId !== activeChatIdRef.current) return;
           setMessages((prev) => {
-            if (prev.some((m) => m.id === message.id)) return prev;
+            const idx = prev.findIndex((m) => m.id === message.id);
+            if (idx >= 0) {
+              const updated = [...prev];
+              updated[idx] = message;
+              return updated;
+            }
             return [...prev, message];
           });
         },

@@ -33,6 +33,7 @@ impl WorkspaceManager {
             network_access,
             allowed_network_destinations,
             skill_dirs: Vec::new(),
+            extra_env_vars: Vec::new(),
         }
     }
 }
@@ -43,11 +44,17 @@ pub struct Workspace {
     network_access: bool,
     allowed_network_destinations: Vec<String>,
     skill_dirs: Vec<(String, String)>,
+    extra_env_vars: Vec<(String, String)>,
 }
 
 impl Workspace {
     pub fn with_skill_dirs(mut self, skill_dirs: Vec<(String, String)>) -> Self {
         self.skill_dirs = skill_dirs;
+        self
+    }
+
+    pub fn with_extra_env_vars(mut self, vars: Vec<(String, String)>) -> Self {
+        self.extra_env_vars = vars;
         self
     }
 }
@@ -149,6 +156,8 @@ impl Workspace {
 
         let resolved_refs: Vec<&str> = resolved_args.iter().map(|s| s.as_str()).collect();
 
+        env_vars.extend(self.extra_env_vars.clone());
+
         let config = SandboxConfig {
             workspace_dir: canonical_path.to_string_lossy().into_owned(),
             network_access: self.network_access,
@@ -184,6 +193,7 @@ mod tests {
             network_access: false,
             allowed_network_destinations: Vec::new(),
             skill_dirs: Vec::new(),
+            extra_env_vars: Vec::new(),
         }
     }
 
@@ -222,6 +232,7 @@ mod tests {
             network_access: false,
             allowed_network_destinations: Vec::new(),
             skill_dirs: Vec::new(),
+            extra_env_vars: Vec::new(),
         };
         ws.setup().unwrap();
 
@@ -260,6 +271,23 @@ mod tests {
         assert_eq!(lines[1], canonical.join(".config").to_string_lossy().as_ref());
         assert_eq!(lines[2], canonical.join(".cache").to_string_lossy().as_ref());
 
+        let _ = std::fs::remove_dir_all(&ws.path);
+    }
+
+    #[tokio::test]
+    async fn test_execute_does_not_leak_parent_env() {
+        unsafe { std::env::set_var("FRONA_TEST_SECRET", "leaked") };
+        let ws = temp_workspace(&format!("env_leak_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::remove_dir_all(&ws.path);
+
+        let result = ws
+            .execute("bash", &["-c", "echo $FRONA_TEST_SECRET"], None, 10)
+            .await
+            .unwrap();
+
+        assert_eq!(result.stdout.trim(), "", "parent env vars must not leak into sandbox");
+
+        unsafe { std::env::remove_var("FRONA_TEST_SECRET") };
         let _ = std::fs::remove_dir_all(&ws.path);
     }
 

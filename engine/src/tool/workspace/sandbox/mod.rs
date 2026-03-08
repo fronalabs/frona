@@ -214,10 +214,26 @@ pub async fn execute_sandboxed(
 ) -> Result<SandboxOutput, AppError> {
     let mut cmd = sandbox.sandboxed_command(program, args, config)?;
 
-    if !config.additional_path_dirs.is_empty() {
+    cmd.env_clear();
+
+    const PASSTHROUGH_VARS: &[&str] = &[
+        "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "USER", "LOGNAME", "TMPDIR", "SHELL",
+    ];
+
+    for key in PASSTHROUGH_VARS {
+        if let Ok(val) = std::env::var(key) {
+            cmd.env(key, val);
+        }
+    }
+
+    {
         let existing = std::env::var("PATH").unwrap_or_default();
-        let extra = config.additional_path_dirs.join(":");
-        cmd.env("PATH", format!("{extra}:{existing}"));
+        if config.additional_path_dirs.is_empty() {
+            cmd.env("PATH", existing);
+        } else {
+            let extra = config.additional_path_dirs.join(":");
+            cmd.env("PATH", format!("{extra}:{existing}"));
+        }
     }
 
     for (key, value) in &config.env_vars {

@@ -39,6 +39,7 @@ services:
       - cargo-cache:/app/target
       - node-modules:/app/frontend/node_modules
       - ../frontend:/app/frontend
+      - ../resources:/app/resources
       - ../data:/app/data
     environment:
       - ANTHROPIC_API_KEY

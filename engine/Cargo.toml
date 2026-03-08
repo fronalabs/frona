@@ -45,6 +45,9 @@ backon = { workspace = true }
 cron = "0.15"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false }
+vaultrs = { version = "0.7", default-features = false, features = ["rustls"] }
+keepass = "0.10"
+keeper-secrets-manager-core = "17"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"

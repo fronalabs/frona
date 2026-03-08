@@ -66,6 +66,17 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE TABLE IF NOT EXISTS call SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_call_chat ON TABLE call COLUMNS chat UNIQUE;
 
+        DEFINE TABLE IF NOT EXISTS vault_connection SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_vault_connection_user ON TABLE vault_connection COLUMNS user_id;
+
+        DEFINE TABLE IF NOT EXISTS vault_grant SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_vault_grant_user ON TABLE vault_grant COLUMNS user_id;
+        DEFINE INDEX IF NOT EXISTS idx_vault_grant_user_agent ON TABLE vault_grant COLUMNS user_id, agent_id;
+
+        DEFINE TABLE IF NOT EXISTS vault_access_log SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_vault_access_log_chat ON TABLE vault_access_log COLUMNS chat_id;
+        DEFINE INDEX IF NOT EXISTS idx_vault_access_log_user ON TABLE vault_access_log COLUMNS user_id;
+
         DEFINE EVENT IF NOT EXISTS cascade_delete_chat_messages ON TABLE chat
           WHEN $event = 'DELETE'
           THEN (DELETE FROM message WHERE chat_id = meta::id($before.id));

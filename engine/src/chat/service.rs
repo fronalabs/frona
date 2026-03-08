@@ -373,7 +373,39 @@ impl ChatService {
                 *status = ToolStatus::Resolved;
                 *resp = Some(response_text.clone());
             }
+            Some(MessageTool::VaultApproval { status, response: resp, .. }) => {
+                *status = ToolStatus::Resolved;
+                *resp = Some(response_text.clone());
+            }
             _ => return Err(AppError::Validation("Message has no resolvable tool".into())),
+        }
+
+        message.content = response_text;
+
+        let updated = self.message_repo.update(&message).await?;
+        Ok(updated.into())
+    }
+
+    pub async fn deny_tool_message(
+        &self,
+        message_id: &str,
+        response: Option<String>,
+    ) -> Result<MessageResponse, AppError> {
+        let mut message = self
+            .message_repo
+            .find_by_id(message_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Message not found".into()))?;
+
+        let response_text = response
+            .unwrap_or_else(|| "User denied the request.".to_string());
+
+        match &mut message.tool {
+            Some(MessageTool::VaultApproval { status, response: resp, .. }) => {
+                *status = ToolStatus::Denied;
+                *resp = Some(response_text.clone());
+            }
+            _ => return Err(AppError::Validation("Message has no deniable tool".into())),
         }
 
         message.content = response_text;

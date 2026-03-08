@@ -20,7 +20,7 @@ use crate::chat::broadcast::BroadcastService;
 use crate::chat::service::ChatService;
 use crate::contact::ContactService;
 use crate::credential::keypair::service::KeyPairService;
-use crate::credential::service::CredentialService;
+use crate::credential::vault::service::VaultService;
 use crate::inference::ModelProviderRegistry;
 use crate::inference::config::ModelRegistryConfig;
 use crate::memory::service::MemoryService;
@@ -81,7 +81,6 @@ pub struct AppState {
     pub chat_service: ChatService,
     pub contact_service: ContactService,
     pub task_service: TaskService,
-    pub credential_service: CredentialService,
     pub broadcast_service: BroadcastService,
     pub browser_session_manager: Arc<BrowserSessionManager>,
     pub active_sessions: ActiveSessions,
@@ -96,6 +95,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub agent_workspaces: AgentWorkspaceManager,
     pub prompts: PromptLoader,
+    pub vault_service: VaultService,
     pub keypair_service: KeyPairService,
     pub token_service: TokenService,
     pub oauth_service: Option<OAuthService>,
@@ -169,6 +169,23 @@ impl AppState {
             config.auth.refresh_token_expiry_secs,
         );
 
+        let vault_credential_repo: Arc<dyn crate::credential::vault::repository::CredentialRepository> =
+            Arc::new(SurrealRepo::<crate::credential::vault::models::Credential>::new(db.clone()));
+        let vault_connection_repo: Arc<dyn crate::credential::vault::repository::VaultConnectionRepository> =
+            Arc::new(SurrealRepo::<crate::credential::vault::models::VaultConnection>::new(db.clone()));
+        let vault_grant_repo: Arc<dyn crate::credential::vault::repository::VaultGrantRepository> =
+            Arc::new(SurrealRepo::<crate::credential::vault::models::VaultGrant>::new(db.clone()));
+        let vault_access_log_repo: Arc<dyn crate::credential::vault::repository::VaultAccessLogRepository> =
+            Arc::new(SurrealRepo::<crate::credential::vault::models::VaultAccessLog>::new(db.clone()));
+        let vault_service = VaultService::new(
+            vault_connection_repo,
+            vault_grant_repo,
+            vault_credential_repo,
+            vault_access_log_repo,
+            &config.auth.encryption_secret,
+            config.vault.clone(),
+        );
+
         let oauth_service = if config.sso.enabled {
             let oauth_repo: SurrealRepo<crate::auth::oauth::models::OAuthIdentity> =
                 SurrealRepo::new(db.clone());
@@ -195,7 +212,6 @@ impl AppState {
                 prompt_loader.clone(),
             ),
             task_service: TaskService::new(SurrealRepo::new(db.clone())),
-            credential_service: CredentialService::new(SurrealRepo::new(db.clone())),
             broadcast_service: broadcast_service.clone(),
             browser_session_manager: Arc::new(BrowserSessionManager::new(config.browser.clone())),
             active_sessions: ActiveSessions::default(),
@@ -210,6 +226,7 @@ impl AppState {
             config: Arc::new(config.clone()),
             agent_workspaces: workspaces,
             prompts: prompt_loader,
+            vault_service,
             keypair_service,
             token_service,
             oauth_service,

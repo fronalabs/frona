@@ -22,6 +22,7 @@ pub enum MessageRole {
 pub enum ToolStatus {
     Pending,
     Resolved,
+    Denied,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
@@ -44,6 +45,13 @@ pub enum MessageTool {
         task_id: String,
         chat_id: Option<String>,
         status: crate::agent::task::models::TaskStatus,
+    },
+    VaultApproval {
+        query: String,
+        reason: String,
+        env_var_prefix: Option<String>,
+        status: ToolStatus,
+        response: Option<String>,
     },
 }
 

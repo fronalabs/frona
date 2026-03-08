@@ -283,6 +283,25 @@ pub struct VoiceConfig {
     pub callback_base_url: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct VaultConfig {
+    pub onepassword_host: Option<String>,
+    pub onepassword_token: Option<String>,
+    pub onepassword_vault_id: Option<String>,
+    pub bitwarden_token: Option<String>,
+    pub bitwarden_org_id: Option<String>,
+    pub bitwarden_api_url: Option<String>,
+    pub bitwarden_identity_url: Option<String>,
+    pub hashicorp_address: Option<String>,
+    pub hashicorp_token: Option<String>,
+    pub hashicorp_mount: Option<String>,
+    pub keepass_path: Option<String>,
+    pub keepass_password: Option<String>,
+    pub keeper_app_key: Option<String>,
+}
+
+
 #[derive(Clone, Debug, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct Config {
@@ -292,6 +311,7 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub browser: Option<BrowserConfig>,
     pub search: SearchConfig,
+    pub vault: VaultConfig,
     pub storage: StorageConfig,
     pub scheduler: SchedulerConfig,
     pub inference: InferenceConfig,
@@ -377,6 +397,11 @@ impl Config {
             redact(&mut v, &["sso", "client_secret"]);
             redact(&mut v, &["voice", "twilio_account_sid"]);
             redact(&mut v, &["voice", "twilio_auth_token"]);
+            redact(&mut v, &["vault", "onepassword_token"]);
+            redact(&mut v, &["vault", "bitwarden_token"]);
+            redact(&mut v, &["vault", "hashicorp_token"]);
+            redact(&mut v, &["vault", "keepass_password"]);
+            redact(&mut v, &["vault", "keeper_app_key"]);
             if let Some(providers) = v.get_mut("providers").and_then(|p| p.as_object_mut()) {
                 for provider in providers.values_mut() {
                     redact(provider, &["api_key"]);

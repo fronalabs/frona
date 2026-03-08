@@ -5,6 +5,7 @@ use tokio::sync::broadcast;
 use super::message::models::MessageResponse;
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum BroadcastEvent {
     ChatMessage {
         user_id: String,

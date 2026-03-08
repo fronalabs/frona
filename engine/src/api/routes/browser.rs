@@ -25,8 +25,8 @@ async fn debugger_proxy(
     Path(credential_id): Path<String>,
 ) -> Result<Response, ApiError> {
     let credential = state
-        .credential_service
-        .find_by_id(&credential_id)
+        .vault_service
+        .find_credential_by_id(&credential_id)
         .await
         .map_err(ApiError::from)?
         .ok_or_else(|| ApiError::from(crate::core::error::AppError::NotFound("Credential not found".into())))?;

@@ -8,7 +8,7 @@ use frona::inference::error::InferenceError;
 use frona::inference::provider::{ModelProvider, ModelRef};
 use frona::inference::registry::ModelProviderRegistry;
 use frona::inference::Usage;
-use frona::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, ToolType};
+use frona::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
 use rig::completion::request::ToolDefinition as RigToolDefinition;
 use rig::completion::{AssistantContent, Message as RigMessage};
 use rig::completion::message::{ToolCall, ToolFunction};
@@ -180,17 +180,13 @@ impl AgentTool for MockExternalTool {
         }]
     }
 
-    fn tool_type(&self, _tool_name: &str) -> ToolType {
-        ToolType::External
-    }
-
     async fn execute(
         &self,
         _tool_name: &str,
         _arguments: Value,
         _ctx: &InferenceContext,
     ) -> Result<ToolOutput, frona::core::error::AppError> {
-        Ok(ToolOutput::text("external result"))
+        Ok(ToolOutput::text("external result").as_pending_external())
     }
 }
 
@@ -232,8 +228,8 @@ impl AgentTool for MockFailingTool {
 
 pub fn mock_context() -> InferenceContext {
     let (tx, _rx) = mpsc::channel(100);
-    InferenceContext {
-        user: frona::core::models::user::User {
+    InferenceContext::new(
+        frona::core::models::user::User {
             id: "test-user".into(),
             username: "testuser".into(),
             email: "test@test.com".into(),
@@ -242,7 +238,7 @@ pub fn mock_context() -> InferenceContext {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         },
-        agent: frona::agent::models::Agent {
+        frona::agent::models::Agent {
             id: "test-agent".into(),
             user_id: Some("test-user".into()),
             name: "Test Agent".into(),
@@ -260,7 +256,7 @@ pub fn mock_context() -> InferenceContext {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         },
-        chat: frona::chat::models::Chat {
+        frona::chat::models::Chat {
             id: "test-chat".into(),
             user_id: "test-user".into(),
             space_id: None,
@@ -271,8 +267,8 @@ pub fn mock_context() -> InferenceContext {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         },
-        event_tx: tx,
-    }
+        tx,
+    )
 }
 
 pub fn test_model_group() -> ModelGroup {

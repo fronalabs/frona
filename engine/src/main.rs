@@ -54,6 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let surreal = db::init(&config.database.path).await?;
     db::seed_config_agents(&surreal, &workspaces).await?;
     let state = AppState::new(surreal.clone(), &config, loaded.models, workspaces, metrics_handle);
+    state.vault_service.sync_config_connections().await?;
     state.browser_session_manager.kill_all_sessions().await;
 
     state.init_task_executor();
@@ -113,12 +114,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(routes::contacts::router())
         .merge(routes::messages::router())
         .merge(routes::tasks::router())
-        .merge(routes::credentials::router())
         .merge(routes::browser::router())
         .merge(routes::navigation::router())
         .merge(routes::tools::router())
         .merge(routes::files::router())
         .merge(routes::metrics::router())
+        .merge(routes::vaults::router())
         .merge(routes::voice::router())
         .layer(DefaultBodyLimit::max(config.server.max_body_size_bytes))
         .layer(axum::middleware::from_fn(track_http_metrics));

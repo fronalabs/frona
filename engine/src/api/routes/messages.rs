@@ -128,8 +128,8 @@ pub async fn build_tool_registry(
     let mut registry = AgentToolRegistry::new();
 
     let credential = state
-        .credential_service
-        .list(user_id)
+        .vault_service
+        .list_credentials(user_id)
         .await
         .ok()
         .and_then(|creds| creds.into_iter().next());

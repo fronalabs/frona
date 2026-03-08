@@ -31,6 +31,7 @@ use crate::tool::delegate::DelegateTaskTool;
 use crate::tool::heartbeat::HeartbeatTool;
 use crate::tool::produce_file::ProduceFileTool;
 use crate::tool::read_file::ReadFileTool;
+use crate::tool::request_credentials::RequestCredentialsTool;
 use crate::tool::schedule::ScheduleTaskTool;
 use crate::tool::time::TimeTool;
 use crate::tool::update_entity::UpdateEntityTool;
@@ -254,6 +255,13 @@ pub async fn build_tool_registry(
         )));
     }
 
+    if allowed_tools.iter().any(|t| t == "request_credentials") {
+        registry.register(Arc::new(RequestCredentialsTool::new(
+            state.vault_service.clone(),
+            prompts.clone(),
+        )));
+    }
+
     if allowed_tools.iter().any(|t| t == "make_voice_call") {
         registry.register(Arc::new(crate::tool::voice::VoiceCallTool {
             provider: state.voice_provider.clone(),
@@ -381,7 +389,8 @@ async fn stream_message(
     let stored_messages = state.chat_service.get_stored_messages(&chat_id).await;
     let pending_tool_id = stored_messages.iter().rev().find_map(|m| match &m.tool {
         Some(MessageTool::Question { status: ToolStatus::Pending, .. })
-        | Some(MessageTool::HumanInTheLoop { status: ToolStatus::Pending, .. }) => {
+        | Some(MessageTool::HumanInTheLoop { status: ToolStatus::Pending, .. })
+        | Some(MessageTool::VaultApproval { status: ToolStatus::Pending, .. }) => {
             Some(m.id.clone())
         }
         _ => None,

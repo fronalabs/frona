@@ -96,7 +96,7 @@ impl AgentTool for CliTool {
         }]
     }
 
-    async fn execute(&self, _tool_name: &str, arguments: Value, _ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
+    async fn execute(&self, _tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
         let args_map = arguments
             .as_object()
             .ok_or_else(|| AppError::Tool("Arguments must be a JSON object".to_string()))?;
@@ -124,11 +124,18 @@ impl AgentTool for CliTool {
             .as_ref()
             .map(|tmpl| Self::substitute(tmpl, args_map));
 
-        let workspace = self.workspace_manager.get_workspace(
+        let mut workspace = self.workspace_manager.get_workspace(
             &self.agent_id,
             self.network_access,
             self.allowed_network_destinations.clone(),
         ).with_skill_dirs(self.skill_dirs.clone());
+
+        {
+            let vault_vars = ctx.vault_env_vars.read().await;
+            if !vault_vars.is_empty() {
+                workspace = workspace.with_extra_env_vars(vault_vars.clone());
+            }
+        }
 
         let timeout = self.config.timeout_secs.unwrap_or(30);
 

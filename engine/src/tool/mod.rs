@@ -7,6 +7,7 @@ pub mod produce_file;
 pub mod read_file;
 pub mod registry;
 pub mod remember;
+pub mod request_credentials;
 pub mod schedule;
 pub mod skill;
 pub mod time;
@@ -40,6 +41,7 @@ pub fn init_configurable_tools(cli_tools: &[CliToolConfig]) {
     names.push("delegate".to_string());
     names.push("schedule".to_string());
     names.push("heartbeat".to_string());
+    names.push("request_credentials".to_string());
     let _ = CONFIGURABLE_TOOLS.set(names);
 }
 

@@ -117,12 +117,17 @@ impl ChatSessionContext {
             .find_by_id(&chat.agent_id)
             .await?
             .ok_or_else(|| AppError::NotFound("Agent not found".into()))?;
-        let tool_ctx = InferenceContext {
-            user,
-            agent,
-            chat: chat.clone(),
-            event_tx: tool_event_tx,
-        };
+        let tool_ctx = InferenceContext::new(user, agent, chat.clone(), tool_event_tx);
+
+        let vault_env = state
+            .vault_service
+            .hydrate_chat_env_vars(user_id, &chat.id)
+            .await
+            .unwrap_or_default();
+        if !vault_env.is_empty() {
+            let mut vault_vars = tool_ctx.vault_env_vars.write().await;
+            vault_vars.extend(vault_env);
+        }
 
         Ok(Self {
             chat,

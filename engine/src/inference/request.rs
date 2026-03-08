@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
 use rig::completion::Message as RigMessage;
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::models::Agent;
@@ -16,6 +18,7 @@ pub struct InferenceContext {
     pub agent: Agent,
     pub chat: Chat,
     pub event_tx: mpsc::Sender<InferenceEvent>,
+    pub vault_env_vars: Arc<RwLock<Vec<(String, String)>>>,
 }
 
 impl InferenceContext {
@@ -30,6 +33,7 @@ impl InferenceContext {
             agent,
             chat,
             event_tx,
+            vault_env_vars: Arc::new(RwLock::new(Vec::new())),
         }
     }
 }

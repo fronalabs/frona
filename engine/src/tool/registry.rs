@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::core::error::AppError;
 
-use super::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, ToolType};
+use super::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
 
 pub struct AgentToolRegistry {
     tools: HashMap<String, Arc<dyn AgentTool>>,
@@ -74,16 +74,6 @@ impl AgentToolRegistry {
         Ok(())
     }
 
-    pub fn is_external(&self, tool_name: &str) -> bool {
-        let Some(owner_name) = self.tool_name_to_owner.get(tool_name) else {
-            return false;
-        };
-        let Some(tool) = self.tools.get(owner_name) else {
-            return false;
-        };
-        tool.tool_type(tool_name) == ToolType::External
-    }
-
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
     }
@@ -117,8 +107,8 @@ mod tests {
 
     fn mock_context() -> InferenceContext {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        InferenceContext {
-            user: crate::core::models::user::User {
+        InferenceContext::new(
+            crate::core::models::user::User {
                 id: "test-user".into(),
                 username: "testuser".into(),
                 email: "test@test.com".into(),
@@ -127,7 +117,7 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             },
-            agent: crate::agent::models::Agent {
+            crate::agent::models::Agent {
                 id: "test-agent".into(),
                 user_id: Some("test-user".into()),
                 name: "Test Agent".into(),
@@ -145,7 +135,7 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             },
-            chat: crate::chat::models::Chat {
+            crate::chat::models::Chat {
                 id: "test-chat".into(),
                 user_id: "test-user".into(),
                 space_id: None,
@@ -156,8 +146,8 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             },
-            event_tx: tx,
-        }
+            tx,
+        )
     }
 
     #[tokio::test]

@@ -6,9 +6,7 @@ use crate::core::error::AppError;
 use crate::chat::message::models::{MessageTool, ToolStatus};
 use frona_derive::agent_tool;
 
-use super::{InferenceContext, ToolOutput, ToolType};
-
-const EXTERNAL_TOOLS: &[&str] = &["ask_user_question", "request_user_takeover"];
+use super::{InferenceContext, ToolOutput};
 
 pub struct NotifyHumanTool {
     debugger_url: Option<String>,
@@ -25,14 +23,6 @@ impl NotifyHumanTool {
 
 #[agent_tool(files("request_user_takeover", "ask_user_question"))]
 impl NotifyHumanTool {
-    fn tool_type(&self, tool_name: &str) -> ToolType {
-        if EXTERNAL_TOOLS.contains(&tool_name) {
-            ToolType::External
-        } else {
-            ToolType::Internal
-        }
-    }
-
     async fn execute(&self, tool_name: &str, arguments: Value, _ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
         match tool_name {
             "request_user_takeover" => {
@@ -55,7 +45,8 @@ impl NotifyHumanTool {
                         debugger_url,
                         status: ToolStatus::Pending,
                         response: None,
-                    }))
+                    })
+                    .as_pending_external())
             }
             "ask_user_question" => {
                 let question = arguments
@@ -80,7 +71,8 @@ impl NotifyHumanTool {
                         options,
                         status: ToolStatus::Pending,
                         response: None,
-                    }))
+                    })
+                    .as_pending_external())
             }
             _ => Err(AppError::Tool(format!(
                 "Unknown notify_human sub-tool: {tool_name}"

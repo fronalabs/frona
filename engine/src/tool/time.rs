@@ -65,13 +65,13 @@ mod tests {
 
     fn mock_context() -> InferenceContext {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        InferenceContext {
-            user: crate::core::models::user::User {
+        InferenceContext::new(
+            crate::core::models::user::User {
                 id: "u".into(), username: "u".into(), email: "e".into(), name: "n".into(),
                 password_hash: String::new(),
                 created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
             },
-            agent: crate::agent::models::Agent {
+            crate::agent::models::Agent {
                 id: "a".into(), user_id: None, name: "a".into(),
                 description: String::new(), model_group: "p".into(), enabled: true,
                 tools: vec![], sandbox_config: None, max_concurrent_tasks: None,
@@ -80,14 +80,14 @@ mod tests {
                 heartbeat_chat_id: None,
                 created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
             },
-            chat: crate::chat::models::Chat {
+            crate::chat::models::Chat {
                 id: "c".into(), user_id: "u".into(), space_id: None,
                 task_id: None, agent_id: "a".into(), title: None,
                 archived_at: None,
                 created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
             },
-            event_tx: tx,
-        }
+            tx,
+        )
     }
 
     #[tokio::test]

@@ -305,8 +305,8 @@ mod tests {
 
     fn mock_context() -> InferenceContext {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        InferenceContext {
-            user: crate::core::models::user::User {
+        InferenceContext::new(
+            crate::core::models::user::User {
                 id: "test-user".into(),
                 username: "testuser".into(),
                 email: "test@test.com".into(),
@@ -315,7 +315,7 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             },
-            agent: crate::agent::models::Agent {
+            crate::agent::models::Agent {
                 id: "test-agent".into(),
                 user_id: Some("test-user".into()),
                 name: "Test Agent".into(),
@@ -333,7 +333,7 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             },
-            chat: crate::chat::models::Chat {
+            crate::chat::models::Chat {
                 id: "test-chat".into(),
                 user_id: "test-user".into(),
                 space_id: None,
@@ -344,8 +344,8 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             },
-            event_tx: tx,
-        }
+            tx,
+        )
     }
 
     #[tokio::test]

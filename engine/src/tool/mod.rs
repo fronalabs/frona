@@ -47,13 +47,6 @@ pub fn configurable_tools() -> &'static [String] {
     CONFIGURABLE_TOOLS.get().map(|v| v.as_slice()).unwrap_or(&[])
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ToolType {
-    Internal,
-    External,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
     pub name: String,
@@ -72,6 +65,7 @@ pub struct ToolOutput {
     attachments: Vec<crate::api::files::Attachment>,
     tool_data: Option<crate::chat::message::models::MessageTool>,
     system_prompt: Option<String>,
+    pending_external: bool,
 }
 
 impl ToolOutput {
@@ -82,6 +76,7 @@ impl ToolOutput {
             attachments: Vec::new(),
             tool_data: None,
             system_prompt: None,
+            pending_external: false,
         }
     }
 
@@ -92,6 +87,7 @@ impl ToolOutput {
             attachments: Vec::new(),
             tool_data: None,
             system_prompt: None,
+            pending_external: false,
         }
     }
 
@@ -126,6 +122,15 @@ impl ToolOutput {
         self.tool_data.as_ref()
     }
 
+    pub fn as_pending_external(mut self) -> Self {
+        self.pending_external = true;
+        self
+    }
+
+    pub fn is_pending_external(&self) -> bool {
+        self.pending_external
+    }
+
     pub fn system_prompt(&self) -> Option<&str> {
         self.system_prompt.as_deref()
     }
@@ -135,9 +140,6 @@ impl ToolOutput {
 pub trait AgentTool: Send + Sync {
     fn name(&self) -> &str;
     fn definitions(&self) -> Vec<ToolDefinition>;
-    fn tool_type(&self, _tool_name: &str) -> ToolType {
-        ToolType::Internal
-    }
     async fn execute(&self, tool_name: &str, arguments: Value, ctx: &InferenceContext) -> Result<ToolOutput, AppError>;
     async fn cleanup(&self) -> Result<(), AppError> {
         Ok(())

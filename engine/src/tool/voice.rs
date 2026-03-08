@@ -14,7 +14,7 @@ use crate::contact::ContactService;
 use crate::core::config::VoiceConfig;
 use crate::core::error::AppError;
 use crate::credential::keypair::service::KeyPairService;
-use crate::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, ToolType, load_tool_definition};
+use crate::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, load_tool_definition};
 
 /// Short-lived JWT embedded in the Twilio callback URL.
 /// Owner "voice", signed by the provider.
@@ -176,10 +176,6 @@ impl AgentTool for VoiceCallTool {
         "make_voice_call"
     }
 
-    fn tool_type(&self, _tool_name: &str) -> ToolType {
-        ToolType::External
-    }
-
     fn definitions(&self) -> Vec<ToolDefinition> {
         load_tool_definition(&self.prompts, "tools/voice_call.md")
             .map(|d| vec![d])
@@ -237,7 +233,7 @@ impl AgentTool for VoiceCallTool {
             .replace("{{phone_number}}", phone_number)
             .replace("{{objective}}", objective);
 
-        Ok(ToolOutput::text(call_connected_block))
+        Ok(ToolOutput::text(call_connected_block).as_pending_external())
     }
 }
 
@@ -255,10 +251,6 @@ impl AgentTool for SendDtmfTool {
         "send_dtmf"
     }
 
-    fn tool_type(&self, _tool_name: &str) -> ToolType {
-        ToolType::External
-    }
-
     fn definitions(&self) -> Vec<ToolDefinition> {
         load_tool_definition(&self.prompts, "tools/send_dtmf.md")
             .map(|d| vec![d])
@@ -271,7 +263,7 @@ impl AgentTool for SendDtmfTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| AppError::Validation("Missing required parameter: digits".into()))?;
         // The result IS the digits string — the voice handler reads external_tool.result
-        Ok(ToolOutput::text(digits))
+        Ok(ToolOutput::text(digits).as_pending_external())
     }
 }
 
@@ -289,10 +281,6 @@ impl AgentTool for HangupCallTool {
         "hangup_call"
     }
 
-    fn tool_type(&self, _tool_name: &str) -> ToolType {
-        ToolType::External
-    }
-
     fn definitions(&self) -> Vec<ToolDefinition> {
         load_tool_definition(&self.prompts, "tools/hangup_call.md")
             .map(|d| vec![d])
@@ -300,7 +288,7 @@ impl AgentTool for HangupCallTool {
     }
 
     async fn execute(&self, _tool_name: &str, _arguments: Value, _ctx: &InferenceContext) -> Result<ToolOutput, AppError> {
-        Ok(ToolOutput::text("hangup"))
+        Ok(ToolOutput::text("hangup").as_pending_external())
     }
 }
 
@@ -330,22 +318,21 @@ mod tests {
     }
 
     #[test]
-    fn send_dtmf_tool_type_is_external() {
+    fn send_dtmf_tool_name() {
         use crate::agent::prompt::PromptLoader;
         use std::path::PathBuf;
         let prompts = PromptLoader::new(PathBuf::from("/tmp/nonexistent"));
         let tool = SendDtmfTool { prompts };
-        assert_eq!(tool.tool_type("send_dtmf"), ToolType::External);
+        assert_eq!(tool.name(), "send_dtmf");
     }
 
     #[test]
-    fn hangup_call_tool_type_is_external() {
+    fn hangup_call_tool_name() {
         use crate::agent::prompt::PromptLoader;
         use std::path::PathBuf;
         let prompts = PromptLoader::new(PathBuf::from("/tmp/nonexistent"));
         let tool = HangupCallTool { prompts };
         assert_eq!(tool.name(), "hangup_call");
-        assert_eq!(tool.tool_type("hangup_call"), ToolType::External);
     }
 
     async fn test_call_service() -> crate::call::CallService {
@@ -368,6 +355,5 @@ mod tests {
             call_service: test_call_service().await,
         };
         assert_eq!(tool.name(), "make_voice_call");
-        assert_eq!(tool.tool_type("make_voice_call"), ToolType::External);
     }
 }

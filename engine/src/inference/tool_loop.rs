@@ -204,9 +204,7 @@ async fn execute_tool_calls(
             obj.remove("description");
         }
 
-        let is_external = tool_registry.is_external(tool_name);
-
-        tracing::debug!(tool = %tool_name, args = %arguments, external = is_external, "Executing tool");
+        tracing::debug!(tool = %tool_name, args = %arguments, "Executing tool");
 
         let start = Instant::now();
         let (text, tool_output) = match tool_registry.execute(tool_name, arguments, ctx).await {
@@ -263,7 +261,9 @@ async fn execute_tool_calls(
             system_prompt: sp.clone(),
         };
 
-        if is_external {
+        let is_pending_external = tool_output.as_ref().is_some_and(|o| o.is_pending_external());
+
+        if is_pending_external {
             result.has_external = true;
             result.external_tool_result = Some(tool_call_result);
         } else {

@@ -18,6 +18,22 @@ pub struct InferenceContext {
     pub event_tx: mpsc::Sender<InferenceEvent>,
 }
 
+impl InferenceContext {
+    pub fn new(
+        user: User,
+        agent: Agent,
+        chat: Chat,
+        event_tx: mpsc::Sender<InferenceEvent>,
+    ) -> Self {
+        Self {
+            user,
+            agent,
+            chat,
+            event_tx,
+        }
+    }
+}
+
 pub struct InferenceRequest {
     pub registry: ModelProviderRegistry,
     pub model_group: ModelGroup,

@@ -40,6 +40,13 @@ fn provider_error_contains_status(msg: &str, codes: &[u16]) -> bool {
     codes.iter().any(|code| msg.contains(&code.to_string()))
 }
 
+fn has_non_retryable_status(msg: &str) -> bool {
+    let non_retryable: &[u16] = &[400, 401, 403, 404, 405, 422];
+    non_retryable
+        .iter()
+        .any(|code| msg.contains(&code.to_string()))
+}
+
 impl InferenceError {
     pub fn is_retryable(&self) -> bool {
         match self {
@@ -62,7 +69,7 @@ impl InferenceError {
                     }
             }
             InferenceError::CompletionFailed(rig::completion::CompletionError::ProviderError(msg)) => {
-                provider_error_contains_status(msg, &[429, 500, 502, 503, 504])
+                !has_non_retryable_status(msg)
             }
             InferenceError::CompletionFailed(_) => false,
             InferenceError::InferenceFailed(msg) | InferenceError::StreamingFailed(msg) => {

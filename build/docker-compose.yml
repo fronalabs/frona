@@ -44,7 +44,8 @@ services:
     environment:
       - ANTHROPIC_API_KEY
       - FRONA_SERVER_CORS_ORIGINS
-      - NEXT_PUBLIC_API_URL
+      - FRONA_SERVER_BACKEND_URL
+      - FRONA_SERVER_FRONTEND_URL
       - FRONA_AUTH_ENCRYPTION_SECRET=dev-secret-change-in-production
       - FRONA_LOG_LEVEL=debug
       - FRONA_BROWSER_WS_URL=ws://browserless:3333

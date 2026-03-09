@@ -1,0 +1,118 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["id", "name"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique identifier for the service (e.g. 'gold-dashboard')"
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable name"
+    },
+    "description": {
+      "type": "string",
+      "description": "What this service does"
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["service", "static"],
+      "default": "service",
+      "description": "Service type: 'service' runs a command, 'static' serves files"
+    },
+    "command": {
+      "type": "string",
+      "description": "Startup command (service mode). App must listen on PORT env var."
+    },
+    "static_dir": {
+      "type": "string",
+      "description": "Directory to serve relative to workspace (static mode), e.g. 'dist/'"
+    },
+    "icon": {
+      "type": "string",
+      "description": "Icon for the app. Either a URL, a path to an image file in the workspace, or an emoji"
+    },
+    "expose": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether to expose the service via the reverse proxy"
+    },
+    "network_destinations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["host", "port"],
+        "properties": {
+          "host": { "type": "string", "description": "Hostname" },
+          "port": { "type": "integer", "description": "Port number" }
+        }
+      },
+      "description": "Allowed outbound network destinations (service mode)"
+    },
+    "read_paths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Additional read-only paths beyond workspace"
+    },
+    "write_paths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Additional writable paths beyond workspace"
+    },
+    "credentials": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["query", "reason", "env_var_prefix"],
+        "properties": {
+          "query": { "type": "string", "description": "Vault search term" },
+          "reason": { "type": "string", "description": "Why the service needs this credential" },
+          "env_var_prefix": { "type": "string", "description": "Env var prefix for credential fields" }
+        }
+      },
+      "description": "Credentials to inject as env vars (service mode)"
+    },
+    "health_check": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "default": "/", "description": "HTTP path to check" },
+        "interval_secs": { "type": "integer", "default": 10 },
+        "timeout_secs": { "type": "integer", "default": 2 },
+        "initial_delay_secs": { "type": "integer", "default": 5 },
+        "failure_threshold": { "type": "integer", "default": 3 }
+      },
+      "description": "Health check configuration (service mode)"
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "memory_mb": { "type": "integer", "description": "Max memory in MB" },
+        "cpu_shares": { "type": "integer", "description": "Relative CPU weight" },
+        "max_pids": { "type": "integer", "description": "Max processes/threads" }
+      },
+      "description": "Resource limits (service mode)"
+    },
+    "restart_policy": {
+      "type": "string",
+      "enum": ["always", "on_failure", "never"],
+      "default": "on_failure",
+      "description": "When to restart the process after it exits"
+    },
+    "hibernate": {
+      "type": "boolean",
+      "default": true,
+      "description": "Auto-hibernate after idle timeout"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "service" } } },
+      "then": { "required": ["command"] }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "static" } } },
+      "then": { "required": ["static_dir"] }
+    }
+  ]
+}

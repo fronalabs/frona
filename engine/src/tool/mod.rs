@@ -2,6 +2,7 @@ pub mod browser;
 pub mod cli;
 pub mod delegate;
 pub mod heartbeat;
+pub mod manage_service;
 pub mod notify_human;
 pub mod produce_file;
 pub mod read_file;
@@ -42,6 +43,7 @@ pub fn init_configurable_tools(cli_tools: &[CliToolConfig]) {
     names.push("schedule".to_string());
     names.push("heartbeat".to_string());
     names.push("request_credentials".to_string());
+    names.push("manage_service".to_string());
     let _ = CONFIGURABLE_TOOLS.set(names);
 }
 

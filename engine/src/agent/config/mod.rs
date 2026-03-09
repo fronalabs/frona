@@ -21,8 +21,21 @@ pub fn parse_frontmatter(content: &str) -> ConfigEntry {
         let body = &after_first[end_idx + 4..];
         let body = body.strip_prefix('\n').unwrap_or(body);
 
-        let metadata: HashMap<String, String> = serde_yaml::from_str(yaml_str)
-            .unwrap_or_default();
+        let metadata: HashMap<String, String> =
+            serde_yaml::from_str::<HashMap<String, serde_yaml::Value>>(yaml_str)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(k, v)| {
+                    let s = match v {
+                        serde_yaml::Value::String(s) => s,
+                        serde_yaml::Value::Bool(b) => b.to_string(),
+                        serde_yaml::Value::Number(n) => n.to_string(),
+                        serde_yaml::Value::Null => return None,
+                        _ => serde_yaml::to_string(&v).ok()?.trim().to_string(),
+                    };
+                    Some((k, s))
+                })
+                .collect();
 
         ConfigEntry {
             template: body.to_string(),
@@ -68,5 +81,26 @@ mod tests {
         let entry = parse_frontmatter(content);
         assert_eq!(entry.template, "Just plain text");
         assert!(entry.metadata.is_empty());
+    }
+
+    #[test]
+    fn test_parse_frontmatter_with_non_string_values() {
+        let content = r#"---
+name: weather
+description: Get current weather and forecasts.
+homepage: https://wttr.in/:help
+extras: {"emoji":"🌤️","requires":{"bins":["curl"]}}
+---
+
+# Weather
+"#;
+        let entry = parse_frontmatter(content);
+        assert_eq!(entry.template, "\n# Weather\n");
+        assert_eq!(entry.metadata.get("name"), Some(&"weather".to_string()));
+        assert_eq!(
+            entry.metadata.get("description"),
+            Some(&"Get current weather and forecasts.".to_string())
+        );
+        assert!(entry.metadata.contains_key("extras"), "nested object should be serialized as string");
     }
 }

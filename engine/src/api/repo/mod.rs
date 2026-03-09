@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod apps;
 pub mod calls;
 pub mod chats;
 pub mod contacts;

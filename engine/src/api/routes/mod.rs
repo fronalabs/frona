@@ -9,6 +9,7 @@ pub mod messages;
 pub mod metrics;
 pub mod navigation;
 pub mod spaces;
+pub mod system;
 pub mod tasks;
 pub mod tools;
 pub mod vaults;

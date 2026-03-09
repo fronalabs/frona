@@ -131,6 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(routes::metrics::router())
         .merge(routes::vaults::router())
         .merge(routes::voice::router())
+        .merge(routes::system::router())
         .layer(DefaultBodyLimit::max(config.server.max_body_size_bytes))
         .layer(axum::middleware::from_fn(track_http_metrics));
     if let Some(cors) = cors {

@@ -251,6 +251,13 @@ pub async fn build_tool_registry(
         )));
     }
 
+    if allowed_tools.iter().any(|t| t == "manage_service") {
+        registry.register(Arc::new(crate::tool::manage_service::ManageServiceTool::new(
+            state.app_service.clone(),
+            prompts.clone(),
+        )));
+    }
+
     if allowed_tools.iter().any(|t| t == "make_voice_call") {
         registry.register(Arc::new(crate::tool::voice::VoiceCallTool {
             provider: state.voice_provider.clone(),
@@ -379,7 +386,8 @@ async fn stream_message(
     let pending_tool_id = stored_messages.iter().rev().find_map(|m| match &m.tool {
         Some(MessageTool::Question { status: ToolStatus::Pending, .. })
         | Some(MessageTool::HumanInTheLoop { status: ToolStatus::Pending, .. })
-        | Some(MessageTool::VaultApproval { status: ToolStatus::Pending, .. }) => {
+        | Some(MessageTool::VaultApproval { status: ToolStatus::Pending, .. })
+        | Some(MessageTool::ServiceApproval { status: ToolStatus::Pending, .. }) => {
             Some(m.id.clone())
         }
         _ => None,

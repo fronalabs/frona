@@ -1,4 +1,5 @@
 pub mod agents;
+pub mod apps;
 pub mod auth;
 pub mod browser;
 pub mod chats;

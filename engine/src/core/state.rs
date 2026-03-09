@@ -9,6 +9,8 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::task::executor::TaskExecutor;
 
 use crate::agent::service::AgentService;
+use crate::app::manager::AppManager;
+use crate::app::service::AppService;
 use crate::agent::skill::resolver::SkillResolver;
 use crate::agent::workspace::AgentWorkspaceManager;
 use crate::auth::AuthService;
@@ -75,6 +77,7 @@ impl ActiveSessions {
 pub struct AppState {
     pub db: Surreal<Db>,
     pub auth_service: Arc<AuthService>,
+    pub app_service: AppService,
     pub user_repo: SurrealUserRepo,
     pub agent_service: AgentService,
     pub space_service: SpaceService,
@@ -204,9 +207,21 @@ impl AppState {
             None
         };
 
+        let app_manager = Arc::new(AppManager::new(
+            PathBuf::from(&config.storage.workspaces_path),
+            config.server.sandbox_disabled,
+            config.app.port_range_start,
+            config.app.port_range_end,
+        ));
+
         Self {
             db: db.clone(),
             auth_service: Arc::new(AuthService::new()),
+            app_service: AppService::new(
+                SurrealRepo::new(db.clone()),
+                app_manager,
+                config.app.clone(),
+            ),
             user_repo: SurrealRepo::new(db.clone()),
             agent_service: AgentService::new(SurrealRepo::new(db.clone())),
             space_service: SpaceService::new(SurrealRepo::new(db.clone())),

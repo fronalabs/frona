@@ -66,6 +66,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Task executor initialized, resuming pending tasks");
     }
 
+    {
+        let app_state = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = frona::app::supervisor::restore_and_supervise_apps(app_state).await {
+                tracing::error!(error = %e, "App restoration failed");
+            }
+        });
+    }
+
     if let Ok(compaction_group) = state.chat_service.provider_registry()
         .get_model_group("compaction")
         .or_else(|_| state.chat_service.provider_registry().get_model_group("primary"))
@@ -109,6 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(routes::auth::router())
         .merge(routes::well_known::router())
         .merge(routes::agents::router())
+        .merge(routes::apps::router())
         .merge(routes::spaces::router())
         .merge(routes::chats::router())
         .merge(routes::contacts::router())

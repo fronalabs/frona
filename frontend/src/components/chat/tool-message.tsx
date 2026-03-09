@@ -398,6 +398,140 @@ function VaultApprovalMessage({
   );
 }
 
+function ServiceApprovalMessage({
+  message,
+  agentName,
+}: {
+  message: MessageResponse;
+  agentName: string;
+}) {
+  const { activeChatId } = useSession();
+  const [loading, setLoading] = useState(false);
+
+  if (!message.tool || message.tool.type !== "ServiceApproval") return null;
+
+  const { status: toolStatus, action, manifest, previous_manifest } =
+    message.tool.data;
+  const resolved = toolStatus === "resolved";
+  const denied = toolStatus === "denied";
+
+  const name = String(manifest?.name || manifest?.id || "Unknown service");
+  const description = manifest?.description ? String(manifest.description) : null;
+  const kind = String(manifest?.kind || "service");
+  const command = manifest?.command ? String(manifest.command) : null;
+
+  const isUpdate = !!previous_manifest;
+
+  const handleApprove = async () => {
+    if (!activeChatId) return;
+    setLoading(true);
+    try {
+      await api.post("/api/apps/approve", { chat_id: activeChatId });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeny = async () => {
+    if (!activeChatId) return;
+    setLoading(true);
+    try {
+      await api.post("/api/apps/deny", { chat_id: activeChatId });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (resolved || denied) {
+    const colorClasses = denied
+      ? "border-danger/30 bg-danger-bg text-danger-text"
+      : "border-success/30 bg-success-bg text-success-text";
+    const label = denied
+      ? "Service deployment denied"
+      : "Service deployment approved";
+
+    return (
+      <div className="flex justify-start">
+        <div className="flex items-start gap-2.5 max-w-[85%]">
+          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-medium bg-surface-tertiary text-text-secondary">
+            {agentName.charAt(0).toUpperCase()}
+          </div>
+          <div className="min-w-0 pt-0.5">
+            <p className="text-[11px] font-medium text-text-tertiary mb-0.5">
+              {agentName}
+            </p>
+            <div className={`rounded-lg border px-3 py-2 text-sm ${colorClasses}`}>
+              {label}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex justify-start">
+      <div className="flex items-start gap-2.5 max-w-[85%]">
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-medium bg-surface-tertiary text-text-secondary">
+          {agentName.charAt(0).toUpperCase()}
+        </div>
+        <div className="min-w-0 pt-0.5 w-full">
+          <p className="text-[11px] font-medium text-text-tertiary mb-0.5">
+            {agentName}
+          </p>
+          <div className="rounded-lg border border-border p-3 space-y-3">
+            <p className="text-sm font-medium text-text-primary">
+              Service {isUpdate ? "Update" : "Deployment"} Request
+            </p>
+            <div className="space-y-1 text-sm text-text-secondary">
+              <p>
+                <span className="text-text-tertiary">Name:</span> {name}
+              </p>
+              {description && (
+                <p>
+                  <span className="text-text-tertiary">Description:</span>{" "}
+                  {description}
+                </p>
+              )}
+              <p>
+                <span className="text-text-tertiary">Type:</span> {kind}
+              </p>
+              <p>
+                <span className="text-text-tertiary">Action:</span> {action}
+              </p>
+              {command && (
+                <p>
+                  <span className="text-text-tertiary">Command:</span>{" "}
+                  <code className="rounded bg-surface-tertiary px-1 py-0.5 text-xs">
+                    {command}
+                  </code>
+                </p>
+              )}
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                onClick={handleApprove}
+                disabled={loading}
+                className="rounded-lg border border-accent bg-accent/10 px-3 py-1.5 text-sm font-medium text-accent hover:bg-accent/20 transition disabled:opacity-50"
+              >
+                {loading ? "Approving..." : "Approve"}
+              </button>
+              <button
+                onClick={handleDeny}
+                disabled={loading}
+                className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-text-secondary hover:border-danger hover:text-danger transition"
+              >
+                Deny
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ToolMessage({
   message,
   agentName,
@@ -416,6 +550,10 @@ export function ToolMessage({
       return <TaskCompletionMessage message={message} />;
     case "VaultApproval":
       return <VaultApprovalMessage message={message} agentName={agentName} />;
+    case "ServiceApproval":
+      return (
+        <ServiceApprovalMessage message={message} agentName={agentName} />
+      );
     default:
       return null;
   }

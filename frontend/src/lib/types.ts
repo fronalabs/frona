@@ -125,7 +125,8 @@ export type MessageTool =
   | { type: "HumanInTheLoop"; data: { reason: string; debugger_url: string; status: MessageToolStatus; response: string | null } }
   | { type: "Question"; data: { question: string; options: string[]; status: MessageToolStatus; response: string | null } }
   | { type: "TaskCompletion"; data: { task_id: string; chat_id: string | null; status: string } }
-  | { type: "VaultApproval"; data: { query: string; reason: string; env_var_prefix: string | null; status: MessageToolStatus; response: string | null } };
+  | { type: "VaultApproval"; data: { query: string; reason: string; env_var_prefix: string | null; status: MessageToolStatus; response: string | null } }
+  | { type: "ServiceApproval"; data: { action: string; manifest: Record<string, unknown>; previous_manifest: Record<string, unknown> | null; status: MessageToolStatus; response: string | null } };
 
 export interface MessageResponse {
   id: string;
@@ -139,6 +140,25 @@ export interface MessageResponse {
   attachments?: Attachment[];
   contact_id?: string;
   created_at: string;
+}
+
+// App types
+export type AppStatus = "starting" | "running" | "stopped" | "failed" | "serving" | "hibernated";
+
+export interface AppResponse {
+  id: string;
+  agent_id: string;
+  name: string;
+  description?: string;
+  kind: string;
+  command?: string;
+  static_dir?: string;
+  port?: number;
+  status: AppStatus;
+  manifest: Record<string, unknown>;
+  url?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 // Task types

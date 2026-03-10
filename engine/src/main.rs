@@ -19,6 +19,7 @@ use frona::api::routes;
 use frona::core::config::Config;
 use frona::core::metrics::setup_metrics_recorder;
 use frona::core::state::AppState;
+use frona::credential::key_rotation::KeyRotation;
 use frona::scheduler::Scheduler;
 use frona::tool::workspace::sandbox::verify_sandbox;
 
@@ -52,6 +53,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let metrics_handle = setup_metrics_recorder();
 
     let surreal = db::init(&config.database.path).await?;
+
+    if let Some(rotation) =
+        KeyRotation::check(&surreal, &config.auth.encryption_secret).await?
+    {
+        rotation.run().await?;
+    }
+
     db::seed_config_agents(&surreal, &workspaces).await?;
     let state = AppState::new(surreal.clone(), &config, loaded.models, workspaces, metrics_handle);
     state.vault_service.sync_config_connections().await?;
@@ -132,6 +140,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(routes::vaults::router())
         .merge(routes::voice::router())
         .merge(routes::system::router())
+        .merge(routes::config::router())
+        .merge(routes::provider_models::router())
         .layer(DefaultBodyLimit::max(config.server.max_body_size_bytes))
         .layer(axum::middleware::from_fn(track_http_metrics));
     if let Some(cors) = cors {

@@ -20,6 +20,9 @@ pub enum AppError {
     #[error("Internal error: {0}")]
     Internal(String),
 
+    #[error("Decryption error: {0}")]
+    Decryption(String),
+
     #[error("Inference error: {0}")]
     Inference(String),
 

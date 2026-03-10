@@ -3,6 +3,8 @@ pub mod apps;
 pub mod auth;
 pub mod browser;
 pub mod chats;
+pub mod config;
+pub mod provider_models;
 pub mod contacts;
 pub mod files;
 pub mod messages;

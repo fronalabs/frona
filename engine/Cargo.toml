@@ -51,6 +51,8 @@ keepass = "0.10"
 keeper-secrets-manager-core = "17"
 cookie = "0.18.1"
 minijinja = "2"
+schemars = { version = "0.8", features = ["chrono"] }
+tempfile = "3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"

@@ -121,11 +121,15 @@ async fn me(
         .await?
         .ok_or_else(|| AppError::NotFound("User not found".into()))?;
 
+    let setup_completed = state.get_runtime_config_bool("setup_completed").await;
+    let needs_setup = if setup_completed { None } else { Some(true) };
+
     Ok(Json(UserInfo {
         id: user.id,
         username: user.username,
         email: user.email,
         name: user.name,
+        needs_setup,
     }))
 }
 

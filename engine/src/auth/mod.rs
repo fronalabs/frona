@@ -67,6 +67,7 @@ impl AuthService {
                 username: user.username,
                 email: user.email,
                 name: user.name,
+                needs_setup: None,
             },
         };
 
@@ -98,6 +99,7 @@ impl AuthService {
                 username: user.username,
                 email: user.email,
                 name: user.name,
+                needs_setup: None,
             },
         };
 
@@ -243,6 +245,7 @@ impl AuthService {
                 username: user.username,
                 email: user.email,
                 name: user.name,
+                needs_setup: None,
             },
         };
 

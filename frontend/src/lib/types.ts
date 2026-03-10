@@ -3,6 +3,7 @@ export interface UserInfo {
   username: string;
   email: string;
   name: string;
+  needs_setup?: boolean;
 }
 
 export interface AuthResponse {

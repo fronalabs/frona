@@ -26,6 +26,8 @@ pub struct UserInfo {
     pub username: String,
     pub email: String,
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub needs_setup: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

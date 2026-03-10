@@ -197,6 +197,10 @@ impl AppState {
             Arc::new(SurrealRepo::<crate::credential::vault::models::VaultGrant>::new(db.clone()));
         let vault_access_log_repo: Arc<dyn crate::credential::vault::repository::VaultAccessLogRepository> =
             Arc::new(SurrealRepo::<crate::credential::vault::models::VaultAccessLog>::new(db.clone()));
+        let data_dir = PathBuf::from(&config.database.path)
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("data"));
         let vault_service = VaultService::new(
             vault_connection_repo,
             vault_grant_repo,
@@ -204,6 +208,8 @@ impl AppState {
             vault_access_log_repo,
             &config.auth.encryption_secret,
             config.vault.clone(),
+            data_dir,
+            PathBuf::from(&config.storage.files_path),
         );
 
         let oauth_service = if config.sso.enabled {
@@ -265,6 +271,39 @@ impl AppState {
             oauth_service,
             metrics_handle,
         }
+    }
+
+    pub async fn get_runtime_config(&self, key: &str) -> Result<Option<String>, crate::core::error::AppError> {
+        let mut result = self.db
+            .query("SELECT `value` FROM runtime_config WHERE `key` = $key LIMIT 1")
+            .bind(("key", key.to_string()))
+            .await
+            .map_err(|e| crate::core::error::AppError::Internal(e.to_string()))?;
+        let row: Option<serde_json::Value> = result.take(0)
+            .map_err(|e| crate::core::error::AppError::Internal(e.to_string()))?;
+        Ok(row.and_then(|v| v.get("value").and_then(|v| v.as_str().map(String::from))))
+    }
+
+    pub async fn set_runtime_config(&self, key: &str, value: &str) -> Result<(), crate::core::error::AppError> {
+        self.db
+            .query(
+                "DELETE FROM runtime_config WHERE `key` = $key; \
+                 CREATE runtime_config SET `key` = $key, `value` = $value, updated_at = $now"
+            )
+            .bind(("key", key.to_string()))
+            .bind(("value", value.to_string()))
+            .bind(("now", chrono::Utc::now()))
+            .await
+            .map_err(|e| crate::core::error::AppError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn get_runtime_config_bool(&self, key: &str) -> bool {
+        self.get_runtime_config(key)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|v| v == "true")
     }
 
     pub fn init_task_executor(&self) {

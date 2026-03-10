@@ -1,131 +1,184 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 use serde::Deserialize;
+use tokio::process::Command;
+use tokio::sync::Mutex;
 
 use crate::core::error::AppError;
 use crate::credential::vault::models::{VaultItem, VaultSecret};
 use crate::credential::vault::provider::VaultProvider;
 
 pub struct BitwardenVaultProvider {
-    client: reqwest::Client,
-    api_url: String,
-    identity_url: String,
-    access_token: String,
-    organization_id: Option<String>,
+    client_id: String,
+    client_secret: String,
+    master_password: String,
+    server_url: Option<String>,
+    session_key: Mutex<Option<String>>,
+    home_dir: PathBuf,
 }
 
 #[derive(Deserialize)]
-struct TokenResponse {
-    access_token: String,
-}
-
-#[derive(Deserialize)]
-struct SecretIdentifiersResponse {
-    data: Vec<SecretIdentifier>,
-}
-
-#[derive(Deserialize)]
-struct SecretIdentifier {
+struct BwItem {
     id: String,
-    key: String,
+    name: String,
+    login: Option<BwLogin>,
+    notes: Option<String>,
+    #[serde(default)]
+    fields: Vec<BwField>,
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SecretResponse {
+struct BwLogin {
+    username: Option<String>,
+    password: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct BwField {
+    name: Option<String>,
+    value: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct BwListItem {
     id: String,
-    key: String,
-    value: String,
-    note: Option<String>,
+    name: String,
+    login: Option<BwLoginSummary>,
+}
+
+#[derive(Deserialize)]
+struct BwLoginSummary {
+    username: Option<String>,
 }
 
 impl BitwardenVaultProvider {
     pub fn new(
-        access_token: String,
-        organization_id: Option<String>,
-        api_url: Option<String>,
-        identity_url: Option<String>,
-    ) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            api_url: api_url.unwrap_or_else(|| "https://api.bitwarden.com".to_string()),
-            identity_url: identity_url.unwrap_or_else(|| "https://identity.bitwarden.com".to_string()),
-            access_token,
-            organization_id,
-        }
+        client_id: String,
+        client_secret: String,
+        master_password: String,
+        server_url: Option<String>,
+        home_dir: PathBuf,
+    ) -> Result<Self, AppError> {
+        std::fs::create_dir_all(&home_dir)
+            .map_err(|e| AppError::Tool(format!("Failed to create Bitwarden home dir: {e}")))?;
+        Ok(Self {
+            client_id,
+            client_secret,
+            master_password,
+            server_url,
+            session_key: Mutex::new(None),
+            home_dir,
+        })
     }
 
-    async fn get_bearer_token(&self) -> Result<String, AppError> {
-        let resp = self
-            .client
-            .post(format!("{}/connect/token", self.identity_url))
-            .form(&[
-                ("grant_type", "client_credentials"),
-                ("scope", "api.secrets"),
-                ("client_id", &self.access_token),
-                ("client_secret", &self.access_token),
-            ])
-            .send()
+    async fn run_bw(&self, args: &[&str], session: &str) -> Result<String, AppError> {
+        let output = Command::new("bw")
+            .args(args)
+            .arg("--session")
+            .arg(session)
+            .env("HOME", &self.home_dir)
+            .output()
             .await
-            .map_err(|e| AppError::Tool(format!("Bitwarden auth request failed: {e}")))?;
+            .map_err(|e| AppError::Tool(format!("Failed to run `bw` CLI: {e}. Is the Bitwarden CLI installed?")))?;
 
-        if !resp.status().is_success() {
-            return Err(AppError::Tool(format!(
-                "Bitwarden auth failed: {}",
-                resp.status()
-            )));
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("Not found") || stderr.contains("not found") {
+                return Err(AppError::NotFound(format!("Bitwarden item not found: {stderr}")));
+            }
+            return Err(AppError::Tool(format!("Bitwarden CLI error: {stderr}")));
         }
 
-        let token: TokenResponse = resp
-            .json()
-            .await
-            .map_err(|e| AppError::Tool(format!("Bitwarden auth response parse failed: {e}")))?;
+        String::from_utf8(output.stdout)
+            .map_err(|e| AppError::Tool(format!("Bitwarden CLI output not valid UTF-8: {e}")))
+    }
 
-        Ok(token.access_token)
+    async fn ensure_session(&self) -> Result<String, AppError> {
+        {
+            let guard = self.session_key.lock().await;
+            if let Some(ref key) = *guard {
+                return Ok(key.clone());
+            }
+        }
+
+        if let Some(ref url) = self.server_url {
+            let output = Command::new("bw")
+                .args(["config", "server", url])
+                .env("HOME", &self.home_dir)
+                .output()
+                .await
+                .map_err(|e| AppError::Tool(format!("Failed to configure Bitwarden server: {e}")))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(AppError::Tool(format!("Bitwarden config server failed: {stderr}")));
+            }
+        }
+
+        let login_output = Command::new("bw")
+            .args(["login", "--apikey"])
+            .env("BW_CLIENTID", &self.client_id)
+            .env("BW_CLIENTSECRET", &self.client_secret)
+            .env("HOME", &self.home_dir)
+            .output()
+            .await
+            .map_err(|e| AppError::Tool(format!("Failed to run `bw login`: {e}")))?;
+
+        if !login_output.status.success() {
+            let stderr = String::from_utf8_lossy(&login_output.stderr);
+            if !stderr.contains("You are already logged in") {
+                return Err(AppError::Tool(format!("Bitwarden login failed: {stderr}")));
+            }
+        }
+
+        let unlock_output = Command::new("bw")
+            .args(["unlock", "--passwordenv", "BW_PASSWORD", "--raw"])
+            .env("BW_PASSWORD", &self.master_password)
+            .env("HOME", &self.home_dir)
+            .output()
+            .await
+            .map_err(|e| AppError::Tool(format!("Failed to run `bw unlock`: {e}")))?;
+
+        if !unlock_output.status.success() {
+            let stderr = String::from_utf8_lossy(&unlock_output.stderr);
+            return Err(AppError::Tool(format!("Bitwarden unlock failed: {stderr}")));
+        }
+
+        let session = String::from_utf8(unlock_output.stdout)
+            .map_err(|e| AppError::Tool(format!("Bitwarden session key not valid UTF-8: {e}")))?
+            .trim()
+            .to_string();
+
+        let mut guard = self.session_key.lock().await;
+        *guard = Some(session.clone());
+
+        Ok(session)
     }
 }
 
 #[async_trait]
 impl VaultProvider for BitwardenVaultProvider {
     async fn search(&self, query: &str, max_results: usize) -> Result<Vec<VaultItem>, AppError> {
-        let bearer = self.get_bearer_token().await?;
+        let session = self.ensure_session().await?;
 
-        let mut url = format!("{}/secrets", self.api_url);
-        if let Some(ref org_id) = self.organization_id {
-            url = format!("{}/organizations/{org_id}/secrets", self.api_url);
+        let mut args = vec!["list", "items"];
+        if !query.is_empty() {
+            args.push("--search");
+            args.push(query);
         }
 
-        let resp = self
-            .client
-            .get(&url)
-            .bearer_auth(&bearer)
-            .send()
-            .await
-            .map_err(|e| AppError::Tool(format!("Bitwarden list secrets failed: {e}")))?;
+        let json = self.run_bw(&args, &session).await?;
+        let items: Vec<BwListItem> = serde_json::from_str(&json)
+            .map_err(|e| AppError::Tool(format!("Failed to parse Bitwarden item list: {e}")))?;
 
-        if !resp.status().is_success() {
-            return Err(AppError::Tool(format!(
-                "Bitwarden API error: {}",
-                resp.status()
-            )));
-        }
-
-        let identifiers: SecretIdentifiersResponse = resp
-            .json()
-            .await
-            .map_err(|e| AppError::Tool(format!("Bitwarden response parse failed: {e}")))?;
-
-        let query_lower = query.to_lowercase();
-        let results: Vec<VaultItem> = identifiers
-            .data
+        let results: Vec<VaultItem> = items
             .into_iter()
-            .filter(|s| s.key.to_lowercase().contains(&query_lower))
             .take(max_results)
-            .map(|s| VaultItem {
-                id: s.id,
-                name: s.key,
-                username: None,
+            .map(|item| VaultItem {
+                id: item.id,
+                name: item.name,
+                username: item.login.and_then(|l| l.username),
             })
             .collect();
 
@@ -133,43 +186,36 @@ impl VaultProvider for BitwardenVaultProvider {
     }
 
     async fn get_secret(&self, item_id: &str) -> Result<VaultSecret, AppError> {
-        let bearer = self.get_bearer_token().await?;
+        let session = self.ensure_session().await?;
 
-        let resp = self
-            .client
-            .get(format!("{}/secrets/{item_id}", self.api_url))
-            .bearer_auth(&bearer)
-            .send()
-            .await
-            .map_err(|e| AppError::Tool(format!("Bitwarden get secret failed: {e}")))?;
+        let json = self.run_bw(&["get", "item", item_id], &session).await?;
+        let item: BwItem = serde_json::from_str(&json)
+            .map_err(|e| AppError::Tool(format!("Failed to parse Bitwarden item: {e}")))?;
 
-        if !resp.status().is_success() {
-            return Err(AppError::Tool(format!(
-                "Bitwarden API error: {}",
-                resp.status()
-            )));
-        }
-
-        let secret: SecretResponse = resp
-            .json()
-            .await
-            .map_err(|e| AppError::Tool(format!("Bitwarden response parse failed: {e}")))?;
+        let username = item.login.as_ref().and_then(|l| l.username.clone());
+        let password = item.login.as_ref().and_then(|l| l.password.clone());
 
         let mut fields = HashMap::new();
-        fields.insert("value".to_string(), secret.value);
+        for field in &item.fields {
+            if let (Some(name), Some(value)) = (&field.name, &field.value)
+                && !name.is_empty()
+            {
+                fields.insert(name.clone(), value.clone());
+            }
+        }
 
         Ok(VaultSecret {
-            id: secret.id,
-            name: secret.key,
-            username: None,
-            password: None,
-            notes: secret.note,
+            id: item.id,
+            name: item.name,
+            username,
+            password,
+            notes: item.notes,
             fields,
         })
     }
 
     async fn test_connection(&self) -> Result<(), AppError> {
-        self.get_bearer_token().await?;
+        self.ensure_session().await?;
         Ok(())
     }
 }

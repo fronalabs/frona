@@ -94,6 +94,25 @@ pub enum CreateLocalItemRequest {
     },
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+pub enum UpdateLocalItemRequest {
+    UsernamePassword {
+        name: String,
+        username: String,
+        #[serde(default)]
+        password: Option<String>,
+    },
+    ApiKey {
+        name: String,
+        #[serde(default)]
+        api_key: Option<String>,
+    },
+    BrowserProfile {
+        name: String,
+    },
+}
+
 // --- Vault access log ---
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Entity)]
@@ -143,15 +162,14 @@ impl std::fmt::Display for VaultProviderType {
 #[serde(tag = "type")]
 pub enum VaultConnectionConfig {
     OnePassword {
-        connect_host: String,
-        connect_token: String,
+        service_account_token: String,
         default_vault_id: Option<String>,
     },
     Bitwarden {
-        access_token: String,
-        organization_id: Option<String>,
-        api_url: Option<String>,
-        identity_url: Option<String>,
+        client_id: String,
+        client_secret: String,
+        master_password: String,
+        server_url: Option<String>,
     },
     Hashicorp {
         address: String,

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_aux::field_attributes::deserialize_bool_from_anything;
 
@@ -13,18 +14,28 @@ const EXCLUDED_ENV_VARS: &[&str] = &[
     "FRONA_SERVER_DATA_DIR",
 ];
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct ServerConfig {
+    #[schemars(description = "Port the server listens on.")]
     pub port: u16,
+    #[schemars(description = "Path to the static frontend build directory.")]
     pub static_dir: String,
+    #[schemars(description = "Issuer URL for JWT tokens.")]
     pub issuer_url: String,
+    #[schemars(description = "Maximum number of concurrent background tasks.")]
     pub max_concurrent_tasks: usize,
+    #[schemars(description = "Disable filesystem sandboxing for CLI tools. Enable only if your OS does not support Landlock.")]
     pub sandbox_disabled: bool,
+    #[schemars(description = "Comma-separated list of allowed CORS origins.")]
     pub cors_origins: Option<String>,
+    #[schemars(description = "Public base URL for the server (used for callbacks, links).")]
     pub base_url: Option<String>,
+    #[schemars(description = "Override URL for the backend API (if different from base_url).")]
     pub backend_url: Option<String>,
+    #[schemars(description = "Override URL for the frontend (if different from base_url).")]
     pub frontend_url: Option<String>,
+    #[schemars(description = "Maximum request body size in bytes.")]
     pub max_body_size_bytes: usize,
 }
 
@@ -65,12 +76,16 @@ impl Default for ServerConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct AuthConfig {
+    #[schemars(description = "Secret key for JWT signing. Change from default in production.")]
     pub encryption_secret: String,
+    #[schemars(description = "Access token lifetime in seconds.")]
     pub access_token_expiry_secs: u64,
+    #[schemars(description = "Refresh token lifetime in seconds.")]
     pub refresh_token_expiry_secs: u64,
+    #[schemars(description = "Presigned URL expiry in seconds.")]
     pub presign_expiry_secs: u64,
 }
 
@@ -85,17 +100,26 @@ impl Default for AuthConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct SsoConfig {
+    #[schemars(description = "Enable SSO/OIDC authentication.")]
     pub enabled: bool,
+    #[schemars(description = "OIDC authority/issuer URL (e.g. https://accounts.google.com).")]
     pub authority: Option<String>,
+    #[schemars(description = "OIDC client ID.")]
     pub client_id: Option<String>,
+    #[schemars(description = "OIDC client secret.")]
     pub client_secret: Option<String>,
+    #[schemars(description = "OIDC scopes to request.")]
     pub scopes: String,
+    #[schemars(description = "Allow verification of emails not matching known users.")]
     pub allow_unknown_email_verification: bool,
+    #[schemars(description = "Client cache expiration in seconds.")]
     pub client_cache_expiration: u64,
+    #[schemars(description = "Require SSO for all logins (disables native auth).")]
     pub only: bool,
+    #[schemars(description = "Match SSO signups to existing users by email.")]
     pub signups_match_email: bool,
 }
 
@@ -115,9 +139,10 @@ impl Default for SsoConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct DatabaseConfig {
+    #[schemars(description = "Path to the SurrealDB data directory.")]
     pub path: String,
 }
 
@@ -129,11 +154,14 @@ impl Default for DatabaseConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct BrowserConfig {
+    #[schemars(description = "WebSocket URL for browserless (e.g. ws://browserless:3333).")]
     pub ws_url: String,
+    #[schemars(description = "Path to store browser profiles.")]
     pub profiles_path: String,
+    #[schemars(description = "Browser connection timeout in milliseconds.")]
     pub connection_timeout_ms: u64,
 }
 
@@ -174,17 +202,22 @@ impl BrowserConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 pub struct SearchConfig {
+    #[schemars(description = "Search provider (searxng, tavily, or brave).")]
     pub provider: Option<String>,
+    #[schemars(description = "Base URL for SearXNG instance.")]
     pub searxng_base_url: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct StorageConfig {
+    #[schemars(description = "Path for agent workspace directories.")]
     pub workspaces_path: String,
+    #[schemars(description = "Path for uploaded file storage.")]
     pub files_path: String,
+    #[schemars(description = "Path to shared configuration resources.")]
     pub shared_config_dir: String,
 }
 
@@ -198,11 +231,14 @@ impl Default for StorageConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct SchedulerConfig {
+    #[schemars(description = "Interval in seconds between space memory compaction runs.")]
     pub space_compaction_secs: u64,
+    #[schemars(description = "Interval in seconds between insight compaction runs.")]
     pub insight_compaction_secs: u64,
+    #[schemars(description = "Scheduler poll interval in seconds.")]
     pub poll_secs: u64,
 }
 
@@ -216,11 +252,15 @@ impl Default for SchedulerConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct RetryConfig {
+    #[schemars(description = "Maximum number of retry attempts.")]
     pub max_retries: u32,
+    #[schemars(description = "Initial backoff delay in milliseconds.")]
     pub initial_backoff_ms: u64,
+    #[schemars(description = "Multiplier applied to backoff delay between retries.")]
     pub backoff_multiplier: f64,
+    #[schemars(description = "Maximum backoff delay in milliseconds.")]
     pub max_backoff_ms: u64,
 }
 
@@ -245,38 +285,51 @@ impl Default for RetryConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct ModelGroupConfig {
+    #[schemars(description = "Primary model ID (format: provider/model-id).")]
     pub main: String,
     #[serde(default)]
+    #[schemars(description = "Fallback model IDs tried in order if the primary fails.")]
     pub fallbacks: Vec<String>,
     #[serde(default)]
+    #[schemars(description = "Maximum tokens to generate per response.")]
     pub max_tokens: Option<u64>,
     #[serde(default)]
+    #[schemars(description = "Sampling temperature (0.0-2.0).")]
     pub temperature: Option<f64>,
     #[serde(default)]
+    #[schemars(description = "Context window size override.")]
     pub context_window: Option<usize>,
     #[serde(default)]
+    #[schemars(description = "Retry configuration for this model group.")]
     pub retry: RetryConfig,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct ModelProviderConfig {
+    #[schemars(description = "API key for this provider. Supports ${ENV_VAR} references.")]
     pub api_key: Option<String>,
+    #[schemars(description = "Custom base URL for this provider's API.")]
     pub base_url: Option<String>,
     #[serde(
         default = "serde_aux::prelude::bool_true",
         deserialize_with = "deserialize_bool_from_anything"
     )]
+    #[schemars(description = "Whether this provider is enabled.")]
     pub enabled: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct InferenceConfig {
+    #[schemars(description = "Maximum number of tool-use turns per inference loop.")]
     pub max_tool_turns: usize,
+    #[schemars(description = "Default max tokens when not specified by model group.")]
     pub default_max_tokens: u64,
+    #[schemars(description = "Percentage of context window usage that triggers compaction.")]
     pub compaction_trigger_pct: usize,
+    #[schemars(description = "Percentage of history to keep after truncation.")]
     pub history_truncation_pct: usize,
 }
 
@@ -291,48 +344,67 @@ impl Default for InferenceConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct VoiceConfig {
+    #[schemars(description = "Voice provider (twilio or none).")]
     pub provider: Option<String>,
+    #[schemars(description = "Twilio account SID.")]
     pub twilio_account_sid: Option<String>,
+    #[schemars(description = "Twilio auth token.")]
     pub twilio_auth_token: Option<String>,
+    #[schemars(description = "Twilio phone number to call from.")]
     pub twilio_from_number: Option<String>,
+    #[schemars(description = "Twilio voice ID for text-to-speech.")]
     pub twilio_voice_id: Option<String>,
+    #[schemars(description = "Twilio speech recognition model.")]
     pub twilio_speech_model: Option<String>,
-    /// Public-facing base URL used for Twilio callback and WebSocket URLs.
-    /// Overrides `server.base_url` for voice only, so cookies remain non-secure
-    /// when accessing the app locally while still allowing Twilio to reach a
-    /// public ngrok/tunnel endpoint.
+    #[schemars(description = "Public-facing base URL for Twilio callbacks. Overrides server.base_url for voice only.")]
     pub callback_base_url: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct VaultConfig {
-    pub onepassword_host: Option<String>,
-    pub onepassword_token: Option<String>,
+    #[schemars(description = "1Password service account token (for the `op` CLI).")]
+    pub onepassword_service_account_token: Option<String>,
+    #[schemars(description = "1Password vault ID.")]
     pub onepassword_vault_id: Option<String>,
-    pub bitwarden_token: Option<String>,
-    pub bitwarden_org_id: Option<String>,
-    pub bitwarden_api_url: Option<String>,
-    pub bitwarden_identity_url: Option<String>,
+    #[schemars(description = "Bitwarden CLI client ID (personal API key).")]
+    pub bitwarden_client_id: Option<String>,
+    #[schemars(description = "Bitwarden CLI client secret (personal API key).")]
+    pub bitwarden_client_secret: Option<String>,
+    #[schemars(description = "Bitwarden master password (for vault unlock).")]
+    pub bitwarden_master_password: Option<String>,
+    #[schemars(description = "Bitwarden server URL (for self-hosted instances, leave empty for cloud).")]
+    pub bitwarden_server_url: Option<String>,
+    #[schemars(description = "HashiCorp Vault server address.")]
     pub hashicorp_address: Option<String>,
+    #[schemars(description = "HashiCorp Vault access token.")]
     pub hashicorp_token: Option<String>,
+    #[schemars(description = "HashiCorp Vault secrets mount path.")]
     pub hashicorp_mount: Option<String>,
+    #[schemars(description = "Path to KeePass database file.")]
     pub keepass_path: Option<String>,
+    #[schemars(description = "KeePass database password.")]
     pub keepass_password: Option<String>,
+    #[schemars(description = "Keeper Secrets Manager app key.")]
     pub keeper_app_key: Option<String>,
 }
 
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct AppConfig {
+    #[schemars(description = "Start of port range for managed apps.")]
     pub port_range_start: u16,
+    #[schemars(description = "End of port range for managed apps.")]
     pub port_range_end: u16,
+    #[schemars(description = "Health check timeout in seconds.")]
     pub health_check_timeout_secs: u64,
+    #[schemars(description = "Maximum process restart attempts before marking as failed.")]
     pub max_restart_attempts: u32,
+    #[schemars(description = "Seconds of inactivity before an app is auto-hibernated.")]
     pub hibernate_after_secs: u64,
 }
 
@@ -348,7 +420,7 @@ impl Default for AppConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, Default)]
+#[derive(Clone, Debug, Deserialize, Serialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct Config {
     pub server: ServerConfig,
@@ -379,8 +451,7 @@ impl Config {
         let data_dir = std::env::var("FRONA_SERVER_DATA_DIR")
             .unwrap_or_else(|_| "data".into());
 
-        let config_path = std::env::var("FRONA_CONFIG")
-            .unwrap_or_else(|_| format!("{data_dir}/config.yaml"));
+        let config_path = config_file_path();
 
         let yaml_content = std::fs::read_to_string(&config_path).ok();
 
@@ -440,24 +511,102 @@ impl Config {
         }
 
         if let Ok(mut v) = serde_json::to_value(&config) {
-            redact(&mut v, &["auth", "encryption_secret"]);
-            redact(&mut v, &["sso", "client_secret"]);
-            redact(&mut v, &["voice", "twilio_account_sid"]);
-            redact(&mut v, &["voice", "twilio_auth_token"]);
-            redact(&mut v, &["vault", "onepassword_token"]);
-            redact(&mut v, &["vault", "bitwarden_token"]);
-            redact(&mut v, &["vault", "hashicorp_token"]);
-            redact(&mut v, &["vault", "keepass_password"]);
-            redact(&mut v, &["vault", "keeper_app_key"]);
-            if let Some(providers) = v.get_mut("providers").and_then(|p| p.as_object_mut()) {
-                for provider in providers.values_mut() {
-                    redact(provider, &["api_key"]);
-                }
-            }
+            redact_config_for_log(&mut v);
             tracing::debug!("Effective config:\n{}", serde_json::to_string_pretty(&v).unwrap_or_default());
         }
 
         LoadedConfig { config, models }
+    }
+}
+
+/// Paths to sensitive config fields. Used for both log redaction and API response masking.
+pub const SENSITIVE_PATHS: &[&[&str]] = &[
+    &["auth", "encryption_secret"],
+    &["sso", "client_secret"],
+    &["voice", "twilio_account_sid"],
+    &["voice", "twilio_auth_token"],
+    &["vault", "onepassword_service_account_token"],
+    &["vault", "bitwarden_client_secret"],
+    &["vault", "bitwarden_master_password"],
+    &["vault", "hashicorp_token"],
+    &["vault", "keepass_password"],
+    &["vault", "keeper_app_key"],
+];
+
+/// Provider fields that are sensitive (applied to each provider in the map).
+pub const SENSITIVE_PROVIDER_FIELDS: &[&str] = &["api_key"];
+
+pub fn config_file_path() -> String {
+    let data_dir = std::env::var("FRONA_SERVER_DATA_DIR")
+        .unwrap_or_else(|_| "data".into());
+    std::env::var("FRONA_CONFIG")
+        .unwrap_or_else(|_| format!("{data_dir}/config.yaml"))
+}
+
+/// Redact sensitive fields in a config JSON value for logging (replaces with "[redacted]").
+pub fn redact_config_for_log(value: &mut serde_json::Value) {
+    for path in SENSITIVE_PATHS {
+        redact(value, path);
+    }
+    if let Some(providers) = value.get_mut("providers").and_then(|p| p.as_object_mut()) {
+        for provider in providers.values_mut() {
+            for field in SENSITIVE_PROVIDER_FIELDS {
+                redact(provider, &[field]);
+            }
+        }
+    }
+}
+
+const DEFAULT_ENCRYPTION_SECRET: &str = "dev-secret-change-in-production";
+
+/// Redact sensitive fields for API responses: replaces with `{"is_set": true/false}`.
+pub fn redact_config_for_api(value: &mut serde_json::Value) {
+    // Check if encryption secret is the default before redaction replaces it
+    let has_default_secret = value
+        .pointer("/auth/encryption_secret")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| s == DEFAULT_ENCRYPTION_SECRET);
+
+    for path in SENSITIVE_PATHS {
+        redact_as_is_set(value, path);
+    }
+    if let Some(providers) = value.get_mut("providers").and_then(|p| p.as_object_mut()) {
+        for provider in providers.values_mut() {
+            for field in SENSITIVE_PROVIDER_FIELDS {
+                redact_as_is_set(provider, &[field]);
+            }
+        }
+    }
+
+    // Override: treat the default encryption secret as unset
+    if has_default_secret
+        && let Some(auth) = value.get_mut("auth").and_then(|a| a.as_object_mut())
+    {
+        auth.insert(
+            "encryption_secret".into(),
+            serde_json::json!({ "is_set": false }),
+        );
+    }
+}
+
+fn redact_as_is_set(value: &mut serde_json::Value, path: &[&str]) {
+    match path {
+        [] => {}
+        [key] => {
+            if let Some(v) = value.get_mut(*key) {
+                let is_set = match v {
+                    serde_json::Value::Null => false,
+                    serde_json::Value::String(s) => !s.is_empty(),
+                    _ => true,
+                };
+                *v = serde_json::json!({ "is_set": is_set });
+            }
+        }
+        [key, rest @ ..] => {
+            if let Some(child) = value.get_mut(*key) {
+                redact_as_is_set(child, rest);
+            }
+        }
     }
 }
 
@@ -473,6 +622,38 @@ fn redact(value: &mut serde_json::Value, path: &[&str]) {
             if let Some(child) = value.get_mut(*key) {
                 redact(child, rest);
             }
+        }
+    }
+}
+
+/// Deep-merge `patch` into `base`.
+/// - Objects: recursive merge
+/// - `null` values: remove the key
+/// - Values matching `{"is_set": ...}` shape: skip (redaction markers from GET)
+/// - All other values: overwrite
+pub fn deep_merge(base: &mut serde_json::Value, patch: serde_json::Value) {
+    match (base, patch) {
+        (serde_json::Value::Object(base_map), serde_json::Value::Object(patch_map)) => {
+            for (key, value) in patch_map {
+                if value.is_null() {
+                    base_map.remove(&key);
+                } else if value.is_object()
+                    && value.as_object().is_some_and(|o| o.contains_key("is_set") && o.len() == 1)
+                {
+                    // Skip redaction markers
+                } else if let Some(existing) = base_map.get_mut(&key) {
+                    if existing.is_object() && value.is_object() {
+                        deep_merge(existing, value);
+                    } else {
+                        *existing = value;
+                    }
+                } else {
+                    base_map.insert(key, value);
+                }
+            }
+        }
+        (base, patch) => {
+            *base = patch;
         }
     }
 }

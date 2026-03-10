@@ -1,11 +1,12 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
-use sha2::{Digest, Sha256};
 
 use crate::core::config::VaultConfig;
+use crate::credential::key_rotation::derive_key;
 use crate::core::error::AppError;
 
 use super::models::*;
@@ -20,9 +21,12 @@ pub struct VaultService {
     access_log_repo: Arc<dyn VaultAccessLogRepository>,
     encryption_key: [u8; 32],
     vault_config: VaultConfig,
+    data_dir: PathBuf,
+    files_path: PathBuf,
 }
 
 impl VaultService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         connection_repo: Arc<dyn VaultConnectionRepository>,
         grant_repo: Arc<dyn VaultGrantRepository>,
@@ -30,10 +34,10 @@ impl VaultService {
         access_log_repo: Arc<dyn VaultAccessLogRepository>,
         encryption_secret: &str,
         vault_config: VaultConfig,
+        data_dir: PathBuf,
+        files_path: PathBuf,
     ) -> Self {
-        let mut hasher = Sha256::new();
-        hasher.update(encryption_secret.as_bytes());
-        let encryption_key: [u8; 32] = hasher.finalize().into();
+        let encryption_key = derive_key(encryption_secret);
 
         Self {
             connection_repo,
@@ -42,6 +46,8 @@ impl VaultService {
             access_log_repo,
             encryption_key,
             vault_config,
+            data_dir,
+            files_path,
         }
     }
 
@@ -425,32 +431,32 @@ impl VaultService {
     fn config_connection_entries(&self) -> Vec<(String, VaultProviderType, String, VaultConnectionConfig)> {
         let mut entries = Vec::new();
 
-        if let (Some(host), Some(token)) = (
-            &self.vault_config.onepassword_host,
-            &self.vault_config.onepassword_token,
-        ) {
+        if let Some(token) = &self.vault_config.onepassword_service_account_token {
             entries.push((
-                "config-onepassword".to_string(),
+                "onepassword".to_string(),
                 VaultProviderType::OnePassword,
                 "1Password (config)".to_string(),
                 VaultConnectionConfig::OnePassword {
-                    connect_host: host.clone(),
-                    connect_token: token.clone(),
+                    service_account_token: token.clone(),
                     default_vault_id: self.vault_config.onepassword_vault_id.clone(),
                 },
             ));
         }
 
-        if let Some(token) = &self.vault_config.bitwarden_token {
+        if let (Some(client_id), Some(client_secret), Some(master_password)) = (
+            &self.vault_config.bitwarden_client_id,
+            &self.vault_config.bitwarden_client_secret,
+            &self.vault_config.bitwarden_master_password,
+        ) {
             entries.push((
-                "config-bitwarden".to_string(),
+                "bitwarden".to_string(),
                 VaultProviderType::Bitwarden,
                 "Bitwarden (config)".to_string(),
                 VaultConnectionConfig::Bitwarden {
-                    access_token: token.clone(),
-                    organization_id: self.vault_config.bitwarden_org_id.clone(),
-                    api_url: self.vault_config.bitwarden_api_url.clone(),
-                    identity_url: self.vault_config.bitwarden_identity_url.clone(),
+                    client_id: client_id.clone(),
+                    client_secret: client_secret.clone(),
+                    master_password: master_password.clone(),
+                    server_url: self.vault_config.bitwarden_server_url.clone(),
                 },
             ));
         }
@@ -460,7 +466,7 @@ impl VaultService {
             &self.vault_config.hashicorp_token,
         ) {
             entries.push((
-                "config-hashicorp".to_string(),
+                "hashicorp".to_string(),
                 VaultProviderType::Hashicorp,
                 "HashiCorp Vault (config)".to_string(),
                 VaultConnectionConfig::Hashicorp {
@@ -476,7 +482,7 @@ impl VaultService {
             &self.vault_config.keepass_password,
         ) {
             entries.push((
-                "config-keepass".to_string(),
+                "keepass".to_string(),
                 VaultProviderType::KeePass,
                 "KeePass (config)".to_string(),
                 VaultConnectionConfig::KeePass {
@@ -488,7 +494,7 @@ impl VaultService {
 
         if let Some(app_key) = &self.vault_config.keeper_app_key {
             entries.push((
-                "config-keeper".to_string(),
+                "keeper".to_string(),
                 VaultProviderType::Keeper,
                 "Keeper (config)".to_string(),
                 VaultConnectionConfig::Keeper {
@@ -569,6 +575,77 @@ impl VaultService {
         self.credential_repo.find_by_user_and_provider(user_id, provider).await
     }
 
+    pub async fn update_credential(
+        &self,
+        user_id: &str,
+        credential_id: &str,
+        req: UpdateLocalItemRequest,
+    ) -> Result<CredentialResponse, AppError> {
+        let existing = self
+            .credential_repo
+            .find_by_id(credential_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Credential not found".into()))?;
+
+        if existing.user_id != user_id {
+            return Err(AppError::Forbidden("Not your credential".into()));
+        }
+
+        let now = Utc::now();
+
+        let (name, provider, data) = match req {
+            UpdateLocalItemRequest::BrowserProfile { name } => {
+                (name, "browser".to_string(), CredentialData::BrowserProfile)
+            }
+            UpdateLocalItemRequest::UsernamePassword { name, username, password } => {
+                let password_encrypted = if let Some(pw) = password {
+                    encrypt_password(&pw, &self.encryption_key)?
+                } else {
+                    match &existing.data {
+                        CredentialData::UsernamePassword { password_encrypted, .. } => password_encrypted.clone(),
+                        _ => return Err(AppError::Validation("Credential type mismatch".into())),
+                    }
+                };
+                (
+                    name,
+                    "local".to_string(),
+                    CredentialData::UsernamePassword {
+                        username,
+                        password_encrypted,
+                    },
+                )
+            }
+            UpdateLocalItemRequest::ApiKey { name, api_key } => {
+                let key_encrypted = if let Some(key) = api_key {
+                    encrypt_password(&key, &self.encryption_key)?
+                } else {
+                    match &existing.data {
+                        CredentialData::ApiKey { key_encrypted, .. } => key_encrypted.clone(),
+                        _ => return Err(AppError::Validation("Credential type mismatch".into())),
+                    }
+                };
+                (
+                    name,
+                    "local".to_string(),
+                    CredentialData::ApiKey { key_encrypted },
+                )
+            }
+        };
+
+        let credential = Credential {
+            id: existing.id,
+            user_id: existing.user_id,
+            name,
+            provider,
+            data,
+            created_at: existing.created_at,
+            updated_at: now,
+        };
+
+        let credential = self.credential_repo.update(&credential).await?;
+        Ok(credential.into())
+    }
+
     pub async fn delete_credential(
         &self,
         user_id: &str,
@@ -617,7 +694,14 @@ impl VaultService {
         }
 
         let config = self.decrypt_config(&connection)?;
-        create_vault_provider(connection.provider, config)
+
+        let home_dir = if connection.system_managed {
+            self.data_dir.join("system").join("vault").join(connection.id)
+        } else {
+            self.files_path.join(&connection.user_id)
+        };
+
+        create_vault_provider(connection.provider, config, home_dir)
     }
 
     fn encrypt_config(
@@ -701,9 +785,7 @@ mod tests {
     use super::*;
 
     fn test_key() -> [u8; 32] {
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(b"test-secret");
-        hasher.finalize().into()
+        derive_key("test-secret")
     }
 
     #[test]

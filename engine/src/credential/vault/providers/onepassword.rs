@@ -1,21 +1,18 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 use serde::Deserialize;
+use tokio::process::Command;
 
 use crate::core::error::AppError;
 use crate::credential::vault::models::{VaultItem, VaultSecret};
 use crate::credential::vault::provider::VaultProvider;
 
 pub struct OnePasswordVaultProvider {
-    client: reqwest::Client,
-    host: String,
+    service_account_token: String,
     default_vault_id: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct OpVault {
-    id: String,
+    home_dir: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -23,6 +20,11 @@ struct OpItem {
     id: String,
     title: String,
     vault: OpVault,
+}
+
+#[derive(Deserialize)]
+struct OpVault {
+    id: String,
 }
 
 #[derive(Deserialize)]
@@ -40,89 +42,61 @@ struct OpField {
 }
 
 impl OnePasswordVaultProvider {
-    pub fn new(connect_host: String, connect_token: String, default_vault_id: Option<String>) -> Self {
-        let client = reqwest::Client::builder()
-            .default_headers({
-                let mut headers = reqwest::header::HeaderMap::new();
-                headers.insert(
-                    reqwest::header::AUTHORIZATION,
-                    format!("Bearer {connect_token}").parse().unwrap(),
-                );
-                headers
-            })
-            .build()
-            .expect("failed to build reqwest client");
-
+    pub fn new(service_account_token: String, default_vault_id: Option<String>, home_dir: PathBuf) -> Self {
         Self {
-            client,
-            host: connect_host.trim_end_matches('/').to_string(),
+            service_account_token,
             default_vault_id,
+            home_dir,
         }
     }
 
-    async fn get_vault_ids(&self) -> Result<Vec<String>, AppError> {
-        if let Some(ref id) = self.default_vault_id {
-            return Ok(vec![id.clone()]);
+    async fn run_op(&self, args: &[&str]) -> Result<String, AppError> {
+        let output = Command::new("op")
+            .args(args)
+            .arg("--format=json")
+            .env("OP_SERVICE_ACCOUNT_TOKEN", &self.service_account_token)
+            .env("HOME", &self.home_dir)
+            .output()
+            .await
+            .map_err(|e| AppError::Tool(format!("Failed to run `op` CLI: {e}. Is the 1Password CLI installed?")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("not found") || stderr.contains("isn't an item") {
+                return Err(AppError::NotFound(format!("1Password item not found: {stderr}")));
+            }
+            return Err(AppError::Tool(format!("1Password CLI error: {stderr}")));
         }
 
-        let resp = self
-            .client
-            .get(format!("{}/v1/vaults", self.host))
-            .send()
-            .await
-            .map_err(|e| AppError::Tool(format!("1Password Connect request failed: {e}")))?;
-
-        if !resp.status().is_success() {
-            return Err(AppError::Tool(format!(
-                "1Password Connect API error: {}",
-                resp.status()
-            )));
-        }
-
-        let vaults: Vec<OpVault> = resp
-            .json()
-            .await
-            .map_err(|e| AppError::Tool(format!("1Password response parse failed: {e}")))?;
-
-        Ok(vaults.into_iter().map(|v| v.id).collect())
+        String::from_utf8(output.stdout)
+            .map_err(|e| AppError::Tool(format!("1Password CLI output not valid UTF-8: {e}")))
     }
 }
 
 #[async_trait]
 impl VaultProvider for OnePasswordVaultProvider {
     async fn search(&self, query: &str, max_results: usize) -> Result<Vec<VaultItem>, AppError> {
-        let vault_ids = self.get_vault_ids().await?;
-        let mut results = Vec::new();
-
-        for vault_id in vault_ids {
-            let resp = self
-                .client
-                .get(format!("{}/v1/vaults/{vault_id}/items", self.host))
-                .query(&[("filter", format!("title co \"{query}\""))])
-                .send()
-                .await
-                .map_err(|e| AppError::Tool(format!("1Password search failed: {e}")))?;
-
-            if !resp.status().is_success() {
-                continue;
-            }
-
-            let items: Vec<OpItem> = resp
-                .json()
-                .await
-                .map_err(|e| AppError::Tool(format!("1Password response parse failed: {e}")))?;
-
-            for item in items {
-                results.push(VaultItem {
-                    id: format!("{}:{}", item.vault.id, item.id),
-                    name: item.title,
-                    username: None,
-                });
-                if results.len() >= max_results {
-                    return Ok(results);
-                }
-            }
+        let mut args = vec!["item", "list"];
+        if let Some(ref vault_id) = self.default_vault_id {
+            args.push("--vault");
+            args.push(vault_id);
         }
+
+        let json = self.run_op(&args).await?;
+        let items: Vec<OpItem> = serde_json::from_str(&json)
+            .map_err(|e| AppError::Tool(format!("Failed to parse 1Password item list: {e}")))?;
+
+        let query_lower = query.to_lowercase();
+        let results: Vec<VaultItem> = items
+            .into_iter()
+            .filter(|item| query.is_empty() || item.title.to_lowercase().contains(&query_lower))
+            .take(max_results)
+            .map(|item| VaultItem {
+                id: format!("{}:{}", item.vault.id, item.id),
+                name: item.title,
+                username: None,
+            })
+            .collect();
 
         Ok(results)
     }
@@ -132,24 +106,9 @@ impl VaultProvider for OnePasswordVaultProvider {
             .split_once(':')
             .ok_or_else(|| AppError::Tool("Invalid 1Password item ID format (expected vault_id:item_id)".into()))?;
 
-        let resp = self
-            .client
-            .get(format!("{}/v1/vaults/{vault_id}/items/{op_item_id}", self.host))
-            .send()
-            .await
-            .map_err(|e| AppError::Tool(format!("1Password get secret failed: {e}")))?;
-
-        if !resp.status().is_success() {
-            return Err(AppError::Tool(format!(
-                "1Password API error: {}",
-                resp.status()
-            )));
-        }
-
-        let detail: OpItemDetail = resp
-            .json()
-            .await
-            .map_err(|e| AppError::Tool(format!("1Password response parse failed: {e}")))?;
+        let json = self.run_op(&["item", "get", op_item_id, "--vault", vault_id]).await?;
+        let detail: OpItemDetail = serde_json::from_str(&json)
+            .map_err(|e| AppError::Tool(format!("Failed to parse 1Password item detail: {e}")))?;
 
         let mut username = None;
         let mut password = None;
@@ -185,20 +144,19 @@ impl VaultProvider for OnePasswordVaultProvider {
     }
 
     async fn test_connection(&self) -> Result<(), AppError> {
-        let resp = self
-            .client
-            .get(format!("{}/v1/vaults", self.host))
-            .send()
+        let output = Command::new("op")
+            .args(["whoami", "--format=json"])
+            .env("OP_SERVICE_ACCOUNT_TOKEN", &self.service_account_token)
+            .env("HOME", &self.home_dir)
+            .output()
             .await
-            .map_err(|e| AppError::Tool(format!("1Password Connect request failed: {e}")))?;
+            .map_err(|e| AppError::Tool(format!("Failed to run `op` CLI: {e}. Is the 1Password CLI installed?")))?;
 
-        if resp.status().is_success() {
+        if output.status.success() {
             Ok(())
         } else {
-            Err(AppError::Tool(format!(
-                "1Password Connect test failed: {}",
-                resp.status()
-            )))
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(AppError::Tool(format!("1Password CLI auth failed: {stderr}")))
         }
     }
 }

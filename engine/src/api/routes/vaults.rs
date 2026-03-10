@@ -5,8 +5,10 @@ use serde::Deserialize;
 
 use crate::api::error::ApiError;
 use crate::api::middleware::auth::AuthUser;
+use crate::core::error::AppError;
 use crate::core::state::AppState;
 use crate::credential::vault::models::*;
+use crate::credential::vault::provider::create_vault_provider;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -19,11 +21,15 @@ pub fn router() -> Router<AppState> {
             "/api/vaults/local/items",
             get(list_local_items).post(create_local_item),
         )
-        .route("/api/vaults/local/items/{id}", delete(delete_local_item))
+        .route(
+            "/api/vaults/local/items/{id}",
+            axum::routing::put(update_local_item).delete(delete_local_item),
+        )
+        .route("/api/vaults/test", post(test_vault))
         .route("/api/vaults/{id}", delete(delete_connection))
         .route("/api/vaults/{id}/toggle", post(toggle_connection))
         .route("/api/vaults/{id}/test", post(test_connection))
-        .route("/api/vaults/{id}/items", get(search_items))
+        .route("/api/vaults/{id}/items", get(search_items).post(search_items_inline))
 }
 
 async fn create_connection(
@@ -88,6 +94,7 @@ async fn test_connection(
 
 #[derive(Deserialize)]
 struct SearchQuery {
+    #[serde(default)]
     q: String,
     #[serde(default = "default_max_results")]
     max_results: usize,
@@ -109,6 +116,29 @@ async fn search_items(
         .await?;
     Ok(Json(items))
 }
+
+#[derive(Deserialize)]
+struct InlineSearchRequest {
+    provider: VaultProviderType,
+    config: VaultConnectionConfig,
+    #[serde(default)]
+    q: String,
+    #[serde(default = "default_max_results")]
+    max_results: usize,
+}
+
+async fn search_items_inline(
+    _auth: AuthUser,
+    Path(_id): Path<String>,
+    Json(req): Json<InlineSearchRequest>,
+) -> Result<Json<Vec<VaultItem>>, ApiError> {
+    let tmp = tempfile::tempdir()
+        .map_err(|e| ApiError::from(AppError::Tool(format!("Failed to create temp dir: {e}"))))?;
+    let provider = create_vault_provider(req.provider, req.config, tmp.path().to_path_buf())?;
+    let items = provider.search(&req.q, req.max_results).await?;
+    Ok(Json(items))
+}
+
 
 async fn approve_request(
     auth: AuthUser,
@@ -306,6 +336,25 @@ async fn revoke_grant(
     Ok(Json(serde_json::json!({ "revoked": true })))
 }
 
+// --- Inline test route ---
+
+#[derive(Deserialize)]
+struct TestVaultRequest {
+    provider: VaultProviderType,
+    config: VaultConnectionConfig,
+}
+
+async fn test_vault(
+    _auth: AuthUser,
+    Json(req): Json<TestVaultRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let tmp = tempfile::tempdir()
+        .map_err(|e| ApiError::from(AppError::Tool(format!("Failed to create temp dir: {e}"))))?;
+    let provider = create_vault_provider(req.provider, req.config, tmp.path().to_path_buf())?;
+    provider.test_connection().await?;
+    Ok(Json(serde_json::json!({ "status": "ok" })))
+}
+
 // --- Local item routes ---
 
 async fn create_local_item(
@@ -326,6 +375,19 @@ async fn list_local_items(
 ) -> Result<Json<Vec<CredentialResponse>>, ApiError> {
     let credentials = state.vault_service.list_credentials(&auth.user_id).await?;
     Ok(Json(credentials))
+}
+
+async fn update_local_item(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateLocalItemRequest>,
+) -> Result<Json<CredentialResponse>, ApiError> {
+    let response = state
+        .vault_service
+        .update_credential(&auth.user_id, &id, req)
+        .await?;
+    Ok(Json(response))
 }
 
 async fn delete_local_item(

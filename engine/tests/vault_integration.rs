@@ -47,6 +47,8 @@ fn build_service(db: &surrealdb::Surreal<surrealdb::engine::local::Db>) -> Vault
         access_log_repo,
         "test-secret",
         VaultConfig::default(),
+        std::path::PathBuf::from("/tmp/test-data"),
+        std::path::PathBuf::from("/tmp/test-files"),
     )
 }
 

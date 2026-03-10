@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use async_trait::async_trait;
 
 use crate::core::error::AppError;
@@ -22,6 +24,7 @@ pub trait VaultProvider: Send + Sync {
 pub fn create_vault_provider(
     provider_type: VaultProviderType,
     config: VaultConnectionConfig,
+    home_dir: PathBuf,
 ) -> Result<Box<dyn VaultProvider>, AppError> {
     match provider_type {
         VaultProviderType::Local => Err(AppError::Internal(
@@ -29,28 +32,28 @@ pub fn create_vault_provider(
         )),
         VaultProviderType::OnePassword => match config {
             VaultConnectionConfig::OnePassword {
-                connect_host,
-                connect_token,
+                service_account_token,
                 default_vault_id,
             } => Ok(Box::new(OnePasswordVaultProvider::new(
-                connect_host,
-                connect_token,
+                service_account_token,
                 default_vault_id,
+                home_dir,
             ))),
             _ => Err(AppError::Validation("Invalid config for 1Password".into())),
         },
         VaultProviderType::Bitwarden => match config {
             VaultConnectionConfig::Bitwarden {
-                access_token,
-                organization_id,
-                api_url,
-                identity_url,
+                client_id,
+                client_secret,
+                master_password,
+                server_url,
             } => Ok(Box::new(BitwardenVaultProvider::new(
-                access_token,
-                organization_id,
-                api_url,
-                identity_url,
-            ))),
+                client_id,
+                client_secret,
+                master_password,
+                server_url,
+                home_dir,
+            )?)),
             _ => Err(AppError::Validation("Invalid config for Bitwarden".into())),
         },
         VaultProviderType::Hashicorp => match config {

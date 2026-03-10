@@ -8,8 +8,9 @@ use aes_gcm::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::SigningKey;
 use jsonwebtoken::{DecodingKey, EncodingKey};
-use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
+
+use crate::credential::key_rotation::derive_key;
 
 use super::models::KeyPair;
 use super::repository::KeyPairRepository;
@@ -25,9 +26,7 @@ pub struct KeyPairService {
 
 impl KeyPairService {
     pub fn new(encryption_secret: &str, repo: Arc<dyn KeyPairRepository>) -> Self {
-        let mut hasher = Sha256::new();
-        hasher.update(encryption_secret.as_bytes());
-        let encryption_key: [u8; 32] = hasher.finalize().into();
+        let encryption_key = derive_key(encryption_secret);
 
         Self {
             encryption_key,
@@ -83,7 +82,22 @@ impl KeyPairService {
         }
 
         let kp = self.get_or_create(owner).await?;
-        let private_bytes = self.decrypt_private_key(&kp)?;
+        let private_bytes = match self.decrypt_private_key(&kp) {
+            Ok(bytes) => bytes,
+            Err(AppError::Decryption(e)) => {
+                tracing::warn!(
+                    owner = owner,
+                    error = %e,
+                    "Failed to decrypt keypair, regenerating (encryption secret changed or stored key corrupted)"
+                );
+                self.signing_cache.write().await.remove(owner);
+                self.verifying_cache.write().await.remove(owner);
+                self.repo.delete(&kp.id).await?;
+                let new_kp = self.get_or_create(owner).await?;
+                self.decrypt_private_key(&new_kp)?
+            }
+            Err(e) => return Err(e),
+        };
 
         let kid = kp.owner.clone();
 
@@ -150,7 +164,7 @@ impl KeyPairService {
         let nonce = Nonce::from_slice(&kp.nonce);
         let decrypted = cipher
             .decrypt(nonce, kp.private_key_enc.as_ref())
-            .map_err(|e| AppError::Internal(format!("Decryption failed: {e}")))?;
+            .map_err(|e| AppError::Decryption(format!("Decryption failed: {e}")))?;
 
         let mut key = [0u8; 32];
         key.copy_from_slice(&decrypted);

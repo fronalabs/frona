@@ -315,10 +315,10 @@ function LocalVaultPanel({ expanded, onToggle }: { expanded: boolean; onToggle: 
       >
         <div className="flex flex-1 items-center gap-2.5">
           <LockClosedIcon className="h-5 w-5 text-text-tertiary" />
-          <span className="text-sm font-medium text-text-primary">Local</span>
-          <div onClick={(e) => e.stopPropagation()}>
+          <span className="inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+            <span className="text-sm font-medium text-text-primary leading-none">Local</span>
             <HelpTip content="The local vault stores credentials on the server. Agents can use these to log into websites, authenticate with APIs, or access protected services on your behalf." />
-          </div>
+          </span>
         </div>
         <span className={`rounded-lg px-3 py-1 text-xs font-medium ${itemCount > 0 ? "bg-accent/10 text-accent" : "bg-surface-tertiary text-text-secondary"}`}>
           {itemCount > 0 ? `${itemCount} item${itemCount !== 1 ? "s" : ""}` : "Empty"}

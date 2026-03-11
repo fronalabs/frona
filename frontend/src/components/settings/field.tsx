@@ -39,7 +39,7 @@ interface FieldProps {
 export function Field({ label, description, children }: FieldProps) {
   return (
     <div className="space-y-1">
-      <label className="block text-sm font-medium text-text-secondary">
+      <label className="inline-flex items-center gap-1 text-sm font-medium text-text-secondary">
         {label}
         {description && (
           <HelpTip content={description} />

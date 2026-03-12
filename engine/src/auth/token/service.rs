@@ -8,7 +8,7 @@ use crate::auth::jwt::JwtService;
 use crate::auth::models::Claims;
 use crate::credential::keypair::service::KeyPairService;
 use crate::core::error::AppError;
-use crate::core::models::User;
+use crate::auth::User;
 
 #[derive(Clone)]
 pub struct TokenService {

@@ -1,11 +1,10 @@
 use std::str::FromStr;
-use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use crate::agent::prompt::PromptLoader;
-use crate::agent::repository::AgentRepository;
+use crate::agent::service::AgentService;
 use crate::agent::task::service::TaskService;
 use crate::core::error::AppError;
 use frona_derive::agent_tool;
@@ -28,7 +27,7 @@ pub fn next_cron_occurrence(expression: &str) -> Result<DateTime<Utc>, AppError>
 
 pub struct ScheduleTaskTool {
     task_service: TaskService,
-    agent_repo: Arc<dyn AgentRepository>,
+    agent_service: AgentService,
     user_id: String,
     agent_id: String,
     chat_id: String,
@@ -38,7 +37,7 @@ pub struct ScheduleTaskTool {
 impl ScheduleTaskTool {
     pub fn new(
         task_service: TaskService,
-        agent_repo: Arc<dyn AgentRepository>,
+        agent_service: AgentService,
         user_id: String,
         agent_id: String,
         chat_id: String,
@@ -46,7 +45,7 @@ impl ScheduleTaskTool {
     ) -> Self {
         Self {
             task_service,
-            agent_repo,
+            agent_service,
             user_id,
             agent_id,
             chat_id,
@@ -58,7 +57,7 @@ impl ScheduleTaskTool {
         match target_agent {
             Some(name) => {
                 let agent = self
-                    .agent_repo
+                    .agent_service
                     .find_by_name(&self.user_id, name)
                     .await?
                     .ok_or_else(|| {

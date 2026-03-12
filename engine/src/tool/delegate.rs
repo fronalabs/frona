@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::agent::prompt::PromptLoader;
-use crate::agent::repository::AgentRepository;
+use crate::agent::service::AgentService;
 use crate::agent::task::models::CreateTaskRequest;
 use crate::agent::task::executor::TaskExecutor;
 use crate::agent::task::service::TaskService;
@@ -15,7 +15,7 @@ use super::{InferenceContext, ToolOutput};
 
 pub struct DelegateTaskTool {
     task_service: TaskService,
-    agent_repo: Arc<dyn AgentRepository>,
+    agent_service: AgentService,
     task_executor: Arc<TaskExecutor>,
     broadcast_service: BroadcastService,
     user_id: String,
@@ -29,7 +29,7 @@ impl DelegateTaskTool {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         task_service: TaskService,
-        agent_repo: Arc<dyn AgentRepository>,
+        agent_service: AgentService,
         task_executor: Arc<TaskExecutor>,
         broadcast_service: BroadcastService,
         user_id: String,
@@ -40,7 +40,7 @@ impl DelegateTaskTool {
     ) -> Self {
         Self {
             task_service,
-            agent_repo,
+            agent_service,
             task_executor,
             broadcast_service,
             user_id,
@@ -73,7 +73,7 @@ impl DelegateTaskTool {
             .ok_or_else(|| AppError::Validation("Missing 'instruction' parameter".into()))?;
 
         let target_agent = self
-            .agent_repo
+            .agent_service
             .find_by_name(&self.user_id, target_agent_name)
             .await?
             .ok_or_else(|| {

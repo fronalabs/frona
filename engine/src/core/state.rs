@@ -39,8 +39,8 @@ use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
 
 use super::config::Config;
+use crate::auth::UserService;
 use crate::db::repo::generic::SurrealRepo;
-use crate::db::repo::users::SurrealUserRepo;
 
 #[derive(Clone, Default)]
 pub struct ActiveSessions {
@@ -78,7 +78,7 @@ pub struct AppState {
     pub db: Surreal<Db>,
     pub auth_service: Arc<AuthService>,
     pub app_service: AppService,
-    pub user_repo: SurrealUserRepo,
+    pub user_service: UserService,
     pub agent_service: AgentService,
     pub space_service: SpaceService,
     pub call_service: CallService,
@@ -120,9 +120,10 @@ impl AppState {
         let provider_registry = ModelProviderRegistry::from_config(llm_config, broadcast_service.clone(), &config.inference)
             .expect("Failed to initialize provider registry");
 
-        let agent_repo = SurrealRepo::new(db.clone());
         let chat_repo = SurrealRepo::new(db.clone());
         let message_repo = SurrealRepo::new(db.clone());
+
+        let agent_service = AgentService::new(SurrealRepo::new(db.clone()), &config.cache);
 
         let shared_config_dir = PathBuf::from(&config.storage.shared_config_dir);
         let shared_config_abs = std::fs::canonicalize(&shared_config_dir)
@@ -166,10 +167,10 @@ impl AppState {
             &config.auth.encryption_secret,
             Arc::new(keypair_repo),
         );
-        let presign_user_repo: SurrealRepo<crate::core::models::User> = SurrealRepo::new(db.clone());
+        let user_service = UserService::new(SurrealRepo::new(db.clone()), &config.cache);
         let presign_service = PresignService::new(
             keypair_service.clone(),
-            Arc::new(presign_user_repo),
+            user_service.clone(),
             local_base_url.clone(),
             config.auth.presign_expiry_secs,
         );
@@ -235,15 +236,15 @@ impl AppState {
                 app_manager,
                 config.app.clone(),
             ),
-            user_repo: SurrealRepo::new(db.clone()),
-            agent_service: AgentService::new(SurrealRepo::new(db.clone())),
+            user_service: user_service.clone(),
+            agent_service: agent_service.clone(),
             space_service: SpaceService::new(SurrealRepo::new(db.clone())),
             call_service: CallService::new(SurrealRepo::new(db.clone())),
             contact_service: ContactService::new(SurrealRepo::new(db.clone())),
             chat_service: ChatService::new(
                 chat_repo,
                 message_repo,
-                agent_repo,
+                agent_service.clone(),
                 provider_registry,
                 workspaces.clone(),
                 memory_service.clone(),

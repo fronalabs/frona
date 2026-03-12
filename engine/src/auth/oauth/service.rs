@@ -12,10 +12,9 @@ use tokio::sync::Mutex;
 use super::models::OAuthIdentity;
 use super::repository::OAuthRepository;
 use crate::auth::token::service::TokenService;
-use crate::auth::{AuthService, UserRepository};
+use crate::auth::{AuthService, User, UserService};
 use crate::core::config::Config;
 use crate::core::error::AppError;
-use crate::core::models::User;
 use crate::credential::keypair::service::KeyPairService;
 
 #[derive(Clone)]
@@ -130,7 +129,7 @@ impl OAuthService {
         &self,
         code: &str,
         state: &str,
-        user_repo: &dyn UserRepository,
+        user_service: &UserService,
         _keypair_svc: &KeyPairService,
         _token_svc: &TokenService,
     ) -> Result<(User, bool), AppError> {
@@ -192,7 +191,7 @@ impl OAuthService {
 
         // Look up existing identity
         if let Some(identity) = self.repo.find_identity_by_sub(&external_sub).await? {
-            let user = user_repo
+            let user = user_service
                 .find_by_id(&identity.user_id)
                 .await?
                 .ok_or_else(|| AppError::Internal("Linked user not found".into()))?;
@@ -202,7 +201,7 @@ impl OAuthService {
         // Try to match by email
         if self.signups_match_email
             && let Some(ref email) = external_email
-            && let Some(existing_user) = user_repo.find_by_email(email).await?
+            && let Some(existing_user) = user_service.find_by_email(email).await?
         {
             let now = Utc::now();
             let identity = OAuthIdentity {
@@ -225,7 +224,7 @@ impl OAuthService {
         } else {
             format!("sso-{external_sub}")
         };
-        let username = AuthService::generate_unique_username(user_repo, &base_username).await?;
+        let username = AuthService::generate_unique_username(user_service, &base_username).await?;
 
         let new_user = User {
             id: uuid::Uuid::new_v4().to_string(),
@@ -240,7 +239,7 @@ impl OAuthService {
             created_at: now,
             updated_at: now,
         };
-        let user = user_repo.create(&new_user).await?;
+        let user = user_service.create(&new_user).await?;
 
         let identity = OAuthIdentity {
             id: uuid::Uuid::new_v4().to_string(),

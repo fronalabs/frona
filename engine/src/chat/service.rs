@@ -1,6 +1,6 @@
 use crate::agent::config::parse_frontmatter;
+use crate::agent::service::AgentService;
 use crate::agent::workspace::{AgentPromptLoader, AgentWorkspaceManager};
-use crate::db::repo::agents::SurrealAgentRepo;
 use crate::db::repo::chats::SurrealChatRepo;
 use crate::db::repo::messages::SurrealMessageRepo;
 use crate::core::error::AppError;
@@ -34,7 +34,7 @@ use super::repository::ChatRepository;
 pub struct ChatService {
     chat_repo: SurrealChatRepo,
     message_repo: SurrealMessageRepo,
-    agent_repo: SurrealAgentRepo,
+    agent_service: AgentService,
     provider_registry: ModelProviderRegistry,
     workspaces: AgentWorkspaceManager,
     memory_service: MemoryService,
@@ -45,7 +45,7 @@ impl ChatService {
     pub fn new(
         chat_repo: SurrealChatRepo,
         message_repo: SurrealMessageRepo,
-        agent_repo: SurrealAgentRepo,
+        agent_service: AgentService,
         provider_registry: ModelProviderRegistry,
         workspaces: AgentWorkspaceManager,
         memory_service: MemoryService,
@@ -54,7 +54,7 @@ impl ChatService {
         Self {
             chat_repo,
             message_repo,
-            agent_repo,
+            agent_service,
             provider_registry,
             workspaces,
             memory_service,
@@ -485,7 +485,7 @@ impl ChatService {
     pub async fn resolve_agent_config(&self, agent_id: &str) -> Result<AgentConfig, AppError> {
         let ws = self.workspaces.get(agent_id);
 
-        if let Ok(Some(agent)) = self.agent_repo.find_by_id(agent_id).await {
+        if let Ok(Some(agent)) = self.agent_service.find_by_id(agent_id).await {
             tracing::info!(agent_id, ?agent.tools, user_id = ?agent.user_id, "Resolved agent from DB");
             let tools = if agent.tools.is_empty() {
                 crate::tool::configurable_tools().to_vec()

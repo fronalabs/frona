@@ -277,7 +277,7 @@ async fn auth_gate(
         }
     };
 
-    let user = crate::core::models::User {
+    let user = crate::auth::User {
         id: claims.sub,
         username: claims.username,
         email: claims.email,

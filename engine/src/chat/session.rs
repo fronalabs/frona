@@ -4,7 +4,6 @@ pub use tokio_util::sync::CancellationToken;
 use crate::chat::models::Chat;
 use crate::chat::service::AgentConfig;
 use crate::core::error::AppError;
-use crate::core::repository::Repository;
 use crate::core::state::AppState;
 use crate::inference::config::ModelGroup;
 use crate::inference::convert::to_rig_messages;
@@ -97,7 +96,7 @@ impl ChatSessionContext {
         let registry = state.chat_service.provider_registry().clone();
 
         let user = state
-            .user_repo
+            .user_service
             .find_by_id(user_id)
             .await?
             .ok_or_else(|| AppError::NotFound("User not found".into()))?;

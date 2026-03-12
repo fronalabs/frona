@@ -116,17 +116,9 @@ impl TaskExecutor {
     }
 
     async fn get_agent_concurrent_limit(&self, agent_id: &str) -> usize {
-        use crate::db::repo::generic::SurrealRepo;
-        use crate::core::repository::Repository;
-
-        let repo: SurrealRepo<crate::agent::models::Agent> = SurrealRepo::new(
-            self.app_state.db.clone(),
-        );
-
-        if let Ok(Some(agent)) = repo.find_by_id(agent_id).await {
+        if let Ok(Some(agent)) = self.app_state.agent_service.find_by_id(agent_id).await {
             return agent.max_concurrent_tasks.unwrap_or(3) as usize;
         }
-
         3
     }
 

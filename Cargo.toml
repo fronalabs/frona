@@ -20,3 +20,4 @@ async-stream = "0.3"
 serde-aux = "4"
 base64 = "0.22"
 backon = "1"
+moka = { version = "0.12", features = ["future"] }

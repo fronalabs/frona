@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::models::Agent;
 use crate::chat::models::Chat;
-use crate::core::models::user::User;
+use crate::auth::User;
 use crate::tool::registry::AgentToolRegistry;
 
 use super::config::ModelGroup;

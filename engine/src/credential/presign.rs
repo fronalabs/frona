@@ -1,11 +1,5 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use tokio::sync::RwLock;
-use tokio::time::Instant;
-
 use crate::auth::jwt::JwtService;
-use crate::auth::UserRepository;
+use crate::auth::UserService;
 use crate::chat::message::models::MessageResponse;
 use crate::core::error::AppError;
 use crate::credential::keypair::service::KeyPairService;
@@ -13,37 +7,28 @@ use crate::credential::keypair::service::KeyPairService;
 use crate::api::files::PresignClaims;
 use crate::api::files::attachment_url_segment;
 
-struct CachedUser {
-    username: String,
-    cached_at: Instant,
-}
-
 #[derive(Clone)]
 pub struct PresignService {
     keypair_svc: KeyPairService,
     jwt_svc: JwtService,
-    user_repo: Arc<dyn UserRepository>,
+    user_service: UserService,
     issuer_url: String,
     expiry_secs: u64,
-    cache: Arc<RwLock<HashMap<String, CachedUser>>>,
 }
-
-const CACHE_TTL_SECS: u64 = 300; // 5 minutes
 
 impl PresignService {
     pub fn new(
         keypair_svc: KeyPairService,
-        user_repo: Arc<dyn UserRepository>,
+        user_service: UserService,
         issuer_url: String,
         expiry_secs: u64,
     ) -> Self {
         Self {
             keypair_svc,
             jwt_svc: JwtService::new(),
-            user_repo,
+            user_service,
             issuer_url,
             expiry_secs,
-            cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -98,31 +83,12 @@ impl PresignService {
     }
 
     async fn resolve_username(&self, user_id: &str) -> Result<String, AppError> {
-        {
-            let cache = self.cache.read().await;
-            if let Some(entry) = cache.get(user_id)
-                && entry.cached_at.elapsed().as_secs() < CACHE_TTL_SECS
-            {
-                return Ok(entry.username.clone());
-            }
-        }
-
         let user = self
-            .user_repo
+            .user_service
             .find_by_id(user_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("User {user_id} not found")))?;
-
-        let username = user.username.clone();
-        {
-            let mut cache = self.cache.write().await;
-            cache.insert(user_id.to_string(), CachedUser {
-                username: username.clone(),
-                cached_at: Instant::now(),
-            });
-        }
-
-        Ok(username)
+        Ok(user.username)
     }
 }
 

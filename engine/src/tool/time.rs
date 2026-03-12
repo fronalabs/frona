@@ -66,7 +66,7 @@ mod tests {
     fn mock_context() -> InferenceContext {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         InferenceContext::new(
-            crate::core::models::user::User {
+            crate::auth::User {
                 id: "u".into(), username: "u".into(), email: "e".into(), name: "n".into(),
                 password_hash: String::new(),
                 created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),

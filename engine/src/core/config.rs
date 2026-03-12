@@ -420,6 +420,24 @@ impl Default for AppConfig {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(default)]
+pub struct CacheConfig {
+    #[schemars(description = "TTL in seconds for cached entities (agents, users).")]
+    pub entity_ttl_secs: u64,
+    #[schemars(description = "Maximum number of cached entities.")]
+    pub entity_max_capacity: u64,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            entity_ttl_secs: 300,
+            entity_max_capacity: 1000,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct Config {
@@ -435,6 +453,7 @@ pub struct Config {
     pub inference: InferenceConfig,
     pub voice: VoiceConfig,
     pub app: AppConfig,
+    pub cache: CacheConfig,
     #[serde(default)]
     pub models: HashMap<String, ModelGroupConfig>,
     #[serde(default)]

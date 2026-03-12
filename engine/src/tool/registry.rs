@@ -108,7 +108,7 @@ mod tests {
     fn mock_context() -> InferenceContext {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         InferenceContext::new(
-            crate::core::models::user::User {
+            crate::auth::User {
                 id: "test-user".into(),
                 username: "testuser".into(),
                 email: "test@test.com".into(),

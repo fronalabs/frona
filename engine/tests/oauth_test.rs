@@ -3,7 +3,7 @@ use frona::db::init as db;
 use frona::db::repo::generic::SurrealRepo;
 use frona::auth::oauth::models::OAuthIdentity;
 use frona::auth::oauth::repository::OAuthRepository;
-use frona::core::models::User;
+use frona::auth::User;
 use frona::core::repository::Repository;
 use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;

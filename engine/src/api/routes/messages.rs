@@ -204,9 +204,6 @@ pub async fn build_tool_registry(
         registry.register(Arc::new(WebSearchTool::new(state.search_provider.clone(), prompts.clone())));
     }
 
-    let agent_repo: Arc<dyn crate::agent::repository::AgentRepository> =
-        Arc::new(crate::db::repo::generic::SurrealRepo::new(state.db.clone()));
-
     if allowed_tools.iter().any(|t| t == "delegate")
         && let Some(executor) = state.task_executor()
     {
@@ -215,7 +212,7 @@ pub async fn build_tool_registry(
 
         registry.register(Arc::new(DelegateTaskTool::new(
             state.task_service.clone(),
-            agent_repo.clone(),
+            state.agent_service.clone(),
             executor,
             state.broadcast_service.clone(),
             user_id.to_string(),
@@ -229,7 +226,7 @@ pub async fn build_tool_registry(
     if allowed_tools.iter().any(|t| t == "schedule") {
         registry.register(Arc::new(ScheduleTaskTool::new(
             state.task_service.clone(),
-            agent_repo.clone(),
+            state.agent_service.clone(),
             user_id.to_string(),
             agent_id.to_string(),
             chat_id.to_string(),

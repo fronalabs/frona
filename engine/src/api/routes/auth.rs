@@ -13,7 +13,6 @@ use crate::api::cookie::{
 use crate::auth::models::{AuthResponse, LoginRequest, RegisterRequest, UpdateUsernameRequest, UserInfo};
 use crate::auth::token::models::CreatePatRequest;
 use crate::core::error::AppError;
-use crate::core::repository::Repository;
 
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
@@ -59,7 +58,7 @@ async fn register(
     let (response, refresh_jwt) = state
         .auth_service
         .register(
-            &state.user_repo,
+            &state.user_service,
             &state.keypair_service,
             &state.token_service,
             req,
@@ -94,7 +93,7 @@ async fn login(
     let (response, refresh_jwt) = state
         .auth_service
         .login(
-            &state.user_repo,
+            &state.user_service,
             &state.keypair_service,
             &state.token_service,
             req,
@@ -116,7 +115,7 @@ async fn me(
     State(state): State<AppState>,
 ) -> Result<Json<UserInfo>, ApiError> {
     let user = state
-        .user_repo
+        .user_service
         .find_by_id(&auth.user_id)
         .await?
         .ok_or_else(|| AppError::NotFound("User not found".into()))?;
@@ -142,7 +141,7 @@ async fn change_username(
     let (response, refresh_jwt) = state
         .auth_service
         .change_username(
-            &state.user_repo,
+            &state.user_service,
             &state.keypair_service,
             &state.token_service,
             &state.config,
@@ -228,7 +227,7 @@ async fn create_pat(
     }
 
     let user = state
-        .user_repo
+        .user_service
         .find_by_id(&auth.user_id)
         .await?
         .ok_or_else(|| AppError::NotFound("User not found".into()))?;
@@ -309,7 +308,7 @@ async fn sso_callback(
         .handle_callback(
             code,
             callback_state,
-            &state.user_repo,
+            &state.user_service,
             &state.keypair_service,
             &state.token_service,
         )

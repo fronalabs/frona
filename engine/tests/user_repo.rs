@@ -1,9 +1,10 @@
 use chrono::Utc;
 use frona::db::init as db;
 use frona::db::repo::users::SurrealUserRepo;
-use frona::auth::UserRepository;
+use frona::auth::{UserRepository, UserService};
+use frona::core::config::CacheConfig;
 use frona::core::repository::Repository;
-use frona::core::models::User;
+use frona::auth::User;
 use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
 
@@ -99,4 +100,60 @@ async fn test_find_by_id_not_found() {
 
     let found = repo.find_by_id("nonexistent-id").await.unwrap();
     assert!(found.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// UserService cache tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn user_service_find_by_id_caches() {
+    let db = test_db().await;
+    let svc = UserService::new(SurrealUserRepo::new(db.clone()), &CacheConfig::default());
+    let user = test_user();
+    svc.create(&user).await.unwrap();
+
+    let first = svc.find_by_id(&user.id).await.unwrap().unwrap();
+    let second = svc.find_by_id(&user.id).await.unwrap().unwrap();
+    assert_eq!(first.id, second.id);
+    assert_eq!(first.username, second.username);
+}
+
+#[tokio::test]
+async fn user_service_update_invalidates_cache() {
+    let db = test_db().await;
+    let svc = UserService::new(SurrealUserRepo::new(db.clone()), &CacheConfig::default());
+    let user = test_user();
+    svc.create(&user).await.unwrap();
+
+    // Populate cache
+    let cached = svc.find_by_id(&user.id).await.unwrap().unwrap();
+    assert_eq!(cached.name, "Test User");
+
+    // Update via service
+    let mut updated = cached;
+    updated.name = "Updated Name".to_string();
+    updated.updated_at = Utc::now();
+    svc.update(&updated).await.unwrap();
+
+    // Next find_by_id should return updated data
+    let after = svc.find_by_id(&user.id).await.unwrap().unwrap();
+    assert_eq!(after.name, "Updated Name");
+}
+
+#[tokio::test]
+async fn user_service_delete_invalidates_cache() {
+    let db = test_db().await;
+    let svc = UserService::new(SurrealUserRepo::new(db.clone()), &CacheConfig::default());
+    let user = test_user();
+    svc.create(&user).await.unwrap();
+
+    // Populate cache
+    assert!(svc.find_by_id(&user.id).await.unwrap().is_some());
+
+    // Delete
+    svc.delete(&user.id).await.unwrap();
+
+    // Should be gone
+    assert!(svc.find_by_id(&user.id).await.unwrap().is_none());
 }

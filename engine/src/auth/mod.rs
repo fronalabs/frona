@@ -2,14 +2,16 @@ pub mod jwt;
 pub mod models;
 pub mod oauth;
 pub mod token;
+pub mod user_service;
 
 use async_trait::async_trait;
 
+pub use self::models::User;
+pub use self::user_service::UserService;
 use self::models::{AuthResponse, LoginRequest, RegisterRequest, UpdateUsernameRequest, UserInfo};
 use crate::auth::token::service::TokenService;
 use crate::core::config::Config;
 use crate::core::error::AppError;
-use crate::core::models::User;
 use crate::core::repository::Repository;
 use crate::credential::keypair::service::KeyPairService;
 
@@ -29,7 +31,7 @@ impl AuthService {
 
     pub async fn register(
         &self,
-        repo: &dyn UserRepository,
+        user_service: &UserService,
         keypair_svc: &KeyPairService,
         token_svc: &TokenService,
         req: RegisterRequest,
@@ -37,10 +39,10 @@ impl AuthService {
         Self::validate_username(&req.username)?;
         Self::validate_password(&req.password)?;
 
-        if repo.find_by_email(&req.email).await?.is_some() {
+        if user_service.find_by_email(&req.email).await?.is_some() {
             return Err(AppError::Validation("Email already registered".into()));
         }
-        if repo.find_by_username(&req.username).await?.is_some() {
+        if user_service.find_by_username(&req.username).await?.is_some() {
             return Err(AppError::Validation("Username already taken".into()));
         }
 
@@ -56,7 +58,7 @@ impl AuthService {
             updated_at: now,
         };
 
-        let user = repo.create(&user).await?;
+        let user = user_service.create(&user).await?;
         let (access_jwt, refresh_jwt) =
             token_svc.create_session_pair(keypair_svc, &user).await?;
 
@@ -76,15 +78,15 @@ impl AuthService {
 
     pub async fn login(
         &self,
-        repo: &dyn UserRepository,
+        user_service: &UserService,
         keypair_svc: &KeyPairService,
         token_svc: &TokenService,
         req: LoginRequest,
     ) -> Result<(AuthResponse, String), AppError> {
         let user = if req.identifier.contains('@') {
-            repo.find_by_email(&req.identifier).await?
+            user_service.find_by_email(&req.identifier).await?
         } else {
-            repo.find_by_username(&req.identifier).await?
+            user_service.find_by_username(&req.identifier).await?
         }
         .ok_or_else(|| AppError::Auth("Invalid credentials".into()))?;
 
@@ -156,7 +158,7 @@ impl AuthService {
     }
 
     pub async fn generate_unique_username(
-        repo: &dyn UserRepository,
+        user_service: &UserService,
         base: &str,
     ) -> Result<String, AppError> {
         let base = if base.is_empty() || !base.starts_with(|c: char| c.is_ascii_lowercase()) {
@@ -167,12 +169,12 @@ impl AuthService {
 
         let truncated = if base.len() > 29 { &base[..29] } else { &base };
 
-        if repo.find_by_username(truncated).await?.is_none() {
+        if user_service.find_by_username(truncated).await?.is_none() {
             return Ok(truncated.to_string());
         }
         for i in 2..1000 {
             let candidate = format!("{truncated}-{i}");
-            if candidate.len() <= 32 && repo.find_by_username(&candidate).await?.is_none() {
+            if candidate.len() <= 32 && user_service.find_by_username(&candidate).await?.is_none() {
                 return Ok(candidate);
             }
         }
@@ -181,7 +183,7 @@ impl AuthService {
 
     pub async fn change_username(
         &self,
-        repo: &dyn UserRepository,
+        user_service: &UserService,
         keypair_svc: &KeyPairService,
         token_svc: &TokenService,
         config: &Config,
@@ -190,11 +192,11 @@ impl AuthService {
     ) -> Result<(AuthResponse, String), AppError> {
         Self::validate_username(&req.username)?;
 
-        if repo.find_by_username(&req.username).await?.is_some() {
+        if user_service.find_by_username(&req.username).await?.is_some() {
             return Err(AppError::Validation("Username already taken".into()));
         }
 
-        let mut user = repo
+        let mut user = user_service
             .find_by_id(user_id)
             .await?
             .ok_or_else(|| AppError::NotFound("User not found".into()))?;
@@ -206,7 +208,7 @@ impl AuthService {
 
         user.username = req.username.clone();
         user.updated_at = chrono::Utc::now();
-        repo.update(&user).await?;
+        user_service.update(&user).await?;
 
         // Rename files directory
         let old_files_dir = std::path::Path::new(&config.storage.files_path).join(&old_username);

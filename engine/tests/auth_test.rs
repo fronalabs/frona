@@ -8,7 +8,9 @@ use frona::auth::token::models::CreatePatRequest;
 use frona::auth::token::repository::TokenRepository;
 use frona::auth::token::service::TokenService;
 use frona::auth::AuthService;
-use frona::core::models::User;
+use frona::auth::User;
+use frona::auth::UserService;
+use frona::core::config::CacheConfig;
 use frona::core::repository::Repository;
 use frona::credential::keypair::service::KeyPairService;
 use surrealdb::engine::local::{Db, Mem};
@@ -280,14 +282,14 @@ async fn test_jwks_listing() {
 #[tokio::test]
 async fn test_register_and_login_flow() {
     let db = test_db().await;
-    let user_repo = SurrealRepo::new(db.clone());
+    let user_service = UserService::new(SurrealRepo::new(db.clone()), &CacheConfig::default());
     let (keypair_svc, token_svc) = setup_services(&db);
     let auth_svc = AuthService::new();
 
     // Register
     let (register_resp, register_refresh) = auth_svc
         .register(
-            &user_repo,
+            &user_service,
             &keypair_svc,
             &token_svc,
             frona::auth::models::RegisterRequest {
@@ -314,7 +316,7 @@ async fn test_register_and_login_flow() {
     // Login with same credentials
     let (login_resp, _login_refresh) = auth_svc
         .login(
-            &user_repo,
+            &user_service,
             &keypair_svc,
             &token_svc,
             frona::auth::models::LoginRequest {
@@ -332,14 +334,14 @@ async fn test_register_and_login_flow() {
 #[tokio::test]
 async fn test_login_wrong_password() {
     let db = test_db().await;
-    let user_repo = SurrealRepo::new(db.clone());
+    let user_service = UserService::new(SurrealRepo::new(db.clone()), &CacheConfig::default());
     let (keypair_svc, token_svc) = setup_services(&db);
     let auth_svc = AuthService::new();
 
     // Register first
     auth_svc
         .register(
-            &user_repo,
+            &user_service,
             &keypair_svc,
             &token_svc,
             frona::auth::models::RegisterRequest {
@@ -355,7 +357,7 @@ async fn test_login_wrong_password() {
     // Login with wrong password
     let result = auth_svc
         .login(
-            &user_repo,
+            &user_service,
             &keypair_svc,
             &token_svc,
             frona::auth::models::LoginRequest {
@@ -371,7 +373,7 @@ async fn test_login_wrong_password() {
 #[tokio::test]
 async fn test_duplicate_registration() {
     let db = test_db().await;
-    let user_repo = SurrealRepo::new(db.clone());
+    let user_service = UserService::new(SurrealRepo::new(db.clone()), &CacheConfig::default());
     let (keypair_svc, token_svc) = setup_services(&db);
     let auth_svc = AuthService::new();
 
@@ -383,7 +385,7 @@ async fn test_duplicate_registration() {
     };
 
     auth_svc
-        .register(&user_repo, &keypair_svc, &token_svc, req)
+        .register(&user_service, &keypair_svc, &token_svc, req)
         .await
         .unwrap();
 
@@ -395,7 +397,7 @@ async fn test_duplicate_registration() {
     };
 
     let result = auth_svc
-        .register(&user_repo, &keypair_svc, &token_svc, req2)
+        .register(&user_service, &keypair_svc, &token_svc, req2)
         .await;
 
     assert!(result.is_err());

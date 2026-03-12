@@ -1,6 +1,8 @@
 use chrono::Utc;
 use frona::agent::models::Agent;
 use frona::agent::repository::AgentRepository;
+use frona::agent::service::AgentService;
+use frona::core::config::CacheConfig;
 use frona::core::repository::Repository;
 use frona::db::init as db;
 use frona::db::repo::agents::SurrealAgentRepo;
@@ -143,4 +145,75 @@ async fn test_seed_config_agents_visible_in_find_by_user_id() {
     assert!(names.contains(&"developer"), "Seeded agents should include 'developer', got: {names:?}");
     assert!(names.contains(&"researcher"), "Seeded agents should include 'researcher', got: {names:?}");
     assert!(names.contains(&"system"), "Seeded agents should include 'system', got: {names:?}");
+}
+
+// ---------------------------------------------------------------------------
+// AgentService cache tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn agent_service_find_by_id_caches() {
+    let db = test_db().await;
+    let svc = AgentService::new(SurrealAgentRepo::new(db.clone()), &CacheConfig::default());
+    let repo = SurrealAgentRepo::new(db);
+    let agent = test_agent("user-1");
+    repo.create(&agent).await.unwrap();
+
+    let first = svc.find_by_id(&agent.id).await.unwrap().unwrap();
+    let second = svc.find_by_id(&agent.id).await.unwrap().unwrap();
+    assert_eq!(first.id, second.id);
+    assert_eq!(first.name, second.name);
+}
+
+#[tokio::test]
+async fn agent_service_update_invalidates_cache() {
+    use frona::agent::models::UpdateAgentRequest;
+
+    let db = test_db().await;
+    let svc = AgentService::new(SurrealAgentRepo::new(db.clone()), &CacheConfig::default());
+    let repo = SurrealAgentRepo::new(db);
+    let agent = test_agent("user-1");
+    repo.create(&agent).await.unwrap();
+
+    // Populate cache
+    let cached = svc.find_by_id(&agent.id).await.unwrap().unwrap();
+    assert_eq!(cached.name, "Test Agent");
+
+    // Update via service
+    svc.update(
+        "user-1",
+        &agent.id,
+        UpdateAgentRequest {
+            name: Some("Renamed".to_string()),
+            description: None,
+            model_group: None,
+            enabled: None,
+            tools: None,
+            sandbox_config: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    // Next find_by_id should return updated data
+    let after = svc.find_by_id(&agent.id).await.unwrap().unwrap();
+    assert_eq!(after.name, "Renamed");
+}
+
+#[tokio::test]
+async fn agent_service_delete_invalidates_cache() {
+    let db = test_db().await;
+    let svc = AgentService::new(SurrealAgentRepo::new(db.clone()), &CacheConfig::default());
+    let repo = SurrealAgentRepo::new(db);
+    let agent = test_agent("user-1");
+    repo.create(&agent).await.unwrap();
+
+    // Populate cache
+    assert!(svc.find_by_id(&agent.id).await.unwrap().is_some());
+
+    // Delete via service
+    svc.delete("user-1", &agent.id).await.unwrap();
+
+    // Should be gone
+    assert!(svc.find_by_id(&agent.id).await.unwrap().is_none());
 }

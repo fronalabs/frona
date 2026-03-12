@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 
+use crate::core::config::CacheConfig;
 use crate::db::repo::agents::SurrealAgentRepo;
 use crate::core::error::AppError;
 use crate::core::repository::Repository;
@@ -12,11 +13,16 @@ use super::repository::AgentRepository;
 #[derive(Clone)]
 pub struct AgentService {
     repo: SurrealAgentRepo,
+    cache: moka::future::Cache<String, Agent>,
 }
 
 impl AgentService {
-    pub fn new(repo: SurrealAgentRepo) -> Self {
-        Self { repo }
+    pub fn new(repo: SurrealAgentRepo, cache_config: &CacheConfig) -> Self {
+        let cache = moka::future::Cache::builder()
+            .max_capacity(cache_config.entity_max_capacity)
+            .time_to_live(std::time::Duration::from_secs(cache_config.entity_ttl_secs))
+            .build();
+        Self { repo, cache }
     }
 
     pub async fn create(
@@ -51,7 +57,14 @@ impl AgentService {
     }
 
     pub async fn find_by_id(&self, agent_id: &str) -> Result<Option<Agent>, AppError> {
-        self.repo.find_by_id(agent_id).await
+        if let Some(agent) = self.cache.get(agent_id).await {
+            return Ok(Some(agent));
+        }
+        let result = self.repo.find_by_id(agent_id).await?;
+        if let Some(ref agent) = result {
+            self.cache.insert(agent_id.to_string(), agent.clone()).await;
+        }
+        Ok(result)
     }
 
     pub async fn get(
@@ -117,6 +130,7 @@ impl AgentService {
         agent.updated_at = chrono::Utc::now();
 
         let agent = self.repo.update(&agent).await?;
+        self.cache.invalidate(agent_id).await;
         Ok(agent.into())
     }
 
@@ -143,6 +157,7 @@ impl AgentService {
             return Err(AppError::Forbidden("Not your agent".into()));
         }
 
+        self.cache.invalidate(agent_id).await;
         self.repo.delete(agent_id).await
     }
 
@@ -163,7 +178,9 @@ impl AgentService {
 
         agent.next_heartbeat_at = next;
         agent.updated_at = chrono::Utc::now();
-        self.repo.update(&agent).await
+        let agent = self.repo.update(&agent).await?;
+        self.cache.invalidate(agent_id).await;
+        Ok(agent)
     }
 
     pub async fn update_heartbeat_chat(
@@ -179,7 +196,9 @@ impl AgentService {
 
         agent.heartbeat_chat_id = Some(chat_id.to_string());
         agent.updated_at = chrono::Utc::now();
-        self.repo.update(&agent).await
+        let agent = self.repo.update(&agent).await?;
+        self.cache.invalidate(agent_id).await;
+        Ok(agent)
     }
 
     pub async fn set_heartbeat(
@@ -203,6 +222,8 @@ impl AgentService {
             }
         }
         agent.updated_at = Utc::now();
-        self.repo.update(&agent).await
+        let agent = self.repo.update(&agent).await?;
+        self.cache.invalidate(agent_id).await;
+        Ok(agent)
     }
 }

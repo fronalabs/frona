@@ -6,8 +6,10 @@ use frona::api::files::{Attachment, PresignClaims};
 use frona::db::repo::generic::SurrealRepo;
 use frona::auth::jwt::JwtService;
 use frona::auth::models::Claims;
+use frona::auth::UserService;
 use frona::chat::message::models::{MessageResponse, MessageRole};
-use frona::core::models::User;
+use frona::auth::User;
+use frona::core::config::CacheConfig;
 use frona::core::repository::Repository;
 use frona::credential::keypair::service::KeyPairService;
 use frona::credential::presign::{PresignService, presign_response, presign_response_by_user_id};
@@ -26,10 +28,10 @@ fn keypair_service(db: &Surreal<Db>) -> KeyPairService {
 
 fn presign_service(db: &Surreal<Db>) -> PresignService {
     let kp_svc = keypair_service(db);
-    let user_repo: SurrealRepo<frona::core::models::User> = SurrealRepo::new(db.clone());
+    let user_service = UserService::new(SurrealRepo::new(db.clone()), &CacheConfig::default());
     PresignService::new(
         kp_svc,
-        Arc::new(user_repo),
+        user_service,
         "http://localhost:3001".to_string(),
         86400,
     )

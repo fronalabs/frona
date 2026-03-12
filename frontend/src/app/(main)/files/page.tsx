@@ -24,27 +24,22 @@ import {
   searchFiles,
   presignFile,
 } from "@/lib/api-client";
-import type { Agent, FileEntry } from "@/lib/types";
+import type { Agent } from "@/lib/types";
 import type { IEntity, IApi, IFileMenuOption } from "@svar-ui/react-filemanager";
 import { Filemanager, Willow, WillowDark, getMenuOptions } from "@svar-ui/react-filemanager";
 import { Locale } from "@svar-ui/react-core";
 import "@svar-ui/react-filemanager/all.css";
-
-const MYFILES_ROOT = "/My Files";
-const WORKSPACES_ROOT = "/Workspaces";
-
-function toSvarEntries(
-  entries: FileEntry[],
-  parentPrefix: string,
-): IEntity[] {
-  return entries.map((e) => ({
-    id: `${parentPrefix}${e.id}`,
-    size: e.size,
-    date: e.date,
-    type: e.type,
-    ...(e.type === "folder" ? { lazy: true } : {}),
-  }));
-}
+import {
+  MYFILES_ROOT,
+  WORKSPACES_ROOT,
+  toSvarEntries,
+  isWorkspacePath,
+  isMyFilesPath,
+  userSubpath,
+  agentSubpath,
+  resolveAgentId as resolveAgentIdUtil,
+  getFileOwnerPath as getFileOwnerPathUtil,
+} from "@/lib/file-manager-utils";
 
 export default function FilesPage() {
   const { user } = useAuth();
@@ -231,40 +226,12 @@ export default function FilesPage() {
   }, [agents, buildRootData]);
 
   function resolveAgentId(path: string): string | null {
-    if (!path.startsWith(WORKSPACES_ROOT + "/")) return null;
-    const rest = path.slice(WORKSPACES_ROOT.length + 1);
-    const agentName = rest.split("/")[0];
-    const agent = agentsRef.current.find((a) => a.name === agentName);
-    return agent?.id ?? null;
-  }
-
-  function agentSubpath(path: string): string {
-    const rest = path.slice(WORKSPACES_ROOT.length + 1);
-    const parts = rest.split("/");
-    return parts.slice(1).join("/");
-  }
-
-  function isWorkspacePath(path: string): boolean {
-    return path.startsWith(WORKSPACES_ROOT + "/");
-  }
-
-  function isMyFilesPath(path: string): boolean {
-    return path === MYFILES_ROOT || path.startsWith(MYFILES_ROOT + "/");
-  }
-
-  function userSubpath(path: string): string {
-    if (path === MYFILES_ROOT) return "";
-    return path.slice(MYFILES_ROOT.length + 1);
+    return resolveAgentIdUtil(path, agentsRef.current);
   }
 
   function getFileOwnerPath(fileId: string): { owner: string; path: string } | null {
     if (!user) return null;
-    if (isWorkspacePath(fileId)) {
-      const agentId = resolveAgentId(fileId);
-      if (!agentId) return null;
-      return { owner: `agent:${agentId}`, path: agentSubpath(fileId) };
-    }
-    return { owner: `user:${user.id}`, path: userSubpath(fileId) };
+    return getFileOwnerPathUtil(fileId, user.id, agentsRef.current);
   }
 
   const handleInit = useCallback(

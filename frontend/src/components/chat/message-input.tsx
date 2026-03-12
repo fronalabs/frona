@@ -2,10 +2,11 @@
 
 import { useRef, useState, useEffect, useCallback } from "react";
 import { PaperAirplaneIcon, StopIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/solid";
-import { ArrowUpTrayIcon, CloudIcon } from "@heroicons/react/24/outline";
+import { ArrowUpTrayIcon, CloudIcon, FolderOpenIcon } from "@heroicons/react/24/outline";
 import { useSession } from "@/lib/session-context";
 import { uploadFile } from "@/lib/api-client";
 import { AutoResizeTextarea, type AutoResizeTextareaHandle } from "@/components/auto-resize-textarea";
+import { FileBrowserModal } from "@/components/chat/file-browser-modal";
 import type { Attachment } from "@/lib/types";
 
 interface PendingFile {
@@ -24,8 +25,10 @@ export function MessageInput() {
   const canSend = !!(activeChatId || pendingAgentId);
   const [text, setText] = useState("");
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
+  const [serverAttachments, setServerAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [browseOpen, setBrowseOpen] = useState(false);
   const textareaRef = useRef<AutoResizeTextareaHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -67,23 +70,31 @@ export function MessageInput() {
     setPendingFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const removeServerAttachment = (index: number) => {
+    setServerAttachments((prev) => prev.filter((_, i) => i !== index));
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const content = text.trim();
-    if ((!content && pendingFiles.length === 0) || !canSend) return;
+    const hasFiles = pendingFiles.length > 0 || serverAttachments.length > 0;
+    if ((!content && !hasFiles) || !canSend) return;
 
     setText("");
     textareaRef.current?.resetHeight();
     const filesToUpload = [...pendingFiles];
+    const serverFiles = [...serverAttachments];
     setPendingFiles([]);
+    setServerAttachments([]);
 
-    let attachments: Attachment[] | undefined;
+    let attachments: Attachment[] = [...serverFiles];
     if (filesToUpload.length > 0) {
       setUploading(true);
       try {
-        attachments = await Promise.all(
+        const uploaded = await Promise.all(
           filesToUpload.map((pf) => uploadFile(pf.file, pf.relativePath)),
         );
+        attachments = [...attachments, ...uploaded];
       } catch {
         setUploading(false);
         return;
@@ -91,7 +102,7 @@ export function MessageInput() {
       setUploading(false);
     }
 
-    await sendMessage(content || "See attached files.", attachments);
+    await sendMessage(content || "See attached files.", attachments.length > 0 ? attachments : undefined);
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
@@ -106,11 +117,11 @@ export function MessageInput() {
 
   return (
     <form onSubmit={handleSubmit} className="sticky bottom-0 bg-surface p-4">
-      {pendingFiles.length > 0 && (
+      {(pendingFiles.length > 0 || serverAttachments.length > 0) && (
         <div className="flex flex-wrap gap-1.5 mb-2 px-1">
           {pendingFiles.map((pf, i) => (
             <span
-              key={i}
+              key={`local-${i}`}
               className="inline-flex items-center gap-1 rounded-md bg-surface-tertiary px-2 py-1 text-xs text-text-secondary"
             >
               <span className="max-w-[200px] truncate">{pf.relativePath || pf.file.name}</span>
@@ -118,6 +129,22 @@ export function MessageInput() {
               <button
                 type="button"
                 onClick={() => removePendingFile(i)}
+                className="ml-0.5 hover:text-text-primary"
+              >
+                <XMarkIcon className="h-3 w-3" />
+              </button>
+            </span>
+          ))}
+          {serverAttachments.map((att, i) => (
+            <span
+              key={`server-${i}`}
+              className="inline-flex items-center gap-1 rounded-md bg-surface-tertiary px-2 py-1 text-xs text-text-secondary"
+            >
+              <span className="max-w-[200px] truncate">{att.filename}</span>
+              <span className="text-text-tertiary">({formatFileSize(att.size_bytes)})</span>
+              <button
+                type="button"
+                onClick={() => removeServerAttachment(i)}
                 className="ml-0.5 hover:text-text-primary"
               >
                 <XMarkIcon className="h-3 w-3" />
@@ -173,6 +200,17 @@ export function MessageInput() {
                 </button>
                 <button
                   type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:bg-surface-tertiary transition-colors"
+                  onClick={() => {
+                    setBrowseOpen(true);
+                    setMenuOpen(false);
+                  }}
+                >
+                  <FolderOpenIcon className="h-4 w-4" />
+                  Browse files
+                </button>
+                <button
+                  type="button"
                   className="flex w-full items-center gap-2 px-3 py-2 text-sm text-text-tertiary cursor-default"
                   onClick={() => setMenuOpen(false)}
                 >
@@ -193,7 +231,7 @@ export function MessageInput() {
           ) : (
             <button
               type="submit"
-              disabled={(!text.trim() && pendingFiles.length === 0) || !canSend || uploading}
+              disabled={(!text.trim() && pendingFiles.length === 0 && serverAttachments.length === 0) || !canSend || uploading}
               className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary disabled:opacity-30 transition"
             >
               <PaperAirplaneIcon className="h-5 w-5" />
@@ -201,6 +239,11 @@ export function MessageInput() {
           )}
         </div>
       </div>
+      <FileBrowserModal
+        open={browseOpen}
+        onClose={() => setBrowseOpen(false)}
+        onSelect={(attachments) => setServerAttachments((prev) => [...prev, ...attachments])}
+      />
     </form>
   );
 }

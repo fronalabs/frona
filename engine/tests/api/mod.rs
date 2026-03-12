@@ -19,7 +19,7 @@ use axum::extract::connect_info::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use frona::agent::workspace::AgentWorkspaceManager;
-use frona::api::db;
+use frona::db::init as db;
 use frona::api::routes;
 use frona::core::config::Config;
 use frona::core::metrics::setup_metrics_recorder;

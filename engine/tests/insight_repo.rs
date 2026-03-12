@@ -1,7 +1,7 @@
 use chrono::{Duration, Utc};
-use frona::api::db;
-use frona::api::repo::generic::SurrealRepo;
-use frona::api::repo::insights::SurrealInsightRepo;
+use frona::db::init as db;
+use frona::db::repo::generic::SurrealRepo;
+use frona::db::repo::insights::SurrealInsightRepo;
 use frona::memory::insight::models::Insight;
 use frona::memory::insight::repository::InsightRepository;
 use frona::core::repository::Repository;

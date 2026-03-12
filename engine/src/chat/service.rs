@@ -1,8 +1,8 @@
 use crate::agent::config::parse_frontmatter;
 use crate::agent::workspace::{AgentPromptLoader, AgentWorkspaceManager};
-use crate::api::repo::agents::SurrealAgentRepo;
-use crate::api::repo::chats::SurrealChatRepo;
-use crate::api::repo::messages::SurrealMessageRepo;
+use crate::db::repo::agents::SurrealAgentRepo;
+use crate::db::repo::chats::SurrealChatRepo;
+use crate::db::repo::messages::SurrealMessageRepo;
 use crate::core::error::AppError;
 use crate::core::metrics::InferenceMetricsContext;
 use crate::core::template::render_template;

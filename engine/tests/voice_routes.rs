@@ -1,7 +1,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use frona::agent::workspace::AgentWorkspaceManager;
-use frona::api::db;
+use frona::db::init as db;
 use frona::api::routes::voice;
 use frona::core::config::Config;
 use frona::core::metrics::setup_metrics_recorder;
@@ -83,7 +83,7 @@ async fn twilio_ws_invalid_token_returns_403() {
 #[tokio::test]
 async fn twilio_callback_valid_token_returns_xml() {
     use chrono::Utc;
-    use frona::api::repo::generic::SurrealRepo;
+    use frona::db::repo::generic::SurrealRepo;
     use frona::auth::jwt::JwtService;
     use frona::credential::keypair::service::KeyPairService;
     use frona::tool::voice::VoiceCallbackClaims;

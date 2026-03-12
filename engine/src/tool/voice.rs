@@ -300,14 +300,14 @@ impl AgentTool for HangupCallTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::repo::generic::SurrealRepo;
+    use crate::db::repo::generic::SurrealRepo;
     use crate::core::config::VoiceConfig;
 
     async fn test_contact_service() -> ContactService {
         use surrealdb::Surreal;
         use surrealdb::engine::local::Mem;
         let db = Surreal::new::<Mem>(()).await.unwrap();
-        crate::api::db::setup_schema(&db).await.unwrap();
+        crate::db::init::setup_schema(&db).await.unwrap();
         ContactService::new(SurrealRepo::new(db))
     }
 
@@ -340,7 +340,7 @@ mod tests {
         use surrealdb::Surreal;
         use surrealdb::engine::local::Mem;
         let db = Surreal::new::<Mem>(()).await.unwrap();
-        crate::api::db::setup_schema(&db).await.unwrap();
+        crate::db::init::setup_schema(&db).await.unwrap();
         crate::call::CallService::new(SurrealRepo::new(db))
     }
 

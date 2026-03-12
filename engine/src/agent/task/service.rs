@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use crate::api::repo::tasks::SurrealTaskRepo;
+use crate::db::repo::tasks::SurrealTaskRepo;
 use crate::core::error::AppError;
 use crate::core::repository::Repository;
 

@@ -39,8 +39,8 @@ use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
 
 use super::config::Config;
-use crate::api::repo::generic::SurrealRepo;
-use crate::api::repo::users::SurrealUserRepo;
+use crate::db::repo::generic::SurrealRepo;
+use crate::db::repo::users::SurrealUserRepo;
 
 #[derive(Clone, Default)]
 pub struct ActiveSessions {

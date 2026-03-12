@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use chrono::{Duration, Utc};
-use frona::api::db;
-use frona::api::repo::generic::SurrealRepo;
+use frona::db::init as db;
+use frona::db::repo::generic::SurrealRepo;
 use frona::auth::jwt::JwtService;
 use frona::auth::token::models::CreatePatRequest;
 use frona::auth::token::repository::TokenRepository;

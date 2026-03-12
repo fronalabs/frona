@@ -1,4 +1,4 @@
-use crate::api::repo::spaces::SurrealSpaceRepo;
+use crate::db::repo::spaces::SurrealSpaceRepo;
 use crate::core::error::AppError;
 use crate::core::repository::Repository;
 

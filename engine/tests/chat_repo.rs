@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use chrono::Utc;
 use frona::agent::task::models::{Task, TaskKind, TaskStatus};
-use frona::api::db;
-use frona::api::repo::chats::SurrealChatRepo;
-use frona::api::repo::messages::SurrealMessageRepo;
+use frona::db::init as db;
+use frona::db::repo::chats::SurrealChatRepo;
+use frona::db::repo::messages::SurrealMessageRepo;
 use frona::api::files::Attachment;
 use frona::chat::message::models::{Message, MessageRole};
 use frona::chat::message::repository::MessageRepository;
@@ -368,7 +368,7 @@ async fn test_cascade_delete_task_removes_chat_and_messages() {
     let db = test_db().await;
     let chat_repo = SurrealChatRepo::new(db.clone());
     let msg_repo = SurrealMessageRepo::new(db.clone());
-    let task_repo = frona::api::repo::tasks::SurrealTaskRepo::new(db);
+    let task_repo = frona::db::repo::tasks::SurrealTaskRepo::new(db);
 
     let chat = test_chat("user-1", "system", Some("task-1"));
     chat_repo.create(&chat).await.unwrap();

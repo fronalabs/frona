@@ -4,9 +4,9 @@ use chrono::{DateTime, Utc};
 use rig::completion::Message as RigMessage;
 
 use crate::agent::workspace::{AgentPromptLoader, AgentWorkspaceManager};
-use crate::api::repo::insights::SurrealInsightRepo;
-use crate::api::repo::memories::SurrealMemoryRepo;
-use crate::api::repo::messages::SurrealMessageRepo;
+use crate::db::repo::insights::SurrealInsightRepo;
+use crate::db::repo::memories::SurrealMemoryRepo;
+use crate::db::repo::messages::SurrealMessageRepo;
 use crate::chat::message::models::Message;
 use crate::chat::message::repository::MessageRepository;
 use crate::core::error::AppError;

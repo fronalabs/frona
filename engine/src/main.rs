@@ -13,7 +13,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use frona::agent::workspace::AgentWorkspaceManager;
-use frona::api::db;
+use frona::db::init as db;
 use frona::api::middleware::metrics::track_http_metrics;
 use frona::api::routes;
 use frona::core::config::Config;

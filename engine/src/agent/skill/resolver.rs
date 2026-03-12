@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::agent::config::parse_frontmatter;
 use crate::agent::workspace::AgentWorkspaceManager;
-use crate::api::repo::skills::SurrealSkillRepo;
+use crate::db::repo::skills::SurrealSkillRepo;
 
 use super::repository::SkillRepository;
 

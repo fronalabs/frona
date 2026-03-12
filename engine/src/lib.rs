@@ -6,6 +6,7 @@ pub mod app;
 pub mod call;
 pub mod contact;
 pub mod core;
+pub mod db;
 pub mod auth;
 pub mod chat;
 pub mod credential;

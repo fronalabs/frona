@@ -205,7 +205,7 @@ pub async fn build_tool_registry(
     }
 
     let agent_repo: Arc<dyn crate::agent::repository::AgentRepository> =
-        Arc::new(crate::api::repo::generic::SurrealRepo::new(state.db.clone()));
+        Arc::new(crate::db::repo::generic::SurrealRepo::new(state.db.clone()));
 
     if allowed_tools.iter().any(|t| t == "delegate")
         && let Some(executor) = state.task_executor()

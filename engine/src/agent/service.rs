@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use crate::api::repo::agents::SurrealAgentRepo;
+use crate::db::repo::agents::SurrealAgentRepo;
 use crate::core::error::AppError;
 use crate::core::repository::Repository;
 use crate::tool::configurable_tools;

@@ -1,7 +1,7 @@
 use chrono::Utc;
 use uuid::Uuid;
 
-use crate::api::repo::generic::SurrealRepo;
+use crate::db::repo::generic::SurrealRepo;
 use crate::core::error::AppError;
 use crate::core::repository::Repository;
 
@@ -79,7 +79,7 @@ mod tests {
         use surrealdb::Surreal;
         use surrealdb::engine::local::Mem;
         let db = Surreal::new::<Mem>(()).await.unwrap();
-        crate::api::db::setup_schema(&db).await.unwrap();
+        crate::db::init::setup_schema(&db).await.unwrap();
         CallService::new(SurrealRepo::new(db))
     }
 

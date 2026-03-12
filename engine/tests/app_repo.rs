@@ -1,5 +1,5 @@
-use frona::api::db;
-use frona::api::repo::generic::SurrealRepo;
+use frona::db::init as db;
+use frona::db::repo::generic::SurrealRepo;
 use frona::app::models::{App, AppStatus};
 use frona::app::repository::AppRepository;
 use frona::core::repository::Repository;

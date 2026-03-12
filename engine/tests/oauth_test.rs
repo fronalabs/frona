@@ -1,6 +1,6 @@
 use chrono::Utc;
-use frona::api::db;
-use frona::api::repo::generic::SurrealRepo;
+use frona::db::init as db;
+use frona::db::repo::generic::SurrealRepo;
 use frona::auth::oauth::models::OAuthIdentity;
 use frona::auth::oauth::repository::OAuthRepository;
 use frona::core::models::User;

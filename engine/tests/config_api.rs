@@ -114,7 +114,7 @@ async fn test_runtime_config_operations() {
     let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
         .await
         .unwrap();
-    frona::api::db::setup_schema(&db).await.unwrap();
+    frona::db::init::setup_schema(&db).await.unwrap();
 
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
     let config = Config::default();

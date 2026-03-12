@@ -1,4 +1,4 @@
-use frona::api::db::setup_schema;
+use frona::db::init::setup_schema;
 use frona::credential::key_rotation::{KeyRotation, derive_key};
 use frona::credential::vault::service::{decrypt_password, encrypt_password};
 

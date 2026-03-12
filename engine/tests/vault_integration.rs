@@ -1,5 +1,5 @@
-use frona::api::db::setup_schema;
-use frona::api::repo::generic::SurrealRepo;
+use frona::db::init::setup_schema;
+use frona::db::repo::generic::SurrealRepo;
 use frona::credential::vault::models::*;
 use frona::credential::vault::repository::{VaultAccessLogRepository, VaultConnectionRepository, VaultGrantRepository};
 use frona::credential::vault::service::VaultService;

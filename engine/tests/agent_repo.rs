@@ -2,8 +2,8 @@ use chrono::Utc;
 use frona::agent::models::Agent;
 use frona::agent::repository::AgentRepository;
 use frona::core::repository::Repository;
-use frona::api::db;
-use frona::api::repo::agents::SurrealAgentRepo;
+use frona::db::init as db;
+use frona::db::repo::agents::SurrealAgentRepo;
 use surrealdb::engine::local::{Db, Mem};
 use surrealdb::Surreal;
 

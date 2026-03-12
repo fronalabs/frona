@@ -1,6 +1,7 @@
 mod agents;
 mod auth;
 mod chats;
+mod files;
 mod security;
 mod spaces;
 mod tasks;
@@ -52,7 +53,82 @@ fn build_app(state: AppState) -> Router {
         .merge(routes::chats::router())
         .merge(routes::spaces::router())
         .merge(routes::tasks::router())
+        .merge(routes::files::router())
         .with_state(state)
+}
+
+fn multipart_upload(token: &str, filename: &str, content: &[u8]) -> Request<Body> {
+    let boundary = "----testboundary";
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    bytes.extend_from_slice(content);
+    bytes.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    Request::builder()
+        .method("POST")
+        .uri("/api/files")
+        .header("authorization", format!("Bearer {token}"))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(bytes))
+        .unwrap()
+}
+
+fn multipart_upload_with_path(
+    token: &str,
+    filename: &str,
+    content: &[u8],
+    path: &str,
+) -> Request<Body> {
+    let boundary = "----testboundary";
+    let mut bytes = Vec::new();
+    // path field
+    bytes.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"path\"\r\n\r\n{path}\r\n"
+        )
+        .as_bytes(),
+    );
+    // file field
+    bytes.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    bytes.extend_from_slice(content);
+    bytes.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    Request::builder()
+        .method("POST")
+        .uri("/api/files")
+        .header("authorization", format!("Bearer {token}"))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(bytes))
+        .unwrap()
+}
+
+async fn upload_test_file(
+    state: &AppState,
+    token: &str,
+    filename: &str,
+    content: &[u8],
+) -> serde_json::Value {
+    let app = build_app(state.clone());
+    let req = multipart_upload(token, filename, content);
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "upload_test_file({filename}) failed");
+    body_json(resp).await
 }
 
 fn with_connect_info(req: &mut Request<Body>) {

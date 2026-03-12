@@ -5,6 +5,7 @@ import { PaperAirplaneIcon, StopIcon, PlusIcon, XMarkIcon } from "@heroicons/rea
 import { ArrowUpTrayIcon, CloudIcon } from "@heroicons/react/24/outline";
 import { useSession } from "@/lib/session-context";
 import { uploadFile } from "@/lib/api-client";
+import { AutoResizeTextarea, type AutoResizeTextareaHandle } from "@/components/auto-resize-textarea";
 import type { Attachment } from "@/lib/types";
 
 interface PendingFile {
@@ -25,7 +26,7 @@ export function MessageInput() {
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = useRef<AutoResizeTextareaHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
@@ -72,6 +73,7 @@ export function MessageInput() {
     if ((!content && pendingFiles.length === 0) || !canSend) return;
 
     setText("");
+    textareaRef.current?.resetHeight();
     const filesToUpload = [...pendingFiles];
     setPendingFiles([]);
 
@@ -132,14 +134,13 @@ export function MessageInput() {
           className="hidden"
           onChange={handleFilesSelected}
         />
-        <textarea
+        <AutoResizeTextarea
           ref={textareaRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Send a message..."
-          rows={1}
-          className="w-full resize-none bg-transparent text-sm leading-5 text-text-primary placeholder:text-text-tertiary focus:outline-none"
+          className="w-full bg-transparent text-sm leading-5 text-text-primary placeholder:text-text-tertiary focus:outline-none"
           disabled={isDisabled}
         />
         <div className="flex items-center justify-between pt-2">

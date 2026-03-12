@@ -7,6 +7,7 @@ import { EllipsisVerticalIcon } from "@heroicons/react/24/outline";
 import { api, API_URL } from "@/lib/api-client";
 import { useSession } from "@/lib/session-context";
 import { useNavigation } from "@/lib/navigation-context";
+import { AutoResizeTextarea } from "@/components/auto-resize-textarea";
 import type { ChatResponse, AppResponse } from "@/lib/types";
 
 function SpaceView({ spaceId }: { spaceId: string }) {
@@ -55,7 +56,7 @@ function SpaceView({ spaceId }: { spaceId: string }) {
         <div className="px-6 py-4">
           <form onSubmit={handleNewChat}>
             <div className="flex items-center gap-2 rounded-xl border border-border bg-surface-secondary px-3 py-2 focus-within:border-accent transition-colors">
-              <textarea
+              <AutoResizeTextarea
                 autoFocus
                 value={newMessage}
                 onChange={(e) => setNewMessage(e.target.value)}
@@ -66,9 +67,8 @@ function SpaceView({ spaceId }: { spaceId: string }) {
                   }
                 }}
                 placeholder="Send a message to start a new chat..."
-                rows={1}
                 disabled={submitting}
-                className="flex-1 resize-none bg-transparent text-sm leading-5 text-text-primary placeholder:text-text-tertiary focus:outline-none m-0 p-0"
+                className="flex-1 bg-transparent text-sm leading-5 text-text-primary placeholder:text-text-tertiary focus:outline-none m-0 p-0"
               />
               <button
                 type="submit"
@@ -261,7 +261,7 @@ function LandingView() {
       <div className="w-full max-w-3xl space-y-8">
         <form onSubmit={handleNewChat}>
           <div className="flex items-center gap-2 rounded-xl border border-border bg-surface-secondary px-3 py-2 focus-within:border-accent transition-colors">
-            <textarea
+            <AutoResizeTextarea
               autoFocus
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
@@ -272,9 +272,8 @@ function LandingView() {
                 }
               }}
               placeholder="Send a message to start a new chat..."
-              rows={1}
               disabled={submitting}
-              className="flex-1 resize-none bg-transparent text-sm leading-5 text-text-primary placeholder:text-text-tertiary focus:outline-none m-0 p-0"
+              className="flex-1 bg-transparent text-sm leading-5 text-text-primary placeholder:text-text-tertiary focus:outline-none m-0 p-0"
             />
             <button
               type="submit"

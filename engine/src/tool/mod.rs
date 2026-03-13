@@ -69,6 +69,7 @@ pub struct ToolOutput {
     tool_data: Option<crate::chat::message::models::MessageTool>,
     system_prompt: Option<String>,
     pending_external: bool,
+    success: bool,
 }
 
 impl ToolOutput {
@@ -80,6 +81,19 @@ impl ToolOutput {
             tool_data: None,
             system_prompt: None,
             pending_external: false,
+            success: true,
+        }
+    }
+
+    pub fn error(s: impl Into<String>) -> Self {
+        Self {
+            text: s.into(),
+            images: Vec::new(),
+            attachments: Vec::new(),
+            tool_data: None,
+            system_prompt: None,
+            pending_external: false,
+            success: false,
         }
     }
 
@@ -91,6 +105,7 @@ impl ToolOutput {
             tool_data: None,
             system_prompt: None,
             pending_external: false,
+            success: true,
         }
     }
 
@@ -132,6 +147,10 @@ impl ToolOutput {
 
     pub fn is_pending_external(&self) -> bool {
         self.pending_external
+    }
+
+    pub fn is_success(&self) -> bool {
+        self.success
     }
 
     pub fn system_prompt(&self) -> Option<&str> {

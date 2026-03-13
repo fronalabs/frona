@@ -174,7 +174,8 @@ impl AgentTool for CliTool {
             result.push_str("(no output)");
         }
 
-        Ok(ToolOutput::text(result))
+        let failed = output.timed_out || output.exit_code.is_some_and(|c| c != 0);
+        Ok(if failed { ToolOutput::error(result) } else { ToolOutput::text(result) })
     }
 }
 

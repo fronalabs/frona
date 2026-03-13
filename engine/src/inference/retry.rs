@@ -188,7 +188,7 @@ pub async fn stream_with_retry_and_fallback(
     let model_str = model_group.main.as_str();
 
     let result = (|| async {
-        let (text_tx, text_rx) = mpsc::channel::<String>(32);
+        let (text_tx, text_rx) = mpsc::channel::<String>(super::STREAM_CHANNEL_BUFFER);
 
         let event_tx_clone = event_tx.clone();
         let forward_handle = tokio::spawn(async move {

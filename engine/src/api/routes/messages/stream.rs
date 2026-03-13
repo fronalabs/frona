@@ -260,7 +260,9 @@ pub(crate) async fn stream_message(
 
     let user_content = req.content;
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(32);
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(
+        crate::inference::STREAM_CHANNEL_BUFFER,
+    );
 
     let agent_id = ctx.chat.agent_id.clone();
     let needs_title = ctx.chat.title.is_none();

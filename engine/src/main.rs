@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode, Uri};
+use axum::serve::ListenerExt;
 use axum::response::{Html, IntoResponse};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::ServeDir;
@@ -181,7 +182,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));
     info!("Server starting on {addr}");
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await?
+        .tap_io(|tcp_stream| {
+            if let Err(err) = tcp_stream.set_nodelay(true) {
+                tracing::trace!("failed to set TCP_NODELAY on incoming connection: {err:#}");
+            }
+        });
     axum::serve(listener, api.into_make_service_with_connect_info::<SocketAddr>()).await?;
 
     Ok(())

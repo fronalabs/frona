@@ -15,6 +15,9 @@ pub use request::{InferenceRequest, InferenceResponse, InferenceContext};
 pub use rig::completion::request::Usage;
 pub use tool_loop::{InferenceEvent, InferenceEventKind};
 
+/// Buffer capacity for the streaming event channels between LLM provider and SSE output.
+pub const STREAM_CHANNEL_BUFFER: usize = 256;
+
 use rig::completion::Message as RigMessage;
 
 use crate::core::error::AppError;

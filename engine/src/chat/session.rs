@@ -32,7 +32,8 @@ impl ChatSessionContext {
         chat: Chat,
         cancel_token: CancellationToken,
     ) -> Result<Self, AppError> {
-        let (tool_event_tx, tool_event_rx) = tokio::sync::mpsc::channel::<InferenceEvent>(32);
+        let (tool_event_tx, tool_event_rx) =
+            tokio::sync::mpsc::channel::<InferenceEvent>(crate::inference::STREAM_CHANNEL_BUFFER);
         let agent_config = state
             .chat_service
             .resolve_agent_config(&chat.agent_id)

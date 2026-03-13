@@ -749,3 +749,152 @@ async fn test_fallback_multiple_fallbacks_order() {
     assert_eq!(result, "fb2 ok");
 }
 
+// ---------------------------------------------------------------------------
+// streaming timing tests
+// ---------------------------------------------------------------------------
+
+/// A mock provider that sends tokens one-by-one with a delay between each,
+/// simulating realistic LLM streaming behavior.
+struct StreamingMockProvider {
+    tokens: Vec<String>,
+    delay_between: std::time::Duration,
+    call_count: std::sync::Mutex<usize>,
+}
+
+impl StreamingMockProvider {
+    fn new(tokens: Vec<&str>, delay: std::time::Duration) -> Self {
+        Self {
+            tokens: tokens.into_iter().map(String::from).collect(),
+            delay_between: delay,
+            call_count: std::sync::Mutex::new(0),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl frona::inference::provider::ModelProvider for StreamingMockProvider {
+    async fn inference(
+        &self,
+        _model_id: &str,
+        _system_prompt: &str,
+        _chat_history: Vec<rig::completion::Message>,
+        _tools: Vec<rig::completion::request::ToolDefinition>,
+        _max_tokens: Option<u64>,
+        _temperature: Option<f64>,
+    ) -> Result<(Vec<rig::completion::AssistantContent>, frona::inference::Usage), InferenceError> {
+        unreachable!("streaming test should not call non-streaming inference");
+    }
+
+    async fn stream_inference(
+        &self,
+        _model_id: &str,
+        _system_prompt: &str,
+        _chat_history: Vec<rig::completion::Message>,
+        _tools: Vec<rig::completion::request::ToolDefinition>,
+        token_tx: mpsc::Sender<String>,
+        _max_tokens: Option<u64>,
+        _temperature: Option<f64>,
+    ) -> Result<Vec<rig::completion::AssistantContent>, InferenceError> {
+        *self.call_count.lock().unwrap() += 1;
+        let mut full_text = String::new();
+        for token in &self.tokens {
+            full_text.push_str(token);
+            let _ = token_tx.send(token.clone()).await;
+            tokio::time::sleep(self.delay_between).await;
+        }
+        Ok(vec![rig::completion::AssistantContent::text(full_text)])
+    }
+}
+
+#[tokio::test]
+async fn test_streaming_tokens_arrive_individually() {
+    init_metrics();
+
+    let tokens: Vec<&str> = vec![
+        "Hello", " ", "world", ",", " ", "this", " ", "is", " ", "a",
+        " ", "streaming", " ", "test", " ", "with", " ", "many", " ", "tokens",
+    ];
+    let provider = Arc::new(StreamingMockProvider::new(
+        tokens.clone(),
+        std::time::Duration::from_millis(10),
+    ));
+    let registry = test_registry_with_provider("mock", provider);
+    let model_group = test_model_group();
+    let tool_registry = AgentToolRegistry::new();
+    let (event_tx, mut event_rx) = mpsc::channel(32);
+    let cancel = CancellationToken::new();
+    let ctx = mock_context();
+    let metrics = test_metrics_ctx();
+
+    let handle = tokio::spawn(async move {
+        run_tool_loop(
+            &registry,
+            &model_group,
+            "system",
+            vec![RigMessage::user("hi")],
+            &tool_registry,
+            event_tx,
+            cancel,
+            &ctx,
+            &metrics,
+        )
+        .await
+    });
+
+    // Collect text events with timestamps
+    let mut received: Vec<(String, std::time::Instant)> = Vec::new();
+    let start = std::time::Instant::now();
+    while let Some(event) = event_rx.recv().await {
+        match event.kind {
+            InferenceEventKind::Text(t) => {
+                received.push((t, std::time::Instant::now()));
+            }
+            InferenceEventKind::Done(_) => break,
+            _ => {}
+        }
+    }
+
+    let _ = handle.await;
+
+    // Verify we got individual tokens, not batched chunks
+    assert!(
+        received.len() >= tokens.len(),
+        "Expected at least {} text events, got {} — tokens are being batched",
+        tokens.len(),
+        received.len(),
+    );
+
+    // Verify tokens arrived spread over time, not in bursts.
+    // With 10ms delay per token, 20 tokens should take ~200ms.
+    // If they all arrive within <50ms, something is batching them.
+    let total_elapsed = received.last().unwrap().1.duration_since(start);
+    assert!(
+        total_elapsed.as_millis() >= 100,
+        "All {} tokens arrived in {:?} — likely batched, expected spread over ~200ms",
+        received.len(),
+        total_elapsed,
+    );
+
+    // Check that consecutive tokens have reasonable gaps (not all arriving at once)
+    let mut burst_count = 0;
+    for window in received.windows(2) {
+        let gap = window[1].1.duration_since(window[0].1);
+        if gap.as_millis() < 2 {
+            burst_count += 1;
+        }
+    }
+    let burst_pct = (burst_count as f64 / (received.len() - 1) as f64) * 100.0;
+    println!(
+        "Streaming stats: {} tokens, {:.0}% arrived in bursts (<2ms gap), total time: {:?}",
+        received.len(),
+        burst_pct,
+        total_elapsed,
+    );
+
+    // Fail if more than 30% of tokens arrive in bursts
+    assert!(
+        burst_pct < 30.0,
+        "{burst_pct:.0}% of tokens arrived in bursts — channel pipeline is batching"
+    );
+}
+

@@ -1,6 +1,6 @@
 pub mod config;
 pub mod context;
-pub mod convert;
+pub mod conversation;
 pub mod error;
 pub mod provider;
 pub mod registry;

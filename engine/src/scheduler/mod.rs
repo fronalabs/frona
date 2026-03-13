@@ -162,7 +162,7 @@ impl Scheduler {
                 None => continue,
             };
 
-            let ws = self.app_state.storage.agent_workspace(&agent.id);
+            let ws = self.app_state.storage_service.agent_workspace(&agent.id);
             let heartbeat_content = match ws.read("HEARTBEAT.md") {
                 Some(content) if !content.trim().is_empty() => content,
                 _ => {

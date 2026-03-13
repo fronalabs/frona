@@ -8,7 +8,8 @@ use crate::core::error::AppError;
 use crate::core::metrics::InferenceMetricsContext;
 use crate::core::template::render_template;
 use crate::inference::ModelProviderRegistry;
-use crate::inference::convert::to_rig_messages;
+use crate::auth::UserService;
+use crate::inference::conversation::{ConversationBuilder, ConversationContext, DefaultConversationBuilder};
 use crate::inference::text_inference;
 use crate::inference::provider::ModelRef;
 use crate::memory::service::MemoryService;
@@ -37,18 +38,21 @@ pub struct ChatService {
     message_repo: SurrealMessageRepo,
     agent_service: AgentService,
     provider_registry: ModelProviderRegistry,
-    storage: StorageService,
+    storage_service: StorageService,
+    user_service: UserService,
     memory_service: MemoryService,
     prompts: PromptLoader,
 }
 
 impl ChatService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         chat_repo: SurrealChatRepo,
         message_repo: SurrealMessageRepo,
         agent_service: AgentService,
         provider_registry: ModelProviderRegistry,
-        storage: StorageService,
+        storage_service: StorageService,
+        user_service: UserService,
         memory_service: MemoryService,
         prompts: PromptLoader,
     ) -> Self {
@@ -57,7 +61,8 @@ impl ChatService {
             message_repo,
             agent_service,
             provider_registry,
-            storage,
+            storage_service,
+            user_service,
             memory_service,
             prompts,
         }
@@ -205,9 +210,17 @@ impl ChatService {
         let model_group_name = agent_config.model_group;
 
         let stored_messages = self.message_repo.find_by_chat_id(chat_id).await?;
-        let mut rig_history = to_rig_messages(&stored_messages, &chat.agent_id);
-
         let model_group = self.provider_registry.get_model_group(&model_group_name)?;
+        let conv_builder = DefaultConversationBuilder {
+            user_service: self.user_service.clone(),
+            storage_service: self.storage_service.clone(),
+        };
+        let conv_ctx = ConversationContext {
+            agent_id: chat.agent_id.clone(),
+            model_ref: model_group.main.clone(),
+            user_id: user_id.to_string(),
+        };
+        let mut rig_history = conv_builder.build(&stored_messages, &conv_ctx).await;
 
         rig_history.push(RigMessage::user(&req.content));
         let response_text = text_inference(
@@ -484,7 +497,7 @@ impl ChatService {
     }
 
     pub async fn resolve_agent_config(&self, agent_id: &str) -> Result<AgentConfig, AppError> {
-        let ws = self.storage.agent_workspace(agent_id);
+        let ws = self.storage_service.agent_workspace(agent_id);
 
         if let Ok(Some(agent)) = self.agent_service.find_by_id(agent_id).await {
             tracing::info!(agent_id, ?agent.tools, user_id = ?agent.user_id, "Resolved agent from DB");
@@ -537,7 +550,7 @@ impl ChatService {
         agent_id: &str,
         user_content: &str,
     ) -> Result<String, AppError> {
-        let ws = self.storage.agent_workspace(agent_id);
+        let ws = self.storage_service.agent_workspace(agent_id);
         let prompts = AgentPromptLoader::new(&ws, &self.prompts);
         let content = prompts.read("TITLE.md")
             .ok_or_else(|| AppError::Internal("No title generation prompt found".into()))?;

@@ -14,7 +14,9 @@ use tokio_stream::StreamExt;
 use crate::credential::presign::{PresignService, presign_response, presign_response_by_user_id};
 use crate::chat::broadcast::BroadcastEvent;
 use crate::chat::message::models::{MessageResponse, ResolveToolRequest, SendMessageRequest};
-use crate::inference::convert::{format_content_with_attachments, to_rig_messages};
+use crate::inference::conversation::{
+    ConversationBuilder, ConversationContext, DefaultConversationBuilder, build_user_message,
+};
 use crate::inference::request::{InferenceRequest, InferenceResponse};
 use crate::inference::tool_loop::{InferenceEvent, InferenceEventKind};
 use crate::agent::models::SandboxSettings;
@@ -134,7 +136,7 @@ pub async fn build_tool_registry(
     registry.register(Arc::new(NotifyHumanTool::new(credential_id, prompts.clone())));
 
     registry.register(Arc::new(ReadFileTool::new(
-        state.storage.clone(),
+        state.storage_service.clone(),
         prompts.clone(),
     )));
 
@@ -237,7 +239,7 @@ pub async fn build_tool_registry(
     if allowed_tools.iter().any(|t| t == "heartbeat") {
         registry.register(Arc::new(HeartbeatTool::new(
             state.agent_service.clone(),
-            state.storage.clone(),
+            state.storage_service.clone(),
             agent_id.to_string(),
             prompts.clone(),
         )));
@@ -594,7 +596,16 @@ async fn stream_message(
             "Understood. I have context from our previous conversation. How can I help?",
         ));
     }
-    rig_history.extend(to_rig_messages(&context_messages, &ctx.chat.agent_id));
+    let conv_builder = DefaultConversationBuilder {
+        user_service: state.user_service.clone(),
+        storage_service: state.storage_service.clone(),
+    };
+    let conv_ctx = ConversationContext {
+        agent_id: ctx.chat.agent_id.clone(),
+        model_ref: ctx.model_group.main.clone(),
+        user_id: auth.user_id.clone(),
+    };
+    rig_history.extend(conv_builder.build(&context_messages, &conv_ctx).await);
     ctx.rig_history = rig_history;
 
     let user_content = req.content;
@@ -634,6 +645,16 @@ async fn stream_message(
             .await
             .map_err(ApiError::from)?;
 
+        let pending_conv_builder = DefaultConversationBuilder {
+            user_service: state.user_service.clone(),
+            storage_service: state.storage_service.clone(),
+        };
+        let pending_conv_ctx = ConversationContext {
+            agent_id: agent_id.clone(),
+            model_ref: model_group.main.clone(),
+            user_id: auth.user_id.clone(),
+        };
+
         tokio::spawn(async move {
             if !session.send_or_cleanup("user_message", &user_response).await {
                 return;
@@ -643,7 +664,7 @@ async fn stream_message(
             }
 
             let stored_messages = session.chat_service.get_stored_messages(&session.chat_id).await;
-            let rig_history = to_rig_messages(&stored_messages, &agent_id);
+            let rig_history = pending_conv_builder.build(&stored_messages, &pending_conv_ctx).await;
 
             let handle = spawn_inference(InferenceRequest {
                 registry, model_group, system_prompt,
@@ -664,6 +685,9 @@ async fn stream_message(
             .map_err(ApiError::from)?;
 
         presign_response(&session.presign_svc, &mut user_response, &auth.user_id, &auth.username).await;
+
+        let msg_user_service = state.user_service.clone();
+        let msg_storage_service = state.storage_service.clone();
 
         tokio::spawn(async move {
             if !session.send_or_cleanup("user_message", &user_response).await {
@@ -688,7 +712,12 @@ async fn stream_message(
                 });
             }
 
-            let user_rig_msg = RigMessage::user(format_content_with_attachments(&user_content, &attachments));
+            let user_rig_msg = build_user_message(
+                &user_content,
+                &attachments,
+                &msg_user_service,
+                &msg_storage_service,
+            ).await;
             let mut full_history = rig_history;
             full_history.push(user_rig_msg);
 

@@ -14,7 +14,9 @@ use crate::core::error::AppError;
 use crate::core::metrics::InferenceMetricsContext;
 use crate::inference::config::ModelGroup;
 use crate::inference::context::{estimate_tokens, resolve_context_window};
-use crate::inference::convert::to_rig_messages;
+use crate::inference::conversation::{
+    convert_agent_message, convert_tool_result, format_files_block_simple,
+};
 use crate::inference::text_inference;
 use crate::inference::ModelProviderRegistry;
 use crate::memory::insight::models::Insight;
@@ -80,7 +82,25 @@ impl MemoryService {
             return Ok(());
         }
 
-        let rig_messages = to_rig_messages(&messages, chat_agent_id);
+        let rig_messages: Vec<RigMessage> = messages
+            .iter()
+            .filter_map(|msg| match msg.role {
+                crate::chat::message::models::MessageRole::User
+                | crate::chat::message::models::MessageRole::TaskCompletion
+                | crate::chat::message::models::MessageRole::Contact => {
+                    let content = format_files_block_simple(&msg.content, &msg.attachments);
+                    Some(RigMessage::user(&content))
+                }
+                crate::chat::message::models::MessageRole::LiveCall => {
+                    let content = format_files_block_simple(&msg.content, &msg.attachments);
+                    Some(RigMessage::user(format!("[LIVE_CALL] {content}")))
+                }
+                crate::chat::message::models::MessageRole::Agent => {
+                    convert_agent_message(msg, chat_agent_id)
+                }
+                crate::chat::message::models::MessageRole::ToolResult => convert_tool_result(msg),
+            })
+            .collect();
         let window = resolve_context_window(model_id, context_window);
         let available = window.saturating_sub(max_output_tokens);
 

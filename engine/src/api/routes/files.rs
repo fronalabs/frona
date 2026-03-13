@@ -141,7 +141,7 @@ async fn upload_file(
         ))
     })?;
 
-    let user_ws = state.storage.user_workspace(&auth.username);
+    let user_ws = state.storage_service.user_workspace(&auth.username);
     let base = user_ws.base_path().to_path_buf();
 
     let (dir, filename_for_dedup, virtual_relative) = if let Some(ref rel_path) = relative_path {
@@ -259,7 +259,7 @@ async fn delete_user_file(
     }
 
     let vpath = VirtualPath::user(&username, &filename);
-    let resolved = state.storage.resolve(&vpath)?;
+    let resolved = state.storage_service.resolve(&vpath)?;
 
     if !resolved.exists() {
         return Err(ApiError(AppError::NotFound(
@@ -308,7 +308,7 @@ async fn presign_file(
             "Invalid owner prefix".into(),
         )));
     };
-    let _ = state.storage.resolve(&vpath)?;
+    let _ = state.storage_service.resolve(&vpath)?;
 
     let url = state
         .presign_service
@@ -325,7 +325,7 @@ async fn presign_file(
 }
 
 async fn serve_file(vpath: &VirtualPath, state: &AppState) -> Result<Response, ApiError> {
-    let resolved = state.storage.resolve(vpath)?;
+    let resolved = state.storage_service.resolve(vpath)?;
 
     if !resolved.exists() {
         return Err(ApiError(AppError::NotFound(
@@ -365,7 +365,7 @@ async fn list_user_files(
         validate_relative_path(&rel)?;
     }
 
-    let user_ws = state.storage.user_workspace(&auth.username);
+    let user_ws = state.storage_service.user_workspace(&auth.username);
     let base = user_ws.base_path().to_path_buf();
     let dir = if rel.is_empty() {
         base
@@ -379,7 +379,7 @@ async fn list_user_files(
         format!("/{rel}")
     };
 
-    let entries = state.storage.list_dir(&dir, &parent_id).await?;
+    let entries = state.storage_service.list_dir(&dir, &parent_id).await?;
     Ok(Json(entries))
 }
 
@@ -395,7 +395,7 @@ async fn list_agent_dir(
         validate_relative_path(rel)?;
     }
 
-    let ws = state.storage.agent_workspace(agent_id);
+    let ws = state.storage_service.agent_workspace(agent_id);
     let base = ws.base_path().to_path_buf();
     let dir = if rel.is_empty() {
         base
@@ -409,7 +409,7 @@ async fn list_agent_dir(
         format!("/{rel}")
     };
 
-    let entries = state.storage.list_dir(&dir, &parent_id).await?;
+    let entries = state.storage_service.list_dir(&dir, &parent_id).await?;
     Ok(Json(entries))
 }
 
@@ -454,7 +454,7 @@ async fn search_files(
                 None => (rest, None),
             };
             state.agent_service.get(&auth.user_id, agent_id).await?;
-            let ws = state.storage.agent_workspace(agent_id);
+            let ws = state.storage_service.agent_workspace(agent_id);
             let root = ws.base_path().to_path_buf();
             let dir = match subpath {
                 Some(sub) => root.join(sub),
@@ -464,7 +464,7 @@ async fn search_files(
         }
         Some(scope) if scope.starts_with("user") => {
             let subpath = scope.strip_prefix("user:").unwrap_or("");
-            let ws = state.storage.user_workspace(&auth.username);
+            let ws = state.storage_service.user_workspace(&auth.username);
             let base = ws.base_path().to_path_buf();
             let dir = if subpath.is_empty() {
                 base.clone()
@@ -474,13 +474,13 @@ async fn search_files(
             targets.push(SearchTarget { dir, root: base, source: "user".to_string() });
         }
         _ => {
-            let user_ws = state.storage.user_workspace(&auth.username);
+            let user_ws = state.storage_service.user_workspace(&auth.username);
             let user_dir = user_ws.base_path().to_path_buf();
             targets.push(SearchTarget { dir: user_dir.clone(), root: user_dir, source: "user".to_string() });
 
             let user_agents = state.agent_service.list(&auth.user_id).await?;
             for agent in &user_agents {
-                let ws = state.storage.agent_workspace(&agent.id);
+                let ws = state.storage_service.agent_workspace(&agent.id);
                 let agent_dir = ws.base_path().to_path_buf();
                 if agent_dir.is_dir() {
                     targets.push(SearchTarget { dir: agent_dir.clone(), root: agent_dir, source: agent.id.clone() });
@@ -489,7 +489,7 @@ async fn search_files(
         }
     }
 
-    let results = state.storage.search(targets, &query.q).await?;
+    let results = state.storage_service.search(targets, &query.q).await?;
     Ok(Json(results))
 }
 
@@ -506,7 +506,7 @@ async fn rename_user_file(
 ) -> Result<(), ApiError> {
     let trimmed = req.path.trim_start_matches('/');
     let vpath = VirtualPath::user(&auth.username, trimmed);
-    let resolved = state.storage.resolve(&vpath)?;
+    let resolved = state.storage_service.resolve(&vpath)?;
 
     if !resolved.exists() {
         return Err(ApiError(AppError::NotFound(
@@ -588,14 +588,14 @@ async fn copy_files(
     ensure_user_destination(&req.destination)?;
 
     let dest_dir =
-        resolve_file_virtual_path(&req.destination, &auth, &state.storage)?;
+        resolve_file_virtual_path(&req.destination, &auth, &state.storage_service)?;
 
     fs::create_dir_all(&dest_dir)
         .await
         .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
 
     for source in &req.sources {
-        let src = resolve_file_virtual_path(source, &auth, &state.storage)?;
+        let src = resolve_file_virtual_path(source, &auth, &state.storage_service)?;
         if !src.exists() {
             continue;
         }
@@ -659,7 +659,7 @@ async fn move_files(
     ensure_user_destination(&req.destination)?;
 
     let dest_dir =
-        resolve_file_virtual_path(&req.destination, &auth, &state.storage)?;
+        resolve_file_virtual_path(&req.destination, &auth, &state.storage_service)?;
 
     fs::create_dir_all(&dest_dir)
         .await
@@ -671,7 +671,7 @@ async fn move_files(
                 "Cannot move from agent workspaces".into(),
             )));
         }
-        let src = resolve_file_virtual_path(source, &auth, &state.storage)?;
+        let src = resolve_file_virtual_path(source, &auth, &state.storage_service)?;
         if !src.exists() {
             continue;
         }
@@ -705,7 +705,7 @@ async fn create_user_folder(
     validate_relative_path(trimmed)?;
 
     let vpath = VirtualPath::user(&auth.username, trimmed);
-    let resolved = state.storage.resolve(&vpath)?;
+    let resolved = state.storage_service.resolve(&vpath)?;
 
     fs::create_dir_all(&resolved)
         .await

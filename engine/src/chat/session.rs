@@ -6,7 +6,7 @@ use crate::chat::service::AgentConfig;
 use crate::core::error::AppError;
 use crate::core::state::AppState;
 use crate::inference::config::ModelGroup;
-use crate::inference::convert::to_rig_messages;
+use crate::inference::conversation::{ConversationBuilder, ConversationContext, DefaultConversationBuilder};
 use crate::inference::tool_loop::InferenceEvent;
 use crate::inference::ModelProviderRegistry;
 use crate::tool::registry::AgentToolRegistry;
@@ -91,7 +91,17 @@ impl ChatSessionContext {
             }
         }
 
-        let rig_history = to_rig_messages(&stored_messages, &chat.agent_id);
+        let model_ref = model_group.main.clone();
+        let conv_ctx = ConversationContext {
+            agent_id: chat.agent_id.clone(),
+            model_ref,
+            user_id: user_id.to_string(),
+        };
+        let conv_builder = DefaultConversationBuilder {
+            user_service: state.user_service.clone(),
+            storage_service: state.storage_service.clone(),
+        };
+        let rig_history = conv_builder.build(&stored_messages, &conv_ctx).await;
 
         let registry = state.chat_service.provider_registry().clone();
 

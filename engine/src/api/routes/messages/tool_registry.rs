@@ -7,7 +7,6 @@ use crate::tool::delegate::DelegateTaskTool;
 use crate::tool::heartbeat::HeartbeatTool;
 use crate::tool::notify_human::NotifyHumanTool;
 use crate::tool::produce_file::ProduceFileTool;
-use crate::tool::read_file::ReadFileTool;
 use crate::tool::registry::AgentToolRegistry;
 use crate::tool::remember::{RememberTool, RememberUserFactTool};
 use crate::tool::request_credentials::RequestCredentialsTool;
@@ -47,11 +46,6 @@ pub async fn build_tool_registry(
 
     registry.register(Arc::new(TimeTool::new(prompts.clone())));
     registry.register(Arc::new(NotifyHumanTool::new(credential_id, prompts.clone())));
-
-    registry.register(Arc::new(ReadFileTool::new(
-        state.storage_service.clone(),
-        prompts.clone(),
-    )));
 
     let workspace_path = std::path::Path::new(&state.config.storage.workspaces_path).join(agent_id);
     registry.register(Arc::new(ProduceFileTool::new(

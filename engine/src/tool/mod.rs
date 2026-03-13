@@ -5,7 +5,6 @@ pub mod heartbeat;
 pub mod manage_service;
 pub mod notify_human;
 pub mod produce_file;
-pub mod read_file;
 pub mod registry;
 pub mod remember;
 pub mod request_credentials;

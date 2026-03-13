@@ -3,7 +3,7 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-use super::*;
+use super::super::*;
 
 /// Read SSE frames from a response body until timeout, returning accumulated text.
 async fn collect_sse_frames(body: Body, timeout_ms: u64) -> String {
@@ -235,6 +235,26 @@ async fn event_stream_filters_other_user_task_updates() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn stream_message_without_auth_returns_401() {
+    let (state, _tmp) = test_app_state().await;
+    let app = build_app(state);
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/chats/fake-id/messages/stream")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"content": "X"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn stream_message_other_user_returns_error() {
     let (state, _tmp) = test_app_state().await;
     let (token_a, _) =
@@ -260,80 +280,4 @@ async fn stream_message_other_user_returns_error() {
         "Expected 403 or 404, got {}",
         resp.status()
     );
-}
-
-// ---------------------------------------------------------------------------
-// Resolve tool message
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn resolve_tool_message_without_auth_returns_401() {
-    let (state, _tmp) = test_app_state().await;
-    let app = build_app(state);
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/chats/fake-id/messages/msg-1/resolve")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({"response": "yes"}).to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn resolve_tool_message_other_user_returns_error() {
-    let (state, _tmp) = test_app_state().await;
-    let (token_a, _) =
-        register_user(&state, "resolve-own", "resolveown@example.com", "password123").await;
-    let (token_b, _) =
-        register_user(&state, "resolve-oth", "resolveoth@example.com", "password123").await;
-
-    let agent = create_agent(&state, &token_a, "ResolveAgent").await;
-    let chat = create_chat(&state, &token_a, agent["id"].as_str().unwrap(), None).await;
-    let chat_id = chat["id"].as_str().unwrap();
-
-    let app = build_app(state);
-    let resp = app
-        .oneshot(auth_post_json(
-            &format!("/api/chats/{chat_id}/messages/fake-msg/resolve"),
-            &token_b,
-            serde_json::json!({"response": "yes"}),
-        ))
-        .await
-        .unwrap();
-    assert!(
-        resp.status() == StatusCode::FORBIDDEN || resp.status() == StatusCode::NOT_FOUND,
-        "Expected 403 or 404, got {}",
-        resp.status()
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Send message (POST /api/chats/{id}/messages) — auth checks only
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn send_message_without_auth_returns_401() {
-    let (state, _tmp) = test_app_state().await;
-    let app = build_app(state);
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/chats/fake-id/messages")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({"content": "hello"}).to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }

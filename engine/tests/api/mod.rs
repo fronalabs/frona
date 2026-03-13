@@ -8,7 +8,6 @@ mod misc;
 mod navigation;
 mod security;
 mod spaces;
-mod sse;
 mod tasks;
 mod vaults;
 

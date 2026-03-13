@@ -136,8 +136,7 @@ impl AgentTool for UpdateEntityTool {
                     record_id: self.record_id.clone(),
                     fields: merge_value,
                 },
-            })
-            .await;
+            });
 
         Ok(ToolOutput::text(format!("Updated fields: {}", field_names.join(", "))))
     }

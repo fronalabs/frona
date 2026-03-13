@@ -22,7 +22,7 @@ pub struct ChatSessionContext {
     pub tool_registry: AgentToolRegistry,
     pub tool_ctx: InferenceContext,
     pub cancel_token: CancellationToken,
-    pub tool_event_rx: tokio::sync::mpsc::Receiver<InferenceEvent>,
+    pub tool_event_rx: tokio::sync::mpsc::UnboundedReceiver<InferenceEvent>,
 }
 
 impl ChatSessionContext {
@@ -33,7 +33,7 @@ impl ChatSessionContext {
         cancel_token: CancellationToken,
     ) -> Result<Self, AppError> {
         let (tool_event_tx, tool_event_rx) =
-            tokio::sync::mpsc::channel::<InferenceEvent>(crate::inference::STREAM_CHANNEL_BUFFER);
+            tokio::sync::mpsc::unbounded_channel::<InferenceEvent>();
         let agent_config = state
             .chat_service
             .resolve_agent_config(&chat.agent_id)

@@ -64,7 +64,7 @@ mod tests {
     use crate::tool::{AgentTool, InferenceContext};
 
     fn mock_context() -> InferenceContext {
-        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         InferenceContext::new(
             crate::auth::User {
                 id: "u".into(), username: "u".into(), email: "e".into(), name: "n".into(),

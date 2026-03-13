@@ -26,7 +26,7 @@ async fn test_tool_loop_simple_text_response() {
     let registry = test_registry_with_provider("mock", provider.clone());
     let model_group = test_model_group();
     let tool_registry = AgentToolRegistry::new();
-    let (event_tx, mut event_rx) = mpsc::channel(100);
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
@@ -88,7 +88,7 @@ async fn test_tool_loop_single_tool_call() {
         "search",
         vec!["search results here".into()],
     )));
-    let (event_tx, mut event_rx) = mpsc::channel(100);
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
@@ -164,7 +164,7 @@ async fn test_tool_loop_multi_turn() {
         "step_two",
         vec!["step two done".into()],
     )));
-    let (event_tx, _event_rx) = mpsc::channel(100);
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
@@ -202,7 +202,7 @@ async fn test_tool_loop_external_tool_returns_pending() {
     let model_group = test_model_group();
     let mut tool_registry = AgentToolRegistry::new();
     tool_registry.register(Arc::new(MockExternalTool::new("ext_tool")));
-    let (event_tx, _event_rx) = mpsc::channel(100);
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
@@ -245,7 +245,7 @@ async fn test_tool_loop_mixed_internal_external() {
         vec!["internal done".into()],
     )));
     tool_registry.register(Arc::new(MockExternalTool::new("external")));
-    let (event_tx, _event_rx) = mpsc::channel(100);
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
@@ -288,7 +288,7 @@ async fn test_tool_loop_cancellation_before_inference() {
     let registry = test_registry_with_provider("mock", provider.clone());
     let model_group = test_model_group();
     let tool_registry = AgentToolRegistry::new();
-    let (event_tx, mut event_rx) = mpsc::channel(100);
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let cancel = CancellationToken::new();
     cancel.cancel();
     let ctx = mock_context();
@@ -333,7 +333,7 @@ async fn test_tool_loop_rate_limit_retry() {
     let registry = test_registry_with_provider("mock", provider.clone());
     let model_group = test_model_group();
     let tool_registry = AgentToolRegistry::new();
-    let (event_tx, mut event_rx) = mpsc::channel(100);
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
@@ -388,7 +388,7 @@ async fn test_tool_loop_rate_limit_exhausted() {
     let registry = test_registry_with_provider("mock", provider);
     let model_group = test_model_group();
     let tool_registry = AgentToolRegistry::new();
-    let (event_tx, _event_rx) = mpsc::channel(100);
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
@@ -431,7 +431,7 @@ async fn test_tool_loop_tool_execution_failure() {
     let model_group = test_model_group();
     let mut tool_registry = AgentToolRegistry::new();
     tool_registry.register(Arc::new(MockFailingTool::new("bad_tool")));
-    let (event_tx, mut event_rx) = mpsc::channel(100);
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
@@ -475,7 +475,7 @@ async fn test_tool_loop_provider_error() {
     let registry = test_registry_with_provider("mock", provider);
     let model_group = test_model_group();
     let tool_registry = AgentToolRegistry::new();
-    let (event_tx, _event_rx) = mpsc::channel(100);
+    let (event_tx, _event_rx) = mpsc::unbounded_channel();
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
@@ -821,7 +821,7 @@ async fn test_streaming_tokens_arrive_individually() {
     let registry = test_registry_with_provider("mock", provider);
     let model_group = test_model_group();
     let tool_registry = AgentToolRegistry::new();
-    let (event_tx, mut event_rx) = mpsc::channel(32);
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();

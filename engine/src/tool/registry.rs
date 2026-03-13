@@ -106,7 +106,7 @@ mod tests {
     }
 
     fn mock_context() -> InferenceContext {
-        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         InferenceContext::new(
             crate::auth::User {
                 id: "test-user".into(),

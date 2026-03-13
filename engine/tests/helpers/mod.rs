@@ -227,7 +227,7 @@ impl AgentTool for MockFailingTool {
 }
 
 pub fn mock_context() -> InferenceContext {
-    let (tx, _rx) = mpsc::channel(100);
+    let (tx, _rx) = mpsc::unbounded_channel();
     InferenceContext::new(
         frona::auth::User {
             id: "test-user".into(),

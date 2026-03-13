@@ -15,8 +15,6 @@ pub use request::{InferenceRequest, InferenceResponse, InferenceContext};
 pub use rig::completion::request::Usage;
 pub use tool_loop::{InferenceEvent, InferenceEventKind};
 
-/// Buffer capacity for the streaming event channels between LLM provider and SSE output.
-pub const STREAM_CHANNEL_BUFFER: usize = 256;
 
 use rig::completion::Message as RigMessage;
 
@@ -66,8 +64,7 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
                 let _ = event_tx
                     .send(InferenceEvent {
                         kind: InferenceEventKind::Done(accumulated_text.clone()),
-                    })
-                    .await;
+                    });
                 Ok(InferenceResponse::Completed {
                     text: accumulated_text,
                     attachments: vec![],
@@ -77,8 +74,7 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
                 let _ = event_tx
                     .send(InferenceEvent {
                         kind: InferenceEventKind::Cancelled(accumulated_text.clone()),
-                    })
-                    .await;
+                    });
                 Ok(InferenceResponse::Cancelled(accumulated_text))
             }
         }
@@ -132,7 +128,6 @@ pub async fn text_inference(
         system_prompt,
         history,
         vec![],
-        None,
         metrics_ctx,
     )
     .await?;

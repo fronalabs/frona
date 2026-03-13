@@ -122,8 +122,7 @@ impl UpdateIdentityTool {
                     record_id: self.agent_id.clone(),
                     fields: Value::Object(entity_fields),
                 },
-            })
-            .await;
+            });
 
         let updated_keys: Vec<&String> = attrs.keys().collect();
         Ok(ToolOutput::text(format!(

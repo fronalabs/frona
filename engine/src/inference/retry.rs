@@ -41,7 +41,6 @@ pub async fn inference_with_retry_and_fallback(
     system_prompt: &str,
     history: Vec<RigMessage>,
     tools: Vec<RigToolDefinition>,
-    _event_tx: Option<&mpsc::Sender<InferenceEvent>>,
     metrics_ctx: &InferenceMetricsContext,
 ) -> Result<(Vec<AssistantContent>, crate::inference::Usage), InferenceError> {
     let mut errors = Vec::new();
@@ -174,7 +173,7 @@ pub async fn stream_with_retry_and_fallback(
     system_prompt: &str,
     chat_history: &[RigMessage],
     tools: &[RigToolDefinition],
-    event_tx: &mpsc::Sender<InferenceEvent>,
+    event_tx: &mpsc::UnboundedSender<InferenceEvent>,
     cancel_token: &tokio_util::sync::CancellationToken,
     accumulated_text: &mut String,
     metrics_ctx: &InferenceMetricsContext,
@@ -188,7 +187,7 @@ pub async fn stream_with_retry_and_fallback(
     let model_str = model_group.main.as_str();
 
     let result = (|| async {
-        let (text_tx, text_rx) = mpsc::channel::<String>(super::STREAM_CHANNEL_BUFFER);
+        let (text_tx, text_rx) = mpsc::channel::<String>(64);
 
         let event_tx_clone = event_tx.clone();
         let forward_handle = tokio::spawn(async move {
@@ -199,8 +198,7 @@ pub async fn stream_with_retry_and_fallback(
                 let _ = event_tx_clone
                     .send(InferenceEvent {
                         kind: InferenceEventKind::Text(token),
-                    })
-                    .await;
+                    });
             }
             text
         });
@@ -255,7 +253,7 @@ pub async fn stream_with_retry_and_fallback(
     .notify(|e, dur| {
         tracing::warn!(model = %model_str, error = %e, delay = ?dur, "Retryable error, backing off");
         if e.is_rate_limited() {
-            let _ = event_tx.try_send(InferenceEvent {
+            let _ = event_tx.send(InferenceEvent {
                 kind: InferenceEventKind::RateLimitRetry {
                     retry_after_ms: dur.as_millis() as u64,
                 },

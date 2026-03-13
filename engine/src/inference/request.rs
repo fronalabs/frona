@@ -17,7 +17,7 @@ pub struct InferenceContext {
     pub user: User,
     pub agent: Agent,
     pub chat: Chat,
-    pub event_tx: mpsc::Sender<InferenceEvent>,
+    pub event_tx: mpsc::UnboundedSender<InferenceEvent>,
     pub vault_env_vars: Arc<RwLock<Vec<(String, String)>>>,
 }
 
@@ -26,7 +26,7 @@ impl InferenceContext {
         user: User,
         agent: Agent,
         chat: Chat,
-        event_tx: mpsc::Sender<InferenceEvent>,
+        event_tx: mpsc::UnboundedSender<InferenceEvent>,
     ) -> Self {
         Self {
             user,

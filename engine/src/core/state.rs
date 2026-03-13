@@ -34,7 +34,7 @@ use crate::tool::browser::session::BrowserSessionManager;
 use crate::tool::cli::{CliToolConfig, load_cli_tool_configs};
 use crate::tool::voice::{VoiceProvider, create_voice_provider};
 use crate::tool::web_search::{SearchProvider, create_search_provider};
-use crate::tool::workspace::WorkspaceManager;
+use crate::tool::sandbox::SandboxManager;
 use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
 
@@ -89,7 +89,7 @@ pub struct AppState {
     pub browser_session_manager: Arc<BrowserSessionManager>,
     pub active_sessions: ActiveSessions,
     pub memory_service: MemoryService,
-    pub workspace_manager: Arc<WorkspaceManager>,
+    pub sandbox_manager: Arc<SandboxManager>,
     pub cli_tools_config: Arc<Vec<CliToolConfig>>,
     pub search_provider: Option<Arc<dyn SearchProvider>>,
     pub voice_provider: Option<Arc<dyn VoiceProvider>>,
@@ -128,7 +128,7 @@ impl AppState {
         let shared_config_abs = std::fs::canonicalize(&shared_config_dir)
             .unwrap_or_else(|_| shared_config_dir.clone());
 
-        let workspace_manager = Arc::new(WorkspaceManager::new(
+        let sandbox_manager = Arc::new(SandboxManager::new(
             &config.storage.workspaces_path,
             config.server.sandbox_disabled,
         ).with_shared_read_paths(vec![shared_config_abs.to_string_lossy().into_owned()]));
@@ -254,7 +254,7 @@ impl AppState {
             browser_session_manager: Arc::new(BrowserSessionManager::new(config.browser.clone())),
             active_sessions: ActiveSessions::default(),
             memory_service,
-            workspace_manager,
+            sandbox_manager,
             cli_tools_config,
             search_provider,
             voice_provider,

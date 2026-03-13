@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 
-use super::workspace::WorkspaceManager;
+use super::sandbox::SandboxManager;
 use super::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, parse_frontmatter};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,7 +27,7 @@ pub struct CliToolConfig {
 
 pub struct CliTool {
     config: CliToolConfig,
-    workspace_manager: Arc<WorkspaceManager>,
+    sandbox_manager: Arc<SandboxManager>,
     agent_id: String,
     network_access: bool,
     allowed_network_destinations: Vec<String>,
@@ -37,14 +37,14 @@ pub struct CliTool {
 impl CliTool {
     pub fn new(
         config: CliToolConfig,
-        workspace_manager: Arc<WorkspaceManager>,
+        sandbox_manager: Arc<SandboxManager>,
         agent_id: String,
         network_access: bool,
         allowed_network_destinations: Vec<String>,
     ) -> Self {
         Self {
             config,
-            workspace_manager,
+            sandbox_manager,
             agent_id,
             network_access,
             allowed_network_destinations,
@@ -118,7 +118,7 @@ impl AgentTool for CliTool {
             .collect();
         let args_refs: Vec<&str> = substituted_args.iter().map(|s| s.as_str()).collect();
 
-        let mut workspace = self.workspace_manager.get_workspace(
+        let mut workspace = self.sandbox_manager.get_sandbox(
             &self.agent_id,
             self.network_access,
             self.allowed_network_destinations.clone(),
@@ -298,7 +298,7 @@ mod tests {
             timeout_secs: Some(30),
         };
 
-        let wm = Arc::new(WorkspaceManager::new("/tmp/test", false));
+        let wm = Arc::new(SandboxManager::new("/tmp/test", false));
         let tool = CliTool::new(config, wm, "agent-1".to_string(), false, vec![]);
         let defs = tool.definitions();
 
@@ -374,7 +374,7 @@ mod tests {
         let tmp = std::env::temp_dir().join("frona_test_cli_tool");
         let _ = std::fs::create_dir_all(&tmp);
 
-        let wm = Arc::new(WorkspaceManager::new(&tmp, false));
+        let wm = Arc::new(SandboxManager::new(&tmp, false));
         let tool = CliTool::new(config, wm, "test-agent".to_string(), false, vec![]);
         let ctx = mock_context();
 

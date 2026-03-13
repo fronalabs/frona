@@ -303,7 +303,7 @@ pub async fn build_tool_registry(
             tracing::info!(tool = %tool_config.name, "Registering CLI tool");
             registry.register(Arc::new(CliTool::new(
                 tool_config.clone(),
-                state.workspace_manager.clone(),
+                state.sandbox_manager.clone(),
                 agent_id.to_string(),
                 defaults.network_access,
                 defaults.allowed_network_destinations.clone(),

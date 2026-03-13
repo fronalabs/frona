@@ -2,11 +2,11 @@ use std::process::Command;
 
 use crate::core::error::AppError;
 
-use super::{Sandbox, SandboxConfig};
+use super::{SandboxDriver, SandboxConfig};
 
-pub struct NoopSandbox;
+pub struct NoopDriver;
 
-impl Sandbox for NoopSandbox {
+impl SandboxDriver for NoopDriver {
     fn sandboxed_command(
         &self,
         program: &str,

@@ -1,23 +1,23 @@
 #![cfg(target_os = "linux")]
 
-use frona::tool::workspace::WorkspaceManager;
+use frona::tool::sandbox::SandboxManager;
 
-fn test_manager() -> WorkspaceManager {
+fn test_manager() -> SandboxManager {
     let base = std::env::temp_dir()
         .join("frona_test_landlock")
         .join(uuid::Uuid::new_v4().to_string());
-    WorkspaceManager::new(base, false)
+    SandboxManager::new(base, false)
 }
 
-fn relative_path_manager() -> WorkspaceManager {
+fn relative_path_manager() -> SandboxManager {
     let base = format!("target/test_landlock_{}", uuid::Uuid::new_v4());
-    WorkspaceManager::new(base, false)
+    SandboxManager::new(base, false)
 }
 
 #[tokio::test]
 async fn test_sandbox_allows_read_system_paths() {
     let mgr = test_manager();
-    let ws = mgr.get_workspace("landlock-read-sys", false, vec![]);
+    let ws = mgr.get_sandbox("landlock-read-sys", false, vec![]);
 
     let output = ws
         .execute("cat", &["/etc/hostname"], 10, None, None, None)
@@ -38,7 +38,7 @@ async fn test_sandbox_allows_read_system_paths() {
 #[tokio::test]
 async fn test_sandbox_blocks_write_to_system_paths() {
     let mgr = test_manager();
-    let ws = mgr.get_workspace("landlock-write-sys", false, vec![]);
+    let ws = mgr.get_sandbox("landlock-write-sys", false, vec![]);
 
     let output = ws
         .execute(
@@ -66,7 +66,7 @@ async fn test_sandbox_blocks_write_to_system_paths() {
 #[tokio::test]
 async fn test_sandbox_allows_write_to_workspace() {
     let mgr = test_manager();
-    let ws = mgr.get_workspace("landlock-write-ws", false, vec![]);
+    let ws = mgr.get_sandbox("landlock-write-ws", false, vec![]);
 
     let output = ws
         .execute(
@@ -94,7 +94,7 @@ async fn test_sandbox_allows_write_to_workspace() {
 #[tokio::test]
 async fn test_sandbox_blocks_read_outside_allowed_paths() {
     let mgr = test_manager();
-    let ws = mgr.get_workspace("landlock-block-read", false, vec![]);
+    let ws = mgr.get_sandbox("landlock-block-read", false, vec![]);
 
     let output = ws
         .execute("ls", &["/root"], 10, None, None, None)
@@ -115,7 +115,7 @@ async fn test_sandbox_blocks_read_outside_allowed_paths() {
 #[tokio::test]
 async fn test_sandbox_allows_write_to_tmp() {
     let mgr = test_manager();
-    let ws = mgr.get_workspace("landlock-write-tmp", false, vec![]);
+    let ws = mgr.get_sandbox("landlock-write-tmp", false, vec![]);
 
     let output = ws
         .execute(
@@ -146,7 +146,7 @@ async fn test_sandbox_allows_write_to_tmp() {
 #[tokio::test]
 async fn test_sandbox_blocks_write_outside_workspace() {
     let mgr = test_manager();
-    let ws = mgr.get_workspace("landlock-block-write", false, vec![]);
+    let ws = mgr.get_sandbox("landlock-block-write", false, vec![]);
 
     let output = ws
         .execute(
@@ -174,7 +174,7 @@ async fn test_sandbox_blocks_write_outside_workspace() {
 #[tokio::test]
 async fn test_sandbox_python_in_workspace() {
     let mgr = test_manager();
-    let ws = mgr.get_workspace("landlock-python", false, vec![]);
+    let ws = mgr.get_sandbox("landlock-python", false, vec![]);
 
     let output = ws
         .execute(
@@ -202,7 +202,7 @@ async fn test_sandbox_python_in_workspace() {
 #[tokio::test]
 async fn test_sandbox_python_cannot_write_system() {
     let mgr = test_manager();
-    let ws = mgr.get_workspace("landlock-py-no-write", false, vec![]);
+    let ws = mgr.get_sandbox("landlock-py-no-write", false, vec![]);
 
     let output = ws
         .execute(
@@ -235,7 +235,7 @@ async fn test_sandbox_python_cannot_write_system() {
 #[tokio::test]
 async fn test_sandbox_write_with_relative_workspace_path() {
     let mgr = relative_path_manager();
-    let ws = mgr.get_workspace("landlock-relative", false, vec![]);
+    let ws = mgr.get_sandbox("landlock-relative", false, vec![]);
 
     let output = ws
         .execute(
@@ -268,7 +268,7 @@ async fn test_sandbox_write_with_relative_workspace_path() {
 #[tokio::test]
 async fn test_sandbox_heredoc_write() {
     let mgr = test_manager();
-    let ws = mgr.get_workspace("landlock-heredoc", false, vec![]);
+    let ws = mgr.get_sandbox("landlock-heredoc", false, vec![]);
 
     let output = ws
         .execute(
@@ -304,7 +304,7 @@ async fn test_sandbox_heredoc_write() {
 #[tokio::test]
 async fn test_sandbox_python_write_to_workspace() {
     let mgr = test_manager();
-    let ws = mgr.get_workspace("landlock-py-write-ws", false, vec![]);
+    let ws = mgr.get_sandbox("landlock-py-write-ws", false, vec![]);
 
     let output = ws
         .execute(
@@ -335,7 +335,7 @@ async fn test_sandbox_python_write_to_workspace() {
 #[tokio::test]
 async fn test_sandbox_blocks_read_etc_shadow() {
     let mgr = test_manager();
-    let ws = mgr.get_workspace("landlock-etc-shadow", false, vec![]);
+    let ws = mgr.get_sandbox("landlock-etc-shadow", false, vec![]);
 
     let output = ws
         .execute("cat", &["/etc/shadow"], 10, None, None, None)
@@ -354,7 +354,7 @@ async fn test_sandbox_blocks_read_etc_shadow() {
 #[tokio::test]
 async fn test_sandbox_blocks_read_etc_passwd() {
     let mgr = test_manager();
-    let ws = mgr.get_workspace("landlock-etc-passwd", false, vec![]);
+    let ws = mgr.get_sandbox("landlock-etc-passwd", false, vec![]);
 
     let output = ws
         .execute("cat", &["/etc/passwd"], 10, None, None, None)
@@ -373,7 +373,7 @@ async fn test_sandbox_blocks_read_etc_passwd() {
 #[tokio::test]
 async fn test_sandbox_allows_read_etc_ssl() {
     let mgr = test_manager();
-    let ws = mgr.get_workspace("landlock-etc-ssl", false, vec![]);
+    let ws = mgr.get_sandbox("landlock-etc-ssl", false, vec![]);
 
     let output = ws
         .execute("ls", &["/etc/ssl"], 10, None, None, None)
@@ -401,8 +401,8 @@ async fn test_sandbox_fallback_on_unsupported_fs() {
         return;
     }
 
-    let mgr = WorkspaceManager::new(base, false);
-    let ws = mgr.get_workspace("landlock-fallback", false, vec![]);
+    let mgr = SandboxManager::new(base, false);
+    let ws = mgr.get_sandbox("landlock-fallback", false, vec![]);
 
     let output = ws
         .execute(

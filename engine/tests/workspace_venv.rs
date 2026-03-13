@@ -1,4 +1,4 @@
-use frona::tool::workspace::WorkspaceManager;
+use frona::tool::sandbox::SandboxManager;
 
 fn python3_available() -> bool {
     std::process::Command::new("python3")
@@ -8,11 +8,11 @@ fn python3_available() -> bool {
         .unwrap_or(false)
 }
 
-fn test_manager() -> WorkspaceManager {
+fn test_manager() -> SandboxManager {
     let base = std::env::temp_dir()
         .join("frona_test_venv_integration")
         .join(uuid::Uuid::new_v4().to_string());
-    WorkspaceManager::new(base, false)
+    SandboxManager::new(base, false)
 }
 
 #[tokio::test]
@@ -23,7 +23,7 @@ async fn test_execute_uses_venv_python() {
     }
 
     let mgr = test_manager();
-    let ws = mgr.get_workspace("agent-venv-prefix", false, vec![]);
+    let ws = mgr.get_sandbox("agent-venv-prefix", false, vec![]);
 
     let output = ws
         .execute(
@@ -60,7 +60,7 @@ async fn test_shell_uses_venv_python() {
     }
 
     let mgr = test_manager();
-    let ws = mgr.get_workspace("agent-venv-which", false, vec![]);
+    let ws = mgr.get_sandbox("agent-venv-which", false, vec![]);
 
     let output = ws
         .execute("which", &["python3"], 30, None, None, None)
@@ -84,8 +84,8 @@ async fn test_pip_install_isolated() {
     }
 
     let mgr = test_manager();
-    let ws_a = mgr.get_workspace("agent-pip-a", true, vec![]);
-    let ws_b = mgr.get_workspace("agent-pip-b", false, vec![]);
+    let ws_a = mgr.get_sandbox("agent-pip-a", true, vec![]);
+    let ws_b = mgr.get_sandbox("agent-pip-b", false, vec![]);
 
     let install = ws_a
         .execute("pip", &["install", "cowsay"], 60, None, None, None)

@@ -22,7 +22,7 @@ use frona::core::metrics::setup_metrics_recorder;
 use frona::core::state::AppState;
 use frona::credential::key_rotation::KeyRotation;
 use frona::scheduler::Scheduler;
-use frona::tool::workspace::sandbox::verify_sandbox;
+use frona::tool::sandbox::driver::verify_sandbox;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -1,4 +1,4 @@
-pub mod sandbox;
+pub mod driver;
 
 use std::path::{Path, PathBuf};
 
@@ -7,15 +7,15 @@ use crate::core::error::AppError;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use self::sandbox::{SandboxConfig, SandboxOutput, create_sandbox, execute_sandboxed};
+use self::driver::{SandboxConfig, SandboxOutput, create_driver, execute_sandboxed};
 
-pub struct WorkspaceManager {
+pub struct SandboxManager {
     base_path: PathBuf,
     sandbox_disabled: bool,
     shared_read_paths: Vec<String>,
 }
 
-impl WorkspaceManager {
+impl SandboxManager {
     pub fn new(base_path: impl Into<PathBuf>, sandbox_disabled: bool) -> Self {
         Self {
             base_path: base_path.into(),
@@ -29,17 +29,17 @@ impl WorkspaceManager {
         self
     }
 
-    pub fn get_workspace(
+    pub fn get_sandbox(
         &self,
         agent_id: &str,
         network_access: bool,
         allowed_network_destinations: Vec<String>,
-    ) -> Workspace {
+    ) -> Sandbox {
         let sanitized = agent_id.replace(['/', '\\', ':', '\0'], "_");
         let path = self.base_path.join(&sanitized);
-        Workspace {
+        Sandbox {
             path,
-            sandbox: create_sandbox(self.sandbox_disabled),
+            sandbox: create_driver(self.sandbox_disabled),
             network_access,
             allowed_network_destinations,
             skill_dirs: Vec::new(),
@@ -49,9 +49,9 @@ impl WorkspaceManager {
     }
 }
 
-pub struct Workspace {
+pub struct Sandbox {
     path: PathBuf,
-    sandbox: Box<dyn sandbox::Sandbox>,
+    sandbox: Box<dyn driver::SandboxDriver>,
     network_access: bool,
     allowed_network_destinations: Vec<String>,
     skill_dirs: Vec<(String, String)>,
@@ -59,7 +59,7 @@ pub struct Workspace {
     shared_read_paths: Vec<String>,
 }
 
-impl Workspace {
+impl Sandbox {
     pub fn with_skill_dirs(mut self, skill_dirs: Vec<(String, String)>) -> Self {
         self.skill_dirs = skill_dirs;
         self
@@ -71,7 +71,7 @@ impl Workspace {
     }
 }
 
-impl Workspace {
+impl Sandbox {
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -84,7 +84,7 @@ impl Workspace {
         if !self.path.exists() {
             std::fs::create_dir_all(&self.path).map_err(|e| {
                 AppError::Tool(format!(
-                    "Failed to create workspace dir {}: {e}",
+                    "Failed to create sandbox dir {}: {e}",
                     self.path.display()
                 ))
             })?;
@@ -208,11 +208,11 @@ mod tests {
             .unwrap_or(false)
     }
 
-    fn temp_workspace(name: &str) -> Workspace {
+    fn temp_sandbox(name: &str) -> Sandbox {
         let dir = std::env::temp_dir().join("frona_test_workspace").join(name);
-        Workspace {
+        Sandbox {
             path: dir,
-            sandbox: create_sandbox(false),
+            sandbox: create_driver(false),
             network_access: false,
             allowed_network_destinations: Vec::new(),
             skill_dirs: Vec::new(),
@@ -227,7 +227,7 @@ mod tests {
             eprintln!("python3 not found, skipping");
             return;
         }
-        let ws = temp_workspace(&format!("setup_venv_{}", uuid::Uuid::new_v4()));
+        let ws = temp_sandbox(&format!("setup_venv_{}", uuid::Uuid::new_v4()));
         let _ = std::fs::remove_dir_all(&ws.path);
 
         ws.setup().unwrap();
@@ -250,9 +250,9 @@ mod tests {
         let rel_path = rel_base.join(&name);
         let _ = std::fs::remove_dir_all(&rel_path);
 
-        let ws = Workspace {
+        let ws = Sandbox {
             path: rel_path.clone(),
-            sandbox: create_sandbox(false),
+            sandbox: create_driver(false),
             network_access: false,
             allowed_network_destinations: Vec::new(),
             skill_dirs: Vec::new(),
@@ -276,7 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_sets_home_and_xdg_env_vars() {
-        let ws = temp_workspace(&format!("home_env_{}", uuid::Uuid::new_v4()));
+        let ws = temp_sandbox(&format!("home_env_{}", uuid::Uuid::new_v4()));
         let _ = std::fs::remove_dir_all(&ws.path);
 
         let result = ws
@@ -304,7 +304,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_does_not_leak_parent_env() {
         unsafe { std::env::set_var("FRONA_TEST_SECRET", "leaked") };
-        let ws = temp_workspace(&format!("env_leak_{}", uuid::Uuid::new_v4()));
+        let ws = temp_sandbox(&format!("env_leak_{}", uuid::Uuid::new_v4()));
         let _ = std::fs::remove_dir_all(&ws.path);
 
         let result = ws
@@ -324,7 +324,7 @@ mod tests {
             eprintln!("python3 not found, skipping");
             return;
         }
-        let ws = temp_workspace(&format!("setup_idempotent_{}", uuid::Uuid::new_v4()));
+        let ws = temp_sandbox(&format!("setup_idempotent_{}", uuid::Uuid::new_v4()));
         let _ = std::fs::remove_dir_all(&ws.path);
 
         ws.setup().unwrap();
@@ -337,7 +337,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_async_streaming() {
-        let ws = temp_workspace(&format!("streaming_{}", uuid::Uuid::new_v4()));
+        let ws = temp_sandbox(&format!("streaming_{}", uuid::Uuid::new_v4()));
         let _ = std::fs::remove_dir_all(&ws.path);
         let (tx, mut rx) = mpsc::channel(16);
 

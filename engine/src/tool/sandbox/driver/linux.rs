@@ -2,11 +2,11 @@ use std::process::Command;
 
 use crate::core::error::AppError;
 
-use super::{Sandbox, SandboxConfig};
+use super::{SandboxDriver, SandboxConfig};
 
-pub struct LandlockSandbox;
+pub struct LandlockDriver;
 
-impl Sandbox for LandlockSandbox {
+impl SandboxDriver for LandlockDriver {
     fn sandboxed_command(
         &self,
         program: &str,

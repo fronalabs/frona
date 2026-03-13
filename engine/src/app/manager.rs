@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use tokio::sync::Mutex;
 
 use crate::core::error::AppError;
-use crate::tool::workspace::sandbox::{SandboxConfig, Sandbox, create_sandbox};
+use crate::tool::sandbox::driver::{SandboxConfig, SandboxDriver, create_driver};
 
 use super::models::{AppManifest, HealthCheck};
 
@@ -57,7 +57,7 @@ impl AppManager {
         let port = self.allocate_port().await?;
         let workspace_dir = self.workspace_path(agent_id);
 
-        let sandbox = create_sandbox(self.sandbox_disabled);
+        let sandbox = create_driver(self.sandbox_disabled);
 
         let child = self.spawn_process(
             &*sandbox,
@@ -254,7 +254,7 @@ impl AppManager {
 
     fn spawn_process(
         &self,
-        sandbox: &dyn Sandbox,
+        sandbox: &dyn SandboxDriver,
         workspace_dir: &str,
         command: &str,
         port: u16,

@@ -2,7 +2,7 @@ use std::process::Command;
 
 use crate::core::error::AppError;
 
-use super::{Sandbox, SandboxConfig};
+use super::{SandboxDriver, SandboxConfig};
 
 enum ReadRule {
     Subpath(&'static str),
@@ -157,9 +157,9 @@ impl SandboxProfileBuilder {
     }
 }
 
-pub struct MacOsSandbox;
+pub struct MacosDriver;
 
-impl Sandbox for MacOsSandbox {
+impl SandboxDriver for MacosDriver {
     fn sandboxed_command(
         &self,
         program: &str,

@@ -93,7 +93,7 @@ pub struct SandboxOutput {
     pub cancelled: bool,
 }
 
-pub trait Sandbox: Send + Sync {
+pub trait SandboxDriver: Send + Sync {
     fn sandboxed_command(
         &self,
         program: &str,
@@ -102,21 +102,21 @@ pub trait Sandbox: Send + Sync {
     ) -> Result<Command, AppError>;
 }
 
-pub fn create_sandbox(disabled: bool) -> Box<dyn Sandbox> {
+pub fn create_driver(disabled: bool) -> Box<dyn SandboxDriver> {
     if disabled {
-        return Box::new(noop::NoopSandbox);
+        return Box::new(noop::NoopDriver);
     }
     #[cfg(target_os = "macos")]
     {
-        Box::new(macos::MacOsSandbox)
+        Box::new(macos::MacosDriver)
     }
     #[cfg(target_os = "linux")]
     {
-        Box::new(linux::LandlockSandbox)
+        Box::new(linux::LandlockDriver)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        Box::new(noop::NoopSandbox)
+        Box::new(noop::NoopDriver)
     }
 }
 
@@ -155,7 +155,7 @@ pub fn verify_sandbox(workspace_base: &str, disabled: bool) -> Result<(), String
 }
 
 async fn run_sandbox_probe(probe_dir: &std::path::Path) -> Result<(), String> {
-    let sandbox = create_sandbox(false);
+    let sandbox = create_driver(false);
     let canonical = std::fs::canonicalize(probe_dir)
         .unwrap_or_else(|_| probe_dir.to_path_buf());
 
@@ -214,7 +214,7 @@ async fn run_sandbox_probe(probe_dir: &std::path::Path) -> Result<(), String> {
 }
 
 pub async fn execute_sandboxed(
-    sandbox: &dyn Sandbox,
+    sandbox: &dyn SandboxDriver,
     program: &str,
     args: &[&str],
     config: &SandboxConfig,
@@ -370,8 +370,8 @@ fn truncate_output(s: String, max_bytes: usize) -> String {
 mod tests {
     use super::*;
 
-    fn test_sandbox() -> Box<dyn Sandbox> {
-        create_sandbox(false)
+    fn test_sandbox() -> Box<dyn SandboxDriver> {
+        create_driver(false)
     }
 
     fn test_config(timeout_secs: u64) -> SandboxConfig {

@@ -23,6 +23,7 @@ export function MessageList() {
   const agent = agents.find((a) => a.id === activeChat?.agent_id);
   const agentName = agentDisplayName(activeChat?.agent_id, agent?.name);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const prevChatIdRef = useRef<string | null | undefined>(undefined);
 
   const visibleMessages = useMemo(
     () =>
@@ -35,12 +36,36 @@ export function MessageList() {
     [messages],
   );
 
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+    bottomRef.current?.scrollIntoView({ behavior });
+  }, []);
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingContent, activeToolCalls]);
+    const chatChanged = prevChatIdRef.current !== activeChat?.id;
+    if (chatChanged) {
+      prevChatIdRef.current = activeChat?.id;
+    }
+
+    if (chatChanged && messages.length > 0) {
+      requestAnimationFrame(() => scrollToBottom("instant"));
+    } else {
+      scrollToBottom();
+    }
+  }, [messages, streamingContent, activeToolCalls, activeChat?.id, scrollToBottom]);
+
+  // Re-scroll when images load (they cause layout shifts)
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const onImageLoad = () => scrollToBottom("instant");
+    container.addEventListener("load", onImageLoad, true);
+    return () => container.removeEventListener("load", onImageLoad, true);
+  }, [scrollToBottom]);
 
   return (
-    <div className="flex-1 px-6 py-4 space-y-3">
+    <div ref={containerRef} className="flex-1 px-6 py-4 space-y-3">
       {visibleMessages.map((msg) => {
         if (msg.tool && msg.tool.type === "TaskCompletion") {
           const { task_id } = msg.tool.data;

@@ -1,33 +1,10 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { codeToHtml } from "shiki";
-import { ClipboardDocumentIcon, CheckIcon } from "@heroicons/react/24/outline";
 import { CODE_THEME } from "@/lib/theme";
 import { cn } from "@/lib/utils";
-
-function CopyButton({ code }: { code: string }) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(code);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }, [code]);
-
-  return (
-    <button
-      onClick={handleCopy}
-      className="absolute top-2 right-2 flex items-center justify-center h-7 w-7 rounded-md bg-surface-tertiary/80 text-text-secondary hover:text-text-primary hover:bg-surface-tertiary transition-all opacity-0 group-hover/code:opacity-100"
-    >
-      {copied ? (
-        <CheckIcon className="h-4 w-4 text-[#4fd1c5]" />
-      ) : (
-        <ClipboardDocumentIcon className="h-4 w-4" />
-      )}
-    </button>
-  );
-}
+import { CopyButton } from "@/components/ui/copy-button";
 
 export function CodeBlock({
   code,
@@ -85,7 +62,7 @@ export function CodeBlock({
           <code>{code}</code>
         </pre>
       )}
-      <CopyButton code={code} />
+      <CopyButton value={code} className="absolute right-2 top-2 opacity-0 group-hover/code:opacity-100" />
     </div>
   );
 }

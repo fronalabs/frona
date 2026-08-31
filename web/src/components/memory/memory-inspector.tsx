@@ -5,6 +5,7 @@ import Link from "next/link";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { AnimatePresence, motion } from "motion/react";
+import { formatDistanceToNow } from "date-fns";
 import {
   ArrowLeftIcon,
   ArrowTopRightOnSquareIcon,
@@ -17,6 +18,8 @@ import { getMemoryPage } from "@/lib/api-client";
 import { wikilinksToMarkdown } from "@/lib/memory-graph";
 import type { AtomicMemory, MemoryPageResponse, MemorySearchResult, PageRelation } from "@/lib/memory-types";
 import { CodeBlock } from "@/components/ui/code-block";
+import { CopyButton } from "@/components/ui/copy-button";
+import { MemoryKindBadge } from "./memory-kind-badge";
 
 export type MemoryTab = "page" | "structure" | "memory";
 
@@ -207,7 +210,14 @@ function StructureBody({ data, onSelect }: { data: MemoryPageResponse; onSelect:
                 <p className="text-sm font-medium text-text-primary">{attribute.label}</p>
                 <span className="rounded bg-surface-tertiary px-1.5 py-0.5 font-mono text-[10px] text-text-tertiary">{attribute.datatype}</span>
               </div>
-              <pre className="mt-1 whitespace-pre-wrap break-words font-sans text-xs text-text-secondary">{valueText(attribute.value)}</pre>
+              <div className="group/attribute-value mt-1 flex max-w-full items-start gap-1">
+                <pre className="min-w-0 whitespace-pre-wrap break-words font-sans text-xs text-text-secondary">{valueText(attribute.value)}</pre>
+                <CopyButton
+                  value={valueText(attribute.value)}
+                  size="compact"
+                  className="shrink-0 -translate-y-0.5 opacity-0 group-hover/attribute-value:opacity-100"
+                />
+              </div>
               <p className="mt-1 break-all font-mono text-[10px] text-text-tertiary">{attribute.property}</p>
             </div>
           ))}
@@ -230,24 +240,34 @@ function MemoryBody({ data }: { data: MemoryPageResponse }) {
         return (
           <section key={memory.id} className="rounded-xl border border-border bg-surface p-4">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-surface-tertiary px-2 py-0.5 text-[11px] text-text-secondary">{memory.kind}</span>
+              <MemoryKindBadge kind={memory.kind} />
               {memory.disposition !== "none" && (
                 <span className="rounded-full bg-surface-tertiary px-2 py-0.5 text-[11px] text-text-secondary">{memory.disposition}</span>
               )}
-              <span className="text-[11px] text-text-tertiary">{new Date(memory.created_at).toLocaleString()}</span>
+              <time
+                dateTime={memory.created_at}
+                title={new Date(memory.created_at).toLocaleString()}
+                className="text-[11px] text-text-tertiary"
+              >
+                {formatDistanceToNow(new Date(memory.created_at), { addSuffix: true })}
+              </time>
             </div>
             <p className="mt-3 whitespace-pre-wrap text-sm leading-5 text-text-primary">{memory.content}</p>
             {memory.comment && <p className="mt-2 text-xs italic text-text-secondary">{memory.comment}</p>}
             {memory.relations.length > 0 && (
               <div className="mt-3">
                 <p className="text-xs font-medium text-text-tertiary">Relations</p>
-                <pre className="mt-1 overflow-x-auto whitespace-pre-wrap text-[11px] text-text-secondary">{JSON.stringify(memory.relations, null, 2)}</pre>
+                <div className="mt-2">
+                  <CodeBlock code={JSON.stringify(memory.relations, null, 2)} language="json" wrap />
+                </div>
               </div>
             )}
             {memory.episode && (
               <details className="mt-3 text-xs text-text-secondary">
                 <summary className="cursor-pointer text-text-tertiary">Episode</summary>
-                <pre className="mt-2 overflow-x-auto whitespace-pre-wrap">{JSON.stringify(memory.episode, null, 2)}</pre>
+                <div className="mt-2">
+                  <CodeBlock code={JSON.stringify(memory.episode, null, 2)} language="json" wrap />
+                </div>
               </details>
             )}
             <div className="mt-3 border-t border-border pt-3">
@@ -259,11 +279,19 @@ function MemoryBody({ data }: { data: MemoryPageResponse }) {
                   </Link>
                 )}
               </div>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-[11px] text-text-secondary">{JSON.stringify(memory.evidence, null, 2)}</pre>
+              <div className="mt-2">
+                <CodeBlock code={JSON.stringify(memory.evidence, null, 2)} language="json" wrap />
+              </div>
             </div>
             <details className="mt-3 text-[11px] text-text-secondary">
               <summary className="cursor-pointer text-text-tertiary">Lifecycle and identifiers</summary>
-              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap">{JSON.stringify({ id: memory.id, ended_at: memory.ended_at, erroneous_at: memory.erroneous_at }, null, 2)}</pre>
+              <div className="mt-2">
+                <CodeBlock
+                  code={JSON.stringify({ id: memory.id, ended_at: memory.ended_at, erroneous_at: memory.erroneous_at }, null, 2)}
+                  language="json"
+                  wrap
+                />
+              </div>
             </details>
           </section>
         );

@@ -299,6 +299,52 @@ async fn reconcile_renames_an_entity_and_keeps_the_old_name_searchable() {
     );
 }
 
+#[tokio::test]
+async fn search_finds_body_only_matches_but_ranks_metadata_matches_first() {
+    let r = repo().await;
+    r.upsert_entity_skeleton(
+        "u",
+        "services/primary",
+        EntityCategory::Concept,
+        &[],
+        "Postgres deployment",
+        "Database operations",
+        &[],
+    )
+    .await
+    .unwrap();
+    r.upsert_entity_skeleton(
+        "u",
+        "notes/incidental",
+        EntityCategory::Concept,
+        &[],
+        "Weekly notes",
+        "Assorted observations",
+        &[],
+    )
+    .await
+    .unwrap();
+    r.db.query(
+        "UPDATE knowledge_entity SET body = 'The postgres deployment was mentioned in passing.'
+         WHERE user_id = 'u' AND path = 'notes/incidental'",
+    )
+    .await
+    .unwrap()
+    .check()
+    .unwrap();
+
+    let hits = r.search_entities("u", "postgres deployment").await.unwrap();
+    assert_eq!(hits.len(), 2, "body-only matches participate: {hits:?}");
+    assert_eq!(
+        hits[0].path, "services/primary",
+        "metadata matches outrank body-only mentions: {hits:?}"
+    );
+    assert_eq!(
+        hits[1].match_snippet("postgres deployment").as_deref(),
+        Some("The postgres deployment was mentioned in passing.")
+    );
+}
+
 /// Retiring or re-homing a memory changes what its entities render, but touches only
 /// memory rows. Every such write must bump the entities, or an entity made stale by
 /// *another* entity's reconcile carries no dirty signal at all and is never re-rendered.

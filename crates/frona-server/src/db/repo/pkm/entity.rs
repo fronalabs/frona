@@ -461,9 +461,10 @@ impl PkmRepo {
             .map_err(|e| Self::err("list_pages_by_category_take", e))
     }
 
-    /// BM25 over `search_text`, scoped to the user. `@0,OR@` uses OR semantics -
-    /// required, AND gives near-zero recall on short fields. `use_count` breaks
-    /// ties. Concept + playbook entities searched uniformly.
+    /// BM25 over page metadata and body, scoped to the user. Metadata matches get
+    /// triple weight because a matching name, description, or alias is stronger
+    /// evidence than a mention in the body. `OR` semantics are required because
+    /// `AND` gives near-zero recall on short fields. `use_count` breaks ties.
     pub async fn search_entities(
         &self,
         user_id: &str,
@@ -473,9 +474,10 @@ impl PkmRepo {
             .db
             .query(
                 "SELECT path, origin, category, kinds, name, description, aliases, body,
-                        search_name_tokens, search_assertions, use_count, search::score(0) AS score
+                        search_name_tokens, search_assertions, use_count,
+                        search::score(0) * 3 + search::score(1) AS score
                  FROM knowledge_entity
-                 WHERE search_text @0,OR@ $q AND user_id = $uid
+                 WHERE (search_text @0,OR@ $q OR body @1,OR@ $q) AND user_id = $uid
                  ORDER BY score DESC, use_count DESC LIMIT $k",
             )
             .bind(("q", query_text.to_string()))

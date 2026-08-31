@@ -371,3 +371,89 @@ pub struct EntityHit {
     /// Cached with search results so model `read_entity` tools need no second query.
     pub body: String,
 }
+
+impl EntityHit {
+    /// Return the body line that best explains why this page matched the query.
+    /// Metadata-only matches intentionally have no snippet.
+    pub fn match_snippet(&self, query: &str) -> Option<String> {
+        const MAX_CHARS: usize = 200;
+
+        let query_tokens: HashSet<String> = query
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|token| !token.is_empty())
+            .map(str::to_lowercase)
+            .collect();
+        if query_tokens.is_empty() {
+            return None;
+        }
+
+        let mut best: Option<(usize, usize, &str)> = None;
+        for (index, line) in self.body.lines().enumerate() {
+            let line = line.trim().trim_start_matches(['#', '-', '*', '>']).trim();
+            if line.is_empty() {
+                continue;
+            }
+            let line_tokens: HashSet<String> = line
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|token| !token.is_empty())
+                .map(str::to_lowercase)
+                .collect();
+            let matches = query_tokens.intersection(&line_tokens).count();
+            if matches > 0 && best.is_none_or(|(score, _, _)| matches > score) {
+                best = Some((matches, index, line));
+            }
+        }
+
+        let (_, _, line) = best?;
+        let compact = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if compact.chars().count() <= MAX_CHARS {
+            return Some(compact);
+        }
+        let mut snippet: String = compact.chars().take(MAX_CHARS - 1).collect();
+        if let Some(last_space) = snippet.rfind(' ') {
+            snippet.truncate(last_space);
+        }
+        snippet.push('…');
+        Some(snippet)
+    }
+}
+
+#[cfg(test)]
+mod entity_hit_tests {
+    use super::*;
+
+    fn hit(body: &str) -> EntityHit {
+        EntityHit {
+            path: "notes/example".into(),
+            origin: EntityOrigin::Internal,
+            category: EntityCategory::Concept,
+            kinds: Vec::new(),
+            name: "Example".into(),
+            description: String::new(),
+            aliases: HashSet::new(),
+            search_name_tokens: Vec::new(),
+            search_assertions: Vec::new(),
+            body: body.into(),
+        }
+    }
+
+    #[test]
+    fn match_snippet_chooses_the_line_with_the_most_query_terms() {
+        let hit = hit(
+            "# Operations\nPostgres is a database.\nRestart postgres with brew services restart postgresql.",
+        );
+        assert_eq!(
+            hit.match_snippet("postgres restart").as_deref(),
+            Some("Restart postgres with brew services restart postgresql.")
+        );
+        assert_eq!(hit.match_snippet("unrelated"), None);
+    }
+
+    #[test]
+    fn match_snippet_is_capped_without_splitting_unicode() {
+        let body = format!("needle {} finish", "café ".repeat(60));
+        let snippet = hit(&body).match_snippet("needle").unwrap();
+        assert!(snippet.chars().count() <= 200, "{snippet}");
+        assert!(snippet.ends_with('…'), "{snippet}");
+    }
+}

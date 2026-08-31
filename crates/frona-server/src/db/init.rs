@@ -92,6 +92,7 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_user ON TABLE knowledge_entity COLUMNS user_id;
         DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_user_path ON TABLE knowledge_entity COLUMNS user_id, path UNIQUE;
         DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_search ON TABLE knowledge_entity FIELDS search_text FULLTEXT ANALYZER knowledge_search BM25;
+        DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_body_search ON TABLE knowledge_entity FIELDS body FULLTEXT ANALYZER knowledge_search BM25;
         DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_names ON TABLE knowledge_entity COLUMNS user_id, search_names.*;
         DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_name_tokens ON TABLE knowledge_entity COLUMNS user_id, search_name_tokens.*;
         DEFINE INDEX IF NOT EXISTS idx_knowledge_entity_search_assertions ON TABLE knowledge_entity COLUMNS user_id, search_assertions.*;

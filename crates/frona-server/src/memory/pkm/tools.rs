@@ -128,6 +128,7 @@ impl SearchTool {
         // `[external]` (read-only - the agent may read/cite but never edit them).
         let mut out = String::from("Top matches — read(<path>) to open one:\n\n");
         for h in hits {
+            let snippet = h.match_snippet(query);
             let (tag, abspath) = match h.origin {
                 EntityOrigin::External => ("external".to_string(), vault.abs_vault_file(&h.path)),
                 EntityOrigin::Internal => {
@@ -143,10 +144,11 @@ impl SearchTool {
                     (tag, vault.abs_page_file(&h.path))
                 }
             };
-            out.push_str(&format!(
-                "- {}  [{tag}]\n  {}\n  {abspath}\n\n",
-                h.name, h.description
-            ));
+            out.push_str(&format!("- {}  [{tag}]\n  {}\n", h.name, h.description));
+            if let Some(snippet) = snippet {
+                out.push_str(&format!("  Match: {snippet}\n"));
+            }
+            out.push_str(&format!("  {abspath}\n\n"));
         }
         Ok(ToolOutput::text(out))
     }

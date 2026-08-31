@@ -8,4 +8,4 @@ parameters:
 required:
   - query
 ---
-Search your knowledge base. Returns up to 8 ranked pages (people, projects, services, places, topics, and playbooks), each with its name, a one-line description, a type tag, and an **absolute file path**. `read(<path>)` to open one — pages are self-describing markdown: prose body plus YAML frontmatter carrying the structured facts (`attributes:`) and links. A `[playbook]` tag marks a reusable how-to procedure (for "how do I X?"); other tags are the concept kind (service, person, project…).
+Search your knowledge base. Returns up to 8 ranked pages (people, projects, services, places, topics, and playbooks), each with its name, a one-line description, a query-relevant body excerpt when available, a type tag, and an **absolute file path**. `read(<path>)` to open one — pages are self-describing markdown: prose body plus YAML frontmatter carrying the structured facts (`attributes:`) and links. A `[playbook]` tag marks a reusable how-to procedure (for "how do I X?"); other tags are the concept kind (service, person, project…).

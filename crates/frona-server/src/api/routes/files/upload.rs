@@ -61,7 +61,8 @@ pub(crate) async fn upload_file(
     let (original_filename, bytes) =
         file_data.ok_or_else(|| ApiError(AppError::Validation("Missing file field".into())))?;
 
-    let user_ws = state.storage_service.user_workspace(&auth.handle);
+    let user_handle = state.user_service.handle_of(&auth.user_id).await?;
+    let user_ws = state.storage_service.user_workspace(&user_handle);
     let base = user_ws.base_path().to_path_buf();
 
     let (dir, filename_for_dedup, virtual_relative) = if let Some(ref rel_path) = relative_path {
@@ -106,10 +107,9 @@ pub(crate) async fn upload_file(
     let content_type = detect_content_type(&final_filename).to_string();
     let size_bytes = bytes.len() as u64;
     let owner = format!("user:{}", auth.user_id);
-
     let url = state
         .presign_service
-        .sign(&owner, &relative, &auth.user_id, &auth.handle)
+        .sign(&owner, &relative, &auth.user_id, &user_handle)
         .await
         .ok()
         .filter(|u| !u.is_empty());
@@ -129,6 +129,7 @@ pub(crate) async fn presign_file(
     State(state): State<AppState>,
     Json(req): Json<PresignRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let user_handle = state.user_service.handle_of(&auth.user_id).await?;
     if let Some(user_id) = req.owner.strip_prefix("user:")
         && user_id != auth.user_id
     {
@@ -138,19 +139,25 @@ pub(crate) async fn presign_file(
     }
 
     let vpath = if req.owner.starts_with("user:") {
-        VirtualPath::user(&auth.handle, &req.path)
+        VirtualPath::user(&user_handle, &req.path)
     } else if let Some(agent_id) = req.owner.strip_prefix("agent:") {
-        VirtualPath::agent(agent_id, &req.path)
+        let agent = state
+            .agent_service
+            .owned_by(&auth.user_id, agent_id)
+            .await?;
+        VirtualPath::agent(agent.handle.as_ref(), &req.path)
     } else {
         return Err(ApiError(AppError::Validation(
             "Invalid owner prefix".into(),
         )));
     };
-    let _ = state.storage_service.resolve_virtual_path(&vpath)?;
+    let _ = state
+        .storage_service
+        .resolve_virtual_path_for_user(&user_handle, &vpath)?;
 
     let url = state
         .presign_service
-        .sign(&req.owner, &req.path, &auth.user_id, &auth.handle)
+        .sign(&req.owner, &req.path, &auth.user_id, &user_handle)
         .await?;
 
     if url.is_empty() {

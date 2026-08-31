@@ -53,6 +53,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/files/rename", post(operations::rename_user_file))
         .route("/api/files/copy", post(operations::copy_files))
         .route("/api/files/move", post(operations::move_files))
+        .route("/api/files/delete", post(operations::delete_files))
         .route("/api/files/mkdir", post(operations::create_user_folder))
 }
 

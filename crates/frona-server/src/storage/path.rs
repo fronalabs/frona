@@ -1,5 +1,5 @@
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::core::error::AppError;
 
@@ -74,11 +74,30 @@ pub fn validate_no_traversal(resolved: &Path, base: &str) -> Result<(), AppError
         }
     }
 
-    let base_canonical = std::fs::canonicalize(base).unwrap_or_else(|_| PathBuf::from(base));
-    let resolved_canonical =
-        std::fs::canonicalize(resolved).unwrap_or_else(|_| resolved.to_path_buf());
+    let base_path = Path::new(base);
+    if !resolved.starts_with(base_path) {
+        return Err(AppError::Validation(
+            "Path escapes allowed directory".into(),
+        ));
+    }
+    if !base_path.exists() {
+        return Ok(());
+    }
 
-    if !resolved_canonical.starts_with(&base_canonical) && !resolved.starts_with(base) {
+    let base_canonical = std::fs::canonicalize(base_path)
+        .map_err(|error| AppError::Internal(format!("Failed to resolve storage root: {error}")))?;
+    let mut existing_ancestor = resolved.to_path_buf();
+    while !existing_ancestor.exists() {
+        if !existing_ancestor.pop() {
+            return Err(AppError::Validation(
+                "Path escapes allowed directory".into(),
+            ));
+        }
+    }
+    let ancestor_canonical = std::fs::canonicalize(&existing_ancestor)
+        .map_err(|error| AppError::Internal(format!("Failed to resolve path: {error}")))?;
+
+    if !ancestor_canonical.starts_with(&base_canonical) {
         return Err(AppError::Validation(
             "Path escapes allowed directory".into(),
         ));

@@ -41,6 +41,11 @@ pub(super) struct CopyMoveRequest {
 }
 
 #[derive(Deserialize)]
+pub(super) struct DeleteRequest {
+    pub(super) paths: Vec<String>,
+}
+
+#[derive(Deserialize)]
 pub(super) struct MkdirRequest {
     pub(super) path: String,
 }

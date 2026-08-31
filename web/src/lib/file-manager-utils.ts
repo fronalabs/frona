@@ -44,6 +44,29 @@ export function resolveAgentId(path: string, agents: Agent[]): string | null {
   return agent?.id ?? null;
 }
 
+export function resolveAgentHandle(path: string, agents: Agent[]): string | null {
+  if (!path.startsWith(WORKSPACES_ROOT + "/")) return null;
+  const rest = path.slice(WORKSPACES_ROOT.length + 1);
+  const agentName = rest.split("/")[0];
+  const agent = agents.find((candidate) => candidate.name === agentName);
+  return agent?.handle ?? null;
+}
+
+export function fileOperationPath(
+  path: string,
+  userHandle: string,
+  agents: Agent[],
+): string | null {
+  if (isMyFilesPath(path)) {
+    return `user://${userHandle}/${userSubpath(path)}`;
+  }
+  if (isWorkspacePath(path)) {
+    const agentHandle = resolveAgentHandle(path, agents);
+    return agentHandle ? `agent://${agentHandle}/${agentSubpath(path)}` : null;
+  }
+  return null;
+}
+
 export function getFileOwnerPath(
   fileId: string,
   userId: string,

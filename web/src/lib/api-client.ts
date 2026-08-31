@@ -358,6 +358,13 @@ export async function deleteFile(handle: string, path: string): Promise<void> {
   await request(`/api/files/user/${handle}/${path}`, { method: "DELETE" });
 }
 
+export async function deleteFiles(paths: string[]): Promise<void> {
+  await request("/api/files/delete", {
+    method: "POST",
+    body: JSON.stringify({ paths }),
+  });
+}
+
 export async function presignFile(owner: string, path: string): Promise<string> {
   const data = await request<{ url: string }>("/api/files/presign", {
     method: "POST",

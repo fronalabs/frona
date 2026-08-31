@@ -61,7 +61,15 @@ export function FileBrowserModal({ open, onClose, onSelect, allowFolders = false
   const buildRootData = useCallback(async (agentList: Agent[]) => {
     setLoading(true);
     try {
-      const userFiles = await listUserFiles();
+      const [userFiles, agentRootEntries] = await Promise.all([
+        listUserFiles(),
+        Promise.all(
+          agentList.map(async (agent) => ({
+            agent,
+            entries: await listAgentFiles(agent.id),
+          })),
+        ),
+      ]);
       const rootEntries: IEntity[] = [
         { id: MYFILES_ROOT, type: "folder", size: 0, date: new Date(), lazy: false },
         { id: WORKSPACES_ROOT, type: "folder", size: 0, date: new Date(), lazy: false },
@@ -71,9 +79,12 @@ export function FileBrowserModal({ open, onClose, onSelect, allowFolders = false
           type: "folder" as const,
           size: 0,
           date: new Date(),
-          lazy: true,
+          lazy: false,
           _agentId: a.id,
         })),
+        ...agentRootEntries.flatMap(({ agent, entries }) =>
+          toSvarEntries(entries, `${WORKSPACES_ROOT}/${agent.name}`),
+        ),
       ];
       setData(rootEntries);
     } catch {

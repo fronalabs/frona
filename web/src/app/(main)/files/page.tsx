@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import { useTheme } from "@/lib/theme";
 import {
@@ -39,12 +40,15 @@ import {
   agentSubpath,
   resolveAgentId as resolveAgentIdUtil,
   fileOperationPath,
+  fileBrowserAncestors,
   getFileOwnerPath as getFileOwnerPathUtil,
 } from "@/lib/file-manager-utils";
 
 export default function FilesPage() {
   const { user } = useAuth();
   const { resolved } = useTheme();
+  const router = useRouter();
+  const pathname = usePathname();
 
   const [agents, setAgents] = useState<Agent[]>([]);
   const [data, setData] = useState<IEntity[]>([]);
@@ -56,6 +60,7 @@ export default function FilesPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const fmApiRef = useRef<IApi | null>(null);
+  const restoringHistoryRef = useRef(false);
 
   const [showMenu, setShowMenu] = useState(false);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
@@ -201,7 +206,15 @@ export default function FilesPage() {
     async (agentList: Agent[]) => {
       setLoading(true);
       try {
-        const userFiles = await listUserFiles();
+        const [userFiles, agentRootEntries] = await Promise.all([
+          listUserFiles(),
+          Promise.all(
+            agentList.map(async (agent) => ({
+              agent,
+              entries: await listAgentFiles(agent.id),
+            })),
+          ),
+        ]);
         const rootEntries: IEntity[] = [
           {
             id: MYFILES_ROOT,
@@ -223,9 +236,12 @@ export default function FilesPage() {
             type: "folder" as const,
             size: 0,
             date: new Date(),
-            lazy: true,
+            lazy: false,
             _agentId: a.id,
           })),
+          ...agentRootEntries.flatMap(({ agent, entries }) =>
+            toSvarEntries(entries, `${WORKSPACES_ROOT}/${agent.name}`),
+          ),
         ];
         setData(rootEntries);
       } catch (error) {
@@ -255,11 +271,55 @@ export default function FilesPage() {
     return getFileOwnerPathUtil(fileId, user.id, agentsRef.current);
   }, [user]);
 
+  const restoreBrowserPath = useCallback(async (requestedPath: string) => {
+    const fmApi = fmApiRef.current;
+    if (!fmApi) return false;
+    const ancestors = fileBrowserAncestors(requestedPath);
+    if (ancestors.length === 0) return false;
+
+    for (let index = 0; index < ancestors.length; index++) {
+      const folder = ancestors[index];
+      if (!fmApi.getFile(folder) && index > 0) {
+        await fmApi.exec("request-data", { id: ancestors[index - 1] });
+      }
+      const node = fmApi.getFile(folder);
+      if (!node || node.type !== "folder") return false;
+      if (!node.open) {
+        await fmApi.exec("open-tree-folder", { id: folder, mode: true });
+      }
+    }
+
+    restoringHistoryRef.current = true;
+    try {
+      await fmApi.exec("set-path", { id: requestedPath });
+    } finally {
+      restoringHistoryRef.current = false;
+    }
+    return true;
+  }, []);
+
+  useEffect(() => {
+    if (!fmApiRef.current || data.length === 0) return;
+    const requestedPath = new URLSearchParams(window.location.search).get("path") ?? MYFILES_ROOT;
+    void restoreBrowserPath(requestedPath).then((restored) => {
+      if (!restored && requestedPath !== MYFILES_ROOT) {
+        void restoreBrowserPath(MYFILES_ROOT);
+      }
+    });
+  }, [data, restoreBrowserPath]);
+
+  useEffect(() => {
+    const restoreFromHistory = () => {
+      const requestedPath = new URLSearchParams(window.location.search).get("path") ?? MYFILES_ROOT;
+      void restoreBrowserPath(requestedPath);
+    };
+    window.addEventListener("popstate", restoreFromHistory);
+    return () => window.removeEventListener("popstate", restoreFromHistory);
+  }, [restoreBrowserPath]);
+
   const handleInit = useCallback(
     (fmApi: IApi) => {
       fmApiRef.current = fmApi;
-
-      fmApi.exec("set-path", { id: MYFILES_ROOT });
 
       fmApi.on("filter-files", (ev) => {
         if (!ev.text) return;
@@ -340,6 +400,14 @@ export default function FilesPage() {
           const node = fmApi.getFile(path);
           if (node && node.type === "folder" && !node.open) {
             fmApi.exec("open-tree-folder", { id: path, mode: true });
+          }
+        }
+
+        if (!restoringHistoryRef.current && fileBrowserAncestors(id).length > 0) {
+          const params = new URLSearchParams(window.location.search);
+          if (params.get("path") !== id) {
+            params.set("path", id);
+            router.push(`${pathname}?${params.toString()}`, { scroll: false });
           }
         }
       });
@@ -518,7 +586,7 @@ export default function FilesPage() {
         }
       });
     },
-    [user, getFileOwnerPath],
+    [user, getFileOwnerPath, pathname, router],
   );
 
   const ThemeWrapper = resolved === "dark" ? WillowDark : Willow;

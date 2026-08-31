@@ -10,6 +10,7 @@ export function toSvarEntries(
 ): IEntity[] {
   return entries.map((e) => ({
     id: `${parentPrefix}${e.id}`,
+    parent: e.parent === "/" ? parentPrefix : `${parentPrefix}${e.parent}`,
     size: e.size,
     date: e.date,
     type: e.type,
@@ -23,6 +24,18 @@ export function isWorkspacePath(path: string): boolean {
 
 export function isMyFilesPath(path: string): boolean {
   return path === MYFILES_ROOT || path.startsWith(MYFILES_ROOT + "/");
+}
+
+export function fileBrowserAncestors(path: string): string[] {
+  if (!isMyFilesPath(path) && !isWorkspacePath(path)) return [];
+  const parts = path.split("/").filter(Boolean);
+  const ancestors: string[] = [];
+  let current = "";
+  for (const part of parts) {
+    current += `/${part}`;
+    ancestors.push(current);
+  }
+  return ancestors;
 }
 
 export function userSubpath(path: string): string {

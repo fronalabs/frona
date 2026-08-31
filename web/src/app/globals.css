@@ -190,8 +190,13 @@
   color: var(--wx-color-primary-font) !important;
 }
 
-/* Hide root "/" folder — My Files and Workspaces appear as top-level */
-.filemanager-container li[data-id="/"] {
+/* Tree selection uses a pale background, so its expand toggle needs the normal icon color. */
+.filemanager-container [class*="wx-tree"] [class*="wx-selected"] [class*="wx-toggle"] {
+  color: var(--fm-icon-color) !important;
+}
+
+/* Hide the file manager's synthetic root so My Files and Workspaces are top-level. */
+.filemanager-container [class*="wx-tree"] [data-id=":/"] {
   display: none;
 }
 /* Shift tree left to compensate for hidden root's indentation level */
@@ -200,8 +205,8 @@
   padding-left: 10px;
 }
 /* Hide root breadcrumb + its separator arrow */
-.filemanager-container [class*="wx-breadcrumbs"] > [data-id="/"],
-.filemanager-container [class*="wx-breadcrumbs"] > [data-id="/"] + [class*="wxi-"] {
+.filemanager-container [class*="wx-breadcrumbs"] > [data-id=":/"],
+.filemanager-container [class*="wx-breadcrumbs"] > [data-id=":/"] + [class*="wxi-"] {
   display: none;
 }
 

@@ -141,26 +141,48 @@ impl StorageService {
         self.resolve_virtual_path(&parsed)
     }
 
+    pub fn resolve_for_user(&self, user_handle: &Handle, path: &str) -> Result<PathBuf, AppError> {
+        if path.starts_with('/') {
+            return Ok(PathBuf::from(path));
+        }
+        let parsed = VirtualPath::parse(path)?;
+        self.resolve_virtual_path_for_user(user_handle, &parsed)
+    }
+
     pub fn resolve_virtual_path(&self, path: &VirtualPath) -> Result<PathBuf, AppError> {
+        let Namespace::User(name) = &path.namespace else {
+            return Err(AppError::Validation(
+                "agent virtual paths require a user handle".into(),
+            ));
+        };
+        let handle = Handle::try_new(name)?;
+        self.resolve_virtual_path_for_user(&handle, path)
+    }
+
+    pub fn resolve_virtual_path_for_user(
+        &self,
+        user_handle: &Handle,
+        path: &VirtualPath,
+    ) -> Result<PathBuf, AppError> {
         let users_root = self.users_root();
         let users_root_str = users_root.to_string_lossy().into_owned();
         let resolved = match &path.namespace {
             Namespace::User(name) => {
                 let handle = Handle::try_new(name)?;
+                if &handle != user_handle {
+                    return Err(AppError::Validation(
+                        "user virtual path does not match the resolving user".into(),
+                    ));
+                }
                 let resolved = self.user_files_path(&handle).join(&path.relative);
                 validate_no_traversal(&resolved, &users_root_str)?;
                 resolved
             }
             Namespace::Agent(name) => {
-                let resolved = if name.contains('/') {
-                    users_root.join(name).join(&path.relative)
-                } else {
-                    users_root
-                        .join(name)
-                        .join("agents")
-                        .join(name)
-                        .join(&path.relative)
-                };
+                let agent_handle = Handle::try_new(name)?;
+                let resolved = self
+                    .agent_workspace_path(user_handle, &agent_handle)
+                    .join(&path.relative);
                 validate_no_traversal(&resolved, &users_root_str)?;
                 resolved
             }
@@ -334,18 +356,29 @@ mod tests {
     fn resolve_agent_path() {
         let svc = test_service();
         let vp = VirtualPath::agent("dev", "output.csv");
-        let result = svc.resolve_virtual_path(&vp).unwrap();
+        let result = svc
+            .resolve_virtual_path_for_user(&crate::handle!("test-user"), &vp)
+            .unwrap();
         assert!(result.is_absolute());
-        assert!(result.ends_with("data/users/dev/agents/dev/output.csv"));
+        assert!(result.ends_with("data/users/test-user/agents/dev/output.csv"));
     }
 
     #[test]
     fn resolve_agent_nested_path() {
         let svc = test_service();
         let vp = VirtualPath::agent("dev", "subdir/nested/file.txt");
-        let result = svc.resolve_virtual_path(&vp).unwrap();
+        let result = svc
+            .resolve_virtual_path_for_user(&crate::handle!("test-user"), &vp)
+            .unwrap();
         assert!(result.is_absolute());
-        assert!(result.ends_with("data/users/dev/agents/dev/subdir/nested/file.txt"));
+        assert!(result.ends_with("data/users/test-user/agents/dev/subdir/nested/file.txt"));
+    }
+
+    #[test]
+    fn resolve_agent_path_without_user_is_rejected() {
+        let svc = test_service();
+        let vp = VirtualPath::agent("dev", "output.csv");
+        assert!(svc.resolve_virtual_path(&vp).is_err());
     }
 
     #[test]

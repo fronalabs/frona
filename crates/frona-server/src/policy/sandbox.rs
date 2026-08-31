@@ -79,7 +79,11 @@ impl SandboxPolicy {
     /// `write_paths`, and `denied_paths` into absolute host paths via
     /// `StorageService`. Absolute paths pass through unchanged. Entries that
     /// fail to parse or resolve are dropped with a warning.
-    pub fn resolve_virtual_paths(&mut self, storage: &StorageService) {
+    pub fn resolve_virtual_paths(
+        &mut self,
+        storage: &StorageService,
+        user_handle: &crate::core::Handle,
+    ) {
         for list in [
             &mut self.read_paths,
             &mut self.write_paths,
@@ -87,7 +91,7 @@ impl SandboxPolicy {
         ] {
             *list = list
                 .iter()
-                .filter_map(|raw| match storage.resolve(raw) {
+                .filter_map(|raw| match storage.resolve_for_user(user_handle, raw) {
                     Ok(p) => Some(p.to_string_lossy().into_owned()),
                     Err(_) => {
                         tracing::warn!(path = %raw, "dropping unresolvable sandbox path entry");
@@ -829,7 +833,7 @@ mod tests {
         };
         assert!(
             policy
-                .validate_paths(&crate::handle!("mina"), no_owned_agents)
+                .validate_paths(&crate::handle!("test-user"), no_owned_agents)
                 .is_ok()
         );
     }
@@ -837,12 +841,12 @@ mod tests {
     #[test]
     fn validate_paths_accepts_owned_user_uri() {
         let policy = SandboxPolicy {
-            read_paths: vec!["user://mina/foo.csv".into()],
+            read_paths: vec!["user://test-user/foo.csv".into()],
             ..Default::default()
         };
         assert!(
             policy
-                .validate_paths(&crate::handle!("mina"), no_owned_agents)
+                .validate_paths(&crate::handle!("test-user"), no_owned_agents)
                 .is_ok()
         );
     }
@@ -855,7 +859,7 @@ mod tests {
         };
         assert!(
             policy
-                .validate_paths(&crate::handle!("mina"), no_owned_agents)
+                .validate_paths(&crate::handle!("test-user"), no_owned_agents)
                 .is_err()
         );
     }
@@ -868,7 +872,7 @@ mod tests {
         };
         assert!(
             policy
-                .validate_paths(&crate::handle!("mina"), |id| id == "my-agent")
+                .validate_paths(&crate::handle!("test-user"), |id| id == "my-agent")
                 .is_ok()
         );
     }
@@ -881,7 +885,7 @@ mod tests {
         };
         assert!(
             policy
-                .validate_paths(&crate::handle!("mina"), |id| id == "my-agent")
+                .validate_paths(&crate::handle!("test-user"), |id| id == "my-agent")
                 .is_err()
         );
     }
@@ -894,7 +898,7 @@ mod tests {
         };
         assert!(
             policy
-                .validate_paths(&crate::handle!("mina"), no_owned_agents)
+                .validate_paths(&crate::handle!("test-user"), no_owned_agents)
                 .is_err()
         );
     }
@@ -907,7 +911,7 @@ mod tests {
         };
         assert!(
             policy
-                .validate_paths(&crate::handle!("mina"), no_owned_agents)
+                .validate_paths(&crate::handle!("test-user"), no_owned_agents)
                 .is_err()
         );
     }
@@ -922,19 +926,19 @@ mod tests {
             read_paths: vec!["/data".into()],
             ..Default::default()
         };
-        policy.resolve_virtual_paths(&test_storage());
+        policy.resolve_virtual_paths(&test_storage(), &crate::handle!("test-user"));
         assert_eq!(policy.read_paths, vec!["/data".to_string()]);
     }
 
     #[test]
     fn resolve_virtual_paths_translates_user_uri() {
         let mut policy = SandboxPolicy {
-            read_paths: vec!["user://mina/foo.csv".into()],
+            read_paths: vec!["user://test-user/foo.csv".into()],
             ..Default::default()
         };
-        policy.resolve_virtual_paths(&test_storage());
+        policy.resolve_virtual_paths(&test_storage(), &crate::handle!("test-user"));
         assert_eq!(policy.read_paths.len(), 1);
-        assert!(policy.read_paths[0].ends_with("data/users/mina/files/foo.csv"));
+        assert!(policy.read_paths[0].ends_with("data/users/test-user/files/foo.csv"));
     }
 
     #[test]
@@ -943,9 +947,9 @@ mod tests {
             write_paths: vec!["agent://dev/output.csv".into()],
             ..Default::default()
         };
-        policy.resolve_virtual_paths(&test_storage());
+        policy.resolve_virtual_paths(&test_storage(), &crate::handle!("test-user"));
         assert_eq!(policy.write_paths.len(), 1);
-        assert!(policy.write_paths[0].ends_with("data/users/dev/agents/dev/output.csv"));
+        assert!(policy.write_paths[0].ends_with("data/users/test-user/agents/dev/output.csv"));
     }
 
     #[test]
@@ -954,7 +958,7 @@ mod tests {
             read_paths: vec!["bad-entry".into(), "/keepme".into()],
             ..Default::default()
         };
-        policy.resolve_virtual_paths(&test_storage());
+        policy.resolve_virtual_paths(&test_storage(), &crate::handle!("test-user"));
         assert_eq!(policy.read_paths, vec!["/keepme".to_string()]);
     }
 

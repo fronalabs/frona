@@ -60,6 +60,22 @@ fn answered(history: &[rig_core::completion::Message], id: &str) -> bool {
     })
 }
 
+fn answer_text<'a>(history: &'a [rig_core::completion::Message], id: &str) -> Option<&'a str> {
+    history.iter().find_map(|message| {
+        let rig_core::completion::Message::User { content } = message else {
+            return None;
+        };
+        content.iter().find_map(|item| {
+            let rig_core::completion::message::UserContent::ToolResult(result) = item else {
+                return None;
+            };
+            (result.call.as_str() == id)
+                .then(|| result.content.iter().find_map(|item| item.as_text()))
+                .flatten()
+        })
+    })
+}
+
 /// The whole point: a malformed submission is answered, not fatal.
 #[tokio::test]
 async fn a_malformed_submission_is_returned_to_the_model_and_corrected() {
@@ -108,6 +124,108 @@ async fn a_malformed_submission_is_returned_to_the_model_and_corrected() {
         provider.calls(),
         2,
         "one repair round, not a fresh conversation"
+    );
+}
+
+/// Some models encode a nested collection twice, leaving valid JSON inside a string. The
+/// submission can be recovered without another model request when the decoded value satisfies
+/// the advertised schema and the complete payload still deserializes as the requested type.
+#[tokio::test]
+async fn a_json_encoded_collection_is_repaired_before_submission() {
+    let db = test_db().await;
+    let usage = test_usage_service(&db);
+    let provider = Arc::new(MockModelProvider::new(vec![submit(
+        "call-1",
+        serde_json::json!({
+            "classes": ["schema:Person"],
+            "relations": "[\"works for\"]",
+        }),
+    )]));
+    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+
+    let mut convo = StructuredConversation::<Classification>::new(
+        &registry,
+        &usage,
+        AgentToolRegistry::empty(),
+        mock_context(),
+        test_model_group(),
+        "system".into(),
+        "classify this".into(),
+        test_usage_ctx(),
+        0,
+    );
+
+    let AnswerAttempt::Submitted(got) = convo.next_attempt().await.expect("repaired submission")
+    else {
+        panic!("valid JSON text should be repaired before returning the answer attempt");
+    };
+    assert_eq!(got.classes, ["schema:Person"]);
+    assert_eq!(got.relations, ["works for"]);
+    assert_eq!(
+        provider.calls(),
+        1,
+        "repair does not spend another model call"
+    );
+}
+
+/// When a string cannot be repaired into the field's advertised type, the model needs the
+/// schema location and expected type. The fields are already at the top level.
+#[tokio::test]
+async fn an_unrepairable_field_gets_schema_specific_feedback() {
+    let db = test_db().await;
+    let usage = test_usage_service(&db);
+    let provider = Arc::new(MockModelProvider::new(vec![
+        submit(
+            "call-1",
+            serde_json::json!({
+                "classes": ["schema:Person"],
+                "relations": "not json",
+            }),
+        ),
+        submit(
+            "call-2",
+            serde_json::json!({
+                "classes": ["schema:Person"],
+                "relations": ["works for"],
+            }),
+        ),
+    ]));
+    let registry = test_registry_with_group("mock", provider.clone(), "test", test_model_group());
+
+    let mut convo = StructuredConversation::<Classification>::new(
+        &registry,
+        &usage,
+        AgentToolRegistry::empty(),
+        mock_context(),
+        test_model_group(),
+        "system".into(),
+        "classify this".into(),
+        test_usage_ctx(),
+        0,
+    );
+
+    assert!(matches!(
+        convo.next_attempt().await.expect("unrepairable attempt"),
+        AnswerAttempt::InvalidSubmission
+    ));
+    assert!(matches!(
+        convo.next_attempt().await.expect("corrected attempt"),
+        AnswerAttempt::Submitted(_)
+    ));
+
+    let history = provider.last_history();
+    let feedback = answer_text(&history, "call-1").expect("failed submit has feedback");
+    assert!(
+        feedback.contains("/relations"),
+        "feedback identifies the malformed field: {feedback}"
+    );
+    assert!(
+        feedback.contains("array"),
+        "feedback names the expected schema type: {feedback}"
+    );
+    assert!(
+        !feedback.contains("TOP level"),
+        "top-level placement was already correct: {feedback}"
     );
 }
 

@@ -112,7 +112,7 @@ where
         // calls and feed their results back for the next turn.
         let has_tool_calls = tool_loop::process_model_response(&contents, &mut chat_history).await;
         if !has_tool_calls {
-            break; // text without submitting → give up (caller defaults to safe)
+            break; // text without submitting -> give up (caller defaults to safe)
         }
         for content in &contents {
             if let AssistantContent::ToolCall(tc) = content {
@@ -216,7 +216,7 @@ pub async fn text_inference_with_tools(
 /// on failure describing the payload rather than just naming a field.
 ///
 /// **The wrapper.** Models sometimes nest the answer one level down -
-/// `{"result": {"classes": […]}}` - measured at 4 of 43 submits against DeepSeek. The
+/// `{"result": {"classes": [...]}}` - measured at 4 of 43 submits against DeepSeek. The
 /// schema is not consulted to detect it: `T` is already known, so each candidate is simply
 /// handed to serde and the first that deserializes wins. That needs no list of blessed
 /// wrapper names and cannot mis-read a real payload, because the only thing deciding is
@@ -229,9 +229,10 @@ pub async fn text_inference_with_tools(
 /// *"the error says missing field `classes` but I clearly included `classes`"*, goes looking
 /// for a fault inside `classes`, finds none, and burns the turn budget. Naming the keys
 /// that were actually present is what makes the failure self-diagnosing.
-fn deserialize_submission<T: serde::de::DeserializeOwned>(
-    args: serde_json::Value,
-) -> Result<T, String> {
+fn deserialize_submission<T>(args: serde_json::Value) -> Result<T, String>
+where
+    T: schemars::JsonSchema + serde::de::DeserializeOwned,
+{
     let first = match serde_json::from_value::<T>(args.clone()) {
         Ok(v) => return Ok(v),
         Err(e) => e,
@@ -250,23 +251,102 @@ fn deserialize_submission<T: serde::de::DeserializeOwned>(
         tracing::debug!(wrapper = %key, "unwrapped a submission nested one level down");
         return Ok(v);
     }
-    Err(format!("{first}{}", describe_payload(&args)))
+    let validator = submission_validator::<T>();
+    if let Some(repaired) = validator
+        .as_ref()
+        .and_then(|validator| repair_json_text_fields(&args, validator))
+        && let Ok(v) = serde_json::from_value::<T>(repaired)
+    {
+        tracing::debug!("decoded JSON text in structured submission fields");
+        return Ok(v);
+    }
+    Err(format!(
+        "{first}{}",
+        describe_payload(&args, validator.as_ref())
+    ))
+}
+
+fn submission_validator<T: schemars::JsonSchema>() -> Option<jsonschema::Validator> {
+    let schema = serde_json::to_value(schemars::schema_for!(T)).ok()?;
+    jsonschema::validator_for(&schema).ok()
+}
+
+/// Decode model-authored arrays or objects that arrived as JSON inside a string. A schema type
+/// error selects the field, and the complete repaired payload must still deserialize as `T`.
+fn repair_json_text_fields(
+    args: &serde_json::Value,
+    validator: &jsonschema::Validator,
+) -> Option<serde_json::Value> {
+    let repairs = validator
+        .iter_errors(args)
+        .filter_map(|error| {
+            let jsonschema::error::ValidationErrorKind::Type { kind } = error.kind() else {
+                return None;
+            };
+            let serde_json::Value::String(text) = error.instance().as_ref() else {
+                return None;
+            };
+            let parsed = serde_json::from_str::<serde_json::Value>(text).ok()?;
+            let parsed_type = match parsed {
+                serde_json::Value::Array(_) => jsonschema::JsonType::Array,
+                serde_json::Value::Object(_) => jsonschema::JsonType::Object,
+                _ => return None,
+            };
+            let expected_type = match kind {
+                jsonschema::error::TypeKind::Single(expected) => *expected == parsed_type,
+                jsonschema::error::TypeKind::Multiple(expected) => expected.contains(parsed_type),
+            };
+            expected_type.then(|| (error.instance_path().to_string(), parsed))
+        })
+        .collect::<Vec<_>>();
+    if repairs.is_empty() {
+        return None;
+    }
+
+    let mut repaired = args.clone();
+    for (path, value) in repairs {
+        *repaired.pointer_mut(&path)? = value;
+    }
+    Some(repaired)
 }
 
 /// A short, factual description of what the model actually sent, appended to a serde error.
-fn describe_payload(args: &serde_json::Value) -> String {
+fn describe_payload(args: &serde_json::Value, validator: Option<&jsonschema::Validator>) -> String {
     match args {
-        serde_json::Value::Object(o) if o.is_empty() => " — you sent an empty object".into(),
+        serde_json::Value::Object(o) if o.is_empty() => " - you sent an empty object".into(),
         serde_json::Value::Object(o) => {
             let keys: Vec<&str> = o.keys().map(String::as_str).collect();
-            format!(
-                " — the object you sent has these keys: [{}]. Put the required fields at the \
-                 TOP level of the `submit` arguments, not nested inside another key.",
-                keys.join(", ")
-            )
+            let Some(error) = validator.and_then(|validator| validator.iter_errors(args).next())
+            else {
+                return format!(
+                    " - the object you sent has these keys: [{}].",
+                    keys.join(", ")
+                );
+            };
+            let path = error.instance_path().to_string();
+            if path.is_empty()
+                && matches!(
+                    error.kind(),
+                    jsonschema::error::ValidationErrorKind::Required { .. }
+                )
+            {
+                format!(
+                    " - the object you sent has these keys: [{}]. Put the required fields at the \
+                     TOP level of the `submit` arguments, not nested inside another key.",
+                    keys.join(", ")
+                )
+            } else if path.is_empty() {
+                format!(
+                    " - the submit arguments do not match the schema: {error}. The object you \
+                     sent has these keys: [{}].",
+                    keys.join(", ")
+                )
+            } else {
+                format!(" - field `{path}` does not match the submit schema: {error}.")
+            }
         }
         other => format!(
-            " — you sent a {}, but `submit` takes an object whose keys are the required fields.",
+            " - you sent a {}, but `submit` takes an object whose keys are the required fields.",
             match other {
                 serde_json::Value::Null => "null",
                 serde_json::Value::Bool(_) => "boolean",
@@ -521,7 +601,7 @@ where
 mod submission_tests {
     use super::*;
 
-    #[derive(Debug, PartialEq, serde::Deserialize)]
+    #[derive(Debug, PartialEq, serde::Deserialize, schemars::JsonSchema)]
     struct Classification {
         classes: Vec<String>,
         #[serde(default)]

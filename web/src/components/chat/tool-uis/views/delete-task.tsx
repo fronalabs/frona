@@ -1,6 +1,7 @@
 "use client";
 
 import { CheckCircleIcon } from "@heroicons/react/24/outline";
+import { ToolViewFallback } from "./safe-tool-view";
 import { ToolRow } from "./tool-row";
 import type { ToolView } from "./types";
 
@@ -25,8 +26,7 @@ function parseResult(result: unknown): ParsedResult | null {
     typeof (obj as { message?: unknown }).message === "string"
       ? (obj as { message: string }).message
       : undefined;
-  // Backend format: `Task '<title>' cancelled.` — extract the title so the
-  // subtitle isn't just a UUID. Greedy `.+` handles titles that contain quotes.
+  if (message === undefined) return null;
   const titleMatch = message?.match(/^Task '(.+)' cancelled\.$/);
   return { message, title: titleMatch ? titleMatch[1] : undefined };
 }
@@ -42,6 +42,10 @@ export const DeleteTaskView: ToolView = ({
   const taskId = typeof a.task_id === "string" ? a.task_id : "";
 
   const parsed = parseResult(result);
+  if (result !== undefined && parsed === null) {
+    return <ToolViewFallback />;
+  }
+
   const taskTitle = parsed?.title ?? null;
   const message = parsed?.message ?? null;
 

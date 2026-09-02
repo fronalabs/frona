@@ -1,5 +1,6 @@
 "use client";
 
+import { ToolViewFallback } from "./safe-tool-view";
 import { ToolRow } from "./tool-row";
 import type { ToolView } from "./types";
 
@@ -64,6 +65,9 @@ export const WebSearchView: ToolView = ({
         ? JSON.stringify(result, null, 2)
         : "";
   const hits = parseSearchResult(resultText);
+  if (result !== undefined && hits === null) {
+    return <ToolViewFallback />;
+  }
 
   return (
     <ToolRow status={status} expandable={resultText.length > 0}>
@@ -74,11 +78,7 @@ export const WebSearchView: ToolView = ({
 
       <ToolRow.Body isExpanded={isExpanded} unstyled>
         <div className="p-3">
-          {hits === null ? (
-            <pre className="whitespace-pre-wrap text-text-secondary text-xs overflow-x-auto">
-              {resultText}
-            </pre>
-          ) : hits.length === 0 ? (
+          {!hits || hits.length === 0 ? (
             <p className="text-xs text-text-tertiary m-0">No results found.</p>
           ) : (
             <ol className="flex flex-col gap-3 m-0 p-0 list-none">

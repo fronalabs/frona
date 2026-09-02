@@ -1,6 +1,6 @@
 "use client";
 
-import { createElement, memo, useState } from "react";
+import { memo, useState } from "react";
 import { PuffLoader } from "react-spinners";
 import {
   type ToolCallMessagePartStatus,
@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import { useToolTimeline } from "./tool-timeline-context";
 import { InlineCode } from "./inline-code";
 import { pickView, TOOL_VIEWS_DEFAULT_EXPANDED } from "./views";
+import { SafeToolView } from "./views/safe-tool-view";
 
 type ToolStatus = ToolCallMessagePartStatus["type"];
 
@@ -107,6 +108,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = (props) => {
     isExpanded: isOpen,
     onToggle: () => setIsOpen((v) => !v),
   };
+  const View = pickView(toolName);
 
   return (
     <>
@@ -163,7 +165,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = (props) => {
           isCancelled={!!isCancelled}
           index={toolIndex}
         />
-        {createElement(pickView(toolName), viewProps)}
+        <SafeToolView view={View} {...viewProps} />
       </motion.div>
     </>
   );

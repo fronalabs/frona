@@ -2,6 +2,7 @@
 
 import { ClockIcon, UserCircleIcon } from "@heroicons/react/24/outline";
 import { cn } from "@/lib/utils";
+import { ToolViewFallback } from "./safe-tool-view";
 import { ToolRow } from "./tool-row";
 import type { ToolView } from "./types";
 
@@ -41,8 +42,9 @@ function parseResult(result: unknown): ParsedResult | null {
   }
   if (!obj || typeof obj !== "object") return null;
   const o = obj as Record<string, unknown>;
+  if (typeof o.task_id !== "string") return null;
   return {
-    taskId: typeof o.task_id === "string" ? o.task_id : undefined,
+    taskId: o.task_id,
     targetAgent: typeof o.target_agent === "string" ? o.target_agent : undefined,
     runAt: typeof o.run_at === "string" ? o.run_at : null,
   };
@@ -83,6 +85,10 @@ export const CreateTaskView: ToolView = ({
     typeof a.delay_minutes === "number" ? a.delay_minutes : null;
 
   const parsed = parseResult(result);
+  if (result !== undefined && parsed === null) {
+    return <ToolViewFallback />;
+  }
+
   const runAt = parsed?.runAt ?? argsRunAt;
   const targetAgent = parsed?.targetAgent ?? targetAgentArg;
 

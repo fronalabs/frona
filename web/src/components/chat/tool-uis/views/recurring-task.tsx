@@ -2,6 +2,7 @@
 
 import cronstrue from "cronstrue";
 import { ClockIcon, UserCircleIcon } from "@heroicons/react/24/outline";
+import { ToolViewFallback } from "./safe-tool-view";
 import { ToolRow } from "./tool-row";
 import type { ToolView } from "./types";
 
@@ -53,8 +54,11 @@ function parseResult(result: unknown): ParsedResult | null {
   }
   if (!obj || typeof obj !== "object") return null;
   const o = obj as Record<string, unknown>;
+  if (typeof o.task_id !== "string" || typeof o.cron_expression !== "string") {
+    return null;
+  }
   return {
-    cronExpression: typeof o.cron_expression === "string" ? o.cron_expression : undefined,
+    cronExpression: o.cron_expression,
     timezone: typeof o.timezone === "string" ? o.timezone : undefined,
     nextRunAt: typeof o.next_run_at === "string" ? o.next_run_at : undefined,
   };
@@ -106,6 +110,10 @@ export const RecurringTaskView: ToolView = ({
   const targetAgent = typeof a.target_agent === "string" ? a.target_agent : null;
 
   const parsedResult = parseResult(result);
+  if (result !== undefined && parsedResult === null) {
+    return <ToolViewFallback />;
+  }
+
   const cronExpression = parsedResult?.cronExpression || argsCron;
   const timezone = parsedResult?.timezone || argsTimezone;
   const nextRunAt = parsedResult?.nextRunAt;

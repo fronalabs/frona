@@ -1,6 +1,7 @@
 "use client";
 
 import { BellAlertIcon, BellSlashIcon } from "@heroicons/react/24/outline";
+import { ToolViewFallback } from "./safe-tool-view";
 import { ToolRow } from "./tool-row";
 import type { ToolView } from "./types";
 
@@ -53,6 +54,23 @@ function parseResult(result: unknown): ParsedResult | null {
   }
   if (!obj || typeof obj !== "object") return null;
   const o = obj as Record<string, unknown>;
+  if (!("heartbeat_interval" in o) && !("next_heartbeat_at" in o)) {
+    return null;
+  }
+  if (
+    o.heartbeat_interval !== undefined &&
+    o.heartbeat_interval !== null &&
+    typeof o.heartbeat_interval !== "number"
+  ) {
+    return null;
+  }
+  if (
+    o.next_heartbeat_at !== undefined &&
+    o.next_heartbeat_at !== null &&
+    typeof o.next_heartbeat_at !== "string"
+  ) {
+    return null;
+  }
   return {
     interval:
       typeof o.heartbeat_interval === "number"
@@ -81,6 +99,10 @@ export const HeartbeatView: ToolView = ({
     typeof a.interval_minutes === "number" ? a.interval_minutes : null;
 
   const parsed = parseResult(result);
+  if (result !== undefined && parsed === null) {
+    return <ToolViewFallback />;
+  }
+
   const interval = parsed?.interval ?? argsInterval;
   const nextAt = parsed?.nextAt ?? null;
 
@@ -108,7 +130,7 @@ export const HeartbeatView: ToolView = ({
               <span className="font-medium text-text-primary">
                 {typeof interval === "number"
                   ? humanizeInterval(interval)
-                  : "—"}
+                  : "-"}
               </span>
             </div>
             {enabled && nextAt && (

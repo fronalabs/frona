@@ -85,7 +85,7 @@ describe("CreateTaskView", () => {
   it("renders the instruction text", () => {
     render(
       <CreateTaskView
-        {...mkProps({ toolName: "create_task", args: baseArgs, result: "{}" })}
+        {...mkProps({ toolName: "create_task", args: baseArgs, result: undefined })}
       />,
     );
     expect(screen.getByText("Instruction")).toBeInTheDocument();
@@ -117,7 +117,7 @@ describe("CreateTaskView", () => {
         {...mkProps({
           toolName: "create_task",
           args: { ...baseArgs, process_result: true },
-          result: "{}",
+          result: undefined,
         })}
       />,
     );

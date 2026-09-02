@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import { SafeToolView } from "../safe-tool-view";
 import { WebSearchView } from "../web-search";
 import { mkProps } from "./helpers";
 
@@ -77,9 +78,10 @@ describe("WebSearchView", () => {
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 
-  it("falls back to raw <pre> output when the result doesn't match the expected format", () => {
+  it("uses the generic view when the result doesn't match the expected format", () => {
     render(
-      <WebSearchView
+      <SafeToolView
+        view={WebSearchView}
         {...mkProps({
           toolName: "web_search",
           args: { query: "x" },
@@ -87,6 +89,7 @@ describe("WebSearchView", () => {
         })}
       />,
     );
+    expect(screen.getByText("Result:")).toBeInTheDocument();
     expect(screen.getByText("Unparseable blob")).toBeInTheDocument();
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });

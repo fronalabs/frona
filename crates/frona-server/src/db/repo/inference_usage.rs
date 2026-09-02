@@ -309,9 +309,7 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
         limit: usize,
     ) -> Result<Vec<ChatCostRow>, AppError> {
         let (window_clause, bindings) = window_clause(since, until);
-        // `chat_id` is `Option<String>` on the row — rootless rows
-        // (Compaction::User, Compaction::Space) have it `None` and are
-        // filtered out by `IS NOT NULL`.
+        // SurrealDB stores an absent optional field as NONE, not NULL.
         let query = format!(
             "SELECT \
                 chat_id, \
@@ -320,7 +318,7 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
                 math::sum(output_tokens) AS output_tokens, \
                 count() AS calls \
                 FROM inference_usage \
-                WHERE user_id = $user_id AND chat_id IS NOT NULL{window_clause} \
+                WHERE user_id = $user_id AND !type::is_none(chat_id){window_clause} \
                 GROUP BY chat_id \
                 ORDER BY cost_usd DESC \
                 LIMIT {limit}"

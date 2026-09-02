@@ -10,34 +10,85 @@ interface MemoryHit {
   tag: string;
   description: string;
   path: string;
+  snippets: string[];
 }
 
-/**
- * Parse the `memory_search` result text emitted by the backend
- * (crates/frona-server/src/memory/pkm/tools.rs). Keep in lockstep:
- *
- *   Top matches - read(<memory-root>/<path>.md) to open one:
- *
- *   - Name  [tag]
- *     description
- *     path/to/page
- *
- *   - Name  [tag]
- *     ...
- *
- * Returns [] for the empty ("No pages matched") case and null on parse
- * failure so the caller can fall back to raw text.
- */
-function parseMemoryResult(text: string): MemoryHit[] | null {
+interface ParsedMemoryResult {
+  hits: MemoryHit[];
+  truncated: boolean;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toMemoryVaultRelativePath(file: string): string {
+  const normalized = file.replaceAll("\\", "/");
+  const memoryRoot = "/Memory/";
+  const rootIndex = normalized.lastIndexOf(memoryRoot);
+
+  if (rootIndex >= 0) {
+    return normalized.slice(rootIndex + memoryRoot.length);
+  }
+
+  return normalized.startsWith("Memory/")
+    ? normalized.slice("Memory/".length)
+    : normalized;
+}
+
+function parseStructuredMemoryResult(value: unknown): ParsedMemoryResult | null {
+  if (!isRecord(value) || !Array.isArray(value.results)) return null;
+
+  const hits: MemoryHit[] = [];
+  for (const result of value.results) {
+    if (!isRecord(result)) return null;
+    if (
+      typeof result.name !== "string" ||
+      typeof result.file !== "string" ||
+      typeof result.description !== "string" ||
+      typeof result.category !== "string" ||
+      !Array.isArray(result.matched_by)
+    ) {
+      return null;
+    }
+
+    const snippets = result.matched_by.flatMap((match) => {
+      if (
+        isRecord(match) &&
+        match.kind === "body_text" &&
+        typeof match.snippet === "string"
+      ) {
+        return [match.snippet];
+      }
+      return [];
+    });
+
+    hits.push({
+      name: result.name,
+      tag: result.category,
+      description: result.description,
+      path: toMemoryVaultRelativePath(result.file),
+      snippets,
+    });
+  }
+
+  return { hits, truncated: value.truncated === true };
+}
+
+function parseMemoryResult(text: string): ParsedMemoryResult | null {
   const trimmed = text.trim();
-  if (!trimmed) return [];
-  if (trimmed.startsWith("No pages matched")) return [];
+  if (!trimmed) return { hits: [], truncated: false };
+  if (trimmed.startsWith("No pages matched")) return { hits: [], truncated: false };
+
+  try {
+    const structured = parseStructuredMemoryResult(JSON.parse(trimmed));
+    if (structured) return structured;
+  } catch {}
 
   const hits: MemoryHit[] = [];
   for (const block of text.split(/\n\n+/)) {
     const lines = block.split("\n").filter((l) => l.trim().length > 0);
     if (lines.length === 0) continue;
-    // The header line ("Top matches - …") and any stray prose don't start an item.
     if (!lines[0].startsWith("- ")) continue;
 
     const head = lines[0].match(/^-\s+(.*?)\s+\[(.+?)\]\s*$/);
@@ -45,17 +96,18 @@ function parseMemoryResult(text: string): MemoryHit[] | null {
     hits.push({
       name: head[1].trim(),
       tag: head[2].trim(),
-      path: lines[lines.length - 1].trim(),
+      path: toMemoryVaultRelativePath(lines[lines.length - 1].trim()),
       description: lines
         .slice(1, -1)
         .map((l) => l.trim())
         .join(" ")
         .trim(),
+      snippets: [],
     });
   }
 
   // Non-empty text that yielded no items is a format mismatch, not "no results".
-  return hits.length > 0 ? hits : null;
+  return hits.length > 0 ? { hits, truncated: false } : null;
 }
 
 export const MemorySearchView: ToolView = ({
@@ -73,14 +125,15 @@ export const MemorySearchView: ToolView = ({
       : result !== undefined
         ? JSON.stringify(result, null, 2)
         : "";
-  const hits = parseMemoryResult(resultText);
-  if (result !== undefined && hits === null) {
+  const parsed = parseMemoryResult(resultText);
+  if (result !== undefined && parsed === null) {
     return <ToolViewFallback />;
   }
 
+  const hits = parsed?.hits;
   const subtitle =
     hits && hits.length > 0
-      ? `${query ? `${query} · ` : ""}${hits.length} ${hits.length === 1 ? "match" : "matches"}`
+      ? `${query ? `${query} - ` : ""}${hits.length}${parsed.truncated ? "+" : ""} ${hits.length === 1 && !parsed.truncated ? "match" : "matches"}`
       : query || null;
 
   return (
@@ -111,6 +164,12 @@ export const MemorySearchView: ToolView = ({
                   {hit.description && (
                     <p className="text-xs text-text-secondary m-0">{hit.description}</p>
                   )}
+                  {hit.snippets.map((snippet) => (
+                    <p key={snippet} className="text-xs text-text-secondary m-0">
+                      <span className="text-text-tertiary">Match: </span>
+                      <span>{snippet}</span>
+                    </p>
+                  ))}
                   {hit.path && (
                     <span className="inline-flex items-center gap-1 text-xs font-mono text-text-tertiary break-all">
                       <DocumentTextIcon className="h-3 w-3 shrink-0" />

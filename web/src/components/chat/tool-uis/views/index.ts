@@ -8,6 +8,7 @@ import {
   StoreAgentMemoryView,
   StoreUserMemoryView,
 } from "./memory";
+import { MemoryGraphSparqlView } from "./memory-graph-sparql";
 import { MemorySearchView } from "./memory-search";
 import { NodeView } from "./node";
 import { ProduceFileView } from "./produce-file";
@@ -40,6 +41,7 @@ export const TOOL_VIEWS_EXACT: Record<string, ToolView> = {
   store_user_memory: StoreUserMemoryView,
   memory_remember: StoreAgentMemoryView,
   memory_search: MemorySearchView,
+  memory_graph_sparql: MemoryGraphSparqlView,
   update_identity: UpdateIdentityView,
   set_heartbeat: HeartbeatView,
 };

@@ -18,6 +18,8 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   produce_file: "Produce File",
   store_agent_memory: "Remember",
   store_user_memory: "Remember",
+  memory_search: "Memory Search",
+  memory_graph_sparql: "Memory Graph Query",
   create_task: "Create Task",
   list_tasks: "List Tasks",
   delete_task: "Delete Task",

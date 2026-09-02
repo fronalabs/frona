@@ -43,6 +43,7 @@
     "remark-parse": "^11.0.0",
     "shiki": "^4.0.2",
     "sigma": "^3.0.3",
+    "sparql-formatter": "^1.0.2",
     "unbash": "^4.0.1",
     "unified": "^11.0.5"
   },

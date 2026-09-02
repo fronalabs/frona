@@ -20,7 +20,7 @@ use crate::memory::pkm::ontology::catalogue::scope::{
     CatalogueTerm, Clash, OntologyScope, SourceInfo, VocabHit,
 };
 use crate::memory::pkm::ontology::catalogue::search::{
-    decamel, local_name, match_rank, normalize, squash,
+    decamel, local_name, match_rank, normalize, squash, squashed_match,
 };
 
 /// Everything the server can see, interned once and shared.
@@ -611,6 +611,38 @@ impl OntologyCatalogue {
             label.len()
         });
         Some((rank, brevity))
+    }
+
+    /// Exact foreground matching, including declared synonyms but excluding partial matches.
+    pub(crate) fn exactly_matches_term(&self, query: &str, iri: &str, label: Option<&str>) -> bool {
+        let needle = normalize(query.trim());
+        if needle.is_empty() {
+            return false;
+        }
+        let mut needles = vec![needle.clone()];
+        if needle == "people" {
+            needles.push("person".to_string());
+        } else if let Some(stem) = needle.strip_suffix("ies") {
+            needles.push(format!("{stem}y"));
+        } else if let Some(stem) = needle.strip_suffix('s')
+            && !stem.ends_with('s')
+        {
+            needles.push(stem.to_string());
+        }
+        let exact = |candidate: &str| {
+            let candidate = normalize(candidate);
+            needles.iter().any(|needle| {
+                candidate == *needle || squashed_match(&squash(needle), &candidate, false)
+            })
+        };
+        if exact(&decamel(local_name(iri))) || label.is_some_and(&exact) {
+            return true;
+        }
+        self.graph.id_of(iri).is_some_and(|id| {
+            self.graph.synonyms[id as usize]
+                .iter()
+                .any(|alias| exact(alias))
+        })
     }
 
     fn cache(&self) -> std::sync::RwLockReadGuard<'_, HashMap<Vec<String>, Arc<OntologyScope>>> {

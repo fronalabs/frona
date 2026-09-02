@@ -39,6 +39,7 @@ mod abox;
 mod catalogue;
 mod prefixes;
 mod release;
+mod retrieval;
 pub(crate) mod schema;
 pub(crate) mod sparql;
 mod validation;
@@ -57,6 +58,9 @@ pub use inspection::OntologyExport;
 pub(crate) use planning::TypePlan;
 pub use prefixes::PrefixMap;
 pub(crate) use prefixes::{TermKind, individual_iri, path_from_individual};
+pub(crate) use retrieval::{
+    ClassInterpretation, IdentityAmbiguity, SemanticCandidate, SemanticMatch,
+};
 pub use schema::{AlignKind, Catalog, Characteristic, OverrideTarget, SchemaEdit};
 pub use validation::Violation;
 pub(crate) use validation::{EditImpact, GraphValidation, ValidationDiagnostic};

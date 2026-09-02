@@ -4,7 +4,49 @@ mod edit;
 mod external;
 mod projection;
 
+#[derive(Deserialize, SurrealValue)]
+#[surreal(crate = "surrealdb::types")]
+struct RankedSearchRow {
+    path: String,
+    origin: EntityOrigin,
+    category: EntityCategory,
+    kinds: Vec<String>,
+    name: String,
+    description: String,
+    aliases: std::collections::HashSet<String>,
+    search_name_tokens: Vec<String>,
+    search_assertions: Vec<String>,
+    body: String,
+    use_count: i64,
+    score: f64,
+}
+
+impl From<RankedSearchRow> for RankedEntityHit {
+    fn from(row: RankedSearchRow) -> Self {
+        Self {
+            entity: EntityHit {
+                path: row.path,
+                origin: row.origin,
+                category: row.category,
+                kinds: row.kinds,
+                name: row.name,
+                description: row.description,
+                aliases: row.aliases,
+                search_name_tokens: row.search_name_tokens,
+                search_assertions: row.search_assertions,
+                body: row.body,
+            },
+            score: row.score,
+            use_count: row.use_count,
+        }
+    }
+}
+
 impl PkmRepo {
+    pub(crate) fn search_top_k(&self) -> usize {
+        self.search_top_k.max(1) as usize
+    }
+
     pub async fn entity_by_path(
         &self,
         user_id: &str,
@@ -515,6 +557,93 @@ impl PkmRepo {
                 body: r.body,
             })
             .collect())
+    }
+
+    pub(crate) async fn search_entity_metadata_candidates(
+        &self,
+        user_id: &str,
+        query_text: &str,
+        limit: usize,
+    ) -> Result<Vec<RankedEntityHit>, AppError> {
+        let mut response = self
+            .db
+            .query(
+                "SELECT path, origin, category, kinds, name, description, aliases, body,
+                        search_name_tokens, search_assertions, use_count,
+                        search::score(0) AS score
+                 FROM knowledge_entity
+                 WHERE search_text @0,OR@ $q AND user_id = $uid
+                 ORDER BY score DESC, use_count DESC, path ASC LIMIT $k",
+            )
+            .bind(("q", query_text.to_string()))
+            .bind(("uid", user_id.to_string()))
+            .bind(("k", limit.max(1) as i64))
+            .await
+            .map_err(|error| Self::err("entity_metadata_candidates", error))?;
+        let rows: Vec<RankedSearchRow> = response
+            .take(0)
+            .map_err(|error| Self::err("entity_metadata_candidates_take", error))?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    pub(crate) async fn search_entity_body_candidates(
+        &self,
+        user_id: &str,
+        query_text: &str,
+        limit: usize,
+    ) -> Result<Vec<RankedEntityHit>, AppError> {
+        let mut response = self
+            .db
+            .query(
+                "SELECT path, origin, category, kinds, name, description, aliases, body,
+                        search_name_tokens, search_assertions, use_count,
+                        search::score(0) AS score
+                 FROM knowledge_entity
+                 WHERE body @0,OR@ $q AND user_id = $uid
+                 ORDER BY score DESC, use_count DESC, path ASC LIMIT $k",
+            )
+            .bind(("q", query_text.to_string()))
+            .bind(("uid", user_id.to_string()))
+            .bind(("k", limit.max(1) as i64))
+            .await
+            .map_err(|error| Self::err("entity_body_candidates", error))?;
+        let rows: Vec<RankedSearchRow> = response
+            .take(0)
+            .map_err(|error| Self::err("entity_body_candidates_take", error))?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// Separate lookup prevents body-only hits from displacing metadata candidates
+    /// before the combined score is calculated.
+    pub(crate) async fn search_entity_body_evidence_for_paths(
+        &self,
+        user_id: &str,
+        query_text: &str,
+        paths: &[String],
+    ) -> Result<Vec<RankedEntityHit>, AppError> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut response = self
+            .db
+            .query(
+                "SELECT path, origin, category, kinds, name, description, aliases, body,
+                        search_name_tokens, search_assertions, use_count,
+                        search::score(0) AS score
+                 FROM knowledge_entity
+                 WHERE body @0,OR@ $q AND user_id = $uid AND path IN $paths
+                 ORDER BY score DESC, use_count DESC, path ASC LIMIT $k",
+            )
+            .bind(("q", query_text.to_string()))
+            .bind(("uid", user_id.to_string()))
+            .bind(("paths", paths.to_vec()))
+            .bind(("k", paths.len() as i64))
+            .await
+            .map_err(|error| Self::err("entity_body_evidence", error))?;
+        let rows: Vec<RankedSearchRow> = response
+            .take(0)
+            .map_err(|error| Self::err("entity_body_evidence_take", error))?;
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     /// Increment an entity's usefulness counter; returns the new count. Rejects

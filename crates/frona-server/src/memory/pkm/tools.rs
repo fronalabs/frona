@@ -14,7 +14,8 @@ use crate::auth::user_service::UserService;
 use crate::core::error::AppError;
 use crate::tool::{InferenceContext, ToolOutput, active_chat, str_arg};
 
-use super::model::{EntityCategory, EntityOrigin};
+use super::ontology::OntologyManager;
+use super::search::MemorySearch;
 use super::storage::PkmStorage;
 use super::vault::VaultScope;
 use crate::db::repo::pkm::PkmRepo;
@@ -22,6 +23,7 @@ use crate::db::repo::pkm::PkmRepo;
 pub fn all(
     repo: Arc<PkmRepo>,
     storage: PkmStorage,
+    ontology: OntologyManager,
     prompts: PromptLoader,
     user_service: UserService,
 ) -> Vec<Arc<dyn crate::tool::AgentTool>> {
@@ -35,7 +37,7 @@ pub fn all(
             prompts: prompts.clone(),
         }),
         Arc::new(SearchTool {
-            repo: repo.clone(),
+            search: MemorySearch::new(repo.clone(), ontology.clone()),
             prompts: prompts.clone(),
             vault: vault.clone(),
         }),
@@ -99,7 +101,7 @@ impl RememberTool {
 }
 
 pub struct SearchTool {
-    repo: Arc<PkmRepo>,
+    search: MemorySearch,
     prompts: PromptLoader,
     vault: VaultResolver,
 }
@@ -113,44 +115,9 @@ impl SearchTool {
         ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
         let query = arg(&arguments, "query")?;
-        let hits = self.repo.search_entities(&ctx.user.id, query).await?;
-        if hits.is_empty() {
-            return Ok(ToolOutput::text(
-                "No pages matched. The KB doesn't model this yet — ask the user, or reformulate.",
-            ));
-        }
         let vault = self.vault.for_caller(ctx).await?;
-        // Emit the ABSOLUTE `.md` file path so the agent can `read(<path>)`
-        // verbatim - no root-prepending or extension-guessing (both of which it
-        // gets wrong, e.g. reading `.../me` before retrying `.../me.md`).
-        // Internal (Memory) pages are directory-prefixed under the root; External
-        // (User Vault) notes live at their own full vault path and are tagged
-        // `[external]` (read-only - the agent may read/cite but never edit them).
-        let mut out = String::from("Top matches — read(<path>) to open one:\n\n");
-        for h in hits {
-            let snippet = h.match_snippet(query);
-            let (tag, abspath) = match h.origin {
-                EntityOrigin::External => ("external".to_string(), vault.abs_vault_file(&h.path)),
-                EntityOrigin::Internal => {
-                    let tag = match h.category {
-                        EntityCategory::Playbook => "playbook".to_string(),
-                        // An untyped concept renders as an empty tag - the extractor is
-                        // schema-blind, so a page is untyped until the Classify stage types it.
-                        EntityCategory::Concept => {
-                            crate::memory::pkm::ontology::PrefixMap::standard()
-                                .display_joined(&h.kinds)
-                        }
-                    };
-                    (tag, vault.abs_page_file(&h.path))
-                }
-            };
-            out.push_str(&format!("- {}  [{tag}]\n  {}\n", h.name, h.description));
-            if let Some(snippet) = snippet {
-                out.push_str(&format!("  Match: {snippet}\n"));
-            }
-            out.push_str(&format!("  {abspath}\n\n"));
-        }
-        Ok(ToolOutput::text(out))
+        let result = self.search.execute(&ctx.user.id, query, &vault).await?;
+        Ok(ToolOutput::text(serde_json::to_string_pretty(&result)?))
     }
 }
 

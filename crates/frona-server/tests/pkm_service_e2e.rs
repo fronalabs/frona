@@ -442,30 +442,32 @@ async fn service_pipeline_consolidates_searches_reads_and_cites_entities_and_pla
         .execute("memory_search", json!({"query": "postgres restart"}), &ctx)
         .await
         .unwrap();
-    let text = out.text_content();
+    let result: serde_json::Value = serde_json::from_str(out.text_content()).unwrap();
+    let results = result["results"].as_array().unwrap();
+    let concept = results
+        .iter()
+        .find(|item| item["path"] == "services/postgres")
+        .expect("search returns the concept");
+    let playbook = results
+        .iter()
+        .find(|item| item["path"] == "procedures/restart-postgres")
+        .expect("search returns the playbook");
+    assert_eq!(concept["category"], "concept");
+    assert_eq!(concept["file"], pg_abs);
+    assert_eq!(playbook["category"], "playbook");
+    assert_eq!(playbook["file"], pb_abs);
     assert!(
-        text.contains("read(<path>)"),
-        "header tells the agent to read the path verbatim:\n{text}"
+        playbook["matched_by"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|matched| matched["kind"] == "body_text" && matched["snippet"].is_string())
     );
     assert!(
-        text.contains(&pg_abs),
-        "lists the concept page's absolute .md path:\n{text}"
-    );
-    assert!(
-        text.contains(&pb_abs),
-        "lists the playbook page's absolute .md path:\n{text}"
-    );
-    // The extractor is schema-blind, so a concept is untyped until the Classify stage types
-    // it - which it does here, because this fixture seeds a real agent and chat. The tag
-    // renders the class it was given (the `ontology_*` e2es cover the typing itself).
-    assert!(
-        text.contains("Postgres  [schema:Thing]"),
-        "typed concept tag:\n{text}"
-    );
-    assert!(text.contains("[playbook]"), "playbook type tag:\n{text}");
-    assert!(
-        !text.contains("/pages/"),
-        "no pages/ subdir in paths:\n{text}"
+        results
+            .iter()
+            .all(|item| !item["file"].as_str().unwrap().contains("/pages/")),
+        "no pages/ subdir in paths: {result:#}"
     );
 
     let file = std::fs::read_to_string(&pg_abs).expect("concept page file written to disk");
@@ -2180,6 +2182,266 @@ async fn ontology_service(
     );
     let harness = test_harness(db, config, mock);
     (service, harness)
+}
+
+#[tokio::test]
+async fn memory_search_merges_and_ranks_identity_semantic_metadata_and_body_matches() {
+    let db = test_db().await;
+    seed_identity(&db).await;
+    let (_tmp, config) = tmp_config();
+    let memory_config = frona::core::config::MemoryConfig::default();
+    let mock = Arc::new(MockModelProvider::new(Vec::new()));
+    let (service, _harness) = ontology_service(&db, &config, mock, &memory_config).await;
+    let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
+    let prefixes = frona::memory::pkm::ontology::PrefixMap::standard();
+
+    service
+        .ontology_manager()
+        .commit(
+            "test-user",
+            &[
+                SchemaEdit::DeclareClass {
+                    class: "frona:Engineer".into(),
+                },
+                SchemaEdit::SubClassOf {
+                    sub: "frona:Engineer".into(),
+                    sup: "schema:Person".into(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+    for (path, class, name, description) in [
+        ("people/sarah", "frona:Engineer", "Sarah", "An engineer"),
+        ("people/bob", "schema:Person", "Bob", "A person"),
+        (
+            "topics/person-handbook",
+            "schema:Thing",
+            "Person handbook",
+            "A lexical metadata match",
+        ),
+    ] {
+        repo.upsert_entity_skeleton(
+            "test-user",
+            path,
+            EntityCategory::Concept,
+            &[prefixes.expand(class)],
+            name,
+            description,
+            &[],
+        )
+        .await
+        .unwrap();
+    }
+    repo.upsert_entity_skeleton(
+        "test-user",
+        "notes/standup",
+        EntityCategory::Concept,
+        &[],
+        "Standup notes",
+        "Weekly notes",
+        &[],
+    )
+    .await
+    .unwrap();
+    db.query(
+        "UPDATE knowledge_entity SET body = 'Sarah approved the Postgres migration.'
+         WHERE user_id = 'test-user' AND path = 'people/sarah';
+         UPDATE knowledge_entity SET body = 'Sarah attended the weekly standup.'
+         WHERE user_id = 'test-user' AND path = 'notes/standup';",
+    )
+    .await
+    .unwrap()
+    .check()
+    .unwrap();
+
+    let tools = service.tools();
+    let names: Vec<_> = tools.iter().map(|tool| tool.name()).collect();
+    for removed in [
+        "memory_graph_find",
+        "memory_schema_search",
+        "memory_schema_inspect",
+        "memory_graph_query",
+    ] {
+        assert!(
+            !names.contains(&removed),
+            "removed tool is registered: {removed}"
+        );
+    }
+    let tool = tools
+        .iter()
+        .find(|tool| tool.name() == "memory_search")
+        .expect("memory_search is registered");
+    let output = tool
+        .execute("memory_search", json!({"query": "Sarah"}), &mock_context())
+        .await
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_str(output.text_content()).unwrap();
+
+    assert_eq!(result["results"][0]["path"], "people/sarah");
+    assert_eq!(
+        result["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["path"] == "people/sarah")
+            .count(),
+        1,
+        "a path returned by several queries is emitted once: {result:#}"
+    );
+    let sarah_matches = result["results"][0]["matched_by"].as_array().unwrap();
+    assert!(
+        sarah_matches
+            .iter()
+            .any(|item| item["kind"] == "exact_name")
+            && sarah_matches
+                .iter()
+                .any(|item| item["kind"] == "metadata_text")
+            && sarah_matches.iter().any(|item| {
+                item["kind"] == "body_text"
+                    && item["snippet"] == "Sarah approved the Postgres migration."
+            }),
+        "the merged result keeps evidence from every query: {result:#}"
+    );
+    assert_eq!(result["results"][1]["path"], "notes/standup");
+
+    let output = tool
+        .execute("memory_search", json!({"query": "person"}), &mock_context())
+        .await
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_str(output.text_content()).unwrap();
+    let paths: Vec<_> = result["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        &paths[..2],
+        &["people/bob", "people/sarah"],
+        "reasoned class members rank before lexical metadata matches: {result:#}"
+    );
+    assert!(
+        result["results"][0]["matched_by"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "asserted_type")
+            && result["results"][1]["matched_by"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["kind"] == "inferred_type"),
+        "asserted and inferred membership share a tier but retain provenance: {result:#}"
+    );
+    assert!(
+        paths
+            .iter()
+            .position(|path| *path == "topics/person-handbook")
+            .is_some_and(|index| index >= 2),
+        "metadata text follows semantic class membership: {result:#}"
+    );
+
+    let output = tool
+        .execute("memory_search", json!({"query": "people"}), &mock_context())
+        .await
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_str(output.text_content()).unwrap();
+    assert_eq!(
+        result["results"].as_array().unwrap().len(),
+        2,
+        "common plural class queries resolve without fuzzy schema expansion: {result:#}"
+    );
+}
+
+#[tokio::test]
+async fn memory_search_ranks_structural_person_evidence_above_incidental_link_text() {
+    let db = test_db().await;
+    seed_identity(&db).await;
+    let (_tmp, config) = tmp_config();
+    let memory_config = frona::core::config::MemoryConfig::default();
+    let mock = Arc::new(MockModelProvider::new(Vec::new()));
+    let (service, _harness) = ontology_service(&db, &config, mock, &memory_config).await;
+    let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
+    let prefixes = frona::memory::pkm::ontology::PrefixMap::standard();
+
+    for (path, class, name, description) in [
+        (
+            "assistants/dark-matter",
+            "schema:Thing",
+            "Dark Matter",
+            "The assistant",
+        ),
+        ("people/me", "schema:Person", "Mina", "The account owner"),
+        ("notes/alpha", "schema:Thing", "Alpha", "Unrelated note"),
+        ("notes/beta", "schema:Thing", "Beta", "Unrelated note"),
+        ("notes/gamma", "schema:Thing", "Gamma", "Unrelated note"),
+    ] {
+        repo.upsert_entity_skeleton(
+            "test-user",
+            path,
+            EntityCategory::Concept,
+            &[prefixes.expand(class)],
+            name,
+            description,
+            &[],
+        )
+        .await
+        .unwrap();
+    }
+    db.query(
+        "UPDATE knowledge_entity
+         SET body = 'Dark Matter is the name [[people/me|Mina]] chose for this assistant.'
+         WHERE user_id = 'test-user' AND path = 'assistants/dark-matter';
+         UPDATE knowledge_entity
+         SET body = 'Mina is the account owner represented by `people/me`. Mina chose the assistant Dark Matter, and research into a potential long-term project remains documented here.'
+         WHERE user_id = 'test-user' AND path = 'people/me';
+         UPDATE knowledge_entity SET body = 'A quiet alpha document.'
+         WHERE user_id = 'test-user' AND path = 'notes/alpha';
+         UPDATE knowledge_entity SET body = 'A quiet beta document.'
+         WHERE user_id = 'test-user' AND path = 'notes/beta';
+         UPDATE knowledge_entity SET body = 'A quiet gamma document.'
+         WHERE user_id = 'test-user' AND path = 'notes/gamma';",
+    )
+    .await
+    .unwrap()
+    .check()
+    .unwrap();
+
+    let tools = service.tools();
+    let tool = tools
+        .iter()
+        .find(|tool| tool.name() == "memory_search")
+        .expect("memory_search is registered");
+    let output = tool
+        .execute(
+            "memory_search",
+            json!({"query": "persons people contacts names"}),
+            &mock_context(),
+        )
+        .await
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_str(output.text_content()).unwrap();
+
+    assert_eq!(
+        result["results"][0]["path"], "people/me",
+        "path and class evidence must beat incidental raw link text: {result:#}"
+    );
+    let matched_by = result["results"][0]["matched_by"].as_array().unwrap();
+    assert!(
+        matched_by
+            .iter()
+            .any(|item| item["kind"] == "path_token" && item["token"] == "people"),
+        "the winning path evidence is explained: {result:#}"
+    );
+    assert!(
+        matched_by.iter().any(|item| {
+            item["kind"] == "asserted_type_token"
+                && matches!(item["token"].as_str(), Some("people" | "persons"))
+                && item["term"] == "schema:Person"
+        }),
+        "the winning effective-ontology evidence is explained: {result:#}"
+    );
 }
 
 fn tmp_config() -> (tempfile::TempDir, Config) {

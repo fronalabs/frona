@@ -372,6 +372,13 @@ pub struct EntityHit {
     pub body: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct RankedEntityHit {
+    pub entity: EntityHit,
+    pub score: f64,
+    pub use_count: i64,
+}
+
 impl EntityHit {
     /// Return the body line that best explains why this page matched the query.
     /// Metadata-only matches intentionally have no snippet.

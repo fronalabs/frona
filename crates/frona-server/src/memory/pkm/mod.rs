@@ -35,6 +35,7 @@ mod recovery;
 mod rename;
 mod reset;
 mod retrieve;
+mod search;
 mod service;
 mod storage;
 mod sweep;
@@ -114,6 +115,7 @@ impl MemoryService for PkmService {
         tools::all(
             self.repo.clone(),
             self.storage.clone(),
+            self.ontology_manager.clone(),
             self.prompts.clone(),
             self.user_service.clone(),
         )

@@ -15,7 +15,8 @@ use crate::core::repository::new_id;
 use crate::memory::pkm::model::{
     Disposition, EntityCategory, EntityHit, EntityOrigin, KnowledgeEntity, KnowledgeEntityLink,
     KnowledgeEntitySource, KnowledgeMemory, KnowledgeOntology, KnowledgeShortMemory, LinkOrigin,
-    MemoryEvidence, MemoryKind, MemoryRelation, PLAYBOOK_KIND_IRI, RelationType, SELF_ENTITY_PATH,
+    MemoryEvidence, MemoryKind, MemoryRelation, PLAYBOOK_KIND_IRI, RankedEntityHit, RelationType,
+    SELF_ENTITY_PATH,
     derive_resolution_search, derive_search_text,
 };
 use crate::memory::pkm::{KnowledgeConsolidationRecord, PendingEntityContribution};

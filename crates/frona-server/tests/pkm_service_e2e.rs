@@ -2185,6 +2185,97 @@ async fn ontology_service(
 }
 
 #[tokio::test]
+async fn memory_graph_get_reads_the_callers_reasoned_entity() {
+    let db = test_db().await;
+    seed_identity(&db).await;
+    let (_tmp, config) = tmp_config();
+    let memory_config = frona::core::config::MemoryConfig::default();
+    let mock = Arc::new(MockModelProvider::new(Vec::new()));
+    let (service, _harness) = ontology_service(&db, &config, mock, &memory_config).await;
+    let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
+    let prefixes = frona::memory::pkm::ontology::PrefixMap::standard();
+
+    repo.upsert_entity_skeleton(
+        "test-user",
+        "people/sarah",
+        EntityCategory::Concept,
+        &[prefixes.expand("schema:Person")],
+        "Sarah",
+        "An engineer",
+        &[],
+    )
+    .await
+    .unwrap();
+    seed_reconciled_entity(
+        &db,
+        "test-user",
+        "people/sarah",
+        "Sarah",
+        "An engineer",
+        &json!({"schema:email": "sarah@example.com"}),
+    )
+    .await
+    .unwrap();
+    repo.upsert_entity_skeleton(
+        "test-user",
+        "organizations/acme",
+        EntityCategory::Concept,
+        &[prefixes.expand("schema:Organization")],
+        "Acme",
+        "Sarah's employer",
+        &[],
+    )
+    .await
+    .unwrap();
+    seed_asserted_entity_link(
+        &db,
+        "test-user",
+        "people/sarah",
+        "organizations/acme",
+        "schema:worksFor",
+    )
+    .await
+    .unwrap();
+    let tools = service.tools();
+    let tool = tools
+        .iter()
+        .find(|tool| tool.name() == "memory_graph_get")
+        .expect("memory_graph_get is registered");
+    let output = tool
+        .execute(
+            "memory_graph_get",
+            json!({"path": "people/sarah", "direction": "both"}),
+            &mock_context(),
+        )
+        .await
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_str(output.text_content()).unwrap();
+
+    assert_eq!(result["path"], "people/sarah");
+    assert_eq!(result["name"], "Sarah");
+    assert_eq!(result["description"], "An engineer");
+    assert!(
+        result["types"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("schema:Person")),
+        "direct and inferred types are returned: {result:#}"
+    );
+    assert!(
+        result["attributes"].as_array().unwrap().iter().any(|item| {
+            item["property"] == "schema:email" && item["value"] == "sarah@example.com"
+        }),
+        "literal attributes are returned: {result:#}"
+    );
+    assert!(
+        result["outgoing"].as_array().unwrap().iter().any(|edge| {
+            edge["relation"] == "schema:worksFor" && edge["entity"] == "organizations/acme"
+        }),
+        "entity relations are returned: {result:#}"
+    );
+}
+
+#[tokio::test]
 async fn memory_search_merges_and_ranks_identity_semantic_metadata_and_body_matches() {
     let db = test_db().await;
     seed_identity(&db).await;
@@ -2442,6 +2533,109 @@ async fn memory_search_ranks_structural_person_evidence_above_incidental_link_te
         }),
         "the winning effective-ontology evidence is explained: {result:#}"
     );
+}
+
+#[tokio::test]
+async fn memory_graph_sparql_formats_reasoned_select_and_ask_results() {
+    let db = test_db().await;
+    seed_identity(&db).await;
+    let (_tmp, config) = tmp_config();
+    let memory_config = frona::core::config::MemoryConfig::default();
+    let mock = Arc::new(MockModelProvider::new(Vec::new()));
+    let (service, _harness) = ontology_service(&db, &config, mock, &memory_config).await;
+    let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
+    let prefixes = frona::memory::pkm::ontology::PrefixMap::standard();
+    repo.upsert_entity_skeleton(
+        "test-user",
+        "people/sarah",
+        EntityCategory::Concept,
+        &[prefixes.expand("schema:Person")],
+        "Sarah",
+        "An engineer",
+        &[],
+    )
+    .await
+    .unwrap();
+    seed_reconciled_entity(
+        &db,
+        "test-user",
+        "people/sarah",
+        "",
+        "An engineer",
+        &json!({
+            "schema:name": "Stale Sarah",
+            "schema:identifier": "people/stale-sarah"
+        }),
+    )
+    .await
+    .unwrap();
+
+    let tools = service.tools();
+    let tool = tools
+        .iter()
+        .find(|tool| tool.name() == "memory_graph_sparql")
+        .expect("memory_graph_sparql is registered");
+    let context = mock_context();
+    let output = tool
+        .execute(
+            "memory_graph_sparql",
+            json!({"query": "SELECT ?person ?type WHERE { ?person a schema:Person; a ?type } ORDER BY ?type"}),
+            &context,
+        )
+        .await
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_str(output.text_content()).unwrap();
+    assert_eq!(result["kind"], "solutions");
+    assert!(
+        result["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| { row["person"] == "people/sarah" && row["type"] == "schema:Person" })
+    );
+
+    let output = tool
+        .execute(
+            "memory_graph_sparql",
+            json!({"query": "SELECT ?person ?name ?path WHERE { ?person a schema:Person; schema:name ?name; schema:identifier ?path }"}),
+            &context,
+        )
+        .await
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_str(output.text_content()).unwrap();
+    assert_eq!(
+        result["rows"],
+        json!([{
+            "person": "people/sarah",
+            "name": "Sarah",
+            "path": "people/sarah"
+        }]),
+        "first-class metadata overrides stale attribute copies: {result:#}"
+    );
+
+    let output = tool
+        .execute(
+            "memory_graph_sparql",
+            json!({"query": "ASK { <urn:frona:kb:people/sarah> a schema:Person }"}),
+            &context,
+        )
+        .await
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_str(output.text_content()).unwrap();
+    assert_eq!(result, json!({"kind": "boolean", "value": true}));
+
+    let result = tool
+        .execute(
+            "memory_graph_sparql",
+            json!({"query": "CONSTRUCT { ?s ?p ?o } WHERE { ?s ?p ?o }"}),
+            &context,
+        )
+        .await;
+    let error = match result {
+        Ok(_) => panic!("only SELECT and ASK are exposed"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("SELECT and ASK"));
 }
 
 fn tmp_config() -> (tempfile::TempDir, Config) {
@@ -5669,6 +5863,14 @@ async fn classify_keeps_every_returned_class_in_the_reasoned_entity() {
     ]));
 
     let (service, harness) = ontology_service(&db, &config, mock, &memory_config).await;
+    let ontology = service.ontology_manager();
+    assert!(
+        !ontology
+            .entails_type("test-user", "people/sarah", "https://schema.org/Thing")
+            .await
+            .unwrap(),
+        "prime the service's graph cache before consolidation creates Sarah"
+    );
     full_pass(
         &service,
         ontology_scope(&service),
@@ -5704,7 +5906,6 @@ async fn classify_keeps_every_returned_class_in_the_reasoned_entity() {
 
     // Both reach the reasoner, so the page is an instance of each.
     // ...and nothing is lost: the retired class is still entailed.
-    let ontology = ontology_manager(&db);
     for want in [
         "urn:frona:Engineer",
         "https://schema.org/Person",

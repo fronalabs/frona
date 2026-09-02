@@ -10,7 +10,7 @@
 //! composes to and the `rev` that identifies those bytes), `storage` (where that file
 //! goes), `consolidation` (the background pipeline and its LLM seam), `ontology` (the OWL
 //! layer), `recovery` (boot-time projection repair), `sync` (the Obsidian sync engine),
-//! and `tools` (the 3 agent tools: `memory_remember` / `memory_search` / `memory_cite`).
+//! and `tools` (foreground remember, search, cite, and graph tools).
 //! Classify's ontology tools are consolidation-internal and live in
 //! `consolidation::tools::ontology`,
 //! never in the agent registry. The SurrealQL lives in `crate::db::repo::pkm`.

@@ -59,6 +59,11 @@ async fn ontology_terms_survive_entities_whose_attributes_are_absent_or_null() {
         terms.contains(&"schema:email".to_string()),
         "and a well-formed entity still contributes its attribute keys: {terms:?}"
     );
+    assert!(
+        terms.contains(&"https://schema.org/name".to_string())
+            && terms.contains(&"https://schema.org/identifier".to_string()),
+        "concepts contribute their built-in ABox metadata predicates: {terms:?}"
+    );
 }
 
 /// The invariant parallel ingest depends on: many chats naming the same entity

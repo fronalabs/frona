@@ -46,6 +46,7 @@ mod validation;
 
 mod commit;
 mod composition;
+mod graph_query;
 mod inspection;
 mod lifecycle;
 mod planning;
@@ -54,6 +55,7 @@ mod reasoning;
 pub use catalogue::Roots;
 pub(crate) use catalogue::{OntologyCatalogue, OntologyScope, VocabHit};
 pub(crate) use composition::{ComposedOntology, UserOntology};
+pub(crate) use graph_query::GraphDirection;
 pub use inspection::OntologyExport;
 pub(crate) use planning::TypePlan;
 pub use prefixes::PrefixMap;

@@ -13,10 +13,10 @@ use crate::core::error::AppError;
 use crate::core::repository::new_id;
 
 use crate::memory::pkm::model::{
-    Disposition, EntityCategory, EntityHit, EntityOrigin, KnowledgeEntity, KnowledgeEntityLink,
-    KnowledgeEntitySource, KnowledgeMemory, KnowledgeOntology, KnowledgeShortMemory, LinkOrigin,
-    MemoryEvidence, MemoryKind, MemoryRelation, PLAYBOOK_KIND_IRI, RankedEntityHit, RelationType,
-    SELF_ENTITY_PATH,
+    Disposition, ENTITY_NAME_PROPERTY_IRI, ENTITY_PATH_PROPERTY_IRI, EntityCategory, EntityHit,
+    EntityOrigin, KnowledgeEntity, KnowledgeEntityLink, KnowledgeEntitySource, KnowledgeMemory,
+    KnowledgeOntology, KnowledgeShortMemory, LinkOrigin, MemoryEvidence, MemoryKind,
+    MemoryRelation, PLAYBOOK_KIND_IRI, RankedEntityHit, RelationType, SELF_ENTITY_PATH,
     derive_resolution_search, derive_search_text,
 };
 use crate::memory::pkm::{KnowledgeConsolidationRecord, PendingEntityContribution};

@@ -1,5 +1,8 @@
 use super::*;
 
+pub const ENTITY_NAME_PROPERTY_IRI: &str = "https://schema.org/name";
+pub const ENTITY_PATH_PROPERTY_IRI: &str = "https://schema.org/identifier";
+
 /// Many-to-many bridge: memory (by id) ↔ entity (by path). The fact-attachment
 /// layer - entities are reconstructed from their linked memories.
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue, Entity)]

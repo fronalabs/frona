@@ -48,23 +48,8 @@ impl PkmRepo {
         Ok(())
     }
 
-    /// The **asserted** (durable) entity links for a user - the ABox object-property
-    /// edges. Matches everything *not* explicitly `Inferred`, so legacy rows that
-    /// predate the `origin` field (stored as `NONE`) count as asserted.
-    /// Every ontology term this user's data references - the three places the data
-    /// meets the schema:
-    ///
-    ///   * entity **kinds** - the classes each entity is an instance of;
-    ///   * attribute **keys** - the datatype properties asserted on it;
-    ///   * link **relations** - the object properties between entities.
-    ///
-    /// Deduped, and left in whatever spelling was stored: kinds are IRIs, keys and
-    /// relations are still CURIEs. Reconciling the two is the prefix map's job, not the
-    /// database's.
-    ///
-    /// This is the **seed set** an effective ontology is cut from, so it runs on every
-    /// ontology load. Pulling `list_entities` + `asserted_links` instead would drag every
-    /// entity body and search blob across to read three columns.
+    /// Ontology seed terms referenced by entity kinds, attribute keys, asserted links,
+    /// and built-in concept metadata. Stored IRIs and CURIEs remain unnormalized.
     pub async fn ontology_terms(&self, user_id: &str) -> Result<Vec<String>, AppError> {
         let mut q = self
             .db
@@ -77,15 +62,16 @@ impl PkmRepo {
                  SELECT VALUE object::keys(attributes) FROM knowledge_entity \
                      WHERE user_id = $uid AND type::is_object(attributes);
                  SELECT VALUE relation FROM knowledge_entity_link \
-                     WHERE user_id = $uid AND origin != $inferred;",
+                     WHERE user_id = $uid AND origin != $inferred;
+                 SELECT VALUE path FROM knowledge_entity \
+                     WHERE user_id = $uid AND category = $concept LIMIT 1;",
             )
             .bind(("uid", user_id.to_string()))
             .bind(("inferred", LinkOrigin::Inferred))
+            .bind(("concept", EntityCategory::Concept))
             .await
             .map_err(|e| Self::err("ontology_terms", e))?;
 
-        // An entity carries several classes, so this is a list per entity rather than one
-        // value; flattened below alongside the attribute keys.
         let kinds: Vec<Vec<String>> = q
             .take(0)
             .map_err(|e| Self::err("ontology_terms_kinds", e))?;
@@ -93,6 +79,9 @@ impl PkmRepo {
         let relations: Vec<String> = q
             .take(2)
             .map_err(|e| Self::err("ontology_terms_relations", e))?;
+        let concepts: Vec<String> = q
+            .take(3)
+            .map_err(|e| Self::err("ontology_terms_concepts", e))?;
 
         let mut out: Vec<String> = kinds
             .into_iter()
@@ -101,6 +90,12 @@ impl PkmRepo {
             .chain(relations)
             .filter(|t| !t.trim().is_empty())
             .collect();
+        if !concepts.is_empty() {
+            out.extend([
+                ENTITY_NAME_PROPERTY_IRI.to_string(),
+                ENTITY_PATH_PROPERTY_IRI.to_string(),
+            ]);
+        }
         out.sort();
         out.dedup();
         Ok(out)

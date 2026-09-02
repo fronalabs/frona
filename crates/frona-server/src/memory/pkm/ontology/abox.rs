@@ -14,7 +14,10 @@ use oxigraph::store::Store;
 use oxrdf::{Literal, NamedNode, NamedOrBlankNode, Term, Triple};
 
 use crate::core::error::AppError;
-use crate::memory::pkm::model::{EntityCategory, KnowledgeEntity, KnowledgeEntityLink};
+use crate::memory::pkm::model::{
+    ENTITY_NAME_PROPERTY_IRI, ENTITY_PATH_PROPERTY_IRI, EntityCategory, KnowledgeEntity,
+    KnowledgeEntityLink,
+};
 
 use super::prefixes::{KB_NAMESPACE, PrefixMap, individual_iri, path_from_individual};
 use super::sparql;
@@ -63,6 +66,16 @@ pub fn build_abox_triples(
             continue;
         }
         let iri = individual_iri(&entity.path);
+        triples.push(Triple::new(
+            subj(&iri),
+            nn(ENTITY_NAME_PROPERTY_IRI),
+            Term::Literal(Literal::new_simple_literal(&entity.name)),
+        ));
+        triples.push(Triple::new(
+            subj(&iri),
+            nn(ENTITY_PATH_PROPERTY_IRI),
+            Term::Literal(Literal::new_simple_literal(&entity.path)),
+        ));
         // One `rdf:type` per class - an entity is genuinely several things at once, and
         // the reasoner derives the union of what they entail.
         //
@@ -87,6 +100,9 @@ pub fn build_abox_triples(
                 if let (Some(key_iri), Some(term)) =
                     (valid_iri(&prefixes.expand(key)), literal_term(val))
                 {
+                    if key_iri == ENTITY_NAME_PROPERTY_IRI || key_iri == ENTITY_PATH_PROPERTY_IRI {
+                        continue;
+                    }
                     triples.push(Triple::new(subj(&iri), nn(&key_iri), term));
                 }
             }

@@ -26,6 +26,7 @@ impl OntologyManager {
         Self {
             catalogue: Arc::new(ArcSwapOption::new(catalogue)),
             repo,
+            reasoned_graphs: Arc::new(reasoning::ReasonedGraphCache::default()),
             roots,
         }
     }
@@ -87,6 +88,7 @@ impl OntologyManager {
             "ontology catalogue installed"
         );
         self.catalogue.store(Some(catalogue));
+        self.invalidate_all_reasoned_graphs_after_catalogue_publish();
         Ok(())
     }
 

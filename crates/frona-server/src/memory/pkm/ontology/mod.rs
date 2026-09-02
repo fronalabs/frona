@@ -84,6 +84,8 @@ pub struct OntologyManager {
     /// a pass that is already running.
     catalogue: Arc<ArcSwapOption<OntologyCatalogue>>,
     repo: Arc<PkmRepo>,
+    /// Shared so every manager clone observes the same invalidations.
+    reasoned_graphs: Arc<reasoning::ReasonedGraphCache>,
     /// Where the catalogue is assembled from, so the manager can install or reload one
     /// after boot without making catalogue availability a server-start precondition.
     roots: Roots,

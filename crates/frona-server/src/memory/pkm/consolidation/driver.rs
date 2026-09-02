@@ -121,6 +121,8 @@ impl Consolidator {
                         {
                             warn!(error = %e, "pkm ontology: saving the effective ontology failed");
                         }
+                        self.ontology
+                            .publish_consolidated_graph(&self.ctx.scope.user_id);
                         Ok(())
                     }
                     Err(e) => Err(e),

@@ -205,6 +205,84 @@ async fn sparql_answers_employees_of_org() {
 }
 
 #[tokio::test]
+async fn graph_queries_share_cache_until_consolidation_publishes() {
+    let (mgr, repo) = manager().await;
+    seed_concept(&repo, "u", "people/bob", "schema:Person").await;
+
+    let alice = individual_iri("people/alice");
+    let query = format!("ASK {{ <{alice}> a schema:Thing }}");
+    assert!(
+        matches!(
+            mgr.sparql("u", &query).await.unwrap(),
+            QueryResults::Boolean(false)
+        ),
+        "the first query materializes and caches the committed graph"
+    );
+
+    seed_concept(&repo, "u", "people/alice", "schema:Person").await;
+    assert!(
+        matches!(
+            mgr.sparql("u", &query).await.unwrap(),
+            QueryResults::Boolean(false)
+        ),
+        "a direct database change is not visible before consolidation publishes"
+    );
+
+    mgr.clone().publish_consolidated_graph("u");
+    assert!(
+        matches!(
+            mgr.sparql("u", &query).await.unwrap(),
+            QueryResults::Boolean(true)
+        ),
+        "manager clones share invalidation and the next query rebuilds"
+    );
+}
+
+#[tokio::test]
+async fn ontology_commit_waits_for_consolidation_publication() {
+    let (mgr, repo) = manager().await;
+    mgr.commit(
+        "u",
+        &[SchemaEdit::DeclareClass {
+            class: "frona:Database".into(),
+        }],
+    )
+    .await
+    .unwrap();
+    seed_concept(&repo, "u", "services/pg", "frona:Database").await;
+
+    let pg = individual_iri("services/pg");
+    let query = format!("ASK {{ <{pg}> a schema:SoftwareApplication }}");
+    assert!(matches!(
+        mgr.sparql("u", &query).await.unwrap(),
+        QueryResults::Boolean(false)
+    ));
+
+    mgr.commit(
+        "u",
+        &[SchemaEdit::SubClassOf {
+            sub: "frona:Database".into(),
+            sup: "schema:SoftwareApplication".into(),
+        }],
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        mgr.sparql("u", &query).await.unwrap(),
+        QueryResults::Boolean(false)
+    ));
+
+    mgr.clone().publish_consolidated_graph("u");
+    assert!(
+        matches!(
+            mgr.sparql("u", &query).await.unwrap(),
+            QueryResults::Boolean(true)
+        ),
+        "the committed TBox becomes visible at the consolidation publication boundary"
+    );
+}
+
+#[tokio::test]
 async fn abox_entity_is_queryable_through_the_base() {
     let (mgr, repo) = manager().await;
     mgr.commit(

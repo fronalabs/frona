@@ -1,3 +1,6 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use dashmap::DashMap;
 use oxigraph::store::Store;
 use oxrdf::GraphName;
 use reasonable::reasoner::Reasoner;
@@ -79,11 +82,49 @@ pub(super) fn materialize(
 /// inferred-link write-back and to validate facet bounds).
 pub(crate) struct ReasonPass {
     pub(crate) reasoned: Reasoned,
+    pub(super) entities: Vec<KnowledgeEntity>,
     pub(super) asserted_links: Vec<KnowledgeEntityLink>,
+    pub(super) delta_ofn: String,
     /// What this pass reasoned under. Carried so downstream steps
     /// (`validate`, the inferred-link write-back) compact IRIs through the *same*
     /// prefix map the ABox was built with, rather than the bundled one.
     pub(super) effective_ontology: Arc<OntologyScope>,
+}
+
+/// The generation blocks stale publication; the mutex coalesces concurrent builds.
+#[derive(Default)]
+struct UserReasonedGraph {
+    generation: AtomicU64,
+    build: tokio::sync::Mutex<Option<(u64, Arc<ReasonPass>)>>,
+}
+
+#[derive(Default)]
+pub(super) struct ReasonedGraphCache {
+    users: DashMap<String, Arc<UserReasonedGraph>>,
+}
+
+impl ReasonedGraphCache {
+    fn user(&self, user_id: &str) -> Arc<UserReasonedGraph> {
+        self.users.entry(user_id.to_string()).or_default().clone()
+    }
+
+    fn invalidate(&self, user_id: &str) {
+        if let Some(user) = self.users.get(user_id) {
+            user.generation.fetch_add(1, Ordering::AcqRel);
+            if let Ok(mut entry) = user.build.try_lock() {
+                *entry = None;
+            }
+        }
+    }
+
+    fn invalidate_all(&self) {
+        for user in &self.users {
+            user.generation.fetch_add(1, Ordering::AcqRel);
+            if let Ok(mut entry) = user.build.try_lock() {
+                *entry = None;
+            }
+        }
+    }
 }
 
 impl OntologyManager {
@@ -106,11 +147,53 @@ impl OntologyManager {
         let abox = abox::build_abox_triples(&entities, &asserted_links, px);
         let reasoned = user.reason(&abox)?;
         let effective_ontology = user.effective_ontology().clone();
+        let delta_ofn = user.delta_ofn().to_string();
         Ok(ReasonPass {
             reasoned,
+            entities,
             asserted_links,
+            delta_ofn,
             effective_ontology,
         })
+    }
+
+    pub(super) async fn cached_reason_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Arc<ReasonPass>, AppError> {
+        let cached = self.reasoned_graphs.user(user_id);
+        loop {
+            let generation = cached.generation.load(Ordering::Acquire);
+            let mut entry = cached.build.lock().await;
+            if let Some((cached_generation, pass)) = entry.as_ref()
+                && *cached_generation == generation
+            {
+                return Ok(pass.clone());
+            }
+
+            let pass = Arc::new(self.reason_user(user_id).await?);
+            if cached.generation.load(Ordering::Acquire) == generation {
+                *entry = Some((generation, pass.clone()));
+                return Ok(pass);
+            }
+
+            // Invalidation raced this build; retry without publishing it.
+            drop(entry);
+        }
+    }
+
+    /// Called only after consolidation Cleanup commits the user graph.
+    pub(crate) fn publish_consolidated_graph(&self, user_id: &str) {
+        self.reasoned_graphs.invalidate(user_id);
+    }
+
+    /// Used by terminal lifecycle operations that bypass consolidation Cleanup.
+    pub(crate) fn evict_reasoned_graph(&self, user_id: &str) {
+        self.reasoned_graphs.invalidate(user_id);
+    }
+
+    pub(super) fn invalidate_all_reasoned_graphs_after_catalogue_publish(&self) {
+        self.reasoned_graphs.invalidate_all();
     }
 
     /// Like [`reason_user`], but composes a **proposed layer** of uncommitted
@@ -132,9 +215,12 @@ impl OntologyManager {
         let composed = ComposedOntology::with_proposed(&user, px, proposed_edits, &abox)?;
         let reasoned = composed.reason(&abox)?;
         let effective_ontology = composed.effective_ontology().clone();
+        let delta_ofn = user.delta_ofn().to_string();
         Ok(ReasonPass {
             reasoned,
+            entities,
             asserted_links,
+            delta_ofn,
             effective_ontology,
         })
     }
@@ -164,7 +250,7 @@ impl OntologyManager {
         user_id: &str,
         query: &str,
     ) -> Result<QueryResults<'static>, AppError> {
-        let pass = self.reason_user(user_id).await?;
+        let pass = self.cached_reason_user(user_id).await?;
         sparql::query(
             &pass.reasoned.store,
             query,
@@ -178,7 +264,7 @@ impl OntologyManager {
         entity_path: &str,
         class: &str,
     ) -> Result<bool, AppError> {
-        let pass = self.reason_user(user_id).await?;
+        let pass = self.cached_reason_user(user_id).await?;
         let query = format!(
             "ASK {{ <{}> a <{}> }}",
             individual_iri(entity_path),

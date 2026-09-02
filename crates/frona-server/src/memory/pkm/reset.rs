@@ -237,6 +237,7 @@ impl PkmService {
         let vault =
             VaultScope::resolve(&self.user_service, &self.storage, user_id, &user.handle).await?;
         self.repo.reset_user_derived_memory(user_id).await?;
+        self.ontology_manager.evict_reasoned_graph(user_id);
         self.storage.delete_memory_directory(&vault)?;
         Ok(())
     }

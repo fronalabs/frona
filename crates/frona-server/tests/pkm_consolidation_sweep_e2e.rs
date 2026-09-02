@@ -3623,6 +3623,8 @@ async fn one_chat_runs_multiple_ingest_windows_concurrently() {
 /// untouched, so a later sweep can replay the complete suffix safely.
 #[tokio::test]
 async fn later_ingest_window_cannot_commit_ahead_of_an_unfinished_window() {
+    const FIRST_WINDOW: &str = "Postgres is a database in the first window";
+    const SECOND_WINDOW: &str = "Postgres is a database in the second window";
     let extracted = json!({
         "new_entities": [{"id":"fixture-page-25",
             "path":"services/postgres", "name":"Postgres", "description":"database",
@@ -3638,12 +3640,18 @@ async fn later_ingest_window_cannot_commit_ahead_of_an_unfinished_window() {
         }]
     });
     let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::Pending,
-        MockResponse::ToolCalls(vec![(
-            "extract-2".into(),
-            "submit".into(),
-            extracted.clone(),
-        )]),
+        MockResponse::ForUserText {
+            text: FIRST_WINDOW.into(),
+            response: Box::new(MockResponse::Pending),
+        },
+        MockResponse::ForUserText {
+            text: SECOND_WINDOW.into(),
+            response: Box::new(MockResponse::ToolCalls(vec![(
+                "extract-2".into(),
+                "submit".into(),
+                extracted.clone(),
+            )])),
+        },
     ]));
     let memory_config = MemoryConfig {
         pkm_extract_max_messages: 1,
@@ -3657,7 +3665,7 @@ async fn later_ingest_window_cannot_commit_ahead_of_an_unfinished_window() {
         &ctx.db,
         &chat.id,
         MessageRole::User,
-        "Postgres is a database",
+        FIRST_WINDOW,
         first,
         Some(MessageStatus::Completed),
     )
@@ -3667,7 +3675,7 @@ async fn later_ingest_window_cannot_commit_ahead_of_an_unfinished_window() {
         &ctx.db,
         &chat.id,
         MessageRole::User,
-        "Postgres is a database",
+        SECOND_WINDOW,
         second,
         Some(MessageStatus::Completed),
     )

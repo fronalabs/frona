@@ -203,7 +203,7 @@ pub fn test_policy_service(db: &Surreal<Db>) -> PolicyService {
     );
     PolicyService::new(repo, schema, tool_manager, storage, user_service)
 }
-use rig_core::completion::message::{ToolCall, ToolFunction};
+use rig_core::completion::message::{ToolCall, ToolFunction, UserContent};
 use rig_core::completion::request::ToolDefinition as RigToolDefinition;
 use rig_core::completion::{AssistantContent, Message as RigMessage};
 use serde_json::Value;
@@ -223,6 +223,12 @@ pub enum MockResponse {
     /// Hold this response until every participant reaches the same point. This proves
     /// model calls overlap without adding timing-sensitive sleeps to concurrency tests.
     Barrier(Arc<tokio::sync::Barrier>, Box<MockResponse>),
+    /// Route a response by user-message content when concurrent calls may reach the
+    /// provider in a different order from the work that spawned them.
+    ForUserText {
+        text: String,
+        response: Box<MockResponse>,
+    },
 }
 
 pub struct MockModelProvider {
@@ -280,6 +286,38 @@ impl MockModelProvider {
         }
     }
 
+    fn next_response_for_history(&self, history: &[RigMessage]) -> MockResponse {
+        let mut responses = self.responses.lock().unwrap();
+        *self.call_count.lock().unwrap() += 1;
+        let matching = responses.iter().position(|response| match response {
+            MockResponse::ForUserText { text, .. } => history.iter().any(|message| {
+                let RigMessage::User { content } = message else {
+                    return false;
+                };
+                content.iter().any(
+                    |item| matches!(item, UserContent::Text(value) if value.text.contains(text)),
+                )
+            }),
+            _ => false,
+        });
+        let fallback = responses
+            .iter()
+            .position(|response| !matches!(response, MockResponse::ForUserText { .. }));
+        let Some(index) = matching.or(fallback) else {
+            return if responses.is_empty() {
+                MockResponse::Text("default response".into())
+            } else {
+                MockResponse::Error(InferenceError::InferenceFailed(
+                    "mock: no response matched the user message".into(),
+                ))
+            };
+        };
+        match responses.remove(index) {
+            MockResponse::ForUserText { response, .. } => *response,
+            response => response,
+        }
+    }
+
     pub fn calls(&self) -> usize {
         *self.call_count.lock().unwrap()
     }
@@ -297,7 +335,7 @@ impl ModelProvider for MockModelProvider {
         _temperature: Option<f64>,
     ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
         *self.last_history.lock().unwrap() = chat_history.clone();
-        self.histories.lock().unwrap().push(chat_history);
+        self.histories.lock().unwrap().push(chat_history.clone());
         self.tool_histories.lock().unwrap().push(tools);
         let usage = Usage {
             input_tokens: 10,
@@ -308,7 +346,7 @@ impl ModelProvider for MockModelProvider {
             reasoning_tokens: 0,
             tool_use_prompt_tokens: 0,
         };
-        let response = match self.next_response() {
+        let response = match self.next_response_for_history(&chat_history) {
             MockResponse::Barrier(barrier, response) => {
                 barrier.wait().await;
                 *response
@@ -336,6 +374,9 @@ impl ModelProvider for MockModelProvider {
             MockResponse::Pending => std::future::pending().await,
             MockResponse::PendingWithDropDelay(delay) => pending_with_drop_delay(delay).await,
             MockResponse::Barrier(_, _) => unreachable!("nested mock barriers are unsupported"),
+            MockResponse::ForUserText { .. } => {
+                unreachable!("history-routed responses are unwrapped before execution")
+            }
         };
         Ok(frona::inference::provider::InferenceOutput::new(
             content, usage,
@@ -404,6 +445,9 @@ impl ModelProvider for MockModelProvider {
             MockResponse::Pending => std::future::pending().await,
             MockResponse::PendingWithDropDelay(delay) => pending_with_drop_delay(delay).await,
             MockResponse::Barrier(_, _) => unreachable!("nested mock barriers are unsupported"),
+            MockResponse::ForUserText { .. } => {
+                unreachable!("history-routed responses require non-streaming inference")
+            }
         };
         Ok(frona::inference::provider::InferenceOutput::new(
             content, usage,
@@ -450,6 +494,9 @@ impl ModelProvider for MockModelProvider {
             MockResponse::Pending => std::future::pending().await,
             MockResponse::PendingWithDropDelay(delay) => pending_with_drop_delay(delay).await,
             MockResponse::Barrier(_, _) => unreachable!("nested mock barriers are unsupported"),
+            MockResponse::ForUserText { .. } => {
+                unreachable!("history-routed responses require conversation inference")
+            }
             _ => Err(InferenceError::InferenceFailed(
                 "mock structured_inference: queue head is not a ToolCalls response".into(),
             )),

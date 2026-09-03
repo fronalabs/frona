@@ -20,9 +20,9 @@ services:
     environment:
       - SEARXNG_BASE_URL=http://localhost:8080
       - SEARXNG_SECRET=change-me-to-something-random
-    configs:
-      - source: searxng-settings
-        target: /etc/searxng/settings.yml
+      - FORCE_OWNERSHIP=false
+    volumes:
+      - ./dev/searxng-settings.yml:/etc/searxng/settings.yml:ro
     restart: ${CONTAINER_RESTART_POLICY:-unless-stopped}
 
   frona-dev:
@@ -129,15 +129,6 @@ services:
       - NGROK_AUTHTOKEN
     ports:
       - "4040:4040"
-
-configs:
-  searxng-settings:
-    content: |
-      use_default_settings: true
-      search:
-        formats:
-          - html
-          - json
 
 volumes:
   cargo-cache:

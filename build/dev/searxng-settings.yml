@@ -1,0 +1,12 @@
+use_default_settings: true
+
+search:
+  formats:
+    - html
+    - json
+
+engines:
+  - name: bing
+    disabled: false
+  - name: mwmbl
+    disabled: false

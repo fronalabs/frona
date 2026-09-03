@@ -39,6 +39,7 @@ export type GlobalSSEEvent =
   | { type: "title"; chatId: string; title: string }
   | { type: "entity_updated"; chatId: string; table: string; recordId: string; fields: Record<string, unknown> }
   | { type: "task_update"; taskId: string; status: string; sourceChatId: string | null; title: string; chatId: string | null; resultSummary: string | null }
+  | { type: "activity_changed" }
   | { type: "inference_count"; count: number }
   | { type: "notification"; notification: Notification };
 
@@ -53,11 +54,14 @@ interface ChatSubscriber {
 
 type GlobalListener = (event: GlobalSSEEvent) => void;
 
+type ChatEventListener = (chatId: string, event: ChatSSEEvent) => void;
+
 type ReconnectListener = () => void;
 
 export class SSEEventBus {
   private chatSubscribers = new Map<string, Set<ChatSubscriber>>();
   private chatBuffers = new Map<string, ChatSSEEvent[]>();
+  private chatEventListeners = new Set<ChatEventListener>();
   private globalListeners = new Set<GlobalListener>();
   private reconnectListeners = new Set<ReconnectListener>();
   private activeSignal: AbortSignal | null = null;
@@ -154,8 +158,21 @@ export class SSEEventBus {
     return () => this.globalListeners.delete(callback);
   }
 
+  /** Observe chat events without consuming the chat-specific stream. */
+  onChatEvent(callback: ChatEventListener): () => void {
+    this.chatEventListeners.add(callback);
+    return () => this.chatEventListeners.delete(callback);
+  }
+
   private dispatchChat(chatId: string, event: ChatSSEEvent) {
     console.log("[sse-bus] dispatchChat", event.type, chatId);
+    for (const listener of this.chatEventListeners) {
+      try {
+        listener(chatId, event);
+      } catch {
+        // An observer must not interrupt delivery to the owning chat.
+      }
+    }
     const subs = this.chatSubscribers.get(chatId);
     if (subs) {
       for (const sub of subs) {
@@ -361,6 +378,9 @@ export class SSEEventBus {
         break;
       case "inference_count":
         this.dispatchGlobal({ type: "inference_count", count: parsed.count as number });
+        break;
+      case "activity_changed":
+        this.dispatchGlobal({ type: "activity_changed" });
         break;
       case "notification":
         this.dispatchGlobal({ type: "notification", notification: parsed.notification as Notification });

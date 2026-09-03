@@ -20,8 +20,23 @@ function stageName(stage: string) {
   } as Record<string, string>)[stage] ?? stage;
 }
 
-export function ConsolidationStatusCard({ value, className = "", compact = false, detailsOnly = false }: { value?: PkmConsolidationStatus | null; className?: string; compact?: boolean; detailsOnly?: boolean }) {
-  const [expanded, setExpanded] = useState(false);
+export function ConsolidationStatusCard({
+  value,
+  className = "",
+  compact = false,
+  detailsOnly = false,
+  expanded: controlledExpanded,
+  onExpandedChange,
+}: {
+  value?: PkmConsolidationStatus | null;
+  className?: string;
+  compact?: boolean;
+  detailsOnly?: boolean;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
+}) {
+  const [internalExpanded, setInternalExpanded] = useState(false);
+  const expanded = controlledExpanded ?? internalExpanded;
   const controlled = value !== undefined;
   const [loaded, setLoaded] = useState<PkmConsolidationStatus | null>(value ?? null);
   const status = controlled ? value ?? null : loaded;
@@ -43,9 +58,14 @@ export function ConsolidationStatusCard({ value, className = "", compact = false
 
   if (compact) {
     const active = status?.status === "running" || status?.status === "retrying";
+    const toggleExpanded = () => {
+      const next = !expanded;
+      if (controlledExpanded === undefined) setInternalExpanded(next);
+      onExpandedChange?.(next);
+    };
     return (
       <div className={className}>
-        <button type="button" onClick={() => setExpanded((open) => !open)} className="flex h-[46px] items-center gap-2 rounded-xl border border-border bg-surface-secondary/95 px-3 text-sm text-text-secondary shadow-lg backdrop-blur hover:text-text-primary" aria-expanded={expanded} aria-label="Memory consolidation status">
+        <button type="button" onClick={toggleExpanded} className="flex h-[46px] items-center gap-2 rounded-xl border border-border bg-surface-secondary/95 px-3 text-sm text-text-secondary shadow-lg backdrop-blur hover:text-text-primary" aria-expanded={expanded} aria-label="Memory consolidation status">
           <span className={`h-2 w-2 rounded-full ${status?.status === "failed" ? "bg-danger" : active ? "animate-pulse bg-accent" : "bg-success"}`} />
           <span className="hidden whitespace-nowrap sm:inline">{status ? (active ? stageName(status.stage) : status.status === "failed" ? "Consolidation failed" : "Memory up to date") : "Memory consolidation"}</span>
           <ChevronDownIcon className={`h-4 w-4 transition ${expanded ? "rotate-180" : ""}`} />

@@ -73,7 +73,7 @@ export function ChatView({
         </div>
       )}
       <ToolUIRegistry />
-      {loaded ? <AssistantThread /> : <div className="flex-1" />}
+      {loaded ? <AssistantThread chatId={currentChatId ?? undefined} /> : <div className="flex-1" />}
     </>
   );
 

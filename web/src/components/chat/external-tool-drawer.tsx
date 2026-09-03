@@ -229,7 +229,13 @@ export function ExternalToolDrawer({ wizard }: { wizard: ToolWizardState }) {
   );
 }
 
-export function CollapsedToolTab({ wizard }: { wizard: ToolWizardState }) {
+export function CollapsedToolTab({
+  wizard,
+  onExpand,
+}: {
+  wizard: ToolWizardState;
+  onExpand?: () => void;
+}) {
   const { collapsed, setCollapsed, currentIndex, submitted } = wizard;
   const pendingTools = usePendingTools();
 
@@ -241,7 +247,10 @@ export function CollapsedToolTab({ wizard }: { wizard: ToolWizardState }) {
 
   return (
     <button
-      onClick={() => setCollapsed(false)}
+      onClick={() => {
+        onExpand?.();
+        setCollapsed(false);
+      }}
       className="mb-[-1px] flex items-center gap-2 rounded-t-xl border border-b-0 border-border bg-surface-secondary px-4 py-1.5 hover:bg-surface-tertiary transition"
     >
       {toolIcon(currentTool)}

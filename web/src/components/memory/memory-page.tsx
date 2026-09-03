@@ -42,6 +42,7 @@ export function MemoryPage() {
   const [showInferred, setShowInferred] = useState(true);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const tab = isTab(searchParams.get("tab")) ? searchParams.get("tab") as MemoryTab : "page";
+  const consolidationExpanded = searchParams.get("consolidation") === "expanded";
 
   useEffect(() => {
     const path = searchParams.get("page") ?? "";
@@ -105,6 +106,14 @@ export function MemoryPage() {
   const setActiveTab = useCallback((nextTab: MemoryTab) => {
     if (selectedPath) writeSelection(selectedPath, nextTab, true);
   }, [selectedPath, writeSelection]);
+
+  const setConsolidationExpanded = useCallback((expanded: boolean) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (expanded) params.set("consolidation", "expanded");
+    else params.delete("consolidation");
+    const query = params.toString();
+    window.history.replaceState(null, "", query ? `${pathname}?${query}` : pathname);
+  }, [pathname, searchParams]);
 
   const openSearch = () => {
     setInspectorOpen(true);
@@ -208,7 +217,12 @@ export function MemoryPage() {
         >
           <AdjustmentsHorizontalIcon className="h-5 w-5" />
         </button>
-        <ConsolidationStatusCard compact className="relative shrink-0" />
+        <ConsolidationStatusCard
+          compact
+          expanded={consolidationExpanded}
+          onExpandedChange={setConsolidationExpanded}
+          className="relative shrink-0"
+        />
       </div>
 
       {filtersOpen && (

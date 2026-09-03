@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { FronaUserMessage } from "./frona-user-message";
 import { FronaAssistantMessage } from "./frona-assistant-message";
@@ -9,9 +9,16 @@ import { ExternalToolDrawer, CollapsedToolTab, useToolWizard } from "./external-
 import { WizardAnswersContext } from "@/lib/wizard-answers-context";
 import { usePendingTools } from "@/lib/pending-tools-context";
 import { useChatPagination } from "@/lib/chat-pagination-context";
+import {
+  ChatActivityDrawer,
+  ChatActivityTab,
+  useChatExecutions,
+} from "./chat-activity-drawer";
 
-export function AssistantThread() {
+export function AssistantThread({ chatId }: { chatId?: string }) {
   const wizard = useToolWizard();
+  const chatExecutions = useChatExecutions(chatId);
+  const [activityOpen, setActivityOpen] = useState(false);
   const wizardSetCollapsed = wizard.setCollapsed;
   const lastScrollTop = useRef(0);
   const updating = useRef(false);
@@ -87,7 +94,33 @@ export function AssistantThread() {
   );
 
   const pendingTools = usePendingTools();
+  const pendingToolIds = pendingTools.map((tool) => tool.id).join(",");
   const hasPendingTools = pendingTools.length > 0 && !wizard.submitted;
+  const hasChatActivity = chatExecutions.length > 0;
+
+  useEffect(() => {
+    if (!hasChatActivity) setActivityOpen(false);
+  }, [hasChatActivity]);
+
+  useEffect(() => {
+    if (!hasPendingTools) return;
+    setActivityOpen(false);
+    setCollapsed(false);
+  }, [hasPendingTools, pendingToolIds, setCollapsed]);
+
+  const expandActivity = useCallback(() => {
+    setCollapsed(true);
+    setActivityOpen(true);
+  }, [setCollapsed]);
+
+  const expandQuestion = useCallback(() => {
+    setActivityOpen(false);
+  }, []);
+
+  const hasCollapsedAccessory =
+    (hasPendingTools && safeWizard.collapsed) ||
+    (hasChatActivity && !activityOpen);
+  const hasComposerAccessory = hasPendingTools || hasChatActivity;
 
   return (
     <WizardAnswersContext value={wizard.answers}>
@@ -110,20 +143,29 @@ export function AssistantThread() {
       <ThreadPrimitive.ViewportFooter className="sticky bottom-0">
         <ThreadPrimitive.ScrollToBottom asChild>
           <button className={`absolute left-1/2 -translate-x-1/2 z-20 rounded-full border border-border bg-surface px-3 py-1 text-xs text-text-secondary shadow-sm hover:bg-surface-secondary transition disabled:hidden ${
-            hasPendingTools && safeWizard.collapsed ? "-top-16" : "-top-10"
+            hasCollapsedAccessory ? "-top-16" : "-top-10"
           }`}>
             Scroll to bottom
           </button>
         </ThreadPrimitive.ScrollToBottom>
         <div className="relative mx-auto w-full max-w-3xl px-3 md:px-6 pb-4">
-          <div className="absolute inset-x-0 -top-7 z-0 flex justify-center px-3 md:px-6">
-            <CollapsedToolTab wizard={safeWizard} />
+          <div className="relative z-0 flex items-end justify-center gap-1 px-3 md:px-6">
+            <CollapsedToolTab wizard={safeWizard} onExpand={expandQuestion} />
+            {!activityOpen && (
+              <ChatActivityTab executions={chatExecutions} onExpand={expandActivity} />
+            )}
           </div>
           <div className={`relative z-10 rounded-2xl transition-colors ${
-            hasPendingTools
+            hasComposerAccessory
               ? "border border-border bg-surface-secondary focus-within:border-accent"
               : "has-[.tool-drawer]:border has-[.tool-drawer]:border-border has-[.tool-drawer]:bg-surface-secondary has-[.tool-drawer]:focus-within:border-accent focus-within:border-accent"
           }`}>
+            {activityOpen && (
+              <ChatActivityDrawer
+                executions={chatExecutions}
+                onCollapse={() => setActivityOpen(false)}
+              />
+            )}
             <ExternalToolDrawer wizard={safeWizard} />
             <FronaComposer wizard={safeWizard} />
           </div>

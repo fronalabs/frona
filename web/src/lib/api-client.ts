@@ -432,6 +432,10 @@ export function getTask(id: string) {
   return api.get<import("./types").TaskResponse>(`/api/tasks/${id}`);
 }
 
+export function getActivity() {
+  return api.get<import("./types").ActivitySnapshot>("/api/activity");
+}
+
 export function getCronRuns(cronId: string) {
   return api.get<import("./types").TaskResponse[]>(`/api/tasks/${cronId}/runs`);
 }

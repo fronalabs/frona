@@ -6,6 +6,7 @@ import { NavigationProvider } from "@/lib/navigation-context";
 import { NotificationProvider } from "@/lib/notification-context";
 import { SessionProvider } from "@/lib/session-context";
 import { TopBar } from "@/components/layout/top-bar";
+import { ActivityProvider } from "@/lib/activity-context";
 
 export default function MainLayout({
   children,
@@ -18,12 +19,14 @@ export default function MainLayout({
         <NotificationProvider>
           <Suspense>
             <SessionProvider>
-              <div className="flex flex-col h-screen">
-                <TopBar />
-                <div className="flex-1 overflow-hidden">
-                  {children}
+              <ActivityProvider>
+                <div className="flex flex-col h-screen">
+                  <TopBar />
+                  <div className="flex-1 overflow-hidden">
+                    {children}
+                  </div>
                 </div>
-              </div>
+              </ActivityProvider>
             </SessionProvider>
           </Suspense>
         </NotificationProvider>

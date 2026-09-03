@@ -3,15 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
   getMemoryGraph: vi.fn(),
+  getPkmStatus: vi.fn(),
   searchMemory: vi.fn(),
 }));
 const inspector = vi.hoisted(() => ({ props: vi.fn() }));
+const navigation = vi.hoisted(() => ({ search: "" }));
 
 vi.mock("@/lib/api-client", () => api);
 vi.mock("@/lib/use-mobile", () => ({ useMobile: () => false }));
 vi.mock("next/navigation", () => ({
   usePathname: () => "/memory",
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => new URLSearchParams(navigation.search),
 }));
 vi.mock("../memory-graph-canvas", () => ({ MemoryGraphCanvas: () => null }));
 vi.mock("../memory-inspector", () => ({
@@ -26,8 +28,11 @@ import { MemoryPage } from "../memory-page";
 describe("MemoryPage", () => {
   beforeEach(() => {
     api.getMemoryGraph.mockReset();
+    api.getPkmStatus.mockReset();
+    api.getPkmStatus.mockResolvedValue({ available: true, reset: null, consolidation: null });
     api.searchMemory.mockReset();
     inspector.props.mockReset();
+    navigation.search = "";
   });
 
   it("shows an empty state after a new user's empty graph loads", async () => {
@@ -111,5 +116,39 @@ describe("MemoryPage", () => {
         expect.objectContaining({ path: "people/alice", name: "Alice" }),
       ],
     }));
+  });
+
+  it("opens consolidation progress when requested by the activity link", async () => {
+    navigation.search = "consolidation=expanded";
+    api.getMemoryGraph.mockResolvedValue({
+      revision: "one",
+      selfPath: "people/zoe",
+      nodes: [
+        {
+          path: "people/zoe",
+          name: "Zoe",
+          description: "The owner",
+          useCount: 0,
+          origin: "internal",
+          category: "concept",
+          types: [],
+          displayType: null,
+          colorBranch: "",
+          hoverAttributes: [],
+          additionalAttributeCount: 0,
+          relationStats: { total: 0, incoming: 0, outgoing: 0, asserted: 0, inferred: 0 },
+        },
+      ],
+      edges: [],
+      legend: [],
+    });
+
+    render(<MemoryPage />);
+
+    const progressButton = await screen.findByRole("button", {
+      name: "Memory consolidation status",
+    });
+    expect(progressButton).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(/No consolidation has run yet/)).toBeInTheDocument();
   });
 });

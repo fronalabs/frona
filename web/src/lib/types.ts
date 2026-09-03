@@ -432,6 +432,37 @@ export interface TaskUpdateEvent {
   result_summary: string | null;
 }
 
+export type ExecutionKind =
+  | "inference"
+  | "task"
+  | "memory"
+  | "app"
+  | "scheduled"
+  | "system";
+
+export type ExecutionStatus = "queued" | "running" | "waiting" | "cancelling";
+
+export interface ExecutionSource {
+  type: "chat" | "task" | "schedule" | "system";
+  id?: string;
+}
+
+export interface Execution {
+  id: string;
+  title: string;
+  kind: ExecutionKind;
+  status: ExecutionStatus;
+  action?: string;
+  source?: ExecutionSource;
+  relatedChatIds?: string[];
+  startedAt: string;
+  canCancel: boolean;
+}
+
+export interface ActivitySnapshot {
+  executions: Execution[];
+}
+
 const DEFAULT_AGENT_NAMES: Record<string, string> = {
   system: "Assistant",
   researcher: "Researcher",

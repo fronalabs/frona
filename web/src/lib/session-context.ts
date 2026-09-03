@@ -34,7 +34,6 @@ interface SessionContextValue {
   activeTaskId: string | null;
   activeTask: TaskResponse | null;
   agentId: string | null;
-  inferring: boolean;
   createChat: (req: CreateChatRequest) => Promise<ChatResponse>;
   setPendingMessage: (message: string, attachments?: Attachment[]) => void;
   getPendingMessage: () => PendingMessage | null;
@@ -53,7 +52,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [activeChat, setActiveChat] = useState<ChatResponse | null>(null);
   const systemAgent = useSystemAgent();
   const agentId = activeChat?.agent_id ?? agentParam ?? systemAgent.id;
-  const [inferring, setInferring] = useState(false);
   const { updateChatTitle, updateAgent, updateTaskInList, setActiveTab, standaloneChats, spaces, archivedChats } = useNavigation();
   const { addNotification } = useNotifications();
 
@@ -146,7 +144,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
           }
           break;
         case "inference_count":
-          setInferring(event.count > 0);
+        case "activity_changed":
           break;
         case "notification":
           addNotification(event.notification);
@@ -184,7 +182,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         activeTaskId,
         activeTask,
         agentId,
-        inferring,
         createChat,
         setPendingMessage,
         getPendingMessage,

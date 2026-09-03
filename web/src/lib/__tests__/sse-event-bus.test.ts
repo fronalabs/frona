@@ -114,6 +114,26 @@ describe("SSEEventBus: chat event routing", () => {
     controller.abort();
   });
 
+  it("lets observers inspect a chat event without consuming it", async () => {
+    const observed: Array<{ chatId: string; event: ChatSSEEvent }> = [];
+    bus.onChatEvent((chatId, event) => observed.push({ chatId, event }));
+    const controller = new AbortController();
+    const iter = bus.subscribe("task-chat", controller.signal)[Symbol.asyncIterator]();
+
+    bus.routeEvent("tool_call", "task-chat", {
+      id: "te-1",
+      provider_call_id: "tc-1",
+      name: "web_search",
+      arguments: { query: "test" },
+      description: "Searching",
+    });
+
+    const delivered = await iter.next();
+    expect(observed).toEqual([{ chatId: "task-chat", event: delivered.value }]);
+
+    controller.abort();
+  });
+
   it("routes tool_result events correctly", async () => {
     const controller = new AbortController();
     const iter = bus.subscribe("chat-1", controller.signal)[Symbol.asyncIterator]();
@@ -303,6 +323,15 @@ describe("SSEEventBus: global events", () => {
 
     expect(received).toHaveLength(1);
     expect(received[0]).toEqual({ type: "inference_count", count: 3 });
+  });
+
+  it("delivers activity_changed as a payload-free wake event", () => {
+    const received: GlobalSSEEvent[] = [];
+    bus.onGlobal((event) => received.push(event));
+
+    bus.routeEvent("activity_changed", "", {});
+
+    expect(received).toEqual([{ type: "activity_changed" }]);
   });
 
   it("delivers notification events to global listeners", () => {

@@ -67,7 +67,7 @@ describe("ChatStore", () => {
       await vi.waitFor(() => expect(listener).toHaveBeenCalledTimes(1));
     });
 
-    it("batches streaming notifications to one animation frame", () => {
+    it("batches mixed SSE notifications to one animation frame", () => {
       const callbacks: FrameRequestCallback[] = [];
       const animationFrame = vi
         .spyOn(globalThis, "requestAnimationFrame")
@@ -80,6 +80,18 @@ describe("ChatStore", () => {
 
       for (let i = 0; i < 100; i += 1) {
         store.handleEvent({ type: "token", content: "x" });
+        store.handleEvent({
+          type: "tool_call",
+          id: `tool-${i}`,
+          provider_call_id: `provider-tool-${i}`,
+          name: `tool_${i}`,
+          arguments: {},
+        });
+        store.handleEvent({
+          type: "tool_result",
+          name: `tool_${i}`,
+          success: true,
+        });
       }
 
       expect(listener).not.toHaveBeenCalled();

@@ -505,7 +505,13 @@ export class ChatStore {
         break;
       }
     }
-    this.notify(event.type === "token" || event.type === "reasoning");
+    // A chat can accumulate a long SSE backlog while it is not mounted. When
+    // the user opens it, the async iterator replays that queue in one turn.
+    // Publishing every tool/lifecycle event synchronously makes React's
+    // external-store subscriber recursively render once per buffered event.
+    // Apply every event immediately, but expose the combined state at most
+    // once per animation frame (the same cadence used for token streaming).
+    this.notify(true);
   }
 
   /**

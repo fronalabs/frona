@@ -2,7 +2,7 @@
 
 import { ClockIcon, UserCircleIcon } from "@heroicons/react/24/outline";
 import { cn } from "@/lib/utils";
-import { ToolViewFallback } from "./safe-tool-view";
+import { shouldUseToolViewFallback, ToolViewFallback } from "./safe-tool-view";
 import { ToolRow } from "./tool-row";
 import type { ToolView } from "./types";
 
@@ -85,7 +85,7 @@ export const CreateTaskView: ToolView = ({
     typeof a.delay_minutes === "number" ? a.delay_minutes : null;
 
   const parsed = parseResult(result);
-  if (result !== undefined && parsed === null) {
+  if (shouldUseToolViewFallback(result, parsed !== null, status)) {
     return <ToolViewFallback />;
   }
 

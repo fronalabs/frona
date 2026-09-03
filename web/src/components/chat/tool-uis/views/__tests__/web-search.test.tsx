@@ -94,6 +94,26 @@ describe("WebSearchView", () => {
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 
+  it("keeps the Web Search view when a failed request returns an HTML error", () => {
+    const error = "Error: HTTP error 403: <html><h1>Forbidden</h1></html>";
+    render(
+      <SafeToolView
+        view={WebSearchView}
+        {...mkProps({
+          toolName: "web_search",
+          args: { query: "Mac Studio M5 Max price" },
+          argsText: JSON.stringify({ query: "Mac Studio M5 Max price" }),
+          result: error,
+          status: { type: "incomplete", reason: "error", error },
+        })}
+      />,
+    );
+
+    expect(screen.getByText(/Mac Studio M5 Max price/)).toBeInTheDocument();
+    expect(screen.getByText("Failed")).toBeInTheDocument();
+    expect(screen.queryByText("Result:")).not.toBeInTheDocument();
+  });
+
   it("disables expansion when there's no result yet", () => {
     render(
       <WebSearchView

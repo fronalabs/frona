@@ -1,7 +1,7 @@
 "use client";
 
 import { DocumentIcon } from "@heroicons/react/24/outline";
-import { ToolViewFallback } from "./safe-tool-view";
+import { shouldUseToolViewFallback, ToolViewFallback } from "./safe-tool-view";
 import { ToolRow } from "./tool-row";
 import type { ToolView } from "./types";
 
@@ -44,7 +44,7 @@ export const ProduceFileView: ToolView = ({
     (typeof parsed.filename === "string" ||
       typeof parsed.content_type === "string" ||
       typeof parsed.size_bytes === "number");
-  if (result !== undefined && !resultMatchesView) {
+  if (shouldUseToolViewFallback(result, resultMatchesView, status)) {
     return <ToolViewFallback />;
   }
 

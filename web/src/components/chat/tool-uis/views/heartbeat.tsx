@@ -1,7 +1,7 @@
 "use client";
 
 import { BellAlertIcon, BellSlashIcon } from "@heroicons/react/24/outline";
-import { ToolViewFallback } from "./safe-tool-view";
+import { shouldUseToolViewFallback, ToolViewFallback } from "./safe-tool-view";
 import { ToolRow } from "./tool-row";
 import type { ToolView } from "./types";
 
@@ -99,7 +99,7 @@ export const HeartbeatView: ToolView = ({
     typeof a.interval_minutes === "number" ? a.interval_minutes : null;
 
   const parsed = parseResult(result);
-  if (result !== undefined && parsed === null) {
+  if (shouldUseToolViewFallback(result, parsed !== null, status)) {
     return <ToolViewFallback />;
   }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { ToolViewFallback } from "./safe-tool-view";
+import { shouldUseToolViewFallback, ToolViewFallback } from "./safe-tool-view";
 import { ToolRow } from "./tool-row";
 import type { ToolView } from "./types";
 
@@ -65,7 +65,7 @@ export const WebSearchView: ToolView = ({
         ? JSON.stringify(result, null, 2)
         : "";
   const hits = parseSearchResult(resultText);
-  if (result !== undefined && hits === null) {
+  if (shouldUseToolViewFallback(result, hits !== null, status)) {
     return <ToolViewFallback />;
   }
 

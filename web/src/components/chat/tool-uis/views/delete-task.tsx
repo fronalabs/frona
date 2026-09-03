@@ -1,7 +1,7 @@
 "use client";
 
 import { CheckCircleIcon } from "@heroicons/react/24/outline";
-import { ToolViewFallback } from "./safe-tool-view";
+import { shouldUseToolViewFallback, ToolViewFallback } from "./safe-tool-view";
 import { ToolRow } from "./tool-row";
 import type { ToolView } from "./types";
 
@@ -42,7 +42,7 @@ export const DeleteTaskView: ToolView = ({
   const taskId = typeof a.task_id === "string" ? a.task_id : "";
 
   const parsed = parseResult(result);
-  if (result !== undefined && parsed === null) {
+  if (shouldUseToolViewFallback(result, parsed !== null, status)) {
     return <ToolViewFallback />;
   }
 

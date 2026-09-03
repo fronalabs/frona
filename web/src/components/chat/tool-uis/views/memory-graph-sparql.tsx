@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { CheckCircleIcon, XCircleIcon } from "@heroicons/react/24/outline";
 import { CodeBlock } from "@/components/ui/code-block";
-import { ToolViewFallback } from "./safe-tool-view";
+import { shouldUseToolViewFallback, ToolViewFallback } from "./safe-tool-view";
 import { ToolRow } from "./tool-row";
 import type { ToolView } from "./types";
 
@@ -174,7 +174,7 @@ export const MemoryGraphSparqlView: ToolView = ({
   const values = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
   const query = typeof values.query === "string" ? values.query : "";
   const { parsed, raw } = decodeResult(result);
-  if (result !== undefined && parsed === null) {
+  if (shouldUseToolViewFallback(result, parsed !== null, status)) {
     return <ToolViewFallback />;
   }
 

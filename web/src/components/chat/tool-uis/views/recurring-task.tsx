@@ -2,7 +2,7 @@
 
 import cronstrue from "cronstrue";
 import { ClockIcon, UserCircleIcon } from "@heroicons/react/24/outline";
-import { ToolViewFallback } from "./safe-tool-view";
+import { shouldUseToolViewFallback, ToolViewFallback } from "./safe-tool-view";
 import { ToolRow } from "./tool-row";
 import type { ToolView } from "./types";
 
@@ -110,7 +110,7 @@ export const RecurringTaskView: ToolView = ({
   const targetAgent = typeof a.target_agent === "string" ? a.target_agent : null;
 
   const parsedResult = parseResult(result);
-  if (result !== undefined && parsedResult === null) {
+  if (shouldUseToolViewFallback(result, parsedResult !== null, status)) {
     return <ToolViewFallback />;
   }
 

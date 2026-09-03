@@ -1,7 +1,7 @@
 "use client";
 
 import { DocumentTextIcon } from "@heroicons/react/24/outline";
-import { ToolViewFallback } from "./safe-tool-view";
+import { shouldUseToolViewFallback, ToolViewFallback } from "./safe-tool-view";
 import { ToolRow } from "./tool-row";
 import type { ToolView } from "./types";
 
@@ -126,7 +126,7 @@ export const MemorySearchView: ToolView = ({
         ? JSON.stringify(result, null, 2)
         : "";
   const parsed = parseMemoryResult(resultText);
-  if (result !== undefined && parsed === null) {
+  if (shouldUseToolViewFallback(result, parsed !== null, status)) {
     return <ToolViewFallback />;
   }
 

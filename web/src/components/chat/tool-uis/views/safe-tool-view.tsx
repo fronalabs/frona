@@ -22,6 +22,19 @@ export function ToolViewFallback() {
   return fallback;
 }
 
+/**
+ * A failed or cancelled call can return an error payload that does not match
+ * the tool's success schema. Keep the known tool view so ToolRow can render
+ * its error state without exposing the generic arguments block.
+ */
+export function shouldUseToolViewFallback(
+  result: unknown,
+  matchesView: boolean,
+  status: ToolViewProps["status"],
+): boolean {
+  return result !== undefined && !matchesView && status?.type !== "incomplete";
+}
+
 interface ErrorBoundaryProps {
   children: ReactNode;
   fallback: ReactNode;

@@ -186,6 +186,30 @@ async fn event_stream_receives_task_update_broadcast() {
 }
 
 #[tokio::test]
+async fn event_stream_receives_user_scoped_activity_wakeups() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, user_id) = register_user(
+        &state,
+        "sse-activity",
+        "sseactivity@example.com",
+        "password123",
+    )
+    .await;
+
+    let app = build_app(state.clone());
+    let response = app.oneshot(auth_get("/api/stream", &token)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    state.broadcast_service.broadcast_activity_changed(&user_id);
+    state
+        .broadcast_service
+        .broadcast_activity_changed("another-user");
+
+    let body = collect_sse_frames(response.into_body(), 500).await;
+    assert_eq!(body.matches("event: activity_changed").count(), 1);
+}
+
+#[tokio::test]
 async fn event_stream_filters_other_user_task_updates() {
     let (state, _tmp) = test_app_state().await;
     let (token, _user_id) =

@@ -158,6 +158,7 @@ async fn test_app_state_with_mock(mock: Arc<MockModelProvider>) -> (AppState, te
         state.policy_service.clone(),
         state.broadcast_service.clone(),
         state.active_sessions.clone(),
+        state.execution_registry.clone(),
         state.shutdown_token.clone(),
         state.prompts.clone(),
         state.config.clone(),
@@ -284,19 +285,40 @@ async fn task_execution_emits_expected_sse_events() {
     // Give the dispatcher a moment to route remaining events.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let frames: Vec<SseFrame> = drain_sse_frames(&mut rx).await;
-    // `entity_updated` is for the channel watcher, not the user-visible
-    // flow this test asserts against.
-    let frames: Vec<SseFrame> = frames
-        .into_iter()
-        .filter(|f| f.event != "entity_updated")
-        .collect();
-    let event_names: Vec<&str> = frames.iter().map(|f| f.event.as_str()).collect();
+    let all_frames: Vec<SseFrame> = drain_sse_frames(&mut rx).await;
+    let all_event_names: Vec<&str> = all_frames.iter().map(|f| f.event.as_str()).collect();
 
-    println!("SSE events received: {event_names:?}");
-    for frame in &frames {
+    println!("SSE events received: {all_event_names:?}");
+    for frame in &all_frames {
         println!("  {}: {}", frame.event, frame.data);
     }
+
+    assert_eq!(
+        all_frames.first().map(|frame| frame.event.as_str()),
+        Some("activity_changed"),
+        "Task activity should start before task progress"
+    );
+    assert_eq!(
+        all_frames.last().map(|frame| frame.event.as_str()),
+        Some("activity_changed"),
+        "Task activity should finish after the terminal task update"
+    );
+    assert_eq!(
+        all_frames
+            .iter()
+            .filter(|frame| frame.event == "activity_changed")
+            .count(),
+        2,
+        "Task execution should emit one start and one finish activity wakeup"
+    );
+
+    // `entity_updated` belongs to the channel watcher. `activity_changed`
+    // brackets the task lifecycle and is asserted separately above.
+    let frames: Vec<SseFrame> = all_frames
+        .into_iter()
+        .filter(|f| f.event != "entity_updated" && f.event != "activity_changed")
+        .collect();
+    let event_names: Vec<&str> = frames.iter().map(|f| f.event.as_str()).collect();
 
     // Expected sequence (first turn + final task_update):
     //   task_update(inprogress) → chat_message → token → inference_done → ... → task_update

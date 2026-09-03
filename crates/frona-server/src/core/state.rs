@@ -26,6 +26,7 @@ use crate::call::CallService;
 use crate::chat::broadcast::BroadcastService;
 use crate::chat::service::ChatService;
 use crate::contact::ContactService;
+use crate::core::execution::ExecutionRegistry;
 use crate::credential::keypair::service::KeyPairService;
 use crate::credential::presign::PresignService;
 use crate::credential::vault::service::VaultService;
@@ -114,6 +115,7 @@ pub struct AppState {
     pub broadcast_service: BroadcastService,
     pub browser_session_manager: Arc<BrowserSessionManager>,
     pub active_sessions: ActiveSessions,
+    pub execution_registry: ExecutionRegistry,
     pub notification_service: NotificationService,
     pub sandbox_factory: Arc<SandboxFactory>,
     pub sandbox_manager: Arc<SandboxManager>,
@@ -541,6 +543,7 @@ impl AppState {
         );
         let shutdown_token = CancellationToken::new();
         let active_sessions = ActiveSessions::default();
+        let execution_registry = ExecutionRegistry::new(broadcast_service.clone());
         let harness = Arc::new(crate::agent::harness::Harness::new(
             chat_service.clone(),
             user_service.clone(),
@@ -555,6 +558,7 @@ impl AppState {
             policy_service.clone(),
             broadcast_service.clone(),
             active_sessions.clone(),
+            execution_registry.clone(),
             shutdown_token.clone(),
             prompt_loader.clone(),
             config_arc.clone(),
@@ -613,6 +617,7 @@ impl AppState {
             broadcast_service: broadcast_service.clone(),
             browser_session_manager: Arc::new(BrowserSessionManager::new(config.browser.clone())),
             active_sessions,
+            execution_registry,
             notification_service: NotificationService::new(SurrealRepo::new(db.clone())),
             policy_service: policy_service.clone(),
             tool_manager,

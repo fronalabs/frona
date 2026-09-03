@@ -9,6 +9,7 @@ use crate::agent::task::models::{SignalMode, Task, TaskKind, TaskStatus};
 use crate::chat::message::models::{MessageEvent, MessageRole};
 use crate::chat::models::CreateChatRequest;
 use crate::core::error::AppError;
+use crate::core::execution::{ExecutionKind, ExecutionSource, ExecutionSourceKind, NewExecution};
 use crate::inference::InferenceResponse;
 use crate::inference::conversation::TaskConversationBuilder;
 use crate::inference::tool_call::TaskEvent;
@@ -372,6 +373,38 @@ impl TaskExecutor {
             map: self.active_tasks.clone(),
             key,
         };
+        let (kind, source) = match &task.kind {
+            TaskKind::CronRun { source_cron_id, .. } => (
+                ExecutionKind::Scheduled,
+                ExecutionSource {
+                    kind: ExecutionSourceKind::Schedule,
+                    id: Some(source_cron_id.clone()),
+                },
+            ),
+            _ => (
+                ExecutionKind::Task,
+                ExecutionSource {
+                    kind: ExecutionSourceKind::Task,
+                    id: Some(task.id.clone()),
+                },
+            ),
+        };
+        let _execution = self.harness.execution_registry.start(
+            &task.user_id,
+            NewExecution {
+                title: task.title.clone(),
+                kind,
+                action: Some("Running task".to_string()),
+                source: Some(source),
+                related_chat_ids: task
+                    .kind
+                    .source_chat_id()
+                    .map(|chat_id| vec![chat_id.to_string()])
+                    .unwrap_or_default(),
+                // Cancelling the source schedule would also disable future runs.
+                can_cancel: !matches!(&task.kind, TaskKind::CronRun { .. }),
+            },
+        );
         self.execute_task(task, cancel_token).await
     }
 

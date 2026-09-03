@@ -497,6 +497,20 @@ async fn execute_heartbeat(
     user_id: &str,
     heartbeat_content: &str,
 ) -> Result<(), AppError> {
+    let _execution = state.execution_registry.start(
+        user_id,
+        crate::core::execution::NewExecution {
+            title: format!("{} heartbeat", agent.name),
+            kind: crate::core::execution::ExecutionKind::Scheduled,
+            action: Some("Running heartbeat".to_string()),
+            source: Some(crate::core::execution::ExecutionSource {
+                kind: crate::core::execution::ExecutionSourceKind::System,
+                id: None,
+            }),
+            related_chat_ids: Vec::new(),
+            can_cancel: false,
+        },
+    );
     let agent_id = &agent.id;
 
     let chat_id = if let Some(ref cid) = agent.heartbeat_chat_id {

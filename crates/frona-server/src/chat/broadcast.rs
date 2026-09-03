@@ -44,6 +44,7 @@ pub enum BroadcastEventKind {
     InferenceCount {
         count: usize,
     },
+    ActivityChanged,
     EntityUpdated {
         table: String,
         record_id: String,
@@ -318,6 +319,9 @@ pub(crate) fn map_event_to_sse(event: &BroadcastEvent) -> Option<Event> {
             "inference_count",
             serde_json::json!({ "count": count }),
         )),
+        BroadcastEventKind::ActivityChanged => {
+            Some(sse_event("activity_changed", serde_json::json!({})))
+        }
         BroadcastEventKind::NewNotification { notification } => Some(sse_event(
             "notification",
             serde_json::json!({ "notification": notification }),
@@ -540,6 +544,15 @@ impl BroadcastService {
             chat_id: None,
             space_id: None,
             kind: BroadcastEventKind::InferenceCount { count },
+        });
+    }
+
+    pub fn broadcast_activity_changed(&self, user_id: &str) {
+        self.dispatch(BroadcastEvent {
+            user_id: user_id.to_string(),
+            chat_id: None,
+            space_id: None,
+            kind: BroadcastEventKind::ActivityChanged,
         });
     }
 

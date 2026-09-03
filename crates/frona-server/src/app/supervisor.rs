@@ -218,6 +218,7 @@ impl Supervisor for AppSupervisor {
         let user_id = app.user_id.clone();
         let chat_id = app.chat_id.clone();
         let agent_id = app.agent_id.clone();
+        let app_name = app.name.clone();
         tokio::spawn(async move {
             let message_id = match state
                 .chat_service
@@ -244,7 +245,22 @@ impl Supervisor for AppSupervisor {
                     return;
                 }
             };
-            if let Err(e) = state.harness.resume(&user_id, &chat_id, &message_id).await {
+            let execution = crate::core::execution::NewExecution {
+                title: format!("Fixing {app_name}"),
+                kind: crate::core::execution::ExecutionKind::App,
+                action: Some("Repairing crashed app".to_string()),
+                source: Some(crate::core::execution::ExecutionSource {
+                    kind: crate::core::execution::ExecutionSourceKind::Chat,
+                    id: Some(chat_id.clone()),
+                }),
+                related_chat_ids: vec![chat_id.clone()],
+                can_cancel: true,
+            };
+            if let Err(e) = state
+                .harness
+                .resume_with_execution(&user_id, &chat_id, &message_id, execution)
+                .await
+            {
                 tracing::error!(error = %e, chat_id = %chat_id, "Failed to resume app chat for crash fix");
             }
         });

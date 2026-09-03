@@ -152,6 +152,20 @@ impl PkmService {
         harness: Arc<crate::agent::harness::Harness>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<ConsolidationStats, AppError> {
+        let _execution = harness.execution_registry.start(
+            &scope.user_id,
+            crate::core::execution::NewExecution {
+                title: "Memory consolidation".to_string(),
+                kind: crate::core::execution::ExecutionKind::Memory,
+                action: Some("Consolidating memory".to_string()),
+                source: Some(crate::core::execution::ExecutionSource {
+                    kind: crate::core::execution::ExecutionSourceKind::System,
+                    id: None,
+                }),
+                related_chat_ids: Vec::new(),
+                can_cancel: false,
+            },
+        );
         // Mining's counts are already banked: the sweep merges them into the record and
         // saves it before this opens it. Merging them again here would double every
         // extract count in the pass log.

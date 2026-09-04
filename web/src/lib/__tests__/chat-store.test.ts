@@ -662,6 +662,28 @@ describe("ChatStore", () => {
       expect(msgs[0].id).toBe("msg-1");
       expect(msgs[0].tool_calls!.length).toBe(2);
     });
+
+    it("does not duplicate a persisted tool call when SSE replays it", () => {
+      const toolCallId = "01a06ba9-4121-7a16-8562-d4113fc0a944";
+      store.messages.push(
+        makeAgentMessage({
+          id: "msg-1",
+          status: "executing",
+          tool_calls: [makeToolCall({ id: toolCallId })],
+        }),
+      );
+
+      store.handleEvent({
+        type: "tool_call",
+        id: toolCallId,
+        provider_call_id: "tc-replayed",
+        name: "web_search",
+        arguments: "{}",
+      });
+
+      const toolCallIds = store.getDisplayMessages()[0].tool_calls!.map((tool) => tool.id);
+      expect(toolCallIds).toEqual([toolCallId]);
+    });
   });
 
   describe("resolveToolCall", () => {

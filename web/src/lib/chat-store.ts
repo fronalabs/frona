@@ -548,7 +548,13 @@ export class ChatStore {
         updated.reasoning = [last.reasoning, this.streamingReasoning].filter(Boolean).join("");
       }
       if (streamingTools.length > 0) {
-        updated.tool_calls = [...(last.tool_calls ?? []), ...streamingTools];
+        const toolCallsById = new Map(
+          (last.tool_calls ?? []).map((toolCall) => [toolCall.id, toolCall]),
+        );
+        for (const toolCall of streamingTools) {
+          toolCallsById.set(toolCall.id, toolCall);
+        }
+        updated.tool_calls = [...toolCallsById.values()];
       }
       return [...merged.slice(0, -1), updated];
     }

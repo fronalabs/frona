@@ -131,4 +131,65 @@ describe("useChatRuntime buffered SSE replay", () => {
 
     view.unmount();
   });
+
+  it("replays a buffered tool call already present in the loaded executing message", async () => {
+    const chatId = `replayed-tool-chat-${crypto.randomUUID()}`;
+    const toolCallId = "01a06ba9-4121-7a16-8562-d4113fc0a944";
+
+    mocks.apiGet.mockImplementation((path: string) => {
+      if (path.endsWith("/usage")) {
+        return Promise.resolve({
+          totals: {
+            input_tokens: 0,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0,
+            calls: 0,
+          },
+          last_chat_input_tokens: null,
+          total_tool_calls: 0,
+        });
+      }
+      return Promise.resolve({
+        messages: [{
+          id: "message-1",
+          chat_id: chatId,
+          role: "agent",
+          content: "",
+          status: "executing",
+          created_at: "2026-09-04T01:44:00Z",
+          tool_calls: [{
+            id: toolCallId,
+            chat_id: chatId,
+            message_id: "message-1",
+            turn: 1,
+            provider_call_id: "provider-tool-1",
+            name: "web_search",
+            arguments: {},
+            result: "",
+            success: true,
+            duration_ms: 0,
+            created_at: "2026-09-04T01:44:00Z",
+          }],
+        }],
+        has_more: false,
+      });
+    });
+
+    sseBus.routeEvent("tool_call", chatId, {
+      id: toolCallId,
+      provider_call_id: "provider-tool-1",
+      name: "web_search",
+      arguments: {},
+    });
+
+    const view = render(<ChatView chatId={chatId} agentId="agent-1" />);
+
+    await waitFor(() => {
+      expect(view.getByTestId("composer")).toBeInTheDocument();
+      expect(view.getAllByTestId("assistant-message")).toHaveLength(1);
+    });
+
+    view.unmount();
+  });
 });

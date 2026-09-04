@@ -2969,7 +2969,7 @@ dependencies = [
 
 [[package]]
 name = "frona-api-types"
-version = "2026.8.0"
+version = "2026.9.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2977,7 +2977,7 @@ dependencies = [
 
 [[package]]
 name = "frona-browser"
-version = "2026.8.0"
+version = "2026.9.0"
 dependencies = [
  "chromiumoxide",
  "futures",
@@ -2994,7 +2994,7 @@ dependencies = [
 
 [[package]]
 name = "frona-cli-mcp"
-version = "2026.8.0"
+version = "2026.9.0"
 dependencies = [
  "clap",
  "frona-api-types",
@@ -3006,7 +3006,7 @@ dependencies = [
 
 [[package]]
 name = "frona-derive"
-version = "2026.8.0"
+version = "2026.9.0"
 dependencies = [
  "chrono",
  "heck 0.5.0",
@@ -3028,7 +3028,7 @@ dependencies = [
 
 [[package]]
 name = "frona-server"
-version = "2026.8.0"
+version = "2026.9.0"
 dependencies = [
  "aes-gcm 0.11.0",
  "agent-skills",
@@ -3145,7 +3145,7 @@ dependencies = [
 
 [[package]]
 name = "frona-text"
-version = "2026.8.0"
+version = "2026.9.0"
 dependencies = [
  "ignore",
  "serde",

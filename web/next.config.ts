@@ -8,7 +8,6 @@ const nextConfig: NextConfig = {
   env: {
     NEXT_PUBLIC_FRONA_SERVER_BACKEND_URL:
       process.env.FRONA_SERVER_BACKEND_URL || "",
-    NEXT_TELEMETRY_DISABLED: "1",
   },
 };
 

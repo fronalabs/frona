@@ -3,9 +3,9 @@
   "version": "2026.8.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --port 3000 --hostname 0.0.0.0 --webpack",
-    "build": "next build",
-    "start": "next start",
+    "dev": "NEXT_TELEMETRY_DISABLED=1 next dev --port 3000 --hostname 0.0.0.0 --webpack",
+    "build": "NEXT_TELEMETRY_DISABLED=1 next build",
+    "start": "NEXT_TELEMETRY_DISABLED=1 next start",
     "lint": "eslint src/",
     "test": "vitest"
   },

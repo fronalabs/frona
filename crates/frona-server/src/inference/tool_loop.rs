@@ -265,6 +265,20 @@ struct ToolCallExecutionResult {
     accumulated_system_prompts: Vec<String>,
 }
 
+fn extend_unique_attachments(
+    all_attachments: &mut Vec<crate::storage::Attachment>,
+    attachments: &[crate::storage::Attachment],
+) {
+    for attachment in attachments {
+        let already_attached = all_attachments
+            .iter()
+            .any(|existing| existing.owner == attachment.owner && existing.path == attachment.path);
+        if !already_attached {
+            all_attachments.push(attachment.clone());
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_tool_calls(
     chat_service: &crate::chat::service::ChatService,
@@ -378,9 +392,7 @@ async fn execute_tool_calls(
             .and_then(|o| o.system_prompt().map(str::to_string));
 
         if let Some(ref output) = tool_output {
-            for attachment in output.attachments() {
-                all_attachments.push(attachment.clone());
-            }
+            extend_unique_attachments(all_attachments, output.attachments());
         }
 
         let success = tool_output.as_ref().is_some_and(|o| o.is_success());
@@ -645,10 +657,6 @@ pub async fn run_tool_loop(
             });
         }
     }
-
-    // Deduplicate attachments by path (e.g. produce_file + complete_task with same deliverable)
-    let mut seen_paths = std::collections::HashSet::new();
-    all_attachments.retain(|a| seen_paths.insert(a.path.clone()));
 
     Ok(ToolLoopOutcome::Completed {
         text: final_text,

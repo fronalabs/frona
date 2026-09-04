@@ -1271,7 +1271,7 @@ async fn test_tool_result_sse_includes_summary() {
 }
 
 #[tokio::test]
-async fn test_tool_loop_deduplicates_attachments() {
+async fn test_tool_loop_deduplicates_attachments_before_lifecycle_return() {
     init_metrics();
 
     let attachment = frona::storage::Attachment {
@@ -1283,7 +1283,8 @@ async fn test_tool_loop_deduplicates_attachments() {
         url: None,
     };
 
-    // Two tools both produce the same attachment (e.g. produce_file + complete_task with deliverables)
+    // The completion event takes the early lifecycle return that used to skip
+    // bottom-of-loop attachment deduplication.
     let provider = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![
         ("c1".into(), "produce_file".into(), serde_json::json!({})),
         ("c2".into(), "complete_task".into(), serde_json::json!({})),
@@ -1295,10 +1296,17 @@ async fn test_tool_loop_deduplicates_attachments() {
         "produce_file",
         attachment.clone(),
     )));
-    tool_registry.register(Arc::new(MockAttachmentTool::new(
-        "complete_task",
-        attachment,
-    )));
+    tool_registry.register(Arc::new(
+        MockAttachmentTool::new("complete_task", attachment.clone()).with_task_event(
+            frona::inference::tool_call::TaskEvent::Completion {
+                task_id: "task-1".into(),
+                chat_id: Some("chat-1".into()),
+                status: frona::agent::task::models::TaskStatus::Completed,
+                summary: Some("done".into()),
+                deliverables: vec![attachment],
+            },
+        ),
+    ));
     let (event_sender, _sse_rx, _broadcast) = test_event_sender().await;
     let cancel = CancellationToken::new();
     let ctx = mock_context();

@@ -20,7 +20,9 @@ You are executing a **task**, not having a conversation. Your instruction is ins
 
 ## When to use `create_task`
 
-Only for **delegating part of this work** to another agent in `<available_agents>` whose expertise matches the piece you're splitting off. Set `process_result: true` if you'll synthesize the result when it returns.
+Only for **delegating part of this work** to another agent in `<available_agents>` whose expertise matches the piece you're splitting off.
+
+Use `process_result: true` when the child's output is required before you can produce this task's `complete_task.result`. Use `false` only when the delegated work is independent and this task can still return a complete result without it. Result delivery and continuation are separate: the child result is delivered either way.
 
 Rules inside a task execution:
 

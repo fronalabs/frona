@@ -13,7 +13,8 @@ parameters:
     description: "Optional: agent name to assign to (from <available_agents>). Omit to create a task for yourself."
   process_result:
     type: boolean
-    description: "Default false — fire-and-forget: the task runs, its completion summary lands in this chat (the user sees the result), and you don't re-engage. Set true if you'll process the result with a fresh inference turn — useful for parallelizing work (spawn multiple tasks and synthesize once they all return) or composing results across subtasks. The completion summary lands here regardless; this flag only controls whether you re-engage to compose, synthesize, or follow up."
+    default: false
+    description: "Continuation selector; it does not control result delivery. Omit it or use false when this task's result completes its assigned slice and can be shown as-is. Use true only when the calling agent has a concrete unfinished next step that requires this result, such as comparing alternatives, merging results into one deliverable, validating before an action, or choosing another tool call. Delegation, research, complexity, delay, and parallel execution do not by themselves require continuation."
   delay_minutes:
     type: integer
     description: "Defer execution by N minutes. Best choice for 'in N minutes/hours' — no date math needed. Cannot be used with run_at."
@@ -28,12 +29,23 @@ parameters:
     description: "One-line description of the result the executing agent should produce. The executor fills `complete_task.result` with a prose/markdown string matching this description, and it renders directly into this chat. Use this for almost every task; pass either this OR `result_schema`, not both. See examples below."
   result_schema:
     type: object
-    description: "Advanced: JSON Schema describing the typed shape of `complete_task.result`. Use only when you'll programmatically consume structured fields (process_result=true and you'll read individual properties). For prose results delivered to a human, prefer `result_description`. Pass either this OR `result_description`, not both."
+    description: "Advanced: JSON Schema describing the typed shape of `complete_task.result`. Simple scalar, list, and flat-object schemas can render directly and do not require continuation. Complex nested schemas require process_result=true so the calling agent can consume them. For prose results delivered to a human, prefer `result_description`. Pass either this OR `result_description`, not both."
 required:
   - title
   - instruction
 ---
-Create a one-off task — immediate or deferred, for yourself or another agent. Use to parallelize work by splitting a problem into independent pieces, each running in its own chat. Target another agent from <available_agents> when expertise matches; target yourself to spawn parallel slices of your own work. Default behavior is fire-and-forget — the task runs and the completion summary lands in this chat for the user to read. Set `process_result: true` only when you'll synthesize the result with a fresh inference turn. For recurring work, use create_recurring_task. For periodic autonomous check-ins, use set_heartbeat.
+Create a one-off task — immediate or deferred, for yourself or another agent. Use it to delegate, defer, run in the background, or split work into independent pieces. Target another agent from <available_agents> when expertise matches; target yourself for a separate context.
+
+## Continuation decision
+
+Every completion result is delivered to the source chat whether `process_result` is false or true. The flag answers one question: **must the calling agent take another inference turn to finish the request?**
+
+- Use `false` or omit the flag when the task output is already a complete user-facing result or an independent result the user can read as-is. Examples: a specialist's research report, a reminder, a scheduled summary, or each stand-alone result from parallel tasks.
+- Use `true` when the calling agent has a concrete unfinished step that consumes this output. Examples: compare several recommendations and select one, merge several analyses into a single answer, validate generated data before deploying, or inspect a typed result and choose another tool call.
+
+Parallel execution alone does not require continuation. Identify the exact next step before selecting `true`; if the task result itself completes the assigned work, select `false`.
+
+For recurring work, use create_recurring_task. For periodic autonomous check-ins, use set_heartbeat.
 
 ## Describing the result (required: pick one)
 
@@ -54,7 +66,7 @@ This is the right choice for >90% of tasks — research, summaries, reminders, d
 
 ### `result_schema` (advanced — typed structure for programmatic use)
 
-Use only when `process_result: true` and you'll read individual properties from the result. Pick the simplest shape that fits:
+Use when the result's machine-readable shape matters. This choice is separate from continuation: simple schemas can render directly with `process_result: false`; set `true` when the calling agent must consume the fields or when the schema is complex. Pick the simplest shape that fits:
 
 - **Single scalar** — top-level scalar.
   ```json
@@ -85,4 +97,4 @@ Use only when `process_result: true` and you'll read individual properties from 
 
 - **Complex / nested schemas** — avoid unless you actually need them. If you must, set `process_result: true` and include a required top-level `summary` string property (only that field renders to the user; everything else is for parent-agent consumption).
 
-When in doubt, use `result_description`. Schemas are for handing typed data to a parent agent that will process it programmatically — not for steering the executor to produce a particular text format.
+When in doubt, use `result_description`. Schemas express a typed output contract; they are not a reason by themselves to resume the calling agent.

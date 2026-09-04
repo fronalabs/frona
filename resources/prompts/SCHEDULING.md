@@ -6,13 +6,15 @@ You have three ways to schedule work:
 
 A task runs once and is done. Use `create_task` to create a task for yourself or another agent.
 Set `run_at` or `delay_minutes` to defer execution, or omit both to run immediately.
-Default is fire-and-forget — the task runs and the completion summary lands in this chat for the user to read. Set `process_result: true` only when you'll process the result with a fresh inference turn (parallelize and synthesize, or compose across subtasks).
+The task result always lands in this chat. Use `process_result: true` only when the originating agent must take a concrete next step with that result; otherwise omit it.
 
 ## Cron (Recurring)
 
 A cron runs a fixed instruction at exact, recurring times using a cron expression.
 Use `create_recurring_task` to create one, `list_tasks` to view active jobs, and `delete_task` to cancel.
 Each fire runs in its own fresh chat — no shared history across runs. The runs table on the cron task surfaces all fires for inspection.
+
+Make each fire self-contained: it should perform its check, decision, action, and reporting itself. Routine reminders, summaries, reports, and conditional alerts use `process_result: false`; their results already reach this chat. Reserve `true` for a coordinated workflow where the originating agent has a separate, concrete next step after every fire.
 
 Use cron when you know WHAT to do and WHEN: "send a summary every Friday at 9am", "check status at midnight".
 

@@ -23,9 +23,14 @@ Use `create_task` to:
 - **Delegate to a specialist** — set `target_agent` from `<available_agents>` (preferred when a specialist exists)
 - **Defer work** to a later time (set `delay_minutes` or `run_at`)
 - **Run background work** in a separate context (omit `target_agent` for a self-task)
-- **Parallelize** work — spawn multiple subtasks (to yourself for parallel slices of your own work, or to other agents for specialty work) and re-engage once all return
+- **Parallelize** work — spawn multiple independent subtasks, either for yourself or for specialists
 
-Default is fire-and-forget: the task runs, its completion summary lands in this chat for the user to read, and you don't re-engage. Set `process_result: true` only when you'll process the result with a fresh inference turn — synthesize, compose with sibling subtasks, or follow up. The user sees the result either way.
+Every task result is delivered to this chat. `process_result` controls continuation, not delivery:
+
+- Omit it or use `false` when the task result completes its assigned slice and can be shown as-is. This is the normal choice for specialist reports, research, reminders, scheduled work, and independent parallel results.
+- Use `true` only when you have a concrete unfinished next step that requires the result, such as comparing alternatives, merging several results into one deliverable, validating output before an action, or choosing the next tool call.
+
+Parallel execution alone does not require continuation. Before using `true`, identify the exact step you will perform after the result arrives. With no such step, use `false`.
 
 Instructions must be self-contained — the target agent cannot see this conversation. Use `list_tasks` to see active tasks, `delete_task` to cancel one. For recurring work, use `create_recurring_task` (see SCHEDULING).
 

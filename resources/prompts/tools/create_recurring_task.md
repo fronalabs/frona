@@ -25,13 +25,14 @@ parameters:
     description: "What to do when a previous fire is still in flight. 'allow': spawn anyway, runs in parallel. 'forbid': skip the new fire while previous is running. 'replace': cancel the previous fire and start fresh. Defaults: singleton→replace, per_instance→forbid."
   process_result:
     type: boolean
-    description: "Default false — fire-and-forget: each cron run completes, its summary lands in this chat (the user sees each fire), and you don't re-engage. Set true if you'll process each run's result with a fresh inference turn — e.g., 'every hour check stock prices and tell me if AAPL moves >5%'. The completion summary lands here regardless; this flag only controls whether you re-engage after each fire. Required when result_schema is complex (nested objects)."
+    default: false
+    description: "Continuation selector for every fire; it does not control result delivery. Omit it or use false when each fire performs the complete check, decision, action, and reporting itself. Use true only when the originating agent has a separate, concrete unfinished next step that requires every fire's result. Reminders, summaries, reports, polling, conditional alerts, target-agent delegation, and recurring execution do not by themselves require continuation. Complex nested result schemas require true."
   result_description:
     type: string
     description: "One-line description of the result each fire should produce. The executor fills `complete_task.result` with a prose/markdown string matching this description, and each fire renders directly into this chat. Use this for almost every recurring task; pass either this OR `result_schema`, not both. See examples below."
   result_schema:
     type: object
-    description: "Advanced: JSON Schema describing the typed shape of each fire's `complete_task.result`. Use only when you'll programmatically consume structured fields (process_result=true and you'll read individual properties on each fire). For prose results delivered to a human, prefer `result_description`. Pass either this OR `result_description`, not both."
+    description: "Advanced: JSON Schema describing the typed shape of each fire's `complete_task.result`. Simple scalar, list, and flat-object schemas can render directly and do not require continuation. Complex nested schemas require process_result=true so the originating agent can consume them. For prose results delivered to a human, prefer `result_description`. Pass either this OR `result_description`, not both."
 required:
   - title
   - instruction
@@ -45,7 +46,15 @@ Mode selection:
 - "generate a monthly report on the 1st" → per_instance + forbid (each report is its own audited work item; don't overlap)
 - "process recurring payments daily at 9am" → per_instance + forbid
 
-Set `process_result: true` when you'll react to each fire's result with a fresh inference turn — e.g., "every hour, check stock prices and tell me if AAPL moves >5%", "every morning summarize my calendar". Otherwise leave it off — fire-and-forget is the right default for reminders and routine background work, since the user sees each run's summary in this chat anyway.
+## Continuation decision
+
+Every fire's result is delivered to the source chat whether `process_result` is false or true. Make the fire self-contained and use `false` for normal recurring work:
+
+- "every hour, report AAPL only if it moved more than 5%" → `false`; the fire checks the threshold and returns either an alert or no result
+- "every morning, summarize my calendar" → `false`; the summary is the final result
+- "every Friday, generate a research report" → `false`; the report is delivered as-is
+
+Use `true` only for a coordinated workflow where the originating agent must take a separate, concrete next step after every fire. Recurrence alone does not create that step.
 
 ## Describing each fire's result (required: pick one)
 
@@ -65,7 +74,7 @@ This is the right choice for >90% of recurring tasks — reminders, daily summar
 
 ### `result_schema` (advanced — typed structure for programmatic use)
 
-Use only when `process_result: true` and you'll read individual properties from each fire's result. Pick the simplest shape that fits:
+Use when each fire needs a machine-readable output shape. This choice is separate from continuation: simple schemas can render directly with `process_result: false`; set `true` when the originating agent must consume the fields or when the schema is complex. Pick the simplest shape that fits:
 
 - **Always-notify scalar.**
   ```json
@@ -97,6 +106,6 @@ Use only when `process_result: true` and you'll read individual properties from 
 
 - **Complex / nested schemas** — avoid unless you actually need them. If you must, set `process_result: true` and include a required top-level `summary` string property.
 
-When in doubt, use `result_description`. Schemas are for handing typed data to a parent agent that will process it programmatically — not for steering the executor to produce a particular text format.
+When in doubt, use `result_description`. Schemas express a typed output contract; they are not a reason by themselves to resume the originating agent.
 
 For one-off or simply delayed work, use create_task. For periodic autonomous check-ins to your own state, use set_heartbeat.

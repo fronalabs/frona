@@ -6,10 +6,12 @@ import {
   ChevronDownIcon,
   ChevronUpIcon,
   StopCircleIcon,
+  UserCircleIcon,
 } from "@heroicons/react/24/outline";
 import { formatDistanceToNowStrict } from "date-fns";
 import { cancelExecution, executionHref } from "@/lib/activity-actions";
 import { useActivity } from "@/lib/activity-context";
+import { executionMetadataLabel } from "@/lib/activity-labels";
 import type { Execution } from "@/lib/types";
 
 export function executionsForChat(
@@ -133,6 +135,10 @@ export function ChatActivityDrawer({
                 </span>
                 <span className="mt-0.5 block truncate text-xs text-text-secondary">
                   {execution.action ?? execution.status}
+                </span>
+                <span className="mt-1 flex items-center gap-1 text-[11px] text-text-tertiary">
+                  <UserCircleIcon className="h-3.5 w-3.5 shrink-0" />
+                  {executionMetadataLabel(execution)}
                 </span>
               </button>
               {execution.canCancel && execution.source?.id && (

@@ -5,20 +5,16 @@ import { useRouter } from "next/navigation";
 import {
   ArrowPathIcon,
   StopCircleIcon,
+  UserCircleIcon,
 } from "@heroicons/react/24/outline";
 import { formatDistanceToNowStrict } from "date-fns";
 import { useActivity } from "@/lib/activity-context";
 import { cancelExecution, executionHref } from "@/lib/activity-actions";
+import {
+  executionKindLabel,
+  executionMetadataLabel,
+} from "@/lib/activity-labels";
 import type { Execution } from "@/lib/types";
-
-const kindLabels: Record<Execution["kind"], string> = {
-  inference: "Inference",
-  task: "Task",
-  memory: "Memory",
-  app: "App",
-  scheduled: "Scheduled",
-  system: "System",
-};
 
 export function ActivityIndicator({ compact = false }: { compact?: boolean }) {
   const { snapshot, stale, refresh } = useActivity();
@@ -117,10 +113,11 @@ export function ActivityIndicator({ compact = false }: { compact?: boolean }) {
                         </span>
                       </span>
                       <span className="mt-0.5 block truncate text-xs text-text-secondary">
-                        {execution.action ?? kindLabels[execution.kind]}
+                        {execution.action ?? executionKindLabel(execution)}
                       </span>
-                      <span className="mt-1 block text-[11px] text-text-tertiary">
-                        {kindLabels[execution.kind]} - {execution.status}
+                      <span className="mt-1 flex items-center gap-1 text-[11px] text-text-tertiary">
+                        <UserCircleIcon className="h-3.5 w-3.5 shrink-0" />
+                        {executionMetadataLabel(execution)}
                       </span>
                     </button>
                     {execution.canCancel && execution.source?.id && (

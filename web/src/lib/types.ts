@@ -450,6 +450,7 @@ export interface ExecutionSource {
 export interface Execution {
   id: string;
   title: string;
+  agentName?: string;
   kind: ExecutionKind;
   status: ExecutionStatus;
   action?: string;

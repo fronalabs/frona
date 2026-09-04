@@ -26,6 +26,7 @@ function execution(overrides: Partial<Execution> = {}): Execution {
   return {
     id: "execution-1",
     title: "Research competitors",
+    agentName: "Researcher",
     kind: "task",
     status: "running",
     action: "Searching the web",
@@ -68,6 +69,7 @@ describe("chat activity drawer", () => {
     const tab = screen.getByRole("button", { name: "Expand 1 background activity" });
     expect(tab).toHaveClass("max-w-[80%]");
     expect(tab).not.toHaveClass("w-4/5");
+    expect(screen.getByText("Research competitors")).toBeInTheDocument();
     expect(screen.queryByText("Searching the web")).not.toBeInTheDocument();
     fireEvent.click(tab);
 
@@ -81,7 +83,8 @@ describe("chat activity drawer", () => {
     );
 
     expect(screen.getByText("Research competitors")).toBeInTheDocument();
-    expect(screen.getByText(/Searching the web/)).toBeInTheDocument();
+    expect(screen.getByText("Searching the web")).toBeInTheDocument();
+    expect(screen.getByText("Researcher - Task - Running")).toBeInTheDocument();
 
     fireEvent.click(
       screen.getByRole("button", { name: "Collapse background activity" }),

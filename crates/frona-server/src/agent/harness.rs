@@ -481,16 +481,23 @@ impl Harness {
         tool_filters: &[ToolFilter],
         command_context_registry: Option<Arc<CommandRegistry>>,
     ) {
-        let title = self
-            .chat_service
-            .find_chat(chat_id)
-            .await
-            .ok()
-            .flatten()
+        let chat = self.chat_service.find_chat(chat_id).await.ok().flatten();
+        let agent_name = match chat.as_ref() {
+            Some(chat) => self
+                .agent_service
+                .find_by_id(&chat.agent_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|agent| agent.name),
+            None => None,
+        };
+        let title = chat
             .and_then(|chat| chat.title)
             .unwrap_or_else(|| "Assistant response".to_string());
         let execution = NewExecution {
             title,
+            agent_name,
             kind: ExecutionKind::Inference,
             action: Some("Generating response".to_string()),
             source: Some(ExecutionSource {

@@ -328,7 +328,18 @@ impl TaskExecutor {
             return Ok(());
         }
 
-        let agent_max = self.get_agent_concurrent_limit(&task.agent_id).await;
+        let agent = self
+            .harness
+            .agent_service
+            .find_by_id(&task.agent_id)
+            .await
+            .ok()
+            .flatten();
+        let agent_max = agent
+            .as_ref()
+            .and_then(|agent| agent.max_concurrent_tasks)
+            .unwrap_or(3) as usize;
+        let agent_name = agent.map(|agent| agent.name);
         let key = format!("{}:{}", task.agent_id, task.id);
         let cancel_token = CancellationToken::new();
 
@@ -393,6 +404,7 @@ impl TaskExecutor {
             &task.user_id,
             NewExecution {
                 title: task.title.clone(),
+                agent_name,
                 kind,
                 action: Some("Running task".to_string()),
                 source: Some(source),
@@ -467,13 +479,6 @@ impl TaskExecutor {
     pub async fn unregister_cancellation(&self, agent_id: &str, task_id: &str) {
         let key = format!("{}:{}", agent_id, task_id);
         self.active_tasks.lock().await.remove(&key);
-    }
-
-    async fn get_agent_concurrent_limit(&self, agent_id: &str) -> usize {
-        if let Ok(Some(agent)) = self.harness.agent_service.find_by_id(agent_id).await {
-            return agent.max_concurrent_tasks.unwrap_or(3) as usize;
-        }
-        3
     }
 
     async fn execute_task(

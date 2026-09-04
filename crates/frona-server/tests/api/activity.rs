@@ -9,6 +9,7 @@ use super::*;
 fn inference(title: &str, chat_id: &str) -> NewExecution {
     NewExecution {
         title: title.to_string(),
+        agent_name: Some("Assistant".to_string()),
         kind: ExecutionKind::Inference,
         action: Some("Generating response".to_string()),
         source: Some(ExecutionSource {
@@ -71,6 +72,7 @@ async fn activity_returns_only_the_current_users_executions() {
     let executions = json["executions"].as_array().unwrap();
     assert_eq!(executions.len(), 1);
     assert_eq!(executions[0]["title"], "Answering support chat");
+    assert_eq!(executions[0]["agentName"], "Assistant");
     assert_eq!(executions[0]["kind"], "inference");
     assert_eq!(executions[0]["status"], "running");
     assert_eq!(executions[0]["source"]["type"], "chat");

@@ -17,6 +17,7 @@ vi.mock("@/lib/activity-context", () => ({
         {
           id: "execution-1",
           title: "Research prices",
+          agentName: "Researcher",
           kind: "task",
           status: "running",
           action: "Searching the web",
@@ -68,6 +69,8 @@ describe("ActivityIndicator", () => {
     expect(panel).not.toHaveClass("mt-2");
 
     const list = screen.getByText("Research prices").closest("button")?.parentElement;
+    expect(screen.getByText("Searching the web")).toBeInTheDocument();
+    expect(screen.getByText("Researcher - Task - Running")).toBeInTheDocument();
     expect(list).toHaveClass("px-4", "py-2");
     expect(list).not.toHaveClass("rounded-lg", "px-3", "py-2.5");
     expect(list?.parentElement).toHaveClass("pb-1");

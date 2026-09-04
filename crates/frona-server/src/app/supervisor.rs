@@ -218,6 +218,14 @@ impl Supervisor for AppSupervisor {
         let user_id = app.user_id.clone();
         let chat_id = app.chat_id.clone();
         let agent_id = app.agent_id.clone();
+        let agent_name = self
+            .state
+            .agent_service
+            .find_by_id(&agent_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|agent| agent.name);
         let app_name = app.name.clone();
         tokio::spawn(async move {
             let message_id = match state
@@ -247,6 +255,7 @@ impl Supervisor for AppSupervisor {
             };
             let execution = crate::core::execution::NewExecution {
                 title: format!("Fixing {app_name}"),
+                agent_name,
                 kind: crate::core::execution::ExecutionKind::App,
                 action: Some("Repairing crashed app".to_string()),
                 source: Some(crate::core::execution::ExecutionSource {

@@ -152,10 +152,18 @@ impl PkmService {
         harness: Arc<crate::agent::harness::Harness>,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<ConsolidationStats, AppError> {
+        let agent_name = harness
+            .agent_service
+            .find_by_id(&scope.agent_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|agent| agent.name);
         let _execution = harness.execution_registry.start(
             &scope.user_id,
             crate::core::execution::NewExecution {
                 title: "Memory consolidation".to_string(),
+                agent_name,
                 kind: crate::core::execution::ExecutionKind::Memory,
                 action: Some("Consolidating memory".to_string()),
                 source: Some(crate::core::execution::ExecutionSource {

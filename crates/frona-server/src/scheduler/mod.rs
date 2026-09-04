@@ -501,6 +501,7 @@ async fn execute_heartbeat(
         user_id,
         crate::core::execution::NewExecution {
             title: format!("{} heartbeat", agent.name),
+            agent_name: Some(agent.name.clone()),
             kind: crate::core::execution::ExecutionKind::Scheduled,
             action: Some("Running heartbeat".to_string()),
             source: Some(crate::core::execution::ExecutionSource {

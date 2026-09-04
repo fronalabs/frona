@@ -49,6 +49,8 @@ pub struct ExecutionSource {
 pub struct Execution {
     pub id: String,
     pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
     pub kind: ExecutionKind,
     pub status: ExecutionStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,6 +71,7 @@ pub struct ActivitySnapshot {
 #[derive(Debug, Clone)]
 pub struct NewExecution {
     pub title: String,
+    pub agent_name: Option<String>,
     pub kind: ExecutionKind,
     pub action: Option<String>,
     pub source: Option<ExecutionSource>,
@@ -101,6 +104,7 @@ impl ExecutionRegistry {
         let execution = Execution {
             id: id.clone(),
             title: new.title,
+            agent_name: new.agent_name,
             kind: new.kind,
             status: ExecutionStatus::Running,
             action: new.action,
@@ -223,6 +227,7 @@ mod tests {
     fn execution(title: &str) -> NewExecution {
         NewExecution {
             title: title.to_string(),
+            agent_name: Some("Assistant".to_string()),
             kind: ExecutionKind::Inference,
             action: Some("Generating response".to_string()),
             source: Some(ExecutionSource {

@@ -454,6 +454,29 @@ describe("ChatStore", () => {
   });
 
   describe("chat_message event", () => {
+    it("keeps persisted task messages chronological when SSE events arrive out of order", () => {
+      const completion = makeAgentMessage({
+        id: "msg-completion",
+        agent_id: "researcher",
+        content: "Marked the task as completed.",
+        created_at: "2026-09-04T01:44:01Z",
+      });
+      const prompt = makeAgentMessage({
+        id: "msg-prompt",
+        agent_id: "dark-matter",
+        content: "Research the latest official US Apple MacBook prices.",
+        created_at: "2026-09-04T01:44:00Z",
+      });
+
+      store.handleEvent({ type: "inference_done", message: completion });
+      store.handleEvent({ type: "chat_message", message: prompt });
+
+      expect(store.getDisplayMessages().map((message) => message.id)).toEqual([
+        "msg-prompt",
+        "msg-completion",
+      ]);
+    });
+
     it("replaces optimistic user message", () => {
       store.addUserMessage("Hello");
       expect(store.messages[0].id).toMatch(/^__user_/);

@@ -249,6 +249,7 @@ export class ChatStore {
         const historical = messages.filter((m) => !existing.has(m.id));
         this.messages = [...historical, ...this.messages];
       }
+      this.sortMessagesChronologically();
       this.hasMore = has_more;
     } catch {
       // leave any optimistic/SSE-delivered messages alone
@@ -272,6 +273,7 @@ export class ChatStore {
       const existing = new Set(this.messages.map((m) => m.id));
       const older = messages.filter((m) => !existing.has(m.id));
       this.messages = [...older, ...this.messages];
+      this.sortMessagesChronologically();
       this.hasMore = has_more;
     } catch {
       // Keep hasMore as-is so a future scroll can retry.
@@ -376,6 +378,7 @@ export class ChatStore {
         } else {
           this.messages.push(msg);
         }
+        this.sortMessagesChronologically();
         this.clearStreaming();
 
         switch (event.reason.type) {
@@ -406,6 +409,7 @@ export class ChatStore {
             msg.tool_calls = this.messages[idx].tool_calls;
           }
           this.messages[idx] = msg;
+          this.sortMessagesChronologically();
         }
         if (msg.tool_calls?.length) {
           for (const te of msg.tool_calls) {
@@ -435,6 +439,7 @@ export class ChatStore {
         } else {
           this.messages.push(msg);
         }
+        this.sortMessagesChronologically();
         this.clearStreaming();
 
         // The agent loop can pause on a fresh set of HITLs and signal that via
@@ -456,12 +461,14 @@ export class ChatStore {
           const optIdx = this.messages.findIndex((m) => m.id.startsWith("__user_"));
           if (optIdx >= 0) {
             this.messages[optIdx] = event.message;
+            this.sortMessagesChronologically();
             break;
           }
         }
         // Skip if this message ID is already in the array
         if (!this.messages.some((m) => m.id === event.message.id)) {
           this.messages.push(event.message);
+          this.sortMessagesChronologically();
         }
         break;
       }
@@ -586,6 +593,17 @@ export class ChatStore {
       }
     }
     return result;
+  }
+
+  private sortMessagesChronologically() {
+    // A task chat can mount between two broadcasts, so the browser may receive
+    // persisted messages in a different order than the database returns them.
+    this.messages.sort((left, right) => {
+      const leftTime = Date.parse(left.created_at);
+      const rightTime = Date.parse(right.created_at);
+      if (!Number.isFinite(leftTime) || !Number.isFinite(rightTime)) return 0;
+      return leftTime - rightTime;
+    });
   }
 
   resolveToolCall(toolCallId: string, result: string) {

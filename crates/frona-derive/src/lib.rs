@@ -6,6 +6,15 @@ use syn::spanned::Spanned;
 use syn::{DeriveInput, Expr, ImplItem, ItemImpl, Lit, Meta, Token, parse_macro_input};
 
 mod migration;
+mod parameter_metadata;
+
+/// Generate protocol metadata from serialized settings fields.
+#[proc_macro_derive(ParameterMetadata, attributes(parameter))]
+pub fn derive_parameter_metadata(input: TokenStream) -> TokenStream {
+    parameter_metadata::expand(parse_macro_input!(input as DeriveInput))
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
 
 /// `#[channel(id = "...", from = ConfigType)]` - `from` is optional; when
 /// omitted, the adapter struct itself is the deserialisation target.

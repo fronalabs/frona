@@ -8,6 +8,7 @@
 //! Grammar: 2..=32 bytes, starts with `a-z`, body is `a-z 0-9 - _`.
 //! Backed by [`SmolStr`] — every valid handle inlines (≤22 bytes).
 
+use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use smol_str::SmolStr;
 use std::fmt;
@@ -74,6 +75,12 @@ impl AsRef<str> for Handle {
     }
 }
 
+impl std::borrow::Borrow<str> for Handle {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
 impl fmt::Display for Handle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.0.as_str())
@@ -108,6 +115,21 @@ impl<'de> Deserialize<'de> for Handle {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let raw = String::deserialize(d)?;
         Handle::try_new(raw).map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for Handle {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Handle".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        let mut schema = generator.subschema_for::<String>();
+        let object = schema.ensure_object();
+        object.insert("minLength".to_string(), 2.into());
+        object.insert("maxLength".to_string(), 32.into());
+        object.insert("pattern".to_string(), "^[a-z][a-z0-9_-]{1,31}$".into());
+        schema
     }
 }
 

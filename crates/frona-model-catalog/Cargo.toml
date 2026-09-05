@@ -1,0 +1,22 @@
+[package]
+name = "frona-model-catalog"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+arc-swap = "1"
+sha2 = "0.11"
+hex = "0.4"
+reqwest = { version = "0.13", features = ["rustls"], default-features = false }
+tempfile = "3"
+jsonschema = { version = "0.49", default-features = false }
+
+[dev-dependencies]
+wiremock = "0.6"
+

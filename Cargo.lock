@@ -3027,6 +3027,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "frona-model-catalog"
+version = "2026.9.0"
+dependencies = [
+ "arc-swap",
+ "chrono",
+ "hex",
+ "jsonschema",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+
+[[package]]
 name = "frona-server"
 version = "2026.9.0"
 dependencies = [

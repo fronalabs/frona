@@ -24,6 +24,9 @@ pub fn create_vault_provider(
     home_dir: PathBuf,
 ) -> Result<Box<dyn VaultProvider>, AppError> {
     match provider_type {
+        VaultProviderType::Managed => Err(AppError::Internal(
+            "Managed vault providers require the shared resolver".into(),
+        )),
         VaultProviderType::Local => Err(AppError::Internal(
             "Local vault provider must be constructed directly with a credential repository".into(),
         )),

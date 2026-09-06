@@ -131,6 +131,7 @@ pub struct VaultAccessLog {
 #[surreal(crate = "surrealdb::types")]
 pub enum VaultProviderType {
     Local,
+    Managed,
     OnePassword,
     Bitwarden,
     Hashicorp,
@@ -141,6 +142,7 @@ impl std::fmt::Display for VaultProviderType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Local => write!(f, "local"),
+            Self::Managed => write!(f, "managed"),
             Self::OnePassword => write!(f, "one_password"),
             Self::Bitwarden => write!(f, "bitwarden"),
             Self::Hashicorp => write!(f, "hashicorp"),
@@ -150,8 +152,9 @@ impl std::fmt::Display for VaultProviderType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", deny_unknown_fields)]
 pub enum VaultConnectionConfig {
+    Managed {},
     OnePassword {
         service_account_token: String,
         default_vault_id: Option<String>,

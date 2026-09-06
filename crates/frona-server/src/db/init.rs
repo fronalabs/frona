@@ -80,6 +80,11 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
         DEFINE INDEX IF NOT EXISTS idx_credential_user ON TABLE credential COLUMNS user_id;
         DEFINE INDEX IF NOT EXISTS idx_credential_user_provider ON TABLE credential COLUMNS user_id, provider;
 
+        DEFINE TABLE IF NOT EXISTS managed_credential SCHEMALESS;
+        DEFINE INDEX IF NOT EXISTS idx_managed_connection ON TABLE managed_credential COLUMNS connection_id;
+        DEFINE INDEX IF NOT EXISTS idx_managed_item_id ON TABLE managed_credential COLUMNS item_id UNIQUE;
+
+
         DEFINE TABLE IF NOT EXISTS memory SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_memory_source ON TABLE memory COLUMNS source_type, source_id;
 

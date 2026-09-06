@@ -9,6 +9,7 @@ pub mod contacts;
 pub mod generic;
 pub mod inference_usage;
 pub mod keypairs;
+pub mod managed_vault;
 pub mod mcp_servers;
 pub mod messages;
 pub mod notifications;

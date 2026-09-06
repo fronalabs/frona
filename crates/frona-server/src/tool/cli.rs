@@ -341,7 +341,11 @@ mod tests {
 
         let config = Config::default();
         let storage = crate::storage::StorageService::new(&config);
-        let resolver = SkillResolver::new("/tmp/frona_test_config", storage.clone());
+        let resolver = SkillResolver::new(
+            "/tmp/frona_test_config",
+            storage.clone(),
+            "/tmp/frona_test_skills",
+        );
         SkillService::new(
             SkillRegistryClient::default(),
             resolver,

@@ -70,26 +70,25 @@ fn extract_command_frontmatter(
 #[derive(Clone)]
 pub struct SkillResolver {
     config_dir: PathBuf,
-    installed_dir: Option<PathBuf>,
+    installed_dir: PathBuf,
     storage: StorageService,
 }
 
 impl SkillResolver {
-    pub fn new(config_dir: impl Into<PathBuf>, storage: StorageService) -> Self {
+    pub fn new(
+        config_dir: impl Into<PathBuf>,
+        storage: StorageService,
+        installed_dir: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             config_dir: config_dir.into(),
-            installed_dir: None,
+            installed_dir: installed_dir.into(),
             storage,
         }
     }
 
-    pub fn with_installed_dir(mut self, dir: impl Into<PathBuf>) -> Self {
-        self.installed_dir = Some(dir.into());
-        self
-    }
-
-    pub fn installed_dir(&self) -> Option<&Path> {
-        self.installed_dir.as_deref()
+    pub fn installed_dir(&self) -> &Path {
+        &self.installed_dir
     }
 
     pub fn builtin_skills_dir(&self) -> PathBuf {
@@ -158,15 +157,13 @@ impl SkillResolver {
             seen.entry(skill.name.clone()).or_insert(skill);
         }
 
-        if let Some(dir) = &self.installed_dir {
-            for skill in self.scan_fs_skills(dir, SkillScope::Shared) {
-                if let Some(allowed) = agent_skills
-                    && !allowed.contains(&skill.name)
-                {
-                    continue;
-                }
-                seen.entry(skill.name.clone()).or_insert(skill);
+        for skill in self.scan_fs_skills(&self.installed_dir, SkillScope::Shared) {
+            if let Some(allowed) = agent_skills
+                && !allowed.contains(&skill.name)
+            {
+                continue;
             }
+            seen.entry(skill.name.clone()).or_insert(skill);
         }
 
         for skill in self.scan_fs_skills(&self.config_dir.join("skills"), SkillScope::Builtin) {

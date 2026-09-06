@@ -779,7 +779,7 @@ mod tests {
     fn test_lock_file_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
         let storage = StorageService::new(&crate::core::config::Config::default());
-        let resolver = SkillResolver::new("/tmp/test_config", storage.clone());
+        let resolver = SkillResolver::new("/tmp/test_config", storage.clone(), tmp.path());
         let service = SkillService::new(
             SkillRegistryClient::default(),
             resolver,
@@ -810,7 +810,7 @@ mod tests {
     fn test_list_installed_empty_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let storage = StorageService::new(&crate::core::config::Config::default());
-        let resolver = SkillResolver::new("/tmp/test_config", storage.clone());
+        let resolver = SkillResolver::new("/tmp/test_config", storage.clone(), tmp.path());
         let service = SkillService::new(
             SkillRegistryClient::default(),
             resolver,
@@ -834,7 +834,7 @@ mod tests {
         .unwrap();
 
         let storage = StorageService::new(&crate::core::config::Config::default());
-        let resolver = SkillResolver::new("/tmp/test_config", storage.clone());
+        let resolver = SkillResolver::new("/tmp/test_config", storage.clone(), tmp.path());
         let service = SkillService::new(
             SkillRegistryClient::default(),
             resolver,
@@ -861,7 +861,7 @@ mod tests {
         .unwrap();
 
         let storage = StorageService::new(&crate::core::config::Config::default());
-        let resolver = SkillResolver::new("/tmp/test_config", storage.clone());
+        let resolver = SkillResolver::new("/tmp/test_config", storage.clone(), tmp.path());
         let service = SkillService::new(
             SkillRegistryClient::default(),
             resolver,
@@ -892,7 +892,7 @@ mod tests {
     async fn test_uninstall_not_found() {
         let tmp = tempfile::tempdir().unwrap();
         let storage = StorageService::new(&crate::core::config::Config::default());
-        let resolver = SkillResolver::new("/tmp/test_config", storage.clone());
+        let resolver = SkillResolver::new("/tmp/test_config", storage.clone(), tmp.path());
         let service = SkillService::new(
             SkillRegistryClient::default(),
             resolver,

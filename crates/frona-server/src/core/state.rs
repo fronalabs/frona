@@ -298,8 +298,11 @@ impl AppState {
             "Memory backend active"
         );
 
-        let skill_resolver = SkillResolver::new(&config.storage.shared_config_dir, storage.clone())
-            .with_installed_dir(&config.storage.skills_dir);
+        let skill_resolver = SkillResolver::new(
+            &config.storage.shared_config_dir,
+            storage.clone(),
+            &config.storage.skills_dir,
+        );
         let skill_service = SkillService::new(
             SkillRegistryClient::new(
                 http_client.clone(),

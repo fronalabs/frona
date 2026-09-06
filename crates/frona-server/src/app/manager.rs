@@ -465,6 +465,7 @@ mod tests {
             crate::agent::skill::resolver::SkillResolver::new(
                 "/tmp/frona-test-shared",
                 storage.clone(),
+                "/tmp/frona-test-skills",
             ),
             storage.clone(),
             "/tmp/frona-test-skills",

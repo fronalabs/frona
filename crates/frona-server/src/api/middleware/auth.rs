@@ -65,7 +65,40 @@ pub struct AuthUser {
     pub extensions: Option<serde_json::Value>,
 }
 
+/// Global administration permission, checked before body extraction or handlers.
+pub struct AdminUser(pub AuthUser);
+
+impl FromRequestParts<AppState> for AdminUser {
+    type Rejection = ApiError;
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let auth = AuthUser::from_request_parts(parts, state).await?;
+        auth.require_admin(state).await?;
+        Ok(Self(auth))
+    }
+}
+
 impl AuthUser {
+    pub async fn require_admin(&self, state: &AppState) -> Result<(), ApiError> {
+        let user = state
+            .user_service
+            .find_by_id(&self.user_id)
+            .await?
+            .ok_or_else(|| ApiError(AppError::NotFound("User not found".into())))?;
+        if !user
+            .groups
+            .iter()
+            .any(|group| group == crate::auth::models::ADMINS_GROUP)
+        {
+            return Err(ApiError(AppError::Forbidden(
+                "Administrator privileges required".into(),
+            )));
+        }
+        Ok(())
+    }
+
     pub fn is_pat(&self) -> bool {
         self.token_type == "pat"
     }

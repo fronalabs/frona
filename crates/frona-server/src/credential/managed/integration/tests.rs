@@ -1,6 +1,12 @@
 use super::*;
 use crate::credential::managed::{ManagedVault, resolver::ManagedResolver};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use chrono::Utc;
 use serde_json::json;
+use wiremock::{
+    Mock, MockServer, ResponseTemplate,
+    matchers::{method, path},
+};
 
 async fn vault() -> ManagedVault {
     let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
@@ -8,6 +14,66 @@ async fn vault() -> ManagedVault {
         .unwrap();
     crate::db::init::setup_schema(&db).await.unwrap();
     crate::credential::managed::test_support::vault(&db, "credentials", "fixture-secret").await
+}
+
+fn jwt() -> String {
+    format!("e30.{}.fixture", URL_SAFE_NO_PAD.encode(serde_json::to_vec(&json!({"exp":(Utc::now()+chrono::Duration::hours(1)).timestamp(),"https://api.openai.com/auth":{"chatgpt_account_id":"account"}})).unwrap()))
+}
+
+#[tokio::test]
+async fn codex_refresh_is_shared_and_only_renewable_changes_are_persisted() {
+    for rotate in [false, true] {
+        let server = MockServer::start().await;
+        let access = jwt();
+        Mock::given(method("POST")).and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"access_token":access,"refresh_token":if rotate {"rotated-private"} else {"private"}})))
+            .expect(1).mount(&server).await;
+        let integration = openai_codex::OpenAiCodexIntegration {
+            auth_endpoint: server.uri(),
+            ..Default::default()
+        };
+        let resolver = Arc::new(ManagedResolver::new(
+            register([(
+                "openai_codex".into(),
+                Arc::new(integration)
+                    as Arc<dyn crate::credential::managed::integration::RegisteredIntegration>,
+            )])
+            .unwrap(),
+        ));
+        let vault = vault().await;
+        let original = json!({"access_token":"expired","refresh_token":"private","expires_at":Utc::now()-chrono::Duration::hours(1),"account_id":"account","scopes":[]});
+        let first = vault
+            .create("openai_codex", json!({}), original.clone())
+            .await
+            .unwrap();
+        let (a, b) = tokio::join!(
+            resolver.resolve(&vault, first.item_id, || async { Ok(()) }),
+            resolver.resolve(&vault, first.item_id, || async { Ok(()) })
+        );
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert_eq!(a.1.to_env().unwrap(), b.1.to_env().unwrap());
+        assert_eq!(a.1.to_env().unwrap()["ACCESS_TOKEN"], access);
+        assert!(!a.1.to_env().unwrap().contains_key("REFRESH_TOKEN"));
+        let (current, doc) = vault.document_by_id(first.item_id).await.unwrap();
+        assert_eq!(current.item_id, first.item_id);
+        assert_eq!(current.version != first.version, rotate);
+        if rotate {
+            assert_eq!(doc["refresh_token"], "rotated-private");
+        } else {
+            assert_eq!(doc, original);
+        }
+        vault
+            .delete_by_id(current.item_id, current.version)
+            .await
+            .unwrap();
+        assert!(
+            resolver
+                .resolve(&vault, first.item_id, || async { Ok(()) })
+                .await
+                .is_err()
+        );
+        server.verify().await;
+    }
 }
 
 #[tokio::test]

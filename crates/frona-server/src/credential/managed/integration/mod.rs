@@ -1,3 +1,4 @@
+pub mod openai_codex;
 pub mod static_secret;
 
 #[cfg(test)]
@@ -222,6 +223,11 @@ pub fn registered() -> HashMap<String, Arc<dyn RegisteredIntegration>> {
         (
             static_secret::ID.into(),
             Arc::new(static_secret::StaticSecretIntegration) as Arc<dyn RegisteredIntegration>,
+        ),
+        (
+            openai_codex::ID.into(),
+            Arc::new(openai_codex::OpenAiCodexIntegration::default())
+                as Arc<dyn RegisteredIntegration>,
         ),
     ])
     .expect("unique built-in managed integrations")

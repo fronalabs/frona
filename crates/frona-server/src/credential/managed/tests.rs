@@ -1,6 +1,7 @@
 use super::test_support::{db, vault};
 use super::*;
 use serde_json::json;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn direct_credentials_preserve_identity_and_reject_stale_scoped_writes() {
@@ -99,6 +100,78 @@ async fn direct_credentials_are_encrypted_and_ids_are_unique() {
     assert!(repo.write(v.connection_id(), row, None).await.is_err());
 }
 
+#[test]
+fn integration_registry_reuses_instances_and_rejects_duplicate_names() {
+    use super::integration::*;
+
+    struct TestIntegration;
+
+    #[async_trait::async_trait]
+    impl ManagedIntegration for TestIntegration {
+        type Credentials = std::collections::HashMap<String, String>;
+        async fn get_secret(
+            &self,
+            _: Value,
+            _: &mut SecretContext,
+        ) -> Result<
+            ResolvedSecret<std::collections::HashMap<String, String>>,
+            crate::core::error::AppError,
+        > {
+            Ok(ResolvedSecret {
+                expires_at: None,
+                credentials: Default::default(),
+                cache: CachePolicy::NoCache,
+            })
+        }
+    }
+    let instance: Arc<dyn crate::credential::managed::integration::RegisteredIntegration> =
+        Arc::new(TestIntegration);
+    let registry = register([("test".into(), instance.clone())]).unwrap();
+    assert!(Arc::ptr_eq(&instance, &registry.get("test").unwrap()));
+    assert!(Arc::ptr_eq(
+        &registry.get("test").unwrap(),
+        &registry.clone().get("test").unwrap()
+    ));
+    assert!(registry.get("missing").is_none());
+    assert!(register([("".into(), instance.clone())]).is_err());
+    assert!(
+        register([
+            ("test".into(), instance.clone()),
+            ("test".into(), instance.clone())
+        ])
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn scoped_context_updates_only_its_entry_and_rejects_stale_results() {
+    use super::integration::SecretContext;
+    let db = db().await;
+    let v = vault(&db, GLOBAL_CONNECTION_ID, "key").await;
+    let first = v
+        .create("test", json!({}), json!({"token":"one"}))
+        .await
+        .unwrap();
+    let mut context = SecretContext::new(v.clone(), first.clone());
+    let mut stale = SecretContext::new(v.clone(), first.clone());
+    context.update_secret(json!({"token":"two"})).await.unwrap();
+    assert!(stale.update_secret(json!({"token":"stale"})).await.is_err());
+    assert_eq!(
+        v.document_by_id(first.item_id).await.unwrap().1["token"],
+        "two"
+    );
+    let current = v.status_by_id(first.item_id).await.unwrap().unwrap();
+    v.delete_by_id(first.item_id, current.version)
+        .await
+        .unwrap();
+    assert!(
+        context
+            .update_secret(json!({"token":"deleted"}))
+            .await
+            .is_err()
+    );
+}
+
 #[tokio::test]
 async fn connections_owned_by_one_user_are_isolated_and_nonempty_deletion_is_rejected() {
     let db = db().await;
@@ -179,6 +252,58 @@ async fn deleting_an_empty_connection_racing_a_write_never_orphans_credentials()
             .unwrap();
         assert!(items.is_empty() || !connections.is_empty());
     }
+}
+
+#[tokio::test]
+async fn disabling_a_connection_blocks_cached_secrets_and_refresh() {
+    let db = db().await;
+    let v = vault(&db, "alice-cache", "key").await;
+    let resolver = super::resolver::ManagedResolver::new(super::integration::registered());
+    let entry = v
+        .create(
+            "static",
+            serde_json::json!({}),
+            serde_json::json!({"API_KEY":"secret"}),
+        )
+        .await
+        .unwrap();
+    resolver
+        .resolve(&v, entry.item_id, || async { Ok(()) })
+        .await
+        .unwrap();
+    db.query("UPDATE type::record('vault_connection', 'alice-cache') SET enabled = false")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(
+        resolver
+            .resolve(&v, entry.item_id, || async { Ok(()) })
+            .await
+            .is_err()
+    );
+    assert!(
+        v.replace_by_id(
+            entry.item_id,
+            entry.version,
+            "static",
+            serde_json::json!({}),
+            serde_json::json!({"API_KEY":"late"})
+        )
+        .await
+        .is_err()
+    );
+    db.query("UPDATE type::record('vault_connection', 'alice-cache') SET enabled = true")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(
+        resolver
+            .resolve(&v, entry.item_id, || async { Ok(()) })
+            .await
+            .is_ok()
+    );
 }
 
 #[test]

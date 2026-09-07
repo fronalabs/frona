@@ -1,7 +1,9 @@
 //! Encrypted integration credentials. Ownership is storage isolation, not an
 //! authorization grant. Callers must authorize access to the owning vault connection.
 
+pub mod integration;
 pub mod repository;
+pub mod resolver;
 mod storage;
 
 #[cfg(test)]

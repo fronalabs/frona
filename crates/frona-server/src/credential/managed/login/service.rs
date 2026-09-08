@@ -107,6 +107,7 @@ impl ManagedLoginService {
 
     pub fn registered() -> Self {
         Self::new([
+            Arc::new(super::openrouter::OpenRouterLogin::default()) as Arc<dyn LoginProvider>,
             Arc::new(super::openai_codex::OpenAiCodexLogin::default()) as Arc<dyn LoginProvider>,
             Arc::new(super::copilot::CopilotLogin::default()) as Arc<dyn LoginProvider>,
         ])

@@ -1,3 +1,4 @@
+pub mod copilot;
 pub mod openai_codex;
 pub mod static_secret;
 
@@ -228,6 +229,10 @@ pub fn registered() -> HashMap<String, Arc<dyn RegisteredIntegration>> {
             openai_codex::ID.into(),
             Arc::new(openai_codex::OpenAiCodexIntegration::default())
                 as Arc<dyn RegisteredIntegration>,
+        ),
+        (
+            copilot::ID.into(),
+            Arc::new(copilot::CopilotIntegration::default()) as Arc<dyn RegisteredIntegration>,
         ),
     ])
     .expect("unique built-in managed integrations")

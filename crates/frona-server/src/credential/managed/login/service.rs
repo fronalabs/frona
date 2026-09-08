@@ -108,6 +108,7 @@ impl ManagedLoginService {
     pub fn registered() -> Self {
         Self::new([
             Arc::new(super::openai_codex::OpenAiCodexLogin::default()) as Arc<dyn LoginProvider>,
+            Arc::new(super::copilot::CopilotLogin::default()) as Arc<dyn LoginProvider>,
         ])
         .expect("unique built-in login providers")
     }

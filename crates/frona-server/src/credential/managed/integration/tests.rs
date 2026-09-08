@@ -142,6 +142,60 @@ async fn static_composite_documents_invalidate_on_update_and_authorization_runs_
 }
 
 #[test]
+fn resolved_exports_preserve_fields_and_redact_diagnostics() {
+    use rig_core::providers::{chatgpt::ChatGPTAuth, copilot::CopilotAuth};
+
+    let expiry = Utc::now() + chrono::Duration::hours(1);
+    let secret = ResolvedSecret {
+        credentials: ChatGPTAuth::AccessToken {
+            access_token: "private-access".into(),
+            account_id: Some("private-account".into()),
+        },
+        expires_at: Some(expiry),
+        cache: CachePolicy::Until(expiry),
+    };
+    assert_eq!(
+        secret.to_env().unwrap(),
+        HashMap::from([
+            ("ACCESS_TOKEN".into(), "private-access".into()),
+            ("ACCOUNT_ID".into(), "private-account".into()),
+            ("EXPIRES_AT".into(), expiry.to_rfc3339()),
+        ])
+    );
+    assert!(!format!("{secret:?}").contains("private"));
+    let erased = secret.erase();
+    assert!(!format!("{erased:?}").contains("private"));
+    let copilot = ResolvedSecret {
+        credentials: CopilotAuth::ApiKey("short-lived".into()),
+        expires_at: Some(expiry),
+        cache: CachePolicy::Until(expiry),
+    };
+    assert_eq!(
+        copilot.to_env().unwrap(),
+        HashMap::from([
+            ("ACCESS_TOKEN".into(), "short-lived".into()),
+            ("EXPIRES_AT".into(), expiry.to_rfc3339()),
+        ])
+    );
+    assert!(ChatGPTAuth::OAuth.to_env().is_err());
+    assert!(
+        ChatGPTAuth::AccessToken {
+            access_token: "token".into(),
+            account_id: None
+        }
+        .to_env()
+        .is_err()
+    );
+    assert!(CopilotAuth::OAuth.to_env().is_err());
+    assert!(
+        CopilotAuth::GitHubAccessToken("bootstrap".into())
+            .to_env()
+            .is_err()
+    );
+    assert!(CopilotAuth::ApiKey(String::new()).to_env().is_err());
+}
+
+#[test]
 fn resolved_export_errors_do_not_expose_integration_details() {
     struct FailingExport;
 

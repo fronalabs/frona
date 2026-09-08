@@ -1,5 +1,6 @@
 use super::test_support::{db, vault};
 use super::*;
+use crate::credential::key_rotation::KeyRotation;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -100,6 +101,50 @@ async fn direct_credentials_are_encrypted_and_ids_are_unique() {
     assert!(repo.write(v.connection_id(), row, None).await.is_err());
 }
 
+#[tokio::test]
+async fn corrupted_secret_blocks_rotation_without_advancing_the_key_and_can_be_retried() {
+    use super::repository::ManagedVaultRepository;
+    let db = db().await;
+    KeyRotation::check(&db, "old").await.unwrap();
+    let vault = vault(&db, GLOBAL_CONNECTION_ID, "old").await;
+    let entry = vault
+        .create("static", json!({}), json!({"API_KEY":"private"}))
+        .await
+        .unwrap();
+    let repo = crate::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone());
+    let row = repo
+        .row_by_id(vault.connection_id(), entry.item_id)
+        .await
+        .unwrap()
+        .unwrap();
+    db.query("UPDATE managed_credential SET ciphertext = [1,2,3] WHERE item_id = $id")
+        .bind(("id", entry.item_id.to_string()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(vault.document_by_id(entry.item_id).await.is_err());
+    let report = KeyRotation::check(&db, "new")
+        .await
+        .unwrap()
+        .unwrap()
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(report.managed_credentials.failed, 1);
+    assert!(!report.all_succeeded());
+    let retry = KeyRotation::check(&db, "new").await.unwrap().unwrap();
+    db.query("UPDATE managed_credential SET ciphertext = $ciphertext WHERE item_id = $id")
+        .bind(("id", entry.item_id.to_string()))
+        .bind(("ciphertext", row["ciphertext"].clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(retry.run().await.unwrap().all_succeeded());
+    assert!(KeyRotation::check(&db, "new").await.unwrap().is_none());
+}
+
 #[test]
 fn integration_registry_reuses_instances_and_rejects_duplicate_names() {
     use super::integration::*;
@@ -169,6 +214,50 @@ async fn scoped_context_updates_only_its_entry_and_rejects_stale_results() {
             .update_secret(json!({"token":"deleted"}))
             .await
             .is_err()
+    );
+}
+
+#[tokio::test]
+async fn rotation_covers_global_and_personal_scopes_and_retries_corrupt_records() {
+    let db = db().await;
+    KeyRotation::check(&db, "old").await.unwrap();
+    let global = vault(&db, GLOBAL_CONNECTION_ID, "old").await;
+    let personal = vault(&db, "alice-vault", "old").await;
+    let a = global
+        .create("static", json!({}), json!({"API_KEY":"global"}))
+        .await
+        .unwrap();
+    let b = personal
+        .create("static", json!({}), json!({"API_KEY":"personal"}))
+        .await
+        .unwrap();
+    assert!(global.status_by_id(b.item_id).await.unwrap().is_none());
+    assert!(personal.status_by_id(a.item_id).await.unwrap().is_none());
+    let report = KeyRotation::check(&db, "new")
+        .await
+        .unwrap()
+        .unwrap()
+        .run()
+        .await
+        .unwrap();
+    assert_eq!(report.managed_credentials.success, 2);
+    assert_eq!(
+        vault(&db, GLOBAL_CONNECTION_ID, "new")
+            .await
+            .document_by_id(a.item_id)
+            .await
+            .unwrap()
+            .1["API_KEY"],
+        "global"
+    );
+    assert_eq!(
+        vault(&db, "alice-vault", "new")
+            .await
+            .document_by_id(b.item_id)
+            .await
+            .unwrap()
+            .1["API_KEY"],
+        "personal"
     );
 }
 

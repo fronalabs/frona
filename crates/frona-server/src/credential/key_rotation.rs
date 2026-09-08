@@ -21,6 +21,7 @@ pub struct RotationReport {
     pub vault_connections: RotationCounts,
     pub credentials: RotationCounts,
     pub keypairs: RotationCounts,
+    pub managed_credentials: RotationCounts,
 }
 
 #[derive(Debug)]
@@ -35,6 +36,7 @@ impl RotationReport {
         self.vault_connections.failed == 0
             && self.credentials.failed == 0
             && self.keypairs.failed == 0
+            && self.managed_credentials.failed == 0
     }
 }
 
@@ -83,17 +85,20 @@ impl KeyRotation {
         let vc = self.rotate_vault_connections().await;
         let cr = self.rotate_credentials().await;
         let kp = self.rotate_keypairs().await;
+        let mp = self.rotate_managed_credentials().await;
 
         let report = RotationReport {
             vault_connections: vc,
             credentials: cr,
             keypairs: kp,
+            managed_credentials: mp,
         };
 
         info!(
             vault_connections = ?report.vault_connections,
             credentials = ?report.credentials,
             keypairs = ?report.keypairs,
+            managed_credentials = ?report.managed_credentials,
             "Key rotation complete"
         );
 
@@ -350,6 +355,78 @@ impl KeyRotation {
         }
 
         counts
+    }
+
+    async fn rotate_managed_credentials(&self) -> RotationCounts {
+        let mut total = RotationCounts {
+            success: 0,
+            skipped: 0,
+            failed: 0,
+        };
+        for table in ["managed_credential"] {
+            let query = format!(
+                "SELECT meta::id(id) as rid, ciphertext, nonce FROM {table} WHERE array::len(ciphertext) > 0"
+            );
+            let rows: Vec<serde_json::Value> = match self
+                .db
+                .query(&query)
+                .await
+                .and_then(|mut response| response.take(0))
+            {
+                Ok(rows) => rows,
+                Err(error) => {
+                    error!(table, error = %error, "Failed to query managed credentials for rotation");
+                    total.failed += 1;
+                    continue;
+                }
+            };
+            for row in rows {
+                let Some(rid) = row.get("rid").and_then(|value| value.as_str()) else {
+                    total.failed += 1;
+                    continue;
+                };
+                let (Some(ciphertext), Some(nonce)) = (
+                    json_to_bytes(row.get("ciphertext")),
+                    json_to_bytes(row.get("nonce")),
+                ) else {
+                    total.skipped += 1;
+                    continue;
+                };
+                match self.reencrypt_blob(&ciphertext, &nonce) {
+                    Ok((ciphertext, nonce)) => {
+                        let update = format!(
+                            "UPDATE type::record('{table}', $rid) SET ciphertext = $ciphertext, nonce = $nonce, updated_at = $now"
+                        );
+                        if let Err(error) = self
+                            .db
+                            .query(&update)
+                            .bind(("rid", rid.to_string()))
+                            .bind(("ciphertext", ciphertext))
+                            .bind(("nonce", nonce))
+                            .bind(("now", Utc::now()))
+                            .await
+                            .and_then(|response| response.check())
+                        {
+                            error!(table, id = rid, error = %error, "Failed to rotate managed credential");
+                            total.failed += 1;
+                        } else {
+                            total.success += 1;
+                        }
+                    }
+                    Err(RotateError::AlreadyRotated) => total.skipped += 1,
+                    Err(RotateError::Failed(error)) => {
+                        error!(
+                            table,
+                            id = rid,
+                            error,
+                            "Failed to re-encrypt managed credential"
+                        );
+                        total.failed += 1;
+                    }
+                }
+            }
+        }
+        total
     }
 
     fn reencrypt_blob(

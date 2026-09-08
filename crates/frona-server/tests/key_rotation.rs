@@ -1,6 +1,11 @@
+mod helpers;
+use frona::core::{Handle, config::ModelProviderConfig};
 use frona::credential::key_rotation::{KeyRotation, derive_key};
+use frona::credential::managed::Candidate;
 use frona::credential::vault::service::{decrypt_password, encrypt_password};
 use frona::db::init::setup_schema;
+use frona::inference::credential::store::CredentialMethod;
+use frona::inference::provider::{platform::ProviderPlatform, validation::binding};
 
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
 use chrono::Utc;
@@ -163,6 +168,114 @@ async fn get_keypair_encrypted(
         .map(|v| v.as_u64().unwrap() as u8)
         .collect();
     (enc, nonce)
+}
+
+#[tokio::test]
+async fn provider_rotation_statement_failures_preserve_secret_and_allow_retry() {
+    for table in ["managed_credential"] {
+        let db = setup_db().await;
+        let old_secret = "fixture-old-secret";
+        let new_secret = "fixture-new-secret";
+        KeyRotation::check(&db, old_secret).await.unwrap();
+        let store = credentials(&db, old_secret).await;
+        let handle = Handle::const_validated("openai");
+        let config = ModelProviderConfig {
+            provider: Some("openai".into()),
+            ..Default::default()
+        };
+        let resolved = ProviderPlatform::resolve(&handle, &config).unwrap();
+        let credential_binding = binding(&resolved, "database", &config);
+        let active = store
+            .stage(
+                &handle,
+                CredentialMethod::ApiKey,
+                credential_binding.clone(),
+                &Candidate::Secret(
+                    frona::credential::managed::integration::static_secret::document(
+                        "fixture-active-key".into(),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        let active = store.promote(active.validation_id, Some(0)).await.unwrap();
+        let pending = store
+            .stage(
+                &handle,
+                CredentialMethod::ApiKey,
+                credential_binding,
+                &Candidate::Secret(
+                    frona::credential::managed::integration::static_secret::document(
+                        "fixture-pending-key".into(),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+
+        // The query returns a response, but its UPDATE statement fails.
+        db.query(format!(
+            "DEFINE EVENT reject_rotation ON TABLE {table} WHEN $event = 'UPDATE' THEN {{ THROW 'injected write failure'; }};"
+        ))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        let report = KeyRotation::check(&db, new_secret)
+            .await
+            .unwrap()
+            .unwrap()
+            .run()
+            .await
+            .unwrap();
+        assert_eq!(report.managed_credentials.failed, 1, "{table}");
+        assert_eq!(report.managed_credentials.success, 0, "{table}");
+        assert!(!report.all_succeeded());
+        let retry = KeyRotation::check(&db, new_secret)
+            .await
+            .unwrap()
+            .expect("a failed statement must preserve the old rotation secret");
+
+        db.query(format!("REMOVE EVENT reject_rotation ON TABLE {table};"))
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let report = retry.run().await.unwrap();
+        assert!(report.all_succeeded());
+        assert_eq!(report.managed_credentials.success, 1);
+        assert_eq!(report.managed_credentials.skipped, 0);
+        let rotated = credentials(&db, new_secret).await;
+        let current = rotated
+            .vault()
+            .status_by_id(active.item_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.version, active.version);
+        let mut response = db
+            .query("SELECT ciphertext, nonce FROM managed_credential WHERE item_id = $id")
+            .bind(("id", active.item_id.to_string()))
+            .await
+            .unwrap();
+        let record: Option<serde_json::Value> = response.take(0).unwrap();
+        let record = record.unwrap();
+        let ciphertext: Vec<u8> = serde_json::from_value(record["ciphertext"].clone()).unwrap();
+        let nonce: Vec<u8> = serde_json::from_value(record["nonce"].clone()).unwrap();
+        let document: serde_json::Value =
+            serde_json::from_slice(&decrypt_blob(&ciphertext, &nonce, &derive_key(new_secret)))
+                .unwrap();
+        assert_eq!(document["API_KEY"], "fixture-active-key");
+
+        assert!(
+            rotated
+                .pending(pending.validation_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(KeyRotation::check(&db, new_secret).await.unwrap().is_none());
+    }
 }
 
 #[tokio::test]
@@ -376,4 +489,29 @@ async fn browser_profile_credentials_skipped() {
     assert_eq!(report.credentials.skipped, 1);
     assert_eq!(report.credentials.success, 0);
     assert_eq!(report.credentials.failed, 0);
+}
+
+async fn credentials(
+    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    secret: &str,
+) -> frona::inference::credential::store::ProviderCredentials {
+    let fixture = helpers::app_state::build(db).await;
+    fixture
+        .state
+        .vault_service
+        .sync_config_connections()
+        .await
+        .unwrap();
+    frona::inference::credential::store::ProviderCredentials::new(
+        frona::credential::managed::ManagedVault::new(
+            std::sync::Arc::new(
+                frona::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone()),
+            ),
+            secret,
+            frona::credential::managed::GLOBAL_CONNECTION_ID.into(),
+        ),
+        std::sync::Arc::new(frona::credential::managed::resolver::ManagedResolver::new(
+            frona::credential::managed::integration::registered(),
+        )),
+    )
 }

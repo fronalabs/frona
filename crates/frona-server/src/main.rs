@@ -29,6 +29,8 @@ use frona::tool::sandbox::driver::verify_sandbox;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    frona::initialize_tls();
+
     let log_filter = std::env::var("FRONA_LOG_CONFIG").unwrap_or_else(|_| {
         let level = std::env::var("FRONA_LOG_LEVEL").unwrap_or_else(|_| "info".into());
         format!("frona={level},tower_http={level}")

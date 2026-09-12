@@ -303,6 +303,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(routes::voice::router())
         .merge(routes::system::router())
         .merge(routes::config::router())
+        .merge(routes::credential_logins::router())
         .merge(routes::provider_models::router());
     // Register the PKM sync API only when PKM is the active backend - a Basic install
     // never exposes `/api/memory/pkm/*`, so no request-time is-PKM probe is needed.

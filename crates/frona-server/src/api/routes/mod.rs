@@ -8,6 +8,7 @@ pub mod channels;
 pub mod chats;
 pub mod commands;
 pub mod config;
+pub mod credential_logins;
 pub mod contacts;
 pub mod files;
 pub mod mcp;

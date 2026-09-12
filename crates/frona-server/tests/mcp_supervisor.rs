@@ -127,6 +127,15 @@ async fn build_mcp_supervisor() -> (
         tmp.path().to_path_buf(),
         vault_storage,
         user_service.clone(),
+        frona::credential::managed::ManagedVault::new(
+            Arc::new(frona::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone())),
+            "test-secret",
+            "managed".into(),
+        ),
+        Arc::new(frona::credential::managed::resolver::ManagedResolver::new(
+            std::collections::HashMap::new(),
+        )),
+        frona::credential::managed::login::ManagedLoginService::registered(),
     );
     let registry: Arc<dyn McpRegistryClient> = Arc::new(PrebuiltMcpRegistryClient::new(
         frona::build_http_client(),

@@ -130,6 +130,15 @@ async fn build_test_harness(
         tmp.path().to_path_buf(),
         test_storage.clone(),
         test_user_service,
+        frona::credential::managed::ManagedVault::new(
+            Arc::new(frona::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone())),
+            "test-secret",
+            "managed".into(),
+        ),
+        Arc::new(frona::credential::managed::resolver::ManagedResolver::new(
+            std::collections::HashMap::new(),
+        )),
+        frona::credential::managed::login::ManagedLoginService::registered(),
     );
     vault.sync_config_connections().await.unwrap();
 

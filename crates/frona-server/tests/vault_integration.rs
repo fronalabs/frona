@@ -68,6 +68,15 @@ fn build_service(db: &surrealdb::Surreal<surrealdb::engine::local::Db>) -> Vault
         std::path::PathBuf::from("/tmp/test-data"),
         storage,
         user_service,
+        frona::credential::managed::ManagedVault::new(
+            Arc::new(frona::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone())),
+            "test-secret",
+            "managed".into(),
+        ),
+        Arc::new(frona::credential::managed::resolver::ManagedResolver::new(
+            std::collections::HashMap::new(),
+        )),
+        frona::credential::managed::login::ManagedLoginService::registered(),
     )
 }
 

@@ -30,6 +30,9 @@ pub struct VaultService {
     data_dir: PathBuf,
     storage: crate::storage::service::StorageService,
     user_service: crate::auth::UserService,
+    managed_vault: crate::credential::managed::ManagedVault,
+    managed_resolver: Arc<crate::credential::managed::resolver::ManagedResolver>,
+    login_service: crate::credential::managed::login::ManagedLoginService,
 }
 
 fn ensure_non_user_principal(principal: &Principal) -> Result<(), AppError> {
@@ -54,6 +57,9 @@ impl VaultService {
         data_dir: PathBuf,
         storage: crate::storage::service::StorageService,
         user_service: crate::auth::UserService,
+        managed_vault: crate::credential::managed::ManagedVault,
+        managed_resolver: Arc<crate::credential::managed::resolver::ManagedResolver>,
+        login_service: crate::credential::managed::login::ManagedLoginService,
     ) -> Self {
         let encryption_key = derive_key(encryption_secret);
 
@@ -68,7 +74,29 @@ impl VaultService {
             data_dir,
             storage,
             user_service,
+            managed_vault,
+            managed_resolver,
+            login_service,
         }
+    }
+
+    pub fn login_service(&self) -> &crate::credential::managed::login::ManagedLoginService {
+        &self.login_service
+    }
+
+    pub async fn advance_login(
+        &self,
+        user_id: &str,
+        attempt: uuid::Uuid,
+        completion: Option<&str>,
+    ) -> Result<crate::credential::managed::login::service::LoginAttempt, AppError> {
+        self.login_service
+            .advance_authorized(user_id, attempt, completion, |connection| async move {
+                self.managed_login_vault(user_id, &connection)
+                    .await
+                    .map(|_| ())
+            })
+            .await
     }
 
     pub async fn create_connection(
@@ -76,6 +104,13 @@ impl VaultService {
         user_id: &str,
         req: CreateVaultConnectionRequest,
     ) -> Result<VaultConnectionResponse, AppError> {
+        if (req.provider == VaultProviderType::Managed)
+            != matches!(req.config, VaultConnectionConfig::Managed {})
+        {
+            return Err(AppError::Validation(
+                "managed vault config requires managed provider".into(),
+            ));
+        }
         let (encrypted, nonce) = self.encrypt_config(&req.config)?;
         let now = Utc::now();
         let connection = VaultConnection {
@@ -92,6 +127,22 @@ impl VaultService {
         };
         let connection = self.connection_repo.create(&connection).await?;
         Ok(connection.into())
+    }
+
+    pub(crate) async fn get_connection(
+        &self,
+        user_id: &str,
+        connection_id: &str,
+    ) -> Result<VaultConnection, AppError> {
+        let connection = self
+            .connection_repo
+            .find_by_id(connection_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("vault connection".into()))?;
+        if !connection.enabled || (!connection.system_managed && connection.user_id != user_id) {
+            return Err(AppError::Forbidden("vault connection unavailable".into()));
+        }
+        Ok(connection)
     }
 
     pub async fn list_connections(
@@ -126,6 +177,13 @@ impl VaultService {
         }
         if connection.user_id != user_id {
             return Err(AppError::Forbidden("Not your vault connection".into()));
+        }
+        if connection.provider == VaultProviderType::Managed {
+            return self
+                .managed_vault
+                .for_connection(connection.id)
+                .delete_connection(user_id)
+                .await;
         }
         self.grant_repo
             .delete_by_connection_id(connection_id)
@@ -275,6 +333,8 @@ impl VaultService {
             .await
     }
 
+    /// Resolve under the current binding and grant, including a recheck after
+    /// remote integration work. Chat-only approval is represented by its binding.
     pub async fn hydrate_chat_env_vars(
         &self,
         user_id: &str,
@@ -317,9 +377,11 @@ impl VaultService {
             .grant_repo
             .find_by_principal(user_id, principal)
             .await?;
-        Ok(grants
-            .iter()
-            .any(|g| g.connection_id == connection_id && g.vault_item_id == vault_item_id))
+        Ok(grants.iter().any(|g| {
+            g.connection_id == connection_id
+                && g.vault_item_id == vault_item_id
+                && g.expires_at.is_none_or(|expiry| expiry > Utc::now())
+        }))
     }
 
     pub async fn delete_grants_for_principal(
@@ -588,6 +650,12 @@ impl VaultService {
         &self,
     ) -> Vec<(String, VaultProviderType, String, VaultConnectionConfig)> {
         let mut entries = Vec::new();
+        entries.push((
+            crate::credential::managed::GLOBAL_CONNECTION_ID.into(),
+            VaultProviderType::Managed,
+            "Managed credentials (shared)".into(),
+            VaultConnectionConfig::Managed {},
+        ));
 
         if let Some(token) = &self.vault_config.onepassword_service_account_token {
             entries.push((
@@ -816,6 +884,70 @@ impl VaultService {
         self.credential_repo.delete(credential_id).await
     }
 
+    /// Current management authorization for a configured managed vault.
+    pub(crate) async fn managed_login_vault(
+        &self,
+        user_id: &str,
+        connection_id: &str,
+    ) -> Result<crate::credential::managed::ManagedVault, AppError> {
+        let user = self
+            .user_service
+            .find_by_id(user_id)
+            .await?
+            .filter(|user| user.deactivated_at.is_none())
+            .ok_or_else(|| AppError::Forbidden("active user required".into()))?;
+        let connection = self
+            .connection_repo
+            .find_by_id(connection_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("vault connection".into()))?;
+        if !connection.enabled || (!connection.system_managed && connection.user_id != user_id) {
+            return Err(AppError::Forbidden(
+                "vault connection is unavailable".into(),
+            ));
+        }
+        if connection.system_managed
+            && !user
+                .groups
+                .iter()
+                .any(|group| group == crate::auth::models::ADMINS_GROUP)
+        {
+            return Err(AppError::Forbidden(
+                "Administrator privileges required".into(),
+            ));
+        }
+        if connection.provider != VaultProviderType::Managed {
+            return Err(AppError::Validation(
+                "login requires a managed vault".into(),
+            ));
+        }
+        if !matches!(
+            self.decrypt_config(&connection)?,
+            VaultConnectionConfig::Managed {}
+        ) {
+            return Err(AppError::Validation(
+                "invalid managed vault connection".into(),
+            ));
+        }
+        let vault = self.managed_vault.for_connection(connection.id);
+        vault.ensure_available().await?;
+        Ok(vault)
+    }
+
+    pub(crate) async fn delete_managed_item(
+        &self,
+        user_id: &str,
+        connection_id: &str,
+        item_id: uuid::Uuid,
+    ) -> Result<(), AppError> {
+        let vault = self.managed_login_vault(user_id, connection_id).await?;
+        let current = vault
+            .status_by_id(item_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("managed credential".into()))?;
+        vault.delete_by_id(item_id, current.version).await
+    }
+
     async fn get_provider(
         &self,
         user_id: &str,
@@ -844,6 +976,20 @@ impl VaultService {
         }
 
         let config = self.decrypt_config(&connection)?;
+        if connection.provider == VaultProviderType::Managed {
+            if !matches!(config, VaultConnectionConfig::Managed {}) {
+                return Err(AppError::Validation(
+                    "invalid managed vault connection".into(),
+                ));
+            }
+            return Ok(Box::new(super::providers::managed::ManagedVaultProvider {
+                vault: self.managed_vault.for_connection(connection.id.clone()),
+                resolver: self.managed_resolver.clone(),
+                connection,
+                connections: self.connection_repo.clone(),
+                user_id: user_id.into(),
+            }));
+        }
 
         let home_dir = if connection.system_managed {
             self.data_dir
@@ -868,6 +1014,9 @@ impl VaultService {
         &self,
         config: &VaultConnectionConfig,
     ) -> Result<(Vec<u8>, Vec<u8>), AppError> {
+        if matches!(config, VaultConnectionConfig::Managed {}) {
+            return Ok((Vec::new(), Vec::new()));
+        }
         let json = serde_json::to_vec(config)
             .map_err(|e| AppError::Internal(format!("Config serialization failed: {e}")))?;
 
@@ -888,6 +1037,9 @@ impl VaultService {
         &self,
         connection: &VaultConnection,
     ) -> Result<VaultConnectionConfig, AppError> {
+        if connection.provider == VaultProviderType::Managed {
+            return Ok(VaultConnectionConfig::Managed {});
+        }
         let cipher = Aes256Gcm::new_from_slice(&self.encryption_key)
             .map_err(|e| AppError::Internal(format!("AES init failed: {e}")))?;
 

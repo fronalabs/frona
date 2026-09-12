@@ -184,7 +184,7 @@ async fn delete_local_item() {
 }
 
 #[tokio::test]
-async fn list_connections_empty() {
+async fn list_connections_includes_only_builtin_vaults_before_personal_creation() {
     let (state, _tmp) = test_app_state().await;
     let (token, _) =
         register_user(&state, "vault-conn", "vaultconn@example.com", "password123").await;
@@ -193,7 +193,15 @@ async fn list_connections_empty() {
     let resp = app.oneshot(auth_get("/api/vaults", &token)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert_eq!(json.as_array().unwrap().len(), 0);
+    let connections = json.as_array().unwrap();
+    assert_eq!(connections.len(), 2);
+    assert!(connections.iter().all(|c| c["system_managed"] == true));
+    assert!(
+        connections
+            .iter()
+            .any(|c| c["id"] == "managed" && c["provider"] == "managed")
+    );
+    assert!(connections.iter().any(|c| c["id"] == "local"));
 }
 
 #[tokio::test]

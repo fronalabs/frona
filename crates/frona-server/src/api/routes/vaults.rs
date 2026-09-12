@@ -32,6 +32,29 @@ pub fn router() -> Router<AppState> {
             get(search_items).post(search_items_inline),
         )
         .route("/api/vaults/{id}/items/{item_id}/fields", get(item_fields))
+        .route(
+            "/api/vaults/{id}/items/{item_id}",
+            delete(delete_managed_item),
+        )
+}
+
+async fn delete_managed_item(
+    auth: AuthUser,
+    State(state): State<AppState>,
+    Path((connection_id, item_id)): Path<(String, uuid::Uuid)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let connection = state
+        .vault_service
+        .get_connection(&auth.user_id, &connection_id)
+        .await?;
+    if connection.system_managed {
+        auth.require_admin(&state).await?;
+    }
+    state
+        .vault_service
+        .delete_managed_item(&auth.user_id, &connection_id, item_id)
+        .await?;
+    Ok(Json(serde_json::json!({"deleted": true})))
 }
 
 async fn create_connection(
@@ -223,6 +246,12 @@ async fn test_vault(
     _auth: AuthUser,
     Json(req): Json<TestVaultRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    if req.provider == VaultProviderType::Managed {
+        if !matches!(req.config, VaultConnectionConfig::Managed {}) {
+            return Err(AppError::Validation("invalid managed vault config".into()).into());
+        }
+        return Ok(Json(serde_json::json!({"status": "ok"})));
+    }
     let tmp = tempfile::tempdir()
         .map_err(|e| ApiError::from(AppError::Tool(format!("Failed to create temp dir: {e}"))))?;
     let provider = create_vault_provider(req.provider, req.config, tmp.path().to_path_buf())?;

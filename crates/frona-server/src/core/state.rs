@@ -205,6 +205,7 @@ impl AppState {
                 provider_credentials.clone(),
                 crate::inference::provider::InferenceCounter::new(broadcast_service.clone()),
             );
+        let login_service = crate::credential::managed::login::ManagedLoginService::registered();
         let runtime_credentials = Arc::new(
             crate::inference::credential::runtime::RuntimeCredentials::new(
                 llm_config.providers.clone(),
@@ -437,6 +438,9 @@ impl AppState {
             data_dir,
             storage.clone(),
             user_service.clone(),
+            managed_vault,
+            managed_resolver,
+            login_service,
         );
 
         let oauth_service = if config.sso.enabled {

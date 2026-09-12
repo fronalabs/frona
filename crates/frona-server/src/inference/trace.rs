@@ -20,8 +20,10 @@
 
 #[cfg(debug_assertions)]
 use std::path::PathBuf;
+
 #[cfg(debug_assertions)]
 use std::sync::LazyLock;
+
 #[cfg(debug_assertions)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -63,6 +65,7 @@ static CONFIG: LazyLock<Option<TraceConfig>> = LazyLock::new(|| {
 
 #[cfg(debug_assertions)]
 static SEQ: AtomicUsize = AtomicUsize::new(0);
+
 #[cfg(debug_assertions)]
 static STAGE_STATE_SEQ: AtomicUsize = AtomicUsize::new(0);
 
@@ -194,6 +197,7 @@ mod tests {
         struct Inner {
             class: String,
         }
+
         #[derive(schemars::JsonSchema)]
         #[allow(dead_code)]
         struct Classification {

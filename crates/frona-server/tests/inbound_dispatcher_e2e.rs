@@ -14,7 +14,6 @@ use frona::core::repository::Repository;
 use frona::core::state::AppState;
 use frona::db::init as db_init;
 use frona::db::repo::generic::SurrealRepo;
-use frona::inference::registry::ModelProviderRegistry;
 use frona::space::models::Space;
 use frona::storage::StorageService;
 use helpers::{MockModelProvider, MockResponse, init_metrics, test_model_group};
@@ -67,11 +66,19 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
 
     let mut state = AppState::new(
         db.clone(),
-        &config,
+        {
+            let mut loaded = frona::core::config::ConfigService::load(
+                tempfile::tempdir().unwrap().path().join("config.yaml"),
+            )
+            .unwrap();
+            loaded.config = config.clone();
+            frona::core::config::ConfigService::new(loaded).unwrap()
+        },
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        crate::helpers::app_state::catalogs(&config),
     );
 
     let mut providers: HashMap<String, Arc<dyn frona::inference::provider::ModelProvider>> =
@@ -79,7 +86,7 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
     providers.insert("mock".to_string(), provider);
     let mut groups = HashMap::new();
     groups.insert("test".to_string(), test_model_group());
-    let mock_registry = ModelProviderRegistry::for_testing(providers, groups);
+    let mock_registry = crate::helpers::test_model_service(providers, groups).await;
 
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let prompts_dir = manifest
@@ -127,8 +134,8 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
     state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(
         state.harness.clone(),
     ));
-
     state.init_signal_service();
+
     state.policy_service.sync_base_policies().await.unwrap();
 
     (state, tmp)

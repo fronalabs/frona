@@ -71,6 +71,7 @@ async fn build_mcp_supervisor() -> (
         frona::agent::skill::resolver::SkillResolver::new(
             "/tmp/frona-test-supervisor-shared",
             storage.clone(),
+            "/tmp/frona-test-supervisor-skills",
         ),
         storage.clone(),
         "/tmp/frona-test-supervisor-skills",

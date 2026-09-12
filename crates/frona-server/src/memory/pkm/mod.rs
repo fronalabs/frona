@@ -67,7 +67,7 @@ use crate::agent::prompt::PromptLoader;
 use crate::core::config::MemoryConfig;
 use crate::core::error::AppError;
 use crate::db::repo::tool_calls::SurrealToolCallRepo;
-use crate::inference::ModelProviderRegistry;
+use crate::inference::provider::service::ModelProviderService;
 use crate::memory::service::{MemoryContext, MemoryService};
 use crate::scheduler::Scheduler;
 use crate::storage::StorageService;
@@ -85,7 +85,7 @@ pub struct PkmService {
     storage: PkmStorage,
     /// Kept only to resolve the background model group; all inference goes through
     /// the harness passed to `consolidate`.
-    registry: Arc<ModelProviderRegistry>,
+    model_providers: Arc<ModelProviderService>,
     prompts: PromptLoader,
     memory_config: MemoryConfig,
     /// For the self-entity → `User` write-through (`{name, timezone}`).
@@ -99,13 +99,15 @@ pub struct PkmService {
 /// Resolve the background model group by name, falling back to `primary`. Shared by
 /// `PkmService` and `PkmSyncService` (each supplies its own "undefined" error message).
 /// `None` if neither the configured group nor `primary` is defined.
-pub(crate) fn resolve_model_group<'a>(
-    registry: &'a ModelProviderRegistry,
+pub(crate) fn resolve_model_group(
+    model_providers: &ModelProviderService,
     configured: &str,
-) -> Option<&'a crate::inference::config::ModelGroup> {
-    registry
-        .get_model_group(configured)
-        .or_else(|_| registry.get_model_group("primary"))
+) -> Option<crate::inference::ModelGroup> {
+    model_providers
+        .resolve_with_fallback(
+            &crate::inference::ModelRef(configured.to_owned().into()),
+            &crate::inference::ModelRef::PRIMARY,
+        )
         .ok()
 }
 

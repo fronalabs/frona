@@ -96,7 +96,8 @@ async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
     });
     let user_service =
         frona::auth::UserService::new(user_repo, &frona::core::config::CacheConfig::default());
-    let tool_manager = Arc::new(frona::tool::manager::ToolManager::new(false));
+    let tool_fixture = helpers::app_state::build(&db).await;
+    let tool_manager = tool_fixture.state.tool_manager.clone();
     let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> =
         Arc::new(frona::db::repo::generic::SurrealRepo::<
             frona::policy::models::Policy,
@@ -116,6 +117,7 @@ async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
         frona::agent::skill::resolver::SkillResolver::new(
             "/tmp/frona-test-mcp-e2e-shared",
             storage.clone(),
+            "/tmp/frona-test-mcp-e2e-skills",
         ),
         storage.clone(),
         "/tmp/frona-test-mcp-e2e-skills",
@@ -281,3 +283,5 @@ async fn tools_for_user_returns_filtered_tools() {
 
     manager.stop("s3").await.unwrap();
 }
+
+mod helpers;

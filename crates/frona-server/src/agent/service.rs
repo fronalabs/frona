@@ -73,6 +73,10 @@ impl AgentService {
     }
 
     pub async fn create(&self, user_id: &str, req: CreateAgentRequest) -> Result<Agent, AppError> {
+        if req.model_group.is_empty() {
+            return Err(AppError::Validation("model_group must not be empty".into()));
+        }
+
         let raw_handle = req
             .handle
             .clone()
@@ -95,7 +99,7 @@ impl AgentService {
             handle,
             name: req.name,
             description: req.description,
-            model_group: req.model_group.unwrap_or_else(|| "primary".to_string()),
+            model_group: req.model_group,
             enabled: true,
             skills: req.skills,
             sandbox_limits: req.sandbox_limits,

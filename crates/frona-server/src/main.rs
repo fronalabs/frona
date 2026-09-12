@@ -17,7 +17,7 @@ use frona::api::middleware::metrics::track_http_metrics;
 use frona::api::middleware::setup_redirect::setup_redirect;
 use frona::api::middleware::shutdown::shutdown_gate;
 use frona::api::routes;
-use frona::core::config::Config;
+use frona::core::config::{ConfigService, config_file_path};
 use frona::core::metrics::setup_metrics_recorder;
 use frona::core::state::AppState;
 use frona::credential::key_rotation::KeyRotation;
@@ -41,8 +41,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Frona v{}", env!("CARGO_PKG_VERSION"));
 
-    let loaded = Config::load();
-    let config = loaded.config;
+    let mut loaded = ConfigService::load(config_file_path())?;
+    let config = loaded.config.clone();
+    let models = loaded.models.take();
 
     const DEFAULT_SECRET: &str = "dev-secret-change-in-production";
     if config.auth.encryption_secret == DEFAULT_SECRET {
@@ -70,6 +71,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rotation.run().await?;
     }
 
+    let config_service = ConfigService::new(loaded)?;
+
     let resource_manager = Arc::new(SystemResourceManager::new(
         config.sandbox.default_limits.max_cpu_pct,
         config.sandbox.default_limits.max_memory_pct,
@@ -78,13 +81,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     resource_manager.start_polling();
 
+    let bundled = PathBuf::from(&config.storage.shared_config_dir).join("catalogs");
+    let catalogs = frona_model_catalog::sources::CatalogSources::load_with_bundled(
+        std::path::Path::new(&config.storage.cache_dir),
+        Some(&bundled),
+    );
+    catalogs.download_missing().await;
     let state = AppState::new(
         surreal.clone(),
-        &config,
-        loaded.models,
+        config_service,
+        models,
         storage,
         metrics_handle,
         resource_manager,
+        catalogs,
     );
     state.agent_service.sync_agent_limits().await?;
     state.vault_service.sync_config_connections().await?;

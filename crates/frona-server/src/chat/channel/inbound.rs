@@ -376,7 +376,7 @@ async fn handle_inbound_message(
         signal_service
             .process_inbound_extract(
                 &state.chat_service,
-                state.chat_service.provider_registry(),
+                state.chat_service.model_providers(),
                 &channel_row,
                 &chat,
                 &msg,

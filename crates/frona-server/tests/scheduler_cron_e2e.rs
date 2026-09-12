@@ -1,5 +1,7 @@
 //! E2E tests driving `scheduler::execute_cron` against a fully wired AppState.
 
+mod helpers;
+
 use std::sync::Arc;
 
 use frona::agent::task::executor::TaskExecutor;
@@ -61,12 +63,20 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
     let state = AppState::new(
-        db,
-        &config,
+        db.clone(),
+        {
+            let mut loaded = frona::core::config::ConfigService::load(
+                tempfile::tempdir().unwrap().path().join("config.yaml"),
+            )
+            .unwrap();
+            loaded.config = config.clone();
+            frona::core::config::ConfigService::new(loaded).unwrap()
+        },
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        crate::helpers::app_state::catalogs(&config),
     );
     (state, tmp)
 }

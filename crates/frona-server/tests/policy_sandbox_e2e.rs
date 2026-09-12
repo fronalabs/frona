@@ -90,7 +90,8 @@ async fn setup() -> (Surreal<Db>, PolicyService) {
 
     let schema = build_schema();
     let repo: Arc<dyn PolicyRepository> = Arc::new(SurrealRepo::<Policy>::new(db.clone()));
-    let tool_manager = Arc::new(frona::tool::manager::ToolManager::new(false));
+    let tool_fixture = helpers::app_state::build(&db).await;
+    let tool_manager = tool_fixture.state.tool_manager.clone();
 
     tool_manager
         .register_user_tool(
@@ -911,3 +912,5 @@ async fn e2e_reconcile_for_mcp_principal_isolates_from_agent() {
     assert!(mcp_policy.read_paths.contains(&"/mcp-data".to_string()));
     assert!(!mcp_policy.read_paths.contains(&"/agent-data".to_string()));
 }
+
+mod helpers;

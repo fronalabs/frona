@@ -10,7 +10,7 @@ use rig_core::completion::Message as RigMessage;
 use crate::agent::harness::Harness;
 use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
-use crate::inference::config::ModelGroup;
+use crate::inference::ModelGroup;
 use crate::inference::usage::{InferenceKind, UsageContext};
 use crate::inference::{AnswerAttempt, StructuredConversation};
 use crate::tool::AgentTool;

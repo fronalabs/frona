@@ -23,7 +23,8 @@ async fn test_policy_service(db: &Surreal<Db>) -> PolicyService {
         Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(
             db.clone(),
         ));
-    let tool_manager = Arc::new(frona::tool::manager::ToolManager::new(false));
+    let tool_fixture = helpers::app_state::build(db).await;
+    let tool_manager = tool_fixture.state.tool_manager.clone();
     let storage = frona::storage::StorageService::new(&frona::core::config::Config::default());
     let user_service = frona::auth::UserService::new(
         SurrealRepo::new(db.clone()),
@@ -579,3 +580,5 @@ async fn test_refresh_cookie_round_trip() {
         .unwrap();
     assert_eq!(refresh_claims.token_type, "refresh");
 }
+
+mod helpers;

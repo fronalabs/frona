@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
-use crate::inference::config::ModelGroup;
+use crate::inference::ModelGroup;
 use crate::memory::basic::BasicMemoryService;
 use frona_derive::agent_tool;
 

@@ -9,8 +9,7 @@ use crate::chat::message::models::{Message, MessageCommand, MessageRole};
 use crate::chat::models::Chat;
 use crate::chat::service::AgentConfig;
 use crate::core::error::AppError;
-use crate::inference::ModelProviderRegistry;
-use crate::inference::config::ModelGroup;
+use crate::inference::ModelGroup;
 use crate::inference::conversation::{
     ConversationBuilder, ConversationContext, resolve_attachment_path,
 };
@@ -23,7 +22,7 @@ pub struct ChatSessionContext {
     pub system_prompt: String,
     pub model_group: ModelGroup,
     pub rig_history: Vec<RigMessage>,
-    pub registry: ModelProviderRegistry,
+
     pub tool_registry: AgentToolRegistry,
     pub tool_ctx: InferenceContext,
     pub cancel_token: CancellationToken,
@@ -155,10 +154,13 @@ impl ChatSessionContext {
             &resolved_tz,
         );
 
-        let model_group = harness
-            .chat_service
-            .provider_registry()
-            .resolve_model_group(&agent_config.model_group)?;
+        let model_group =
+            harness
+                .chat_service
+                .model_providers()
+                .resolve(&crate::inference::ModelRef(
+                    agent_config.model_group.clone().into(),
+                ))?;
 
         let max_output = model_group
             .max_tokens
@@ -215,10 +217,10 @@ impl ChatSessionContext {
             }
         }
 
-        let model_ref = model_group.main.clone();
+        let model_config = model_group.main.clone();
         let conv_ctx = ConversationContext {
             agent_id: chat.agent_id.clone(),
-            model_ref,
+            model_config,
             user_id: user_id.to_string(),
         };
 
@@ -258,8 +260,6 @@ impl ChatSessionContext {
                 conversation_summary.as_deref(),
             )
             .await;
-
-        let registry = harness.chat_service.provider_registry().clone();
 
         let mut file_paths = Vec::new();
         for msg in &stored_messages {
@@ -311,7 +311,7 @@ impl ChatSessionContext {
             system_prompt,
             model_group,
             rig_history,
-            registry,
+
             tool_registry,
             tool_ctx,
             cancel_token,

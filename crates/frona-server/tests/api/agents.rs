@@ -146,6 +146,7 @@ async fn update_agent() {
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     assert_eq!(json["name"], "After");
+    assert_eq!(json["model_group"], agent["model_group"]);
 }
 
 #[tokio::test]
@@ -191,4 +192,31 @@ async fn delete_agent_other_user_returns_error() {
         "Expected 404 or 403, got {}",
         resp.status()
     );
+}
+
+#[tokio::test]
+async fn agent_creation_requires_an_explicit_model_group() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) =
+        register_user(&state, "selection", "selection@example.com", "password123").await;
+    for (selection, expected_status) in [
+        (None, StatusCode::UNPROCESSABLE_ENTITY),
+        (
+            Some(serde_json::Value::Null),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (Some(serde_json::json!("")), StatusCode::BAD_REQUEST),
+    ] {
+        let mut body = serde_json::json!({"name":"Missing selection","description":"fixture"});
+        if let Some(name) = selection {
+            body["model_group"] = name;
+        }
+        let response = build_app(state.clone())
+            .oneshot(auth_post_json("/api/agents", &token, body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected_status);
+    }
+    let agent = create_agent(&state, &token, "Explicit primary").await;
+    assert_eq!(agent["model_group"], "primary");
 }

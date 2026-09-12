@@ -3549,6 +3549,7 @@ dependencies = [
  "frona-api-types",
  "frona-browser",
  "frona-derive",
+ "frona-model-catalog",
  "frona-ontologies",
  "frona-text",
  "futures",

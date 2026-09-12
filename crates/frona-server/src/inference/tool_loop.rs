@@ -17,10 +17,8 @@ use crate::core::metrics;
 use crate::tool::registry::AgentToolRegistry;
 use crate::tool::{InferenceContext, ToolDefinition, active_chat};
 
-use super::config::ModelGroup;
-use super::registry::ModelProviderRegistry;
-use super::retry::StreamResult;
-use super::retry::stream_with_retry_and_fallback;
+use crate::inference::ModelGroup;
+use crate::inference::retry::StreamResult;
 
 pub struct InferenceEvent {
     pub kind: InferenceEventKind,
@@ -489,7 +487,6 @@ async fn execute_tool_calls(
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run_tool_loop(
-    registry: &ModelProviderRegistry,
     model_group: &ModelGroup,
     system_prompt: &str,
     mut chat_history: Vec<RigMessage>,
@@ -547,19 +544,21 @@ pub async fn run_tool_loop(
             ctx.user.id.clone(),
             model_group.name.clone(),
         );
-        let contents = match stream_with_retry_and_fallback(
-            registry,
-            model_group,
-            &current_system_prompt,
-            &chat_history,
-            &rig_tools,
-            &event_tx,
-            &cancel_token,
-            &mut turn_text,
-            usage_service,
-            &turn_usage_ctx,
-        )
-        .await?
+        let contents = match (model_group)
+            .stream_inference(
+                crate::inference::ModelRequest {
+                    system_prompt: &current_system_prompt,
+                    history: chat_history.to_vec(),
+                    tools: rig_tools.to_vec(),
+                    usage_service,
+                    usage_context: &turn_usage_ctx,
+                    overrides: Default::default(),
+                },
+                &event_tx,
+                &cancel_token,
+                &mut turn_text,
+            )
+            .await?
         {
             StreamResult::Contents { content, usage: _ } => content,
             StreamResult::Cancelled => {

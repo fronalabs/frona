@@ -278,7 +278,7 @@ impl SignalService {
     pub async fn process_inbound_extract(
         &self,
         chat_service: &crate::chat::service::ChatService,
-        registry: &crate::inference::ModelProviderRegistry,
+        model_providers: &crate::inference::provider::service::ModelProviderService,
         channel: &crate::chat::channel::Channel,
         chat: &crate::chat::models::Chat,
         msg: &crate::chat::message::models::Message,
@@ -303,7 +303,9 @@ impl SignalService {
             }
             return Ok(());
         };
-        let model_group = registry.resolve_model_group(&agent.model_group)?;
+        let model_group = model_providers.resolve(&crate::inference::ModelRef(
+            agent.model_group.clone().into(),
+        ))?;
 
         let system_prompt = self.compose_signal_prompt(&channel.provider, &chat.id, awaiting);
         let history = vec![RigMessage::user(&msg.content)];
@@ -318,7 +320,6 @@ impl SignalService {
         );
 
         let output: SignalOutput = match crate::inference::structured_inference::<SignalOutput>(
-            registry,
             &model_group,
             &system_prompt,
             history,

@@ -10,12 +10,11 @@ use async_trait::async_trait;
 use frona::core::metrics;
 use frona::db::repo::generic::SurrealRepo;
 use frona::inference::Usage;
-use frona::inference::config::{ModelGroup, RetryConfig};
 use frona::inference::error::InferenceError;
-use frona::inference::provider::{ModelProvider, ModelRef, SUBMIT_TOOL_NAME};
-use frona::inference::registry::ModelProviderRegistry;
+use frona::inference::provider::service::ModelProviderService;
+use frona::inference::provider::{ModelConfig, ModelProvider, SUBMIT_TOOL_NAME};
+use frona::inference::{ModelGroup, config::RetryConfig};
 use frona::policy::service::PolicyService;
-use frona::tool::manager::ToolManager;
 use frona::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
 use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
@@ -169,8 +168,8 @@ pub async fn commit_checkpointed_extract_patch(
 /// don't assert against the inference_usage table this is a complete stub.
 pub fn test_usage_service(db: &Surreal<Db>) -> frona::inference::usage::UsageService {
     frona::inference::usage::UsageService::new(
-        frona::inference::metadata::ModelCatalogStore::new(
-            frona::inference::metadata::ModelCatalogSnapshot::empty(),
+        frona_model_catalog::ModelCatalogStore::new(
+            frona_model_catalog::ModelCatalogSnapshot::empty(),
         ),
         SurrealRepo::new(db.clone()),
         frona::chat::broadcast::BroadcastService::new(),
@@ -189,13 +188,14 @@ pub fn test_usage_ctx() -> frona::inference::usage::UsageContext {
     )
 }
 
-pub fn test_policy_service(db: &Surreal<Db>) -> PolicyService {
+pub async fn test_policy_service(db: &Surreal<Db>) -> PolicyService {
     let schema = frona::policy::schema::build_schema();
     let repo: Arc<dyn frona::policy::repository::PolicyRepository> =
         Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(
             db.clone(),
         ));
-    let tool_manager = Arc::new(ToolManager::new(false));
+    let tool_fixture = app_state::build(db).await;
+    let tool_manager = tool_fixture.state.tool_manager.clone();
     let storage = frona::storage::StorageService::new(&frona::core::config::Config::default());
     let user_service = frona::auth::UserService::new(
         SurrealRepo::new(db.clone()),
@@ -327,7 +327,7 @@ impl MockModelProvider {
 impl ModelProvider for MockModelProvider {
     async fn inference(
         &self,
-        _model: &ModelRef,
+        _model: &ModelConfig,
         _system_prompt: &str,
         chat_history: Vec<RigMessage>,
         tools: Vec<RigToolDefinition>,
@@ -385,7 +385,7 @@ impl ModelProvider for MockModelProvider {
 
     async fn stream_inference(
         &self,
-        _model: &ModelRef,
+        _model: &ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<RigMessage>,
         _tools: Vec<RigToolDefinition>,
@@ -456,7 +456,7 @@ impl ModelProvider for MockModelProvider {
 
     async fn structured_inference(
         &self,
-        _model: &ModelRef,
+        _model: &ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<RigMessage>,
         _schema: serde_json::Value,
@@ -742,8 +742,12 @@ pub fn mock_context() -> InferenceContext {
 
 pub fn test_model_group() -> ModelGroup {
     ModelGroup {
+        providers: Default::default(),
         name: "test".into(),
-        main: ModelRef {
+        main: ModelConfig {
+            request_settings: Default::default(),
+            catalog_provider: String::new(),
+            provider_handle: frona::core::Handle::const_validated("mock"),
             provider: "mock".into(),
             model_id: "test-model".into(),
         },
@@ -763,7 +767,10 @@ pub fn test_model_group() -> ModelGroup {
 
 pub fn test_model_group_with_fallback(fallback_provider: &str, fallback_model: &str) -> ModelGroup {
     let mut group = test_model_group();
-    group.fallbacks.push(ModelRef {
+    group.fallbacks.push(ModelConfig {
+        request_settings: Default::default(),
+        catalog_provider: String::new(),
+        provider_handle: frona::core::Handle::try_new(fallback_provider).unwrap(),
         provider: fallback_provider.into(),
         model_id: fallback_model.into(),
     });
@@ -803,27 +810,50 @@ pub fn test_metrics_ctx() -> frona::inference::usage::UsageService {
     test_usage_service(db)
 }
 
-pub fn test_registry_with_provider(
+pub fn test_providers(
     name: &str,
     provider: Arc<dyn ModelProvider>,
-) -> ModelProviderRegistry {
-    let mut providers = HashMap::new();
-    providers.insert(name.to_string(), provider);
-    let model_groups = HashMap::new();
-    ModelProviderRegistry::for_testing(providers, model_groups)
+) -> Arc<HashMap<String, Arc<dyn ModelProvider>>> {
+    Arc::new([(name.to_string(), provider)].into())
 }
 
-pub fn test_registry_with_group(
+pub async fn test_model_service_with_group(
     provider_name: &str,
     provider: Arc<dyn ModelProvider>,
     group_name: &str,
     group: ModelGroup,
-) -> ModelProviderRegistry {
-    let mut providers = HashMap::new();
-    providers.insert(provider_name.to_string(), provider);
-    let mut model_groups = HashMap::new();
-    model_groups.insert(group_name.to_string(), group);
-    ModelProviderRegistry::for_testing(providers, model_groups)
+) -> ModelProviderService {
+    test_model_service(
+        [(provider_name.to_string(), provider)].into(),
+        [(group_name.to_string(), group)].into(),
+    )
+    .await
+}
+
+pub async fn test_model_service(
+    providers: HashMap<String, Arc<dyn ModelProvider>>,
+    mut groups: HashMap<String, ModelGroup>,
+) -> ModelProviderService {
+    let shared = Arc::new(providers.clone());
+    for group in groups.values_mut() {
+        group.providers = shared.clone();
+    }
+    let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+        .await
+        .unwrap();
+    frona::db::init::setup_schema(&db).await.unwrap();
+    let fixture = app_state::build(&db).await;
+    let service = fixture.state.model_provider_service;
+    ModelProviderService::new(
+        service.directory,
+        service.config_service,
+        service.store,
+        service.validator,
+        service.runtime,
+        service.active,
+        groups,
+        providers,
+    )
 }
 
 pub fn init_metrics() {
@@ -940,13 +970,10 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
         SurrealRepo::new(db.clone()),
         &config.cache,
         resource_manager.clone(),
-        test_policy_service(&db),
+        test_policy_service(&db).await,
         user_service.clone(),
     );
-    let provider_registry = frona::inference::registry::ModelProviderRegistry::for_testing(
-        HashMap::new(),
-        HashMap::new(),
-    );
+    let provider_registry = test_model_service(HashMap::new(), HashMap::new()).await;
 
     let usage_service = test_usage_service(&db);
 
@@ -989,7 +1016,7 @@ pub fn test_memory_service(
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
-        std::sync::Arc::new(state.chat_service.provider_registry().clone()),
+        std::sync::Arc::new(state.chat_service.model_providers().clone()),
         state.prompts.clone(),
         state.usage_service.clone(),
         frona::core::config::MemoryConfig::default(),
@@ -1016,7 +1043,7 @@ pub async fn test_event_sender() -> (
 /// Build a `Harness` whose inference is wired to `mock_provider` (via a mock-registry
 /// `ChatService`), for exercising the harness-routed PKM consolidation path. All other
 /// services are real in-memory ones from a throwaway `AppState`.
-pub fn test_harness(
+pub async fn test_harness(
     db: &Surreal<Db>,
     config: &frona::core::config::Config,
     mock_provider: Arc<dyn ModelProvider>,
@@ -1035,19 +1062,30 @@ pub fn test_harness(
     let storage = frona::storage::StorageService::new(config);
     let mut state = AppState::new(
         db.clone(),
-        config,
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let mut loaded =
+                frona::core::config::ConfigService::load(directory.path().join("config.yaml"))
+                    .unwrap();
+            loaded.config = config.clone();
+            frona::core::config::ConfigService::new(loaded).unwrap()
+        },
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        app_state::catalogs(config),
     );
+
+    state.init_signal_service();
+    state.tool_manager.init(&state);
 
     // ChatService wired to the mock provider so all harness inference hits it.
     let mut providers: HashMap<String, Arc<dyn ModelProvider>> = HashMap::new();
     providers.insert("mock".to_string(), mock_provider);
     let mut groups = HashMap::new();
     groups.insert("test".to_string(), test_model_group());
-    let mock_registry = ModelProviderRegistry::for_testing(providers, groups);
+    let mock_registry = test_model_service(providers, groups).await;
     let chat_service = ChatService::new(
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
@@ -1084,3 +1122,5 @@ pub fn test_harness(
         state.usage_service.clone(),
     ))
 }
+
+pub mod app_state;

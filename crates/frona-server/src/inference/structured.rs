@@ -9,7 +9,7 @@
 //!     submission in the same dialogue and ask for another attempt.
 //!
 //! All three are **non-persistent**: nothing reaches the chat/message tables, only usage
-//! metrics. (Not to be confused with [`super::conversation`], which builds the persistent
+//! metrics. (Not to be confused with [`crate::inference::conversation`], which builds the persistent
 //! chat history.) Each terminates on a `submit` tool call carrying `T`'s JSON schema.
 
 use rig_core::completion::request::ToolDefinition as RigToolDefinition;
@@ -18,12 +18,11 @@ use rig_core::completion::{AssistantContent, Message as RigMessage};
 use crate::core::error::AppError;
 use crate::tool::registry::AgentToolRegistry;
 
-use super::config::ModelGroup;
-use super::usage::{UsageContext, UsageService};
-use super::{InferenceContext, InferenceError, ModelProviderRegistry, provider, retry, tool_loop};
+use crate::inference::ModelGroup;
+use crate::inference::usage::{UsageContext, UsageService};
+use crate::inference::{InferenceContext, InferenceError, provider, tool_loop};
 
 pub async fn structured_inference<T>(
-    registry: &ModelProviderRegistry,
     model_group: &ModelGroup,
     system_prompt: &str,
     history: Vec<RigMessage>,
@@ -35,16 +34,19 @@ where
 {
     let schema = serde_json::to_value(schemars::schema_for!(T))
         .map_err(|e| InferenceError::InferenceFailed(format!("schema_for failed: {e}")))?;
-    let value = retry::structured_inference_with_retry_and_fallback(
-        registry,
-        model_group,
-        system_prompt,
-        history,
-        schema,
-        usage_service,
-        usage_ctx,
-    )
-    .await?;
+    let value = (model_group)
+        .structured_inference(
+            crate::inference::ModelRequest {
+                system_prompt,
+                history,
+                tools: vec![],
+                usage_service,
+                usage_context: usage_ctx,
+                overrides: Default::default(),
+            },
+            schema,
+        )
+        .await?;
     // Same tolerance and the same diagnosis as the conversational path: a wrapper is a
     // wrapper whether or not the caller drives the loop.
     deserialize_submission::<T>(value)
@@ -57,7 +59,6 @@ where
 /// up). The `InferenceContext` carries the identity + sandbox the tools run under.
 #[allow(clippy::too_many_arguments)]
 pub async fn structured_inference_with_tools<T>(
-    registry: &ModelProviderRegistry,
     model_group: &ModelGroup,
     system_prompt: &str,
     mut chat_history: Vec<RigMessage>,
@@ -86,17 +87,19 @@ where
     tool_defs.push(submit);
 
     for _ in 0..max_turns.max(1) {
-        let (contents, _usage) = retry::inference_with_retry_and_fallback(
-            registry,
-            model_group,
-            system_prompt,
-            chat_history.clone(),
-            tool_defs.clone(),
-            usage_service,
-            usage_ctx,
-        )
-        .await
-        .map_err(|e| AppError::Internal(format!("structured_with_tools inference: {e}")))?;
+        let crate::inference::ModelResponse {
+            content: contents, ..
+        } = (model_group)
+            .inference(crate::inference::ModelRequest {
+                system_prompt,
+                history: chat_history.clone(),
+                tools: tool_defs.clone(),
+                usage_service,
+                usage_context: usage_ctx,
+                overrides: Default::default(),
+            })
+            .await
+            .map_err(|e| AppError::Internal(format!("structured_with_tools inference: {e}")))?;
 
         // A `submit` call terminates the loop - its arguments are the result `T`.
         for content in &contents {
@@ -148,7 +151,6 @@ where
 
 #[allow(clippy::too_many_arguments)]
 pub async fn text_inference_with_tools(
-    registry: &ModelProviderRegistry,
     model_group: &ModelGroup,
     system_prompt: &str,
     mut chat_history: Vec<RigMessage>,
@@ -163,17 +165,19 @@ pub async fn text_inference_with_tools(
         tool_registry.mcp_bridge_mode(),
     );
     for _ in 0..max_turns.max(1) {
-        let (contents, _usage) = retry::inference_with_retry_and_fallback(
-            registry,
-            model_group,
-            system_prompt,
-            chat_history.clone(),
-            tool_defs.clone(),
-            usage_service,
-            usage_ctx,
-        )
-        .await
-        .map_err(|e| AppError::Internal(format!("text_with_tools inference: {e}")))?;
+        let crate::inference::ModelResponse {
+            content: contents, ..
+        } = (model_group)
+            .inference(crate::inference::ModelRequest {
+                system_prompt,
+                history: chat_history.clone(),
+                tools: tool_defs.clone(),
+                usage_service,
+                usage_context: usage_ctx,
+                overrides: Default::default(),
+            })
+            .await
+            .map_err(|e| AppError::Internal(format!("text_with_tools inference: {e}")))?;
         let has_tool_calls = contents
             .iter()
             .any(|content| matches!(content, AssistantContent::ToolCall(_)));
@@ -390,7 +394,6 @@ pub enum AnswerAttempt<T> {
 /// revision in the same in-memory conversation. Nothing is written to the chat/message
 /// tables; only usage metrics are recorded. Built by `Harness::structured_conversation`.
 pub struct StructuredConversation<'a, T> {
-    registry: &'a ModelProviderRegistry,
     usage_service: &'a UsageService,
     tools: AgentToolRegistry,
     ctx: InferenceContext,
@@ -417,7 +420,6 @@ where
     /// exploration only. Answer attempts use a caller-owned limit.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        registry: &'a ModelProviderRegistry,
         usage_service: &'a UsageService,
         tools: AgentToolRegistry,
         ctx: InferenceContext,
@@ -430,7 +432,6 @@ where
         let exploration_tool_defs =
             tool_loop::to_rig_tool_definitions(tools.definitions(), tools.mcp_bridge_mode());
         Self {
-            registry,
             usage_service,
             tools,
             ctx,
@@ -469,17 +470,19 @@ where
             tool_defs.push(self.submit_tool_def.clone());
 
             self.requests_used += 1;
-            let (contents, _usage) = retry::inference_with_retry_and_fallback(
-                self.registry,
-                &self.model_group,
-                &self.system,
-                self.history.clone(),
-                tool_defs,
-                self.usage_service,
-                &self.usage_ctx,
-            )
-            .await
-            .map_err(|e| AppError::Internal(format!("conversation inference: {e}")))?;
+            let crate::inference::ModelResponse {
+                content: contents, ..
+            } = (self.model_group)
+                .inference(crate::inference::ModelRequest {
+                    system_prompt: &self.system,
+                    history: self.history.clone(),
+                    tools: tool_defs,
+                    usage_service: self.usage_service,
+                    usage_context: &self.usage_ctx,
+                    overrides: Default::default(),
+                })
+                .await
+                .map_err(|e| AppError::Internal(format!("conversation inference: {e}")))?;
 
             let submit = contents.iter().find_map(|c| match c {
                 AssistantContent::ToolCall(tc)

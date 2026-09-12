@@ -22,7 +22,6 @@ use frona::core::repository::Repository;
 use frona::core::state::AppState;
 use frona::db::init as db_init;
 use frona::db::repo::generic::SurrealRepo;
-use frona::inference::registry::ModelProviderRegistry;
 use frona::storage::StorageService;
 use helpers::{MockModelProvider, MockResponse, init_metrics, test_model_group};
 use surrealdb::Surreal;
@@ -72,11 +71,19 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
 
     let mut state = AppState::new(
         db.clone(),
-        &config,
+        {
+            let mut loaded = frona::core::config::ConfigService::load(
+                tempfile::tempdir().unwrap().path().join("config.yaml"),
+            )
+            .unwrap();
+            loaded.config = config.clone();
+            frona::core::config::ConfigService::new(loaded).unwrap()
+        },
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        crate::helpers::app_state::catalogs(&config),
     );
 
     // Replace the default chat_service with one wired to the mock model
@@ -86,7 +93,7 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
     providers.insert("mock".to_string(), provider);
     let mut groups = HashMap::new();
     groups.insert("test".to_string(), test_model_group());
-    let mock_registry = ModelProviderRegistry::for_testing(providers, groups);
+    let mock_registry = crate::helpers::test_model_service(providers, groups).await;
 
     let chat_service = ChatService::new(
         SurrealRepo::new(db.clone()),
@@ -125,7 +132,6 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
     state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(
         state.harness.clone(),
     ));
-
     let signal_svc = state.init_signal_service();
     state.policy_service.sync_base_policies().await.unwrap();
     signal_svc.start().await.unwrap();
@@ -312,7 +318,7 @@ impl ForbidToolsProvider {
 impl frona::inference::provider::ModelProvider for ForbidToolsProvider {
     async fn inference(
         &self,
-        _model: &frona::inference::ModelRef,
+        _model: &frona::inference::ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
@@ -327,7 +333,7 @@ impl frona::inference::provider::ModelProvider for ForbidToolsProvider {
 
     async fn stream_inference(
         &self,
-        _model: &frona::inference::ModelRef,
+        _model: &frona::inference::ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
@@ -341,7 +347,7 @@ impl frona::inference::provider::ModelProvider for ForbidToolsProvider {
 
     async fn structured_inference(
         &self,
-        _model: &frona::inference::ModelRef,
+        _model: &frona::inference::ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _schema: serde_json::Value,
@@ -372,11 +378,19 @@ async fn build_state_with_dyn(
 
     let mut state = AppState::new(
         db.clone(),
-        &config,
+        {
+            let mut loaded = frona::core::config::ConfigService::load(
+                tempfile::tempdir().unwrap().path().join("config.yaml"),
+            )
+            .unwrap();
+            loaded.config = config.clone();
+            frona::core::config::ConfigService::new(loaded).unwrap()
+        },
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        crate::helpers::app_state::catalogs(&config),
     );
 
     let mut providers: HashMap<String, Arc<dyn frona::inference::provider::ModelProvider>> =
@@ -384,7 +398,7 @@ async fn build_state_with_dyn(
     providers.insert("mock".to_string(), provider);
     let mut groups = HashMap::new();
     groups.insert("test".to_string(), test_model_group());
-    let mock_registry = ModelProviderRegistry::for_testing(providers, groups);
+    let mock_registry = crate::helpers::test_model_service(providers, groups).await;
 
     let chat_service = ChatService::new(
         SurrealRepo::new(db.clone()),
@@ -423,7 +437,6 @@ async fn build_state_with_dyn(
     state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(
         state.harness.clone(),
     ));
-
     let signal_svc = state.init_signal_service();
     state.policy_service.sync_base_policies().await.unwrap();
     signal_svc.start().await.unwrap();
@@ -508,7 +521,7 @@ async fn signal_extract_never_enters_tool_loop_or_streaming() {
     let svc = signal_service(&state).await;
     svc.process_inbound_extract(
         &state.chat_service,
-        state.chat_service.provider_registry(),
+        state.chat_service.model_providers(),
         &channel,
         &chat,
         &inbound,

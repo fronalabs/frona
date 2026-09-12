@@ -19,8 +19,8 @@ use crate::core::user_config::{UserConfigPatch, UserMemoryConfig};
 use crate::db::repo::pkm::{
     PageEditBase, PageEditCommit, PageEditMemoryOp, PageEditWrite, PkmRepo,
 };
-use crate::inference::ModelProviderRegistry;
-use crate::inference::config::ModelGroup;
+use crate::inference::ModelGroup;
+use crate::inference::provider::service::ModelProviderService;
 use crate::inference::usage::{InferenceKind, UsageContext};
 
 use super::consolidation::{
@@ -164,7 +164,7 @@ pub struct PkmSyncService {
     user_service: UserService,
     prompts: PromptLoader,
     /// Resolves the background model group lazily by name (see [`model_group`]).
-    registry: Arc<ModelProviderRegistry>,
+    model_providers: Arc<ModelProviderService>,
     operations: super::operations::PkmOperationCoordinator,
 }
 
@@ -175,7 +175,7 @@ impl PkmSyncService {
         memory_config: MemoryConfig,
         user_service: UserService,
         prompts: PromptLoader,
-        registry: Arc<ModelProviderRegistry>,
+        model_providers: Arc<ModelProviderService>,
     ) -> Self {
         Self::with_operations(
             repo,
@@ -183,7 +183,7 @@ impl PkmSyncService {
             memory_config,
             user_service,
             prompts,
-            registry,
+            model_providers,
             super::operations::PkmOperationCoordinator::default(),
         )
     }
@@ -194,7 +194,7 @@ impl PkmSyncService {
         memory_config: MemoryConfig,
         user_service: UserService,
         prompts: PromptLoader,
-        registry: Arc<ModelProviderRegistry>,
+        model_providers: Arc<ModelProviderService>,
         operations: super::operations::PkmOperationCoordinator,
     ) -> Self {
         Self {
@@ -203,16 +203,15 @@ impl PkmSyncService {
             memory_config,
             user_service,
             prompts,
-            registry,
+            model_providers,
             operations,
         }
     }
 
     /// Resolve the background model group by name (`memory.model_group`, falling
-    /// back to `primary`). Lazy - the registry may not be populated at construction.
+    /// back to `primary`). Lookup is pure and uses the startup-compiled groups.
     fn model_group(&self) -> Result<ModelGroup, AppError> {
-        super::resolve_model_group(&self.registry, &self.memory_config.model_group)
-            .cloned()
+        super::resolve_model_group(&self.model_providers, &self.memory_config.model_group)
             .ok_or_else(|| AppError::Internal("pkm sync: memory model group undefined".into()))
     }
 

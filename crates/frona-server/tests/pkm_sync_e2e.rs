@@ -26,7 +26,7 @@ use frona::storage::StorageService;
 
 use helpers::{
     MockModelProvider, MockResponse, seed_asserted_entity_link, test_harness, test_model_group,
-    test_registry_with_group,
+    test_model_service_with_group,
 };
 
 const U: &str = "test-user";
@@ -78,14 +78,17 @@ async fn setup(
     };
     let pkm_storage = PkmStorage::new(StorageService::new(&config));
     let memory_config = frona::core::config::MemoryConfig::default();
-    let registry = Arc::new(test_registry_with_group(
-        "mock",
-        mock.clone(),
-        &memory_config.model_group,
-        test_model_group(),
-    ));
+    let registry = Arc::new(
+        test_model_service_with_group(
+            "mock",
+            mock.clone(),
+            &memory_config.model_group,
+            test_model_group(),
+        )
+        .await,
+    );
     let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
-    let harness = test_harness(&db, &config, mock);
+    let harness = test_harness(&db, &config, mock).await;
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
     // The sync engine the API builds from `AppState` - same repo + storage + deps.
     let sync = PkmSyncService::new(
@@ -314,12 +317,15 @@ async fn concurrent_edits_with_one_base_revision_accept_only_one() {
         memory_config.clone(),
         test_user_service(&db),
         frona::agent::prompt::PromptLoader::new(resources_prompts()),
-        Arc::new(test_registry_with_group(
-            "mock-second",
-            mock,
-            &memory_config.model_group,
-            test_model_group(),
-        )),
+        Arc::new(
+            test_model_service_with_group(
+                "mock",
+                mock,
+                &memory_config.model_group,
+                test_model_group(),
+            )
+            .await,
+        ),
     );
 
     let edit = |sync: PkmSyncService, content: &'static str| {
@@ -342,7 +348,11 @@ async fn concurrent_edits_with_one_base_revision_accept_only_one() {
     };
     let first = edit(first_sync, "# Bob\n\nFirst edit.");
     let second = edit(second_sync, "# Bob\n\nSecond edit.");
-    let results = [first.await.unwrap(), second.await.unwrap()];
+    let results = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        [first.await.unwrap(), second.await.unwrap()]
+    })
+    .await
+    .expect("both edits must reach inference and finish");
     let accepted = results
         .iter()
         .filter(|result| matches!(result, EditResult::Accepted { .. }))

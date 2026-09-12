@@ -17,11 +17,17 @@ pub enum InferenceError {
     #[error("Completion error: {0}")]
     CompletionFailed(#[from] rig_core::completion::CompletionError),
 
-    #[error("Invalid model reference: {0}")]
-    InvalidModelRef(String),
-
     #[error("All fallbacks failed: {}", format_fallback_errors(.0))]
-    AllFallbacksFailed(Vec<(String, String)>),
+    AllFallbacksFailed(Vec<InferenceError>),
+
+    #[error("{provider}/{model}: {source}")]
+    ModelFailed {
+        provider: String,
+        model: String,
+        retry_count: u32,
+        #[source]
+        source: Box<InferenceError>,
+    },
 
     #[error("Rate limited: retry after {retry_after_secs}s")]
     RateLimited { retry_after_secs: u64 },
@@ -48,8 +54,22 @@ fn has_non_retryable_status(msg: &str) -> bool {
 }
 
 impl InferenceError {
+    pub fn for_model(
+        self,
+        model: &crate::inference::provider::ModelConfig,
+        retry_count: u32,
+    ) -> Self {
+        Self::ModelFailed {
+            provider: model.provider_name().into(),
+            model: model.model_id.clone(),
+            retry_count,
+            source: Box::new(self),
+        }
+    }
+
     pub fn is_retryable(&self) -> bool {
         match self {
+            Self::ModelFailed { source, .. } => source.is_retryable(),
             InferenceError::RateLimited { .. } | InferenceError::EmptyResponse => true,
             InferenceError::Cancelled(_) => false,
             InferenceError::CompletionFailed(rig_core::completion::CompletionError::HttpError(
@@ -89,6 +109,7 @@ impl InferenceError {
 
     pub fn is_rate_limited(&self) -> bool {
         match self {
+            Self::ModelFailed { source, .. } => source.is_rate_limited(),
             InferenceError::RateLimited { .. } => true,
             InferenceError::CompletionFailed(rig_core::completion::CompletionError::HttpError(
                 http_err,
@@ -108,6 +129,9 @@ impl InferenceError {
     }
 
     pub fn retry_reason(&self) -> &'static str {
+        if let Self::ModelFailed { source, .. } = self {
+            return source.retry_reason();
+        }
         if self.is_rate_limited() {
             return "rate_limited";
         }
@@ -143,7 +167,7 @@ mod tests {
     use rig_core::ProviderResponseError;
     use rig_core::completion::CompletionError;
 
-    use super::InferenceError;
+    use crate::inference::InferenceError;
 
     #[test]
     fn a_successful_http_response_that_rig_cannot_decode_is_retryable() {
@@ -175,16 +199,16 @@ mod tests {
     }
 }
 
-fn format_fallback_errors(errors: &[(String, String)]) -> String {
+fn format_fallback_errors(errors: &[InferenceError]) -> String {
     errors
         .iter()
-        .map(|(model, err)| format!("{model}: {err}"))
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("; ")
 }
 
 impl From<InferenceError> for crate::core::error::AppError {
     fn from(err: InferenceError) -> Self {
-        crate::core::error::AppError::Inference(err.to_string())
+        crate::core::error::AppError::Inference(Box::new(err))
     }
 }

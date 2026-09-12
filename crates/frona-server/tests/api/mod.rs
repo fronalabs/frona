@@ -102,12 +102,20 @@ pub async fn telegram_mock_api() -> MockProviderApi {
 }
 
 async fn test_app_state() -> (AppState, tempfile::TempDir) {
+    test_app_state_with_sandbox(false).await
+}
+
+async fn test_app_state_with_sandbox(disabled: bool) -> (AppState, tempfile::TempDir) {
     let db = Surreal::new::<Mem>(()).await.unwrap();
     db::setup_schema(&db).await.unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path().to_string_lossy().to_string();
     let resources = workspace_resources();
     let config = Config {
+        sandbox: frona::core::config::SandboxConfig {
+            disabled,
+            ..Default::default()
+        },
         auth: frona::core::config::AuthConfig {
             encryption_secret: "test-secret".to_string(),
             ..Default::default()
@@ -128,12 +136,22 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
     let metrics = setup_metrics_recorder();
     let mut state = AppState::new(
         db.clone(),
-        &config,
+        {
+            let mut loaded = frona::core::config::ConfigService::load(
+                tempfile::tempdir().unwrap().path().join("config.yaml"),
+            )
+            .unwrap();
+            loaded.config = config.clone();
+            frona::core::config::ConfigService::new(loaded).unwrap()
+        },
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics,
         resource_manager,
+        crate::helpers::app_state::catalogs(&config),
     );
+
+    state.vault_service.sync_config_connections().await.unwrap();
 
     // Override the MCP service with a noop package installer so tests don't
     // try to run npx/uvx against fake packages.
@@ -163,7 +181,6 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
             state.config.auth.ephemeral_token_expiry_secs,
         ));
     }
-    state.tool_manager.init(&state);
     state.policy_service.sync_base_policies().await.unwrap();
     (state, tmp)
 }
@@ -378,6 +395,7 @@ async fn create_agent(state: &AppState, token: &str, name: &str) -> serde_json::
             serde_json::json!({
                 "name": name,
                 "description": "Test agent",
+                "model_group": "primary",
             }),
         ))
         .await

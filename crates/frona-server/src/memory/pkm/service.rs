@@ -4,7 +4,7 @@ impl PkmService {
     pub fn new(
         db: Surreal<Db>,
         storage_service: StorageService,
-        registry: Arc<ModelProviderRegistry>,
+        model_providers: Arc<ModelProviderService>,
         prompts: PromptLoader,
         memory_config: MemoryConfig,
         user_service: crate::auth::user_service::UserService,
@@ -22,7 +22,7 @@ impl PkmService {
             tool_calls: Arc::new(SurrealToolCallRepo::new(db.clone())),
             messages: crate::db::repo::messages::SurrealMessageRepo::new(db.clone()),
             storage: PkmStorage::new(storage_service),
-            registry,
+            model_providers,
             prompts,
             memory_config,
             user_service,
@@ -325,22 +325,22 @@ impl PkmService {
 
     /// The background model group (`memory.model_group` → `primary`). Resolved lazily
     /// so a missing group degrades here rather than blocking startup.
-    fn consolidation_model_group(&self) -> Result<crate::inference::config::ModelGroup, AppError> {
-        resolve_model_group(&self.registry, &self.memory_config.model_group)
-            .ok_or_else(|| {
+    fn consolidation_model_group(&self) -> Result<crate::inference::ModelGroup, AppError> {
+        resolve_model_group(&self.model_providers, &self.memory_config.model_group).ok_or_else(
+            || {
                 AppError::Internal(format!(
                     "pkm consolidation: model group '{}' (and fallback 'primary') undefined",
                     self.memory_config.model_group
                 ))
-            })
-            .cloned()
+            },
+        )
     }
 
     fn context(
         &self,
         scope: ConsolidationScope,
         harness: Arc<crate::agent::harness::Harness>,
-        model_group: crate::inference::config::ModelGroup,
+        model_group: crate::inference::ModelGroup,
         record: KnowledgeConsolidationRecord,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Arc<ConsolidationContext> {

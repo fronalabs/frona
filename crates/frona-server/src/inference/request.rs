@@ -12,10 +12,9 @@ use crate::chat::models::Chat;
 use crate::core::error::AppError;
 use crate::tool::registry::AgentToolRegistry;
 
-use super::config::ModelGroup;
-use super::registry::ModelProviderRegistry;
-use super::tool_call::TaskEvent;
-use super::usage::UsageService;
+use crate::inference::ModelGroup;
+use crate::inference::tool_call::TaskEvent;
+use crate::inference::usage::UsageService;
 
 use crate::chat::message::models::Reasoning;
 
@@ -98,7 +97,6 @@ pub fn active_chat(ctx: &InferenceContext) -> Result<&Chat, AppError> {
 }
 
 pub struct InferenceRequest {
-    pub registry: ModelProviderRegistry,
     pub model_group: ModelGroup,
     pub system_prompt: String,
     pub history: Vec<RigMessage>,

@@ -40,12 +40,20 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
     );
     let metrics = setup_metrics_recorder();
     let state = AppState::new(
-        db,
-        &config,
+        db.clone(),
+        {
+            let mut loaded = frona::core::config::ConfigService::load(
+                tempfile::tempdir().unwrap().path().join("config.yaml"),
+            )
+            .unwrap();
+            loaded.config = config.clone();
+            frona::core::config::ConfigService::new(loaded).unwrap()
+        },
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics,
         resource_manager,
+        crate::helpers::app_state::catalogs(&config),
     );
     (state, tmp)
 }
@@ -127,11 +135,19 @@ async fn twilio_callback_valid_token_returns_xml() {
     let metrics = setup_metrics_recorder();
     let state = AppState::new(
         db.clone(),
-        &config,
+        {
+            let mut loaded = frona::core::config::ConfigService::load(
+                tempfile::tempdir().unwrap().path().join("config.yaml"),
+            )
+            .unwrap();
+            loaded.config = config.clone();
+            frona::core::config::ConfigService::new(loaded).unwrap()
+        },
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics,
         resource_manager,
+        crate::helpers::app_state::catalogs(&config),
     );
 
     // Persist the user so the AppState's token_service can round-trip the token
@@ -209,3 +225,5 @@ async fn twilio_callback_valid_token_returns_xml() {
         "Expected ConversationRelay in TwiML:\n{body_str}"
     );
 }
+
+mod helpers;

@@ -23,7 +23,8 @@ async fn setup_with_extra_tools(
 
     let schema = build_schema();
     let repo: Arc<dyn PolicyRepository> = Arc::new(SurrealRepo::<Policy>::new(db.clone()));
-    let tool_manager = std::sync::Arc::new(frona::tool::manager::ToolManager::new(false));
+    let tool_fixture = helpers::app_state::build(&db).await;
+    let tool_manager = tool_fixture.state.tool_manager.clone();
 
     use frona::tool::{AgentTool, ToolDefinition, ToolOutput};
     struct MockTool {
@@ -1127,9 +1128,17 @@ mod reconcile {
             .reconcile_agent_tools("user-1", "agent-1", &["web_search".into()])
             .await
             .unwrap();
-        // browser, voice → all-deny → 2 ToolGroup forbids
-        // search → all-allow → no row (baseline already permits)
-        assert_eq!(result.created, 2, "two ToolGroup forbids: browser + voice");
+        let policies = service.list_policies("user-1").await.unwrap();
+        assert_eq!(result.created, policies.len());
+        // Other production tool groups remain unselected too.
+        for group in ["browser", "voice"] {
+            let rows: Vec<_> = policies
+                .iter()
+                .filter(|p| p.policy_text.contains(&format!("ToolGroup::\"{group}\"")))
+                .collect();
+            assert_eq!(rows.len(), 1, "one collapsed forbid for {group}");
+            assert!(rows[0].policy_text.contains("forbid"));
+        }
 
         let all: Vec<String> = vec![
             "browser_navigate".into(),
@@ -1158,22 +1167,29 @@ mod reconcile {
             .reconcile_agent_tools("user-1", "agent-x", &[])
             .await
             .unwrap();
-        // browser, voice, search → 3 ToolGroup forbids (collapsed)
-        // ToolGroup::"agent" → baseline already denies, no row
-        assert_eq!(
-            r1.created, 3,
-            "three ToolGroup forbids; agent group already baseline-deny"
+        let policies = service.list_policies("user-1").await.unwrap();
+        assert_eq!(r1.created, policies.len());
+        assert!(
+            !policies
+                .iter()
+                .any(|p| p.policy_text.contains("ToolGroup::\"agent\""))
         );
+        for group in ["browser", "voice", "search"] {
+            assert!(policies.iter().any(|p| {
+                p.policy_text.contains(&format!("ToolGroup::\"{group}\""))
+                    && p.policy_text.contains("forbid")
+            }));
+        }
 
         let r2 = service
             .reconcile_agent_tools("user-1", "agent-x", &["manage_agent".into()])
             .await
             .unwrap();
-        // browser/voice/search forbids stay (still all-deny in their groups → collapse → forbid).
-        // ToolGroup::"agent" Allow vs baseline-deny → emit one ToolGroup permit.
+        // Other groups stay denied. Production has other agent-group tools,
+        // so selecting only manage_agent must emit a per-tool permit.
         assert_eq!(
             r2.created, 1,
-            "selecting agent-group tool emits one ToolGroup permit"
+            "selecting one agent-group tool emits one per-tool permit"
         );
         assert_eq!(r2.deleted, 0);
 
@@ -1181,10 +1197,10 @@ mod reconcile {
         let agent_permit = policies
             .iter()
             .find(|p| {
-                p.policy_text.contains("ToolGroup::\"agent\"") && p.policy_text.contains("permit")
+                p.policy_text.contains("Tool::\"manage_agent\"") && p.policy_text.contains("permit")
             })
-            .expect("permit row for ToolGroup::agent");
-        assert!(agent_permit.policy_text.contains("resource in"));
+            .expect("permit row for Tool::manage_agent");
+        assert!(!agent_permit.policy_text.contains("ToolGroup::\"agent\""));
     }
 
     /// Provider with two tools, both denied → one rule on the ToolGroup
@@ -1265,7 +1281,15 @@ mod reconcile {
             )
             .await
             .unwrap();
-        assert_eq!(r1.created, 1, "per-tool forbid for hangup_call");
+        let policies = service.list_policies("user-1").await.unwrap();
+        assert_eq!(r1.created, policies.len());
+        let voice_rows: Vec<_> = policies
+            .iter()
+            .filter(|p| p.policy_text.contains("voice") || p.policy_text.contains("hangup_call"))
+            .collect();
+        assert_eq!(voice_rows.len(), 1);
+        assert!(voice_rows[0].policy_text.contains("Tool::\"hangup_call\""));
+        assert!(voice_rows[0].policy_text.contains("forbid"));
 
         // collapse to ToolGroup::voice rule. Diff: 1 delete (hangup_call
         // per-tool) + 1 create (ToolGroup::voice).
@@ -1300,7 +1324,15 @@ mod reconcile {
             .reconcile_agent_tools("user-1", "agent-r", &selected)
             .await
             .unwrap();
-        assert_eq!(r1.created, 1, "voice ToolGroup forbid emitted");
+        let policies = service.list_policies("user-1").await.unwrap();
+        assert_eq!(r1.created, policies.len());
+        let voice_rows: Vec<_> = policies
+            .iter()
+            .filter(|p| p.policy_text.contains("voice"))
+            .collect();
+        assert_eq!(voice_rows.len(), 1);
+        assert!(voice_rows[0].policy_text.contains("ToolGroup::\"voice\""));
+        assert!(voice_rows[0].policy_text.contains("forbid"));
 
         let r2 = service
             .reconcile_agent_tools("user-1", "agent-r", &selected)
@@ -1902,3 +1934,5 @@ mod decision_cache {
         );
     }
 }
+
+mod helpers;

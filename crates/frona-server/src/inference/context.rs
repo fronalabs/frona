@@ -2,7 +2,7 @@ use rig_core::completion::Message as RigMessage;
 
 /// Last-resort context window when the model isn't in the catalog AND no
 /// config override is set. 128K is the floor most modern chat models meet.
-/// Used by `ProviderRegistry::resolve_model_group` when baking the window
+/// Used when compiling named model groups without catalog limits
 /// into `ModelGroup.context_window`.
 pub const DEFAULT_CONTEXT_WINDOW: usize = 128_000;
 

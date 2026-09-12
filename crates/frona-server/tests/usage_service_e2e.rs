@@ -14,17 +14,16 @@ use std::sync::Arc;
 
 use frona::chat::broadcast::BroadcastService;
 use frona::db::repo::generic::SurrealRepo;
-use frona::inference::config::{ModelGroup, RetryConfig};
 use frona::inference::error::InferenceError;
-use frona::inference::metadata::catalog::Cost;
-use frona::inference::metadata::{ModelCatalogSnapshot, ModelCatalogStore, ModelEntry};
-use frona::inference::provider::{ModelProvider, ModelRef};
-use frona::inference::registry::ModelProviderRegistry;
+use frona::inference::provider::{ModelConfig, ModelProvider};
 use frona::inference::usage::{
     CompactionTarget, InferenceKind, InferenceUsage, InferenceUsageRepository, TimeBucket,
     UsageContext, UsageService,
 };
+use frona::inference::{ModelGroup, config::RetryConfig};
 use frona::inference::{structured_inference, text_inference};
+use frona_model_catalog::catalog::Cost;
+use frona_model_catalog::{ModelCatalogSnapshot, ModelCatalogStore, ModelEntry};
 use rig_core::completion::Message as RigMessage;
 use surrealdb::Surreal;
 use surrealdb::engine::local::Mem;
@@ -56,6 +55,7 @@ async fn fresh_service() -> (Surreal<surrealdb::engine::local::Db>, UsageService
         version: "test".to_string(),
         fetched_at: chrono::Utc::now(),
         entries,
+        providers: std::collections::HashMap::new(),
         protocol_defaults: std::collections::HashMap::new(),
     };
     let catalog = ModelCatalogStore::new(snapshot);
@@ -79,10 +79,14 @@ fn chat_usage_ctx(user: &str, agent: &str, chat: &str, message: &str) -> UsageCo
     )
 }
 
-fn fast_retry_model_group(fallbacks: Vec<ModelRef>) -> ModelGroup {
+fn fast_retry_model_group(fallbacks: Vec<ModelConfig>) -> ModelGroup {
     ModelGroup {
+        providers: Default::default(),
         name: "primary".into(),
-        main: ModelRef {
+        main: ModelConfig {
+            request_settings: Default::default(),
+            catalog_provider: String::new(),
+            provider_handle: frona::core::Handle::const_validated("mock"),
             provider: "mock".into(),
             model_id: "test-model".into(),
         },
@@ -102,12 +106,14 @@ fn fast_retry_model_group(fallbacks: Vec<ModelRef>) -> ModelGroup {
     }
 }
 
-fn registry_with(providers: Vec<(&str, Arc<dyn ModelProvider>)>) -> ModelProviderRegistry {
+fn registry_with(
+    providers: Vec<(&str, Arc<dyn ModelProvider>)>,
+) -> Arc<HashMap<String, Arc<dyn ModelProvider>>> {
     let map = providers
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
         .collect();
-    ModelProviderRegistry::for_testing(map, HashMap::new())
+    Arc::new(map)
 }
 
 async fn list_all_rows(db: &Surreal<surrealdb::engine::local::Db>) -> Vec<InferenceUsage> {
@@ -118,6 +124,91 @@ async fn list_all_rows(db: &Surreal<surrealdb::engine::local::Db>) -> Vec<Infere
         .await
         .expect("query");
     result.take(0).expect("take")
+}
+
+#[tokio::test]
+async fn named_connections_and_fallbacks_use_catalog_brand_but_keep_attribution() {
+    init_metrics();
+    let (db, _) = fresh_service().await;
+    let mut snapshot = ModelCatalogSnapshot::empty();
+    snapshot.version = "named-pricing".into();
+    for (brand, price) in [("openai", 1.0), ("anthropic", 3.0)] {
+        snapshot.entries.insert(
+            format!("{brand}/fixture"),
+            ModelEntry {
+                cost: Some(Cost {
+                    input: price,
+                    output: 2.0,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+    }
+    let svc = UsageService::new(
+        ModelCatalogStore::new(snapshot),
+        SurrealRepo::new(db.clone()),
+        BroadcastService::new(),
+    );
+    let config: frona::core::config::Config = serde_json::from_value(serde_json::json!({
+        "providers":{
+            "work-openai":{"provider":"openai"},
+            "other-openai":{"provider":"openai"},
+            "work-anthropic":{"provider":"anthropic"}
+        },
+        "models":{
+            "primary":{"provider":"work-openai","model":"fixture","retry":{"max_retries":0},
+                "fallbacks":[{"provider":"work-anthropic","model":"fixture"}]},
+            "other":{"provider":"other-openai","model":"fixture"}
+        }
+    }))
+    .unwrap();
+    let main = Arc::new(MockModelProvider::new(vec![
+        MockResponse::Text("ok".into()),
+        MockResponse::Error(InferenceError::InferenceFailed("fixture".into())),
+    ]));
+    let backup = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
+        "backup".into(),
+    )]));
+    let other = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
+        "other".into(),
+    )]));
+    let providers = registry_with(vec![
+        ("work-openai", main),
+        ("work-anthropic", backup),
+        ("other-openai", other),
+    ]);
+    let groups = frona::inference::config::ModelRegistryConfig {
+        providers: config.providers,
+        models: config.models,
+        skip_auto_discover: true,
+    }
+    .parse_model_groups(&config.inference, providers)
+    .unwrap();
+    let ctx = chat_usage_ctx("u", "a", "c", "m");
+    for name in ["primary", "other", "primary"] {
+        text_inference(
+            &groups[name],
+            "sys",
+            vec![RigMessage::user("hi")],
+            &svc,
+            &ctx,
+        )
+        .await
+        .unwrap();
+    }
+    let rows = list_all_rows(&db).await;
+    assert_eq!(rows.len(), 3);
+    for row in rows {
+        assert_eq!(row.pricing_version, "named-pricing");
+        let (expected, fallback) = match row.model_ref.as_str() {
+            "work-openai/fixture" | "other-openai/fixture" => (0.00002, 0),
+            "work-anthropic/fixture" => (0.00004, 1),
+            other => panic!("unexpected attribution: {other}"),
+        };
+        assert!((row.cost_usd.unwrap() - expected).abs() < 1e-9);
+        assert_eq!(row.fallback_index, fallback);
+    }
 }
 
 #[tokio::test]
@@ -132,8 +223,10 @@ async fn single_success_records_one_row_with_zero_retry_and_no_fallback() {
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
     let out = text_inference(
-        &registry,
-        &fast_retry_model_group(vec![]),
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(fast_retry_model_group(vec![])).clone()
+        },
         "sys",
         vec![RigMessage::user("hi")],
         &svc,
@@ -179,8 +272,10 @@ async fn retry_then_success_records_retry_count_and_overhead() {
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
     let out = text_inference(
-        &registry,
-        &fast_retry_model_group(vec![]),
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(fast_retry_model_group(vec![])).clone()
+        },
         "sys",
         vec![RigMessage::user("hi")],
         &svc,
@@ -213,15 +308,20 @@ async fn main_fails_fallback_succeeds_records_fallback_index_and_model_ref() {
         ("mock", main as Arc<dyn ModelProvider>),
         ("fallback", fb as Arc<dyn ModelProvider>),
     ]);
-    let group = fast_retry_model_group(vec![ModelRef {
+    let group = fast_retry_model_group(vec![ModelConfig {
+        request_settings: Default::default(),
+        catalog_provider: String::new(),
+        provider_handle: frona::core::Handle::const_validated("fallback"),
         provider: "fallback".into(),
         model_id: "fallback-model".into(),
     }]);
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
     let out = text_inference(
-        &registry,
-        &group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(group).clone()
+        },
         "sys",
         vec![RigMessage::user("hi")],
         &svc,
@@ -262,11 +362,17 @@ async fn second_fallback_records_fallback_index_two() {
         ("fb2", fb2 as Arc<dyn ModelProvider>),
     ]);
     let group = fast_retry_model_group(vec![
-        ModelRef {
+        ModelConfig {
+            request_settings: Default::default(),
+            catalog_provider: String::new(),
+            provider_handle: frona::core::Handle::const_validated("fb1"),
             provider: "fb1".into(),
             model_id: "fallback-1".into(),
         },
-        ModelRef {
+        ModelConfig {
+            request_settings: Default::default(),
+            catalog_provider: String::new(),
+            provider_handle: frona::core::Handle::const_validated("fb2"),
             provider: "fb2".into(),
             model_id: "fallback-2".into(),
         },
@@ -274,8 +380,10 @@ async fn second_fallback_records_fallback_index_two() {
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
     text_inference(
-        &registry,
-        &group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(group).clone()
+        },
         "sys",
         vec![RigMessage::user("hi")],
         &svc,
@@ -308,8 +416,10 @@ async fn structured_inference_records_row() {
     let ctx = chat_usage_ctx("u1", "a1", "c1", "m1");
 
     let _out: Out = structured_inference(
-        &registry,
-        &fast_retry_model_group(vec![]),
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(fast_retry_model_group(vec![])).clone()
+        },
         "sys",
         vec![RigMessage::user("hi")],
         &svc,
@@ -340,8 +450,10 @@ async fn aggregate_by_chat_sums_rows() {
     // Three calls scoped to the same chat.
     for msg_id in ["m1", "m2", "m3"] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &frona::inference::ModelGroup {
+                providers: registry.clone(),
+                ..(fast_retry_model_group(vec![])).clone()
+            },
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -386,8 +498,10 @@ async fn aggregate_by_kind_groups_by_kind_tag() {
 
     for ctx in [&chat_ctx, &title_ctx, &title_ctx] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &frona::inference::ModelGroup {
+                providers: registry.clone(),
+                ..(fast_retry_model_group(vec![])).clone()
+            },
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -425,7 +539,10 @@ async fn aggregate_by_model_groups_by_model_ref() {
         ("mock", main as Arc<dyn ModelProvider>),
         ("fallback", fb as Arc<dyn ModelProvider>),
     ]);
-    let group = fast_retry_model_group(vec![ModelRef {
+    let group = fast_retry_model_group(vec![ModelConfig {
+        request_settings: Default::default(),
+        catalog_provider: String::new(),
+        provider_handle: frona::core::Handle::const_validated("fallback"),
         provider: "fallback".into(),
         model_id: "fallback-model".into(),
     }]);
@@ -433,8 +550,10 @@ async fn aggregate_by_model_groups_by_model_ref() {
     // Call 1: main retries-exhausted → fallback succeeds. Row on fallback.
     // Call 2: main recovers → row on main.
     text_inference(
-        &registry,
-        &group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(group).clone()
+        },
         "sys",
         vec![RigMessage::user("hi")],
         &svc,
@@ -443,8 +562,10 @@ async fn aggregate_by_model_groups_by_model_ref() {
     .await
     .unwrap();
     text_inference(
-        &registry,
-        &group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(group).clone()
+        },
         "sys",
         vec![RigMessage::user("hi")],
         &svc,
@@ -475,8 +596,10 @@ async fn aggregate_by_user_totals_across_chats() {
 
     for (chat, msg) in [("c1", "m1"), ("c2", "m2"), ("c3", "m3")] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &frona::inference::ModelGroup {
+                providers: registry.clone(),
+                ..(fast_retry_model_group(vec![])).clone()
+            },
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -535,8 +658,10 @@ async fn last_chat_input_tokens_returns_latest_main_chat_row() {
         &chat_usage_ctx("u1", "a1", "c1", "m2"),
     ] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &frona::inference::ModelGroup {
+                providers: registry.clone(),
+                ..(fast_retry_model_group(vec![])).clone()
+            },
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -574,8 +699,10 @@ async fn last_chat_input_tokens_returns_none_when_no_main_chat_rows() {
         "primary",
     );
     text_inference(
-        &registry,
-        &fast_retry_model_group(vec![]),
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(fast_retry_model_group(vec![])).clone()
+        },
         "sys",
         vec![RigMessage::user("hi")],
         &svc,
@@ -612,8 +739,10 @@ async fn percentile_query_returns_scalars_after_array_unwrap() {
     let registry = registry_with(vec![("mock", provider as Arc<dyn ModelProvider>)]);
     for msg_id in ["m1", "m2", "m3", "m4", "m5"] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &frona::inference::ModelGroup {
+                providers: registry.clone(),
+                ..(fast_retry_model_group(vec![])).clone()
+            },
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -663,8 +792,10 @@ async fn latency_by_model_computes_percentiles_in_sql() {
     let registry = registry_with(vec![("mock", provider as Arc<dyn ModelProvider>)]);
     for msg_id in ["m1", "m2", "m3"] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &frona::inference::ModelGroup {
+                providers: registry.clone(),
+                ..(fast_retry_model_group(vec![])).clone()
+            },
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -710,8 +841,10 @@ async fn latency_by_bucket_computes_percentiles_in_sql() {
     let registry = registry_with(vec![("mock", provider as Arc<dyn ModelProvider>)]);
     for msg_id in ["m1", "m2", "m3"] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &frona::inference::ModelGroup {
+                providers: registry.clone(),
+                ..(fast_retry_model_group(vec![])).clone()
+            },
             "sys",
             vec![RigMessage::user("hi")],
             &svc,
@@ -763,8 +896,10 @@ async fn top_chats_by_user_skips_rootless_rows() {
         &user_compaction_ctx,
     ] {
         text_inference(
-            &registry,
-            &fast_retry_model_group(vec![]),
+            &frona::inference::ModelGroup {
+                providers: registry.clone(),
+                ..(fast_retry_model_group(vec![])).clone()
+            },
             "sys",
             vec![RigMessage::user("hi")],
             &svc,

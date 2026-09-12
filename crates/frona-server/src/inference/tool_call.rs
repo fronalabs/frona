@@ -53,6 +53,7 @@ pub struct ToolCall {
     pub success: bool,
     pub duration_ms: u64,
     /// Pause marker for HITL prompts. `Some` when the tool emitted a Hitl;
+
     /// status starts as `Pending`, flips to `Resolved`/`Denied` on resolution.
     pub hitl: Option<Hitl>,
     /// Terminal signal from task-control tools. Mutually exclusive with `hitl`.

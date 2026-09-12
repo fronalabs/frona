@@ -21,9 +21,9 @@ use crate::db::repo::basic_memory::SurrealMemoryEntryRepo;
 use crate::db::repo::basic_memory::SurrealMemoryRepo;
 use crate::db::repo::chats::SurrealChatRepo;
 use crate::db::repo::spaces::SurrealSpaceRepo;
-use crate::inference::ModelProviderRegistry;
-use crate::inference::config::ModelGroup;
+use crate::inference::ModelGroup;
 use crate::inference::context::estimate_tokens;
+use crate::inference::provider::service::ModelProviderService;
 use crate::inference::text_inference;
 use crate::memory::basic::models::{Memory, MemoryEntry, MemorySourceType};
 use crate::memory::basic::repository::{MemoryEntryRepository, MemoryRepository};
@@ -44,7 +44,7 @@ pub struct BasicMemoryService {
     /// this module's data surface is visible, not reached through a raw db handle.
     space_repo: SurrealSpaceRepo,
     chat_repo: SurrealChatRepo,
-    provider_registry: Arc<ModelProviderRegistry>,
+    model_providers: Arc<ModelProviderService>,
     prompts: PromptLoader,
     usage_service: crate::inference::usage::UsageService,
     memory_config: MemoryConfig,
@@ -57,7 +57,7 @@ impl BasicMemoryService {
         memory_entry_repo: SurrealMemoryEntryRepo,
         space_repo: SurrealSpaceRepo,
         chat_repo: SurrealChatRepo,
-        provider_registry: Arc<ModelProviderRegistry>,
+        model_providers: Arc<ModelProviderService>,
         prompts: PromptLoader,
         usage_service: crate::inference::usage::UsageService,
         memory_config: MemoryConfig,
@@ -67,7 +67,7 @@ impl BasicMemoryService {
             memory_entry_repo,
             space_repo,
             chat_repo,
-            provider_registry,
+            model_providers,
             prompts,
             usage_service,
             memory_config,
@@ -76,11 +76,15 @@ impl BasicMemoryService {
 
     /// Resolve the compaction model group (`memory.model_group` → `primary`).
     fn compaction_model_group(&self) -> Option<ModelGroup> {
-        self.provider_registry
-            .get_model_group(&self.memory_config.model_group)
-            .or_else(|_| self.provider_registry.get_model_group("primary"))
+        self.model_providers
+            .resolve(&crate::inference::ModelRef(
+                self.memory_config.model_group.clone().into(),
+            ))
+            .or_else(|_| {
+                self.model_providers
+                    .resolve(&crate::inference::ModelRef::PRIMARY)
+            })
             .ok()
-            .cloned()
     }
 
     /// Load a compaction prompt from the resources dir. Missing → `AppError`
@@ -280,7 +284,6 @@ impl BasicMemoryService {
             compaction_model_group.name.clone(),
         );
         let summary = text_inference(
-            &self.provider_registry,
             compaction_model_group,
             &prompt,
             vec![RigMessage::user(&compaction_input)],
@@ -366,7 +369,6 @@ impl BasicMemoryService {
             compaction_model_group.name.clone(),
         );
         let summary = text_inference(
-            &self.provider_registry,
             compaction_model_group,
             &prompt,
             vec![RigMessage::user(&input)],

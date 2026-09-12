@@ -109,54 +109,16 @@ impl Scheduler {
             .memory_service
             .register_maintenance(&self);
 
-        // Skip the startup refresh if the cached catalog is younger than the
-        // periodic interval - restart shouldn't trigger another ~1.5 MB fetch.
-        // Missing/unreadable cache always falls through to a fresh fetch.
-        let cache_dir =
-            std::path::Path::new(&self.app_state.config.storage.cache_dir).to_path_buf();
-        let fresh = crate::inference::metadata::loader::cache_age(&cache_dir)
-            .is_some_and(|age| age < model_metadata_refresh);
-        if fresh {
-            tracing::debug!("Skipping startup model-metadata refresh; cache is fresh");
-        } else {
-            let s = self.clone();
-            tokio::spawn(async move {
-                if let Err(e) = s.run_model_metadata_refresh().await {
-                    tracing::warn!(error = %e, "Initial model-metadata refresh failed; keeping loaded catalog");
-                }
-            });
-        }
+        let s = self.clone();
+        tokio::spawn(async move {
+            // Startup downloads missing sources. Refresh stale data here without
+            // blocking startup or inference.
+            s.app_state.catalog_sources.refresh_due(Utc::now()).await;
+        });
     }
 
-    /// Failures keep the previous table loaded.
     async fn run_model_metadata_refresh(&self) -> Result<(), AppError> {
-        let raw = crate::inference::metadata::loader::fetch_metadata().await?;
-        let parsed = crate::inference::metadata::loader::parse(&raw)?;
-        let entries = parsed.entries.len() as f64;
-        let version = parsed.version.clone();
-        tracing::info!(
-            version = %version,
-            entries = entries as usize,
-            "Refreshed model metadata catalog"
-        );
-        // Persist to disk so the next boot has a head start if the network is
-        // unavailable. Failure is non-fatal - the in-memory swap below still
-        // wins for this process.
-        let cache_dir = std::path::Path::new(&self.app_state.config.storage.cache_dir);
-        if let Err(e) = crate::inference::metadata::loader::save_cache(cache_dir, &raw) {
-            tracing::warn!(error = %e, "Failed to persist model metadata cache");
-        }
-        // Swap the catalog directly - `model_catalog` is shared with
-        // `usage_service` via internal `ArcSwap`, so all readers see the
-        // new snapshot on next `current()`.
-        self.app_state.model_catalog.swap(parsed);
-        metrics::gauge!(
-            crate::inference::usage::service::MODEL_METADATA_ENTRIES,
-            "version" => version,
-        )
-        .set(entries);
-        metrics::gauge!(crate::inference::usage::service::MODEL_METADATA_REFRESH_AGE_SECONDS)
-            .set(0.0);
+        self.app_state.catalog_sources.refresh_due(Utc::now()).await;
         Ok(())
     }
 

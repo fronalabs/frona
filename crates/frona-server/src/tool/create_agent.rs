@@ -70,7 +70,8 @@ impl CreateAgentTool {
         let model_group = arguments
             .get("model_group")
             .and_then(|v| v.as_str())
-            .map(String::from);
+            .ok_or_else(|| AppError::Validation("Missing required parameter: model_group".into()))?
+            .to_string();
 
         let tools: Option<Vec<String>> =
             arguments

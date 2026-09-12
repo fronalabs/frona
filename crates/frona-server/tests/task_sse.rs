@@ -70,7 +70,8 @@ async fn test_app_state_with_mock(mock: Arc<MockModelProvider>) -> (AppState, te
             std::sync::Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(
                 db.clone(),
             ));
-        let tool_manager = std::sync::Arc::new(frona::tool::manager::ToolManager::new(false));
+        let tool_fixture = helpers::app_state::build(&db).await;
+        let tool_manager = tool_fixture.state.tool_manager.clone();
         let storage = frona::storage::StorageService::new(&config);
         frona::policy::service::PolicyService::new(
             repo,
@@ -95,8 +96,7 @@ async fn test_app_state_with_mock(mock: Arc<MockModelProvider>) -> (AppState, te
     let mut model_groups = HashMap::new();
     model_groups.insert("primary".to_string(), test_model_group());
 
-    let provider_registry =
-        frona::inference::registry::ModelProviderRegistry::for_testing(providers, model_groups);
+    let provider_registry = crate::helpers::test_model_service(providers, model_groups).await;
 
     let user_service = frona::auth::UserService::new(SurrealRepo::new(db.clone()), &config.cache);
     let prompt_loader = frona::agent::prompt::PromptLoader::new(format!("{base}/prompts"));
@@ -117,11 +117,19 @@ async fn test_app_state_with_mock(mock: Arc<MockModelProvider>) -> (AppState, te
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
     let mut state = AppState::new(
         db.clone(),
-        &config,
+        {
+            let mut loaded = frona::core::config::ConfigService::load(
+                tempfile::tempdir().unwrap().path().join("config.yaml"),
+            )
+            .unwrap();
+            loaded.config = config.clone();
+            frona::core::config::ConfigService::new(loaded).unwrap()
+        },
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage.clone(),
         metrics_handle,
         resource_manager.clone(),
+        crate::helpers::app_state::catalogs(&config),
     );
     // Must reuse `state.broadcast_service` - a fresh BroadcastService here
     // would disconnect events fired inside ChatService from SSE sessions

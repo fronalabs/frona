@@ -224,10 +224,11 @@ impl SendMessageTool {
                 &[("message", message_content), ("chats", &chats_text)],
             )
             .ok_or_else(|| AppError::Internal("send_message_resolve.md prompt not found".into()))?;
-        let registry = self.chat_service.provider_registry();
-        let model_group = registry
-            .get_model_group("compaction")
-            .or_else(|_| registry.get_model_group("primary"))?;
+        let registry = self.chat_service.model_providers();
+        let model_group = registry.resolve_with_fallback(
+            &crate::inference::ModelRef::COMPACTION,
+            &crate::inference::ModelRef::PRIMARY,
+        )?;
 
         let usage_ctx = crate::inference::usage::UsageContext::new(
             crate::inference::usage::InferenceKind::Router {
@@ -238,8 +239,7 @@ impl SendMessageTool {
             model_group.name.clone(),
         );
         let response = inference::text_inference(
-            registry,
-            model_group,
+            &model_group,
             &system_prompt,
             vec![RigMessage::user("Which chat should this message go to?")],
             self.chat_service.usage_service(),

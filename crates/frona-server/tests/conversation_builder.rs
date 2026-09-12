@@ -10,11 +10,10 @@ use frona::db::repo::generic::SurrealRepo;
 use frona::inference::conversation::{
     ConversationBuilder, ConversationContext, DefaultConversationBuilder,
 };
-use frona::inference::provider::ModelRef;
+use frona::inference::provider::ModelConfig;
 use frona::inference::tool_call::ToolCall;
 use frona::policy::service::PolicyService;
 use frona::storage::StorageService;
-use frona::tool::manager::ToolManager;
 use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
 use rig_core::completion::message::UserContent;
 use rig_core::completion::{AssistantContent, Message as RigMessage};
@@ -27,7 +26,7 @@ async fn test_db() -> Surreal<Db> {
     db
 }
 
-fn test_builder(db: &Surreal<Db>) -> DefaultConversationBuilder {
+async fn test_builder(db: &Surreal<Db>) -> DefaultConversationBuilder {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path().to_string_lossy().to_string();
     let config = frona::core::config::Config {
@@ -43,10 +42,11 @@ fn test_builder(db: &Surreal<Db>) -> DefaultConversationBuilder {
     let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> = Arc::new(
         SurrealRepo::<frona::policy::models::Policy>::new(db.clone()),
     );
+    let tool_fixture = helpers::app_state::build(db).await;
     let policy_service = PolicyService::new(
         policy_repo,
         frona::policy::schema::build_schema(),
-        Arc::new(ToolManager::new(false)),
+        tool_fixture.state.tool_manager.clone(),
         storage_service.clone(),
         user_service.clone(),
     );
@@ -67,7 +67,10 @@ fn test_builder(db: &Surreal<Db>) -> DefaultConversationBuilder {
 fn test_ctx() -> ConversationContext {
     ConversationContext {
         agent_id: "test-agent".into(),
-        model_ref: ModelRef {
+        model_config: ModelConfig {
+            request_settings: Default::default(),
+            catalog_provider: String::new(),
+            provider_handle: frona::core::Handle::const_validated("mock"),
             provider: "mock".into(),
             model_id: "test-model".into(),
         },
@@ -112,7 +115,7 @@ fn tool_call(chat_id: &str, message_id: &str, turn: u32, name: &str) -> ToolCall
 #[tokio::test]
 async fn agent_with_tool_calls_single_turn() {
     let db = test_db().await;
-    let builder = test_builder(&db);
+    let builder = test_builder(&db).await;
     let ctx = test_ctx();
 
     let agent_msg = agent_message(
@@ -169,7 +172,7 @@ async fn agent_with_tool_calls_single_turn() {
 #[tokio::test]
 async fn agent_with_tool_calls_multi_turn() {
     let db = test_db().await;
-    let builder = test_builder(&db);
+    let builder = test_builder(&db).await;
     let ctx = test_ctx();
 
     let agent_msg = agent_message("chat-1", "Final answer", Some(MessageStatus::Completed));
@@ -189,7 +192,7 @@ async fn agent_with_tool_calls_multi_turn() {
 #[tokio::test]
 async fn agent_executing_status_no_final_text() {
     let db = test_db().await;
-    let builder = test_builder(&db);
+    let builder = test_builder(&db).await;
     let ctx = test_ctx();
 
     let agent_msg = agent_message("chat-1", "", Some(MessageStatus::Executing));
@@ -211,7 +214,7 @@ async fn agent_executing_status_no_final_text() {
 #[tokio::test]
 async fn agent_without_tool_calls_unchanged() {
     let db = test_db().await;
-    let builder = test_builder(&db);
+    let builder = test_builder(&db).await;
     let ctx = test_ctx();
 
     let messages = vec![
@@ -236,7 +239,7 @@ async fn agent_without_tool_calls_unchanged() {
 #[tokio::test]
 async fn turn_text_appears_in_reconstructed_history() {
     let db = test_db().await;
-    let builder = test_builder(&db);
+    let builder = test_builder(&db).await;
     let ctx = test_ctx();
 
     let agent_msg = agent_message("chat-1", "Done", Some(MessageStatus::Completed));
@@ -265,7 +268,7 @@ async fn turn_text_appears_in_reconstructed_history() {
 #[tokio::test]
 async fn turn_text_empty_string_omitted() {
     let db = test_db().await;
-    let builder = test_builder(&db);
+    let builder = test_builder(&db).await;
     let ctx = test_ctx();
 
     let agent_msg = agent_message("chat-1", "Done", Some(MessageStatus::Completed));
@@ -295,7 +298,7 @@ async fn turn_text_empty_string_omitted() {
 #[tokio::test]
 async fn agent_with_tool_calls_includes_per_turn_reasoning() {
     let db = test_db().await;
-    let builder = test_builder(&db);
+    let builder = test_builder(&db).await;
     let ctx = test_ctx();
 
     let agent_msg = agent_message("chat-1", "", Some(MessageStatus::Executing));
@@ -335,7 +338,7 @@ async fn agent_with_tool_calls_includes_per_turn_reasoning() {
 #[tokio::test]
 async fn agent_with_tool_calls_omits_reasoning_when_absent() {
     let db = test_db().await;
-    let builder = test_builder(&db);
+    let builder = test_builder(&db).await;
     let ctx = test_ctx();
 
     let agent_msg = agent_message("chat-1", "done", Some(MessageStatus::Completed));
@@ -362,7 +365,7 @@ async fn agent_with_tool_calls_omits_reasoning_when_absent() {
 #[tokio::test]
 async fn agent_with_tool_calls_attaches_reasoning_per_turn() {
     let db = test_db().await;
-    let builder = test_builder(&db);
+    let builder = test_builder(&db).await;
     let ctx = test_ctx();
 
     // Multi-turn paused message - each turn has its OWN reasoning that must
@@ -407,7 +410,7 @@ async fn agent_with_tool_calls_attaches_reasoning_per_turn() {
 #[tokio::test]
 async fn prepends_conversation_summary() {
     let db = test_db().await;
-    let builder = test_builder(&db);
+    let builder = test_builder(&db).await;
     let ctx = test_ctx();
     let messages = vec![user_message("chat-1", "hello")];
 
@@ -429,3 +432,5 @@ async fn prepends_conversation_summary() {
         "leading message must be the summary block"
     );
 }
+
+mod helpers;

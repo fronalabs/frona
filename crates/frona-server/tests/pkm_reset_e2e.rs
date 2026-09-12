@@ -28,7 +28,7 @@ use surrealdb::engine::local::Mem;
 use tower::ServiceExt;
 
 use helpers::{
-    MockModelProvider, MockResponse, test_harness, test_model_group, test_registry_with_group,
+    MockModelProvider, MockResponse, test_harness, test_model_group, test_model_service_with_group,
 };
 
 fn resources() -> std::path::PathBuf {
@@ -220,11 +220,19 @@ async fn reset_rebuilds_only_the_authenticated_users_memory_on_a_later_sweep() {
     );
     let mut state = AppState::new(
         db.clone(),
-        &config,
+        {
+            let mut loaded = frona::core::config::ConfigService::load(
+                tempfile::tempdir().unwrap().path().join("config.yaml"),
+            )
+            .unwrap();
+            loaded.config = config.clone();
+            frona::core::config::ConfigService::new(loaded).unwrap()
+        },
         Some(ModelRegistryConfig::empty()),
         storage,
         setup_metrics_recorder(),
         resource_manager,
+        crate::helpers::app_state::catalogs(&config),
     );
     state.policy_service.sync_base_policies().await.unwrap();
 
@@ -235,12 +243,9 @@ async fn reset_rebuilds_only_the_authenticated_users_memory_on_a_later_sweep() {
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::PendingWithDropDelay(std::time::Duration::from_millis(300)),
     ]));
-    let registry = Arc::new(test_registry_with_group(
-        "mock",
-        mock.clone(),
-        "test",
-        test_model_group(),
-    ));
+    let registry = Arc::new(
+        test_model_service_with_group("mock", mock.clone(), "test", test_model_group()).await,
+    );
     let prompts = frona::agent::prompt::PromptLoader::new(resources().join("prompts"));
     let fixture =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ontology");
@@ -257,7 +262,7 @@ async fn reset_rebuilds_only_the_authenticated_users_memory_on_a_later_sweep() {
         },
     );
     state.pkm_service = Some(pkm.clone());
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
     let seeded_repo = PkmRepo::new(db.clone(), 8);
     seeded_repo
         .upsert_entity_skeleton(

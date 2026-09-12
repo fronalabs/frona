@@ -25,8 +25,9 @@ use crate::db::repo::chat_summaries::SurrealChatSummaryRepo;
 use crate::db::repo::messages::SurrealMessageRepo;
 use crate::inference::context::{estimate_message_tokens, estimate_tokens};
 use crate::inference::conversation::{convert_agent_message, format_files_block_simple};
+use crate::inference::provider::service::ModelProviderService;
+use crate::inference::text_inference;
 use crate::inference::usage::{CompactionTarget, InferenceKind, UsageContext, UsageService};
-use crate::inference::{ModelProviderRegistry, text_inference};
 
 /// Trigger when the conversation exceeds this fraction of the available window.
 const COMPACT_TRIGGER_PCT: usize = 80;
@@ -67,14 +68,14 @@ pub trait ChatSummarizer: Send + Sync {
 /// retries it returns `Err`, which `compact_chat` propagates (fail loud).
 #[derive(Clone)]
 pub struct TextInferenceSummarizer {
-    provider_registry: ModelProviderRegistry,
+    model_providers: ModelProviderService,
     usage_service: UsageService,
 }
 
 impl TextInferenceSummarizer {
-    pub fn new(provider_registry: ModelProviderRegistry, usage_service: UsageService) -> Self {
+    pub fn new(model_providers: ModelProviderService, usage_service: UsageService) -> Self {
         Self {
-            provider_registry,
+            model_providers,
             usage_service,
         }
     }
@@ -91,9 +92,11 @@ impl ChatSummarizer for TextInferenceSummarizer {
         input: &str,
     ) -> Result<String, AppError> {
         let model_group = self
-            .provider_registry
-            .get_model_group("compaction")
-            .or_else(|_| self.provider_registry.get_model_group("primary"))
+            .model_providers
+            .resolve_with_fallback(
+                &crate::inference::ModelRef::COMPACTION,
+                &crate::inference::ModelRef::PRIMARY,
+            )
             .map_err(|e| AppError::Internal(format!("No compaction model group: {e}")))?;
         let usage_ctx = UsageContext::new(
             InferenceKind::Compaction {
@@ -106,8 +109,7 @@ impl ChatSummarizer for TextInferenceSummarizer {
             model_group.name.clone(),
         );
         text_inference(
-            &self.provider_registry,
-            model_group,
+            &model_group,
             system_prompt,
             vec![RigMessage::user(input)],
             &self.usage_service,

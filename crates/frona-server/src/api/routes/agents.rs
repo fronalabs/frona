@@ -20,10 +20,17 @@ use crate::core::state::AppState;
 fn resolve_model(state: &AppState, model_group_name: &str) -> Option<Model> {
     let group = state
         .chat_service
-        .provider_registry()
-        .resolve_model_group(model_group_name)
+        .model_providers()
+        .resolve(&crate::inference::ModelRef(
+            model_group_name.to_owned().into(),
+        ))
         .ok()?;
-    let entry = state.model_catalog.current().lookup(&group.main).cloned();
+    let entry = state
+        .catalog_sources
+        .models
+        .current()
+        .lookup_for_provider(group.main.provider_name(), &group.main.model_id)
+        .cloned();
     Some(Model {
         provider: group.main.provider_name().to_string(),
         model_id: group.main.model_id.clone(),
@@ -337,4 +344,73 @@ async fn upload_avatar(
         "filename": avatar_filename,
         "url": presigned_url,
     })))
+}
+
+#[cfg(test)]
+mod context_budget_tests {
+    use super::*;
+    use crate::{core::config::Config, inference::config::ModelRegistryConfig};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn agent_usage_reports_the_same_catalog_budget_as_compaction() {
+        for override_window in [None, Some(5000)] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut config: Config = serde_json::from_value(serde_json::json!({
+                "providers":{"openai-prod":{"provider":"openai","api_key":"fixture-key"}},
+                "models":{"primary":{"provider":"openai-prod","model":"gpt-4o","context_window":override_window}}
+            })).unwrap();
+            config.storage.cache_dir = directory.path().join("cache").to_string_lossy().into();
+            let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+                .await
+                .unwrap();
+            crate::db::init::setup_schema(&db).await.unwrap();
+            let state = AppState::new(
+                db.clone(),
+                {
+                    let mut loaded = crate::core::config::ConfigService::load(
+                        tempfile::tempdir().unwrap().path().join("config.yaml"),
+                    )
+                    .unwrap();
+                    loaded.config = config.clone();
+                    crate::core::config::ConfigService::new(loaded).unwrap()
+                },
+                Some(ModelRegistryConfig {
+                    providers: config.providers.clone(),
+                    models: config.models.clone(),
+                    skip_auto_discover: true,
+                }),
+                crate::storage::StorageService::new(&config),
+                crate::core::metrics::setup_metrics_recorder(),
+                Arc::new(
+                    crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+                        80.0, 80.0, 90.0, 90.0,
+                    ),
+                ),
+                crate::app_state_fixture::catalogs(&config),
+            );
+            let expected = override_window.unwrap_or_else(|| {
+                state
+                    .catalog_sources
+                    .models
+                    .current()
+                    .lookup_for_provider("openai", "gpt-4o")
+                    .unwrap()
+                    .max_input_tokens()
+                    .unwrap() as usize
+            });
+            let model = resolve_model(&state, "primary").unwrap();
+            assert_eq!(model.context_window, expected);
+            let group = state
+                .chat_service
+                .model_providers()
+                .resolve(&crate::inference::ModelRef::PRIMARY)
+                .unwrap();
+            assert_eq!(model.context_window, group.context_window);
+            assert_eq!(
+                serde_json::to_value(model).unwrap()["context_window"],
+                expected
+            );
+        }
+    }
 }

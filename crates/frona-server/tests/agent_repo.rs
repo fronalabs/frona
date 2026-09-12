@@ -8,7 +8,6 @@ use frona::db::init as db;
 use frona::db::repo::agents::SurrealAgentRepo;
 use frona::db::repo::generic::SurrealRepo;
 use frona::policy::service::PolicyService;
-use frona::tool::manager::ToolManager;
 use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
 use std::sync::Arc;
 use surrealdb::Surreal;
@@ -18,7 +17,7 @@ fn test_resource_manager() -> Arc<SystemResourceManager> {
     Arc::new(SystemResourceManager::new(80.0, 80.0, 90.0, 90.0))
 }
 
-fn test_policy_service(db: &Surreal<Db>) -> PolicyService {
+async fn test_policy_service(db: &Surreal<Db>) -> PolicyService {
     let schema = frona::policy::schema::build_schema();
     let repo: Arc<dyn frona::policy::repository::PolicyRepository> =
         Arc::new(SurrealRepo::<frona::policy::models::Policy>::new(
@@ -26,10 +25,11 @@ fn test_policy_service(db: &Surreal<Db>) -> PolicyService {
         ));
     let storage = frona::storage::StorageService::new(&frona::core::config::Config::default());
     let user_service = test_user_service(db);
+    let tool_fixture = helpers::app_state::build(db).await;
     PolicyService::new(
         repo,
         schema,
-        Arc::new(ToolManager::new(false)),
+        tool_fixture.state.tool_manager.clone(),
         storage,
         user_service,
     )
@@ -222,7 +222,7 @@ async fn test_clone_all_builtins_materializes_per_user_rows() {
         SurrealAgentRepo::new(db.clone()),
         &CacheConfig::default(),
         test_resource_manager(),
-        test_policy_service(&db),
+        test_policy_service(&db).await,
         user_service,
     );
 
@@ -259,7 +259,7 @@ async fn agent_service_find_by_id_caches() {
         SurrealAgentRepo::new(db.clone()),
         &CacheConfig::default(),
         test_resource_manager(),
-        test_policy_service(&db),
+        test_policy_service(&db).await,
         test_user_service(&db),
     );
     let repo = SurrealAgentRepo::new(db);
@@ -281,7 +281,7 @@ async fn agent_service_update_invalidates_cache() {
         SurrealAgentRepo::new(db.clone()),
         &CacheConfig::default(),
         test_resource_manager(),
-        test_policy_service(&db),
+        test_policy_service(&db).await,
         test_user_service(&db),
     );
     let repo = SurrealAgentRepo::new(db);
@@ -323,7 +323,7 @@ async fn agent_service_delete_invalidates_cache() {
         SurrealAgentRepo::new(db.clone()),
         &CacheConfig::default(),
         test_resource_manager(),
-        test_policy_service(&db),
+        test_policy_service(&db).await,
         user_service,
     );
     let repo = SurrealAgentRepo::new(db);
@@ -336,3 +336,5 @@ async fn agent_service_delete_invalidates_cache() {
 
     assert!(svc.find_by_id(&agent.id).await.unwrap().is_none());
 }
+
+mod helpers;

@@ -51,12 +51,20 @@ async fn test_state(backend: MemoryBackend) -> (AppState, tempfile::TempDir) {
     );
     let metrics = frona::core::metrics::setup_metrics_recorder();
     let state = AppState::new(
-        db,
-        &config,
+        db.clone(),
+        {
+            let mut loaded = frona::core::config::ConfigService::load(
+                tempfile::tempdir().unwrap().path().join("config.yaml"),
+            )
+            .unwrap();
+            loaded.config = config.clone();
+            frona::core::config::ConfigService::new(loaded).unwrap()
+        },
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics,
         resource_manager,
+        crate::helpers::app_state::catalogs(&config),
     );
     (state, tmp)
 }

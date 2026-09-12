@@ -30,7 +30,6 @@ use crate::core::execution::ExecutionRegistry;
 use crate::credential::keypair::service::KeyPairService;
 use crate::credential::presign::PresignService;
 use crate::credential::vault::service::VaultService;
-use crate::inference::ModelProviderRegistry;
 use crate::inference::config::ModelRegistryConfig;
 use crate::memory::basic::BasicMemoryService;
 use crate::memory::pkm::PkmService;
@@ -93,6 +92,8 @@ impl ActiveSessions {
 #[derive(Clone)]
 pub struct AppState {
     pub db: Surreal<Db>,
+    pub config_service: crate::core::config::ConfigService,
+    pub model_provider_service: crate::inference::provider::service::ModelProviderService,
     pub runtime_config: crate::core::runtime_config::RuntimeConfigStore,
     /// The Obsidian sync engine - `Some` only when PKM is the active memory backend.
     /// Presence *is* the gate: the `/api/memory/pkm/*` handlers read this instead of
@@ -108,7 +109,7 @@ pub struct AppState {
     pub space_service: SpaceService,
     pub call_service: CallService,
     pub usage_service: crate::inference::usage::UsageService,
-    pub model_catalog: crate::inference::metadata::ModelCatalogStore,
+    pub catalog_sources: frona_model_catalog::sources::CatalogSources,
     pub chat_service: ChatService,
     pub contact_service: ContactService,
     pub task_service: TaskService,
@@ -151,38 +152,83 @@ pub struct AppState {
 impl AppState {
     pub fn new(
         db: Surreal<Db>,
-        config: &Config,
+        config_service: crate::core::config::ConfigService,
         models_config: Option<ModelRegistryConfig>,
         storage: StorageService,
         metrics_handle: PrometheusHandle,
         resource_manager: Arc<SystemResourceManager>,
+        catalog_sources: frona_model_catalog::sources::CatalogSources,
     ) -> Self {
-        // Both `aws-lc-rs` and `ring` are active via reqwest + slack-morphism;
-        // rustls 0.23 panics on first TLS use without an explicit default.
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-
+        let active_config = config_service.active();
+        let config = active_config.as_ref();
         let http_client = crate::build_http_client();
 
         let broadcast_service =
             BroadcastService::with_pending_events_secs(config.server.sse_pending_events_secs);
 
-        // Load the catalog before the provider registry - `parse_model_groups`
-        // consults it to bake `context_window` into each `ModelGroup` at
-        // resolve time.
-        let model_catalog = crate::inference::metadata::ModelCatalogStore::new(
-            crate::inference::metadata::loader::load_cache_or_defaults(std::path::Path::new(
-                &config.storage.cache_dir,
-            )),
+        // The local catalog supplies authoring metadata, usage estimates, and
+        // fallback context budgets. Images supply local catalogs; development
+        // downloads missing sources into the data directory before serving setup.
+        if catalog_sources
+            .status(
+                frona_model_catalog::sources::Source::Models,
+                chrono::Utc::now(),
+            )
+            .state
+            == "unavailable"
+        {
+            catalog_sources
+                .models
+                .swap(crate::inference::directory::defaults::defaults());
+        }
+        let model_catalog = catalog_sources.models.clone();
+        let model_directory = crate::inference::directory::models::ModelDirectoryService::new(
+            catalog_sources.clone(),
         );
 
         let llm_config = load_models_config(models_config);
-        let provider_registry = ModelProviderRegistry::from_config(
-            llm_config,
-            broadcast_service.clone(),
-            &config.inference,
-            &model_catalog.current(),
-        )
-        .expect("Failed to initialize provider registry");
+        let managed_vault = crate::credential::managed::ManagedVault::new(
+            Arc::new(crate::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone())),
+            &config.auth.encryption_secret,
+            crate::credential::managed::GLOBAL_CONNECTION_ID.into(),
+        );
+        let managed_resolver =
+            Arc::new(crate::credential::managed::resolver::ManagedResolver::new(
+                crate::credential::managed::integration::registered(),
+            ));
+        let provider_credentials = crate::inference::credential::store::ProviderCredentials::new(
+            managed_vault.clone(),
+            managed_resolver.clone(),
+        );
+        let provider_validation =
+            crate::inference::provider::validation::ProviderValidationService::new(
+                provider_credentials.clone(),
+                crate::inference::provider::InferenceCounter::new(broadcast_service.clone()),
+            );
+        let runtime_credentials = Arc::new(
+            crate::inference::credential::runtime::RuntimeCredentials::new(
+                llm_config.providers.clone(),
+                provider_credentials.clone(),
+                crate::inference::provider::InferenceCounter::new(broadcast_service.clone()),
+            ),
+        );
+        let model_groups = llm_config
+            .parse_model_groups_with_catalog(
+                &config.inference,
+                &model_catalog.current(),
+                Arc::new(runtime_credentials.providers()),
+            )
+            .expect("Failed to compile model groups");
+        let model_provider_service = crate::inference::provider::service::ModelProviderService::new(
+            model_directory,
+            config_service.clone(),
+            provider_credentials.clone(),
+            provider_validation,
+            runtime_credentials.clone(),
+            Arc::new(config.clone()),
+            model_groups,
+            runtime_credentials.providers(),
+        );
 
         let chat_repo = SurrealRepo::new(db.clone());
         let message_repo = SurrealRepo::new(db.clone());
@@ -210,7 +256,7 @@ impl AppState {
             .external_base_url()
             .unwrap_or_else(|| local_base_url.clone());
 
-        let provider_registry_arc = Arc::new(provider_registry.clone());
+        let model_providers_arc = Arc::new(model_provider_service.clone());
         let schema_path = shared_config_abs
             .join("schemas")
             .join("service_manifest.json")
@@ -223,7 +269,7 @@ impl AppState {
         let cli_tools_config = Arc::new(cli_tools_config);
 
         let usage_service = crate::inference::usage::UsageService::new(
-            model_catalog.clone(),
+            model_catalog,
             SurrealRepo::new(db.clone()),
             broadcast_service.clone(),
         );
@@ -252,7 +298,7 @@ impl AppState {
                 SurrealMemoryEntryRepo::new(db.clone()),
                 SurrealSpaceRepo::new(db.clone()),
                 SurrealChatRepo::new(db.clone()),
-                provider_registry_arc.clone(),
+                model_providers_arc.clone(),
                 prompt_loader.clone(),
                 usage_service.clone(),
                 config.memory.clone(),
@@ -267,7 +313,7 @@ impl AppState {
                 let pkm = PkmService::new(
                     db.clone(),
                     storage.clone(),
-                    provider_registry_arc.clone(),
+                    model_providers_arc.clone(),
                     prompt_loader.clone(),
                     config.memory.clone(),
                     user_service.clone(),
@@ -281,7 +327,7 @@ impl AppState {
                     config.memory.clone(),
                     user_service.clone(),
                     prompt_loader.clone(),
-                    provider_registry_arc.clone(),
+                    model_providers_arc.clone(),
                     pkm.operation_coordinator(),
                 ));
                 pkm_read = Some(crate::memory::pkm::read::PkmReadService::new(
@@ -522,7 +568,7 @@ impl AppState {
         let channel_repo: Arc<dyn crate::chat::channel::repository::ChannelRepository> = Arc::new(
             SurrealRepo::<crate::chat::channel::Channel>::new(db.clone()),
         );
-        let config_arc = Arc::new(config.clone());
+        let config_arc = active_config.clone();
         let channel_service = crate::chat::channel::ChannelService::new(
             channel_repo,
             channel_registry.clone(),
@@ -536,7 +582,7 @@ impl AppState {
             message_repo,
             tool_call_repo,
             agent_service.clone(),
-            provider_registry,
+            model_provider_service.clone(),
             storage.clone(),
             user_service.clone(),
             prompt_loader.clone(),
@@ -599,7 +645,10 @@ impl AppState {
             harness.clone(),
             task_executor.clone(),
         ));
+
         Self {
+            config_service,
+            model_provider_service,
             pkm_sync,
             pkm_read,
             pkm_service,
@@ -613,7 +662,7 @@ impl AppState {
             space_service,
             call_service: CallService::new(SurrealRepo::new(db.clone())),
             usage_service,
-            model_catalog,
+            catalog_sources,
             contact_service,
             chat_service,
             task_service: TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),

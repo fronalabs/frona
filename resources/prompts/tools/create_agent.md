@@ -16,7 +16,7 @@ parameters:
     description: "The full system prompt that defines the agent's behavior, personality, constraints, and capabilities. This is the agent's entire guide — be thorough."
   model_group:
     type: string
-    description: "Model group to use. Options: 'primary' (default, balanced), 'coding' (optimized for code), 'reasoning' (optimized for analysis and complex tasks)"
+    description: "Exact configured model group name, for example 'primary', 'coding', or 'reasoning'. Required; provider/model shorthand is not supported."
   tools:
     type: array
     items:
@@ -27,6 +27,7 @@ required:
   - name
   - summary
   - instructions
+  - model_group
 ---
 Create a new agent with the given configuration. The agent will be immediately available for use.
 

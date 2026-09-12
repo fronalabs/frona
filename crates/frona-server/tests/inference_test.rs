@@ -1,5 +1,39 @@
 mod helpers;
 
+#[tokio::test]
+async fn streaming_skips_unavailable_primary_and_uses_fallback_without_catalogs() {
+    use frona::inference::retry::StreamResult;
+    let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
+        "fallback stream".into(),
+    )]));
+    let registry = test_providers("fallback", provider.clone());
+    let group = test_model_group_with_fallback("fallback", "test-model");
+    let (events, _, _) = test_event_sender().await;
+    let mut text = String::new();
+    let result = frona::inference::ModelGroup {
+        providers: registry,
+        ..group
+    }
+    .stream_inference(
+        frona::inference::ModelRequest {
+            system_prompt: "system",
+            history: vec![RigMessage::user("hi")],
+            tools: vec![],
+            usage_service: &test_metrics_ctx(),
+            usage_context: &test_usage_ctx(),
+            overrides: Default::default(),
+        },
+        &events,
+        &CancellationToken::new(),
+        &mut text,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(result, StreamResult::Contents { .. }));
+    assert_eq!(text, "fallback stream");
+    assert_eq!(provider.calls(), 1);
+}
+
 use std::sync::Arc;
 
 use frona::core::error::AppError;
@@ -19,7 +53,7 @@ async fn test_tool_loop_simple_text_response() {
     let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
         "Hello!".into(),
     )]));
-    let registry = test_registry_with_provider("mock", provider.clone());
+    let registry = test_providers("mock", provider.clone());
     let model_group = test_model_group();
     let tool_registry = AgentToolRegistry::empty();
     let (event_sender, mut sse_rx, _broadcast) = test_event_sender().await;
@@ -29,8 +63,10 @@ async fn test_tool_loop_simple_text_response() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "You are a test assistant",
         vec![RigMessage::user("hi")],
         &tool_registry,
@@ -74,7 +110,7 @@ async fn test_tool_loop_single_tool_call() {
         )]),
         MockResponse::Text("Found results about Rust.".into()),
     ]));
-    let registry = test_registry_with_provider("mock", provider.clone());
+    let registry = test_providers("mock", provider.clone());
     let model_group = test_model_group();
     let mut tool_registry = AgentToolRegistry::empty();
     tool_registry.register(Arc::new(MockInternalTool::new(
@@ -88,8 +124,10 @@ async fn test_tool_loop_single_tool_call() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("search for rust")],
         &tool_registry,
@@ -142,7 +180,7 @@ async fn test_tool_loop_multi_turn() {
         )]),
         MockResponse::Text("All done.".into()),
     ]));
-    let registry = test_registry_with_provider("mock", provider.clone());
+    let registry = test_providers("mock", provider.clone());
     let model_group = test_model_group();
     let mut tool_registry = AgentToolRegistry::empty();
     tool_registry.register(Arc::new(MockInternalTool::new(
@@ -160,8 +198,10 @@ async fn test_tool_loop_multi_turn() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("do steps")],
         &tool_registry,
@@ -190,7 +230,7 @@ async fn test_tool_loop_external_tool_returns_pending() {
             serde_json::json!({"action": "run"}),
         ),
     ])]));
-    let registry = test_registry_with_provider("mock", provider);
+    let registry = test_providers("mock", provider);
     let model_group = test_model_group();
     let mut tool_registry = AgentToolRegistry::empty();
     tool_registry.register(Arc::new(MockExternalTool::new("ext_tool")));
@@ -201,8 +241,10 @@ async fn test_tool_loop_external_tool_returns_pending() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("run external")],
         &tool_registry,
@@ -233,7 +275,7 @@ async fn test_tool_loop_mixed_internal_external() {
         ("c1".into(), "internal".into(), serde_json::json!({})),
         ("c2".into(), "external".into(), serde_json::json!({})),
     ])]));
-    let registry = test_registry_with_provider("mock", provider);
+    let registry = test_providers("mock", provider);
     let model_group = test_model_group();
     let mut tool_registry = AgentToolRegistry::empty();
     tool_registry.register(Arc::new(MockInternalTool::new(
@@ -248,8 +290,10 @@ async fn test_tool_loop_mixed_internal_external() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("do both")],
         &tool_registry,
@@ -281,7 +325,7 @@ async fn test_tool_loop_multiple_external_tools_in_same_turn() {
         ("c2".into(), "ext2".into(), serde_json::json!({})),
         ("c3".into(), "ext3".into(), serde_json::json!({})),
     ])]));
-    let registry = test_registry_with_provider("mock", provider);
+    let registry = test_providers("mock", provider);
     let model_group = test_model_group();
     let mut tool_registry = AgentToolRegistry::empty();
     tool_registry.register(Arc::new(MockExternalTool::new("ext1")));
@@ -294,8 +338,10 @@ async fn test_tool_loop_multiple_external_tools_in_same_turn() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("do all three")],
         &tool_registry,
@@ -329,7 +375,7 @@ async fn test_tool_loop_mixed_internal_and_multiple_external() {
         ("c2".into(), "ext1".into(), serde_json::json!({})),
         ("c3".into(), "ext2".into(), serde_json::json!({})),
     ])]));
-    let registry = test_registry_with_provider("mock", provider);
+    let registry = test_providers("mock", provider);
     let model_group = test_model_group();
     let mut tool_registry = AgentToolRegistry::empty();
     tool_registry.register(Arc::new(MockInternalTool::new(
@@ -345,8 +391,10 @@ async fn test_tool_loop_mixed_internal_and_multiple_external() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("mixed")],
         &tool_registry,
@@ -377,7 +425,7 @@ async fn test_tool_loop_cancellation_before_inference() {
     let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
         "should not see this".into(),
     )]));
-    let registry = test_registry_with_provider("mock", provider.clone());
+    let registry = test_providers("mock", provider.clone());
     let model_group = test_model_group();
     let tool_registry = AgentToolRegistry::empty();
     let (event_sender, _sse_rx, _broadcast) = test_event_sender().await;
@@ -388,8 +436,10 @@ async fn test_tool_loop_cancellation_before_inference() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("hello")],
         &tool_registry,
@@ -417,7 +467,7 @@ async fn test_tool_loop_rate_limit_retry() {
         }),
         MockResponse::Text("Success after retry!".into()),
     ]));
-    let registry = test_registry_with_provider("mock", provider.clone());
+    let registry = test_providers("mock", provider.clone());
     let model_group = test_model_group();
     let tool_registry = AgentToolRegistry::empty();
     let (event_sender, mut sse_rx, _broadcast) = test_event_sender().await;
@@ -431,8 +481,10 @@ async fn test_tool_loop_rate_limit_retry() {
     tokio::time::pause();
 
     let outcome = run_tool_loop(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("hello")],
         &tool_registry,
@@ -475,7 +527,7 @@ async fn test_tool_loop_rate_limit_exhausted() {
         })
         .collect();
     let provider = Arc::new(MockModelProvider::new(responses));
-    let registry = test_registry_with_provider("mock", provider);
+    let registry = test_providers("mock", provider);
     let model_group = test_model_group();
     let tool_registry = AgentToolRegistry::empty();
     let (event_sender, _sse_rx, _broadcast) = test_event_sender().await;
@@ -489,8 +541,10 @@ async fn test_tool_loop_rate_limit_exhausted() {
     tokio::time::pause();
 
     let result = run_tool_loop(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("hello")],
         &tool_registry,
@@ -506,7 +560,7 @@ async fn test_tool_loop_rate_limit_exhausted() {
     assert!(result.is_err());
     match result.unwrap_err() {
         AppError::Inference(msg) => {
-            assert!(msg.contains("Rate limited"), "Got: {msg}");
+            assert!(msg.to_string().contains("Rate limited"), "Got: {msg}");
         }
         other => panic!("Expected AppError::Inference, got {other:?}"),
     }
@@ -524,7 +578,7 @@ async fn test_tool_loop_tool_call_failure() {
         )]),
         MockResponse::Text("Recovered from tool error.".into()),
     ]));
-    let registry = test_registry_with_provider("mock", provider.clone());
+    let registry = test_providers("mock", provider.clone());
     let model_group = test_model_group();
     let mut tool_registry = AgentToolRegistry::empty();
     tool_registry.register(Arc::new(MockFailingTool::new("bad_tool")));
@@ -535,8 +589,10 @@ async fn test_tool_loop_tool_call_failure() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("use bad tool")],
         &tool_registry,
@@ -572,7 +628,7 @@ async fn test_tool_loop_provider_error() {
     let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Error(
         InferenceError::InferenceFailed("Something broke".into()),
     )]));
-    let registry = test_registry_with_provider("mock", provider);
+    let registry = test_providers("mock", provider);
     let model_group = test_model_group();
     let tool_registry = AgentToolRegistry::empty();
     let (event_sender, _sse_rx, _broadcast) = test_event_sender().await;
@@ -582,8 +638,10 @@ async fn test_tool_loop_provider_error() {
     let chat_service = test_chat_service().await;
 
     let result = run_tool_loop(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("hello")],
         &tool_registry,
@@ -599,7 +657,7 @@ async fn test_tool_loop_provider_error() {
     assert!(result.is_err());
     match result.unwrap_err() {
         AppError::Inference(msg) => {
-            assert!(msg.contains("Something broke"), "Got: {msg}");
+            assert!(msg.to_string().contains("Something broke"), "Got: {msg}");
         }
         other => panic!("Expected AppError::Inference, got {other:?}"),
     }
@@ -612,13 +670,15 @@ async fn test_fallback_main_succeeds() {
     let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
         "main success".into(),
     )]));
-    let registry = test_registry_with_provider("mock", provider.clone());
+    let registry = test_providers("mock", provider.clone());
     let model_group = test_model_group();
     let metrics = test_metrics_ctx();
 
     let result = text_inference(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("hi")],
         &metrics,
@@ -651,17 +711,16 @@ async fn test_fallback_main_fails_fallback_succeeds() {
         "fallback".to_string(),
         fallback_provider.clone() as Arc<dyn frona::inference::provider::ModelProvider>,
     );
-    let registry = frona::inference::registry::ModelProviderRegistry::for_testing(
-        providers,
-        std::collections::HashMap::new(),
-    );
+    let registry = Arc::new(providers);
 
     let model_group = test_model_group_with_fallback("fallback", "fallback-model");
     let metrics = test_metrics_ctx();
 
     let result = text_inference(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("hi")],
         &metrics,
@@ -697,17 +756,16 @@ async fn test_fallback_all_fail() {
         "fallback".to_string(),
         fallback_provider as Arc<dyn frona::inference::provider::ModelProvider>,
     );
-    let registry = frona::inference::registry::ModelProviderRegistry::for_testing(
-        providers,
-        std::collections::HashMap::new(),
-    );
+    let registry = Arc::new(providers);
 
     let model_group = test_model_group_with_fallback("fallback", "fallback-model");
     let metrics = test_metrics_ctx();
 
     let result = text_inference(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("hi")],
         &metrics,
@@ -732,13 +790,15 @@ async fn test_fallback_retryable_error_retried() {
         MockResponse::Error(InferenceError::InferenceFailed("timeout".into())),
         MockResponse::Text("retry succeeded".into()),
     ]));
-    let registry = test_registry_with_provider("mock", provider.clone());
+    let registry = test_providers("mock", provider.clone());
     let model_group = test_model_group();
     let metrics = test_metrics_ctx();
 
     let result = text_inference(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("hi")],
         &metrics,
@@ -771,17 +831,16 @@ async fn test_fallback_non_retryable_skips_retry() {
         "fallback".to_string(),
         fallback_provider.clone() as Arc<dyn frona::inference::provider::ModelProvider>,
     );
-    let registry = frona::inference::registry::ModelProviderRegistry::for_testing(
-        providers,
-        std::collections::HashMap::new(),
-    );
+    let registry = Arc::new(providers);
 
     let model_group = test_model_group_with_fallback("fallback", "fallback-model");
     let metrics = test_metrics_ctx();
 
     let result = text_inference(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("hi")],
         &metrics,
@@ -822,18 +881,21 @@ async fn test_fallback_multiple_fallbacks_order() {
         "fb2".to_string(),
         fb2_provider as Arc<dyn frona::inference::provider::ModelProvider>,
     );
-    let registry = frona::inference::registry::ModelProviderRegistry::for_testing(
-        providers,
-        std::collections::HashMap::new(),
-    );
+    let registry = Arc::new(providers);
 
     let mut model_group = test_model_group();
     model_group.fallbacks = vec![
-        frona::inference::ModelRef {
+        frona::inference::ModelConfig {
+            request_settings: Default::default(),
+            catalog_provider: String::new(),
+            provider_handle: frona::core::Handle::const_validated("fb1"),
             provider: "fb1".into(),
             model_id: "fb1-model".into(),
         },
-        frona::inference::ModelRef {
+        frona::inference::ModelConfig {
+            request_settings: Default::default(),
+            catalog_provider: String::new(),
+            provider_handle: frona::core::Handle::const_validated("fb2"),
             provider: "fb2".into(),
             model_id: "fb2-model".into(),
         },
@@ -841,8 +903,10 @@ async fn test_fallback_multiple_fallbacks_order() {
     let metrics = test_metrics_ctx();
 
     let result = text_inference(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("hi")],
         &metrics,
@@ -876,7 +940,7 @@ impl StreamingMockProvider {
 impl frona::inference::provider::ModelProvider for StreamingMockProvider {
     async fn inference(
         &self,
-        _model: &frona::inference::ModelRef,
+        _model: &frona::inference::ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
@@ -888,7 +952,7 @@ impl frona::inference::provider::ModelProvider for StreamingMockProvider {
 
     async fn stream_inference(
         &self,
-        _model: &frona::inference::ModelRef,
+        _model: &frona::inference::ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
@@ -913,7 +977,7 @@ impl frona::inference::provider::ModelProvider for StreamingMockProvider {
 
     async fn structured_inference(
         &self,
-        _model: &frona::inference::ModelRef,
+        _model: &frona::inference::ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _schema: serde_json::Value,
@@ -954,7 +1018,7 @@ async fn test_streaming_tokens_arrive_individually() {
         tokens.clone(),
         std::time::Duration::from_millis(10),
     ));
-    let registry = test_registry_with_provider("mock", provider);
+    let registry = test_providers("mock", provider);
     let model_group = test_model_group();
     let tool_registry = AgentToolRegistry::empty();
     let (event_sender, mut sse_rx, _broadcast) = test_event_sender().await;
@@ -965,8 +1029,10 @@ async fn test_streaming_tokens_arrive_individually() {
 
     let handle = tokio::spawn(async move {
         run_tool_loop(
-            &registry,
-            &model_group,
+            &frona::inference::ModelGroup {
+                providers: registry.clone(),
+                ..(model_group).clone()
+            },
             "system",
             vec![RigMessage::user("hi")],
             &tool_registry,
@@ -1052,7 +1118,7 @@ async fn test_tool_loop_reasoning_in_completed_outcome() {
             "Let me think step by step...".into(),
         ),
     ]));
-    let registry = test_registry_with_provider("mock", provider);
+    let registry = test_providers("mock", provider);
     let model_group = test_model_group();
     let tool_registry = AgentToolRegistry::empty();
     let (event_sender, mut sse_rx, _broadcast) = test_event_sender().await;
@@ -1062,8 +1128,10 @@ async fn test_tool_loop_reasoning_in_completed_outcome() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("what is the meaning of life?")],
         &tool_registry,
@@ -1117,7 +1185,7 @@ async fn test_tool_loop_reasoning_with_tool_calls() {
             "Based on the search results...".into(),
         ),
     ]));
-    let registry = test_registry_with_provider("mock", provider);
+    let registry = test_providers("mock", provider);
     let model_group = test_model_group();
     let mut tool_registry = AgentToolRegistry::empty();
     tool_registry.register(Arc::new(MockInternalTool::new(
@@ -1131,8 +1199,10 @@ async fn test_tool_loop_reasoning_with_tool_calls() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("search for something")],
         &tool_registry,
@@ -1174,7 +1244,7 @@ async fn test_tool_loop_no_reasoning_when_absent() {
     let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
         "Plain text.".into(),
     )]));
-    let registry = test_registry_with_provider("mock", provider);
+    let registry = test_providers("mock", provider);
     let model_group = test_model_group();
     let tool_registry = AgentToolRegistry::empty();
     let (event_sender, mut sse_rx, _broadcast) = test_event_sender().await;
@@ -1184,8 +1254,10 @@ async fn test_tool_loop_no_reasoning_when_absent() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("hello")],
         &tool_registry,
@@ -1223,7 +1295,7 @@ async fn test_tool_result_sse_includes_summary() {
         MockResponse::ToolCalls(vec![("c1".into(), "lookup".into(), serde_json::json!({}))]),
         MockResponse::Text("Done.".into()),
     ]));
-    let registry = test_registry_with_provider("mock", provider);
+    let registry = test_providers("mock", provider);
     let model_group = test_model_group();
     let mut tool_registry = AgentToolRegistry::empty();
     tool_registry.register(Arc::new(MockInternalTool::new(
@@ -1237,8 +1309,10 @@ async fn test_tool_result_sse_includes_summary() {
     let chat_service = test_chat_service().await;
 
     let _outcome = run_tool_loop(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("lookup something")],
         &tool_registry,
@@ -1289,7 +1363,7 @@ async fn test_tool_loop_deduplicates_attachments_before_lifecycle_return() {
         ("c1".into(), "produce_file".into(), serde_json::json!({})),
         ("c2".into(), "complete_task".into(), serde_json::json!({})),
     ])]));
-    let registry = test_registry_with_provider("mock", provider);
+    let registry = test_providers("mock", provider);
     let model_group = test_model_group();
     let mut tool_registry = AgentToolRegistry::empty();
     tool_registry.register(Arc::new(MockAttachmentTool::new(
@@ -1314,8 +1388,10 @@ async fn test_tool_loop_deduplicates_attachments_before_lifecycle_return() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &registry,
-        &model_group,
+        &frona::inference::ModelGroup {
+            providers: registry.clone(),
+            ..(model_group).clone()
+        },
         "system",
         vec![RigMessage::user("produce and complete")],
         &tool_registry,

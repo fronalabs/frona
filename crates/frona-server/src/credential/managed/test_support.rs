@@ -43,3 +43,15 @@ pub(crate) async fn vault(db: &Surreal<Db>, connection_id: &str, secret: &str) -
         connection_id.into(),
     )
 }
+
+pub(crate) async fn credentials(
+    db: Surreal<Db>,
+    secret: &str,
+) -> crate::inference::credential::store::ProviderCredentials {
+    crate::inference::credential::store::ProviderCredentials::new(
+        vault(&db, GLOBAL_CONNECTION_ID, secret).await,
+        Arc::new(super::resolver::ManagedResolver::new(
+            super::integration::registered(),
+        )),
+    )
+}

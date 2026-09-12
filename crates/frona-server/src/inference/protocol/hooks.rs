@@ -1,5 +1,6 @@
 use serde_json::{Map, Value};
 
+#[derive(Clone)]
 pub struct RequestParams {
     pub max_tokens: Option<u64>,
     pub temperature: Option<f64>,
@@ -20,8 +21,8 @@ pub fn openai(mut p: RequestParams) -> RequestParams {
     p
 }
 
-/// Ollama silently ignores top-level `max_tokens` — the cap belongs in
-/// `options.num_predict`. Rig's Ollama provider doesn't do this rewrite.
+/// Legacy hook for callers without Frona's native transport. Rig now handles
+/// common Ollama parameters itself; retain this hook for its existing callers.
 pub fn ollama(mut p: RequestParams) -> RequestParams {
     if let Some(mt) = p.max_tokens.take() {
         let mut root = take_object(&mut p.additional_params);

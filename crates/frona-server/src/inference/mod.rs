@@ -1,12 +1,12 @@
 pub mod config;
 pub mod context;
 pub mod conversation;
+pub mod credential;
+pub mod directory;
 pub mod error;
 pub mod hitl;
-pub mod hooks;
-pub mod metadata;
+pub mod protocol;
 pub mod provider;
-pub mod registry;
 pub mod request;
 pub mod retry;
 pub mod structured;
@@ -15,27 +15,26 @@ pub mod tool_loop;
 pub mod trace;
 pub mod usage;
 
-pub use usage::{CompactionTarget, InferenceKind, UsageContext};
+pub use self::usage::{CompactionTarget, InferenceKind, UsageContext};
 
-pub use crate::chat::broadcast::EventSender;
-pub use error::InferenceError;
-pub use hitl::{
+pub use self::error::InferenceError;
+pub use self::hitl::{
     Hitl, HitlDelivery, HitlOutcome, HitlRequest, HitlResponse, ResolveOutcome, VaultGrant,
 };
-pub use provider::ModelRef;
-pub use registry::ModelProviderRegistry;
-pub use request::{InferenceContext, InferenceRequest, InferenceResponse, active_chat};
-pub use rig_core::completion::request::Usage;
-pub use structured::{
+pub use self::provider::group::{ModelGroup, ModelRequest, ModelResponse, RequestOverrides};
+pub use self::provider::{ModelConfig, ModelRef};
+pub use self::request::{InferenceContext, InferenceRequest, InferenceResponse, active_chat};
+pub use self::structured::{
     AnswerAttempt, StructuredConversation, structured_inference, structured_inference_with_tools,
 };
-pub use tool_loop::{InferenceEvent, InferenceEventKind};
+pub use self::tool_loop::{InferenceEvent, InferenceEventKind};
+pub use crate::chat::broadcast::EventSender;
+pub use rig_core::completion::request::Usage;
 
 use rig_core::completion::Message as RigMessage;
 
 use crate::core::error::AppError;
 
-use self::config::ModelGroup;
 use self::usage::UsageService;
 
 pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, AppError> {
@@ -60,26 +59,28 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
     });
 
     if request.tool_registry.is_empty() {
-        use tool_loop::extract_reasoning;
+        use crate::inference::tool_loop::extract_reasoning;
         // History is compaction-aware at load time; an
         // over-budget request is rejected by the provider, not silently trimmed.
         let history = request.history;
 
         let mut response_text = String::new();
         let event_tx = &request.ctx.event_tx;
-        match retry::stream_with_retry_and_fallback(
-            &request.registry,
-            &request.model_group,
-            &request.system_prompt,
-            &history,
-            &[],
-            event_tx,
-            &request.cancel_token,
-            &mut response_text,
-            &request.usage_service,
-            &chat_usage_ctx,
-        )
-        .await?
+        match (request.model_group)
+            .stream_inference(
+                crate::inference::ModelRequest {
+                    system_prompt: &request.system_prompt,
+                    history: history.to_vec(),
+                    tools: vec![],
+                    usage_service: &request.usage_service,
+                    usage_context: &chat_usage_ctx,
+                    overrides: Default::default(),
+                },
+                event_tx,
+                &request.cancel_token,
+                &mut response_text,
+            )
+            .await?
         {
             retry::StreamResult::Contents {
                 content: contents,
@@ -98,7 +99,6 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
     } else {
         let event_tx = request.ctx.event_tx.clone();
         let outcome = tool_loop::run_tool_loop(
-            &request.registry,
             &request.model_group,
             &request.system_prompt,
             request.history,
@@ -139,22 +139,23 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
 }
 
 pub async fn text_inference(
-    registry: &ModelProviderRegistry,
     model_group: &ModelGroup,
     system_prompt: &str,
     history: Vec<RigMessage>,
     usage_service: &UsageService,
     usage_ctx: &UsageContext,
 ) -> Result<String, InferenceError> {
-    let (contents, _usage) = retry::inference_with_retry_and_fallback(
-        registry,
-        model_group,
-        system_prompt,
-        history,
-        vec![],
-        usage_service,
-        usage_ctx,
-    )
-    .await?;
+    let crate::inference::ModelResponse {
+        content: contents, ..
+    } = (model_group)
+        .inference(crate::inference::ModelRequest {
+            system_prompt,
+            history,
+            tools: vec![],
+            usage_service,
+            usage_context: usage_ctx,
+            overrides: Default::default(),
+        })
+        .await?;
     provider::extract_text_from_choice(&contents)
 }

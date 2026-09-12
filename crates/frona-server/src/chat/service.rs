@@ -8,11 +8,10 @@ use crate::core::repository::Repository;
 use crate::core::template::render_template;
 use crate::db::repo::chats::SurrealChatRepo;
 use crate::db::repo::messages::SurrealMessageRepo;
-use crate::inference::ModelProviderRegistry;
 use crate::inference::conversation::{
     ConversationBuilder, ConversationContext, DefaultConversationBuilder,
 };
-use crate::inference::provider::ModelRef;
+use crate::inference::provider::service::ModelProviderService;
 use crate::inference::text_inference;
 use crate::storage::StorageService;
 use rig_core::completion::Message as RigMessage;
@@ -59,7 +58,7 @@ pub struct ChatService {
     message_repo: SurrealMessageRepo,
     tool_call_repo: crate::db::repo::tool_calls::SurrealToolCallRepo,
     agent_service: AgentService,
-    provider_registry: ModelProviderRegistry,
+    model_providers: ModelProviderService,
     storage_service: StorageService,
     user_service: UserService,
     prompts: PromptLoader,
@@ -76,7 +75,7 @@ impl ChatService {
         message_repo: SurrealMessageRepo,
         tool_call_repo: crate::db::repo::tool_calls::SurrealToolCallRepo,
         agent_service: AgentService,
-        provider_registry: ModelProviderRegistry,
+        model_providers: ModelProviderService,
         storage_service: StorageService,
         user_service: UserService,
         prompts: PromptLoader,
@@ -88,7 +87,7 @@ impl ChatService {
             crate::db::repo::chat_summaries::SurrealChatSummaryRepo::new(message_repo.db().clone()),
             message_repo.clone(),
             std::sync::Arc::new(super::compactor::TextInferenceSummarizer::new(
-                provider_registry.clone(),
+                model_providers.clone(),
                 usage_service.clone(),
             )),
             prompts.clone(),
@@ -98,7 +97,7 @@ impl ChatService {
             message_repo,
             tool_call_repo,
             agent_service,
-            provider_registry,
+            model_providers,
             storage_service,
             user_service,
             prompts,
@@ -142,8 +141,8 @@ impl ChatService {
         );
     }
 
-    pub fn provider_registry(&self) -> &ModelProviderRegistry {
-        &self.provider_registry
+    pub fn model_providers(&self) -> &ModelProviderService {
+        &self.model_providers
     }
 
     pub fn usage_service(&self) -> &crate::inference::usage::UsageService {
@@ -479,7 +478,9 @@ impl ChatService {
         let system_prompt = agent_config.system_prompt;
         let model_group_name = agent_config.model_group;
 
-        let model_group = self.provider_registry.get_model_group(&model_group_name)?;
+        let model_group = self
+            .model_providers
+            .resolve(&crate::inference::ModelRef(model_group_name.clone().into()))?;
         let max_output = model_group
             .max_tokens
             .unwrap_or(model_group.inference.default_max_tokens) as usize;
@@ -504,7 +505,7 @@ impl ChatService {
         };
         let conv_ctx = ConversationContext {
             agent_id: chat.agent_id.clone(),
-            model_ref: model_group.main.clone(),
+            model_config: model_group.main.clone(),
             user_id: user_id.to_string(),
         };
         let tool_calls = self.get_tool_calls(chat_id).await?;
@@ -531,8 +532,7 @@ impl ChatService {
             model_group.name.clone(),
         );
         let response_text = text_inference(
-            &self.provider_registry,
-            model_group,
+            &model_group,
             &system_prompt,
             rig_history,
             &self.usage_service,
@@ -1467,15 +1467,22 @@ impl ChatService {
             agent.user_id.clone(),
             model_group.name.clone(),
         );
-        let result = text_inference(
-            &self.provider_registry,
-            &model_group,
-            &parsed.template,
-            vec![RigMessage::user(user_content)],
-            &self.usage_service,
-            &usage_ctx,
-        )
-        .await?;
+        let crate::inference::ModelResponse {
+            content: contents, ..
+        } = model_group
+            .inference(crate::inference::ModelRequest {
+                system_prompt: &parsed.template,
+                history: vec![RigMessage::user(user_content)],
+                tools: vec![],
+                usage_service: &self.usage_service,
+                usage_context: &usage_ctx,
+                overrides: crate::inference::RequestOverrides {
+                    max_tokens: Some(TITLE_MAX_TOKENS),
+                    temperature: None,
+                },
+            })
+            .await?;
+        let result = crate::inference::provider::extract_text_from_choice(&contents)?;
 
         let title = parse_title_response(&result, user_content);
         self.update_chat_title(chat_id, &title).await?;
@@ -1485,34 +1492,15 @@ impl ChatService {
     fn build_title_model_group(
         &self,
         model_specifier: Option<&str>,
-    ) -> Result<crate::inference::config::ModelGroup, AppError> {
-        let base = match model_specifier {
-            Some(m) if m.contains('/') => {
-                let model_ref =
-                    ModelRef::parse(m).map_err(|e| AppError::Internal(e.to_string()))?;
-                return Ok(crate::inference::config::ModelGroup {
-                    name: "title".to_string(),
-                    main: model_ref,
-                    fallbacks: vec![],
-                    max_tokens: Some(TITLE_MAX_TOKENS),
-                    temperature: None,
-                    context_window: crate::inference::context::DEFAULT_CONTEXT_WINDOW,
-                    retry: Default::default(),
-                    inference: Default::default(),
-                });
-            }
-            Some(group) if !group.is_empty() => self.provider_registry.get_model_group(group)?,
-            _ => self.provider_registry.get_model_group("primary")?,
-        };
-        Ok(crate::inference::config::ModelGroup {
-            name: "title".to_string(),
-            main: base.main.clone(),
-            fallbacks: base.fallbacks.clone(),
-            max_tokens: Some(TITLE_MAX_TOKENS),
-            temperature: base.temperature,
-            context_window: crate::inference::context::DEFAULT_CONTEXT_WINDOW,
-            retry: base.retry.clone(),
-            inference: base.inference.clone(),
+    ) -> Result<crate::inference::ModelGroup, AppError> {
+        let primary = crate::inference::ModelRef::PRIMARY;
+        Ok(match model_specifier {
+            Some(name) if !name.is_empty() => self
+                .model_providers
+                .resolve(&crate::inference::ModelRef(name.to_owned().into()))?,
+            _ => self
+                .model_providers
+                .resolve_with_fallback(&crate::inference::ModelRef::TITLE, &primary)?,
         })
     }
 

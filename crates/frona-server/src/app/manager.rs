@@ -445,7 +445,8 @@ mod tests {
             crate::db::repo::generic::SurrealRepo::new(db.clone()),
             &crate::core::config::CacheConfig::default(),
         );
-        let tool_manager = Arc::new(crate::tool::manager::ToolManager::new(false));
+        let tool_fixture = crate::app_state_fixture::build(&db).await;
+        let tool_manager = tool_fixture.state.tool_manager.clone();
         let policy_repo: Arc<dyn crate::policy::repository::PolicyRepository> =
             Arc::new(crate::db::repo::generic::SurrealRepo::<
                 crate::policy::models::Policy,
@@ -527,7 +528,8 @@ mod tests {
                 crate::policy::models::Policy,
             >::new(db.clone()));
         let schema = crate::policy::schema::build_schema();
-        let tool_manager = std::sync::Arc::new(crate::tool::manager::ToolManager::new(false));
+        let tool_fixture = crate::app_state_fixture::build(&db).await;
+        let tool_manager = tool_fixture.state.tool_manager.clone();
         let storage = crate::storage::StorageService::new(&crate::core::config::Config::default());
         let policy_svc = crate::policy::service::PolicyService::new(
             policy_repo,

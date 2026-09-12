@@ -35,7 +35,7 @@ use frona::storage::StorageService;
 
 use helpers::{
     MockModelProvider, MockResponse, init_metrics, mark_entity_rendered, seed_reconciled_entity,
-    test_harness, test_model_group, test_registry_with_group,
+    test_harness, test_model_group, test_model_service_with_group,
 };
 
 const USER: &str = "u1";
@@ -146,11 +146,19 @@ async fn setup(
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
     let state = frona::core::state::AppState::new(
         db.clone(),
-        &config,
+        {
+            let mut loaded = frona::core::config::ConfigService::load(
+                tempfile::tempdir().unwrap().path().join("config.yaml"),
+            )
+            .unwrap();
+            loaded.config = config.clone();
+            frona::core::config::ConfigService::new(loaded).unwrap()
+        },
         Some(ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        crate::helpers::app_state::catalogs(&config),
     );
 
     state
@@ -170,12 +178,15 @@ async fn setup(
         .await
         .unwrap();
 
-    let registry = Arc::new(test_registry_with_group(
-        "mock",
-        mock.clone(),
-        &memory_config.model_group,
-        test_model_group(),
-    ));
+    let registry = Arc::new(
+        test_model_service_with_group(
+            "mock",
+            mock.clone(),
+            &memory_config.model_group,
+            test_model_group(),
+        )
+        .await,
+    );
     let prompts = frona::agent::prompt::PromptLoader::new(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../resources/prompts"),
     );
@@ -198,7 +209,7 @@ async fn setup(
         state.user_service.clone(),
         ontology_base,
     );
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
     seed_agent(&db).await;
     Ctx {
         _tmp: tmp,

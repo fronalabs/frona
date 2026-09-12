@@ -1,4 +1,5 @@
 pub mod models;
+mod pricing;
 pub mod repository;
 pub mod service;
 

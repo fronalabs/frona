@@ -63,7 +63,7 @@ pub enum AppError {
     Decryption(String),
 
     #[error("Inference error: {0}")]
-    Inference(String),
+    Inference(#[source] Box<crate::inference::error::InferenceError>),
 
     #[error("Browser error: {0}")]
     Browser(String),
@@ -84,6 +84,7 @@ impl From<serde_json::Error> for AppError {
 impl AppError {
     pub fn is_retryable(&self) -> bool {
         match self {
+            AppError::Inference(error) => error.is_retryable(),
             AppError::Http { status, .. } => matches!(status, 429 | 500 | 502 | 503 | 504),
             AppError::Tool(msg) => {
                 let lower = msg.to_lowercase();

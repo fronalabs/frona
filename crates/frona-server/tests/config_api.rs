@@ -1,3 +1,5 @@
+mod helpers;
+
 use frona::core::config::{
     Config, config_file_path, deep_merge, redact_config_for_api, redact_config_for_log,
 };
@@ -33,11 +35,12 @@ fn test_redact_config_for_api() {
 fn test_redact_config_for_api_providers() {
     let mut config = Config::default();
     config.providers.insert(
-        "anthropic".into(),
+        frona::core::Handle::const_validated("anthropic"),
         frona::core::config::ModelProviderConfig {
             api_key: Some("sk-secret".into()),
             base_url: None,
             enabled: true,
+            ..Default::default()
         },
     );
 
@@ -98,7 +101,7 @@ fn test_json_schema_generation() {
     assert!(server_ref.is_object());
 
     let schema_text = serde_json::to_string(&value).unwrap();
-    assert!(schema_text.contains("chat_completions"));
+    assert!(schema_text.contains("completions"));
     assert!(schema_text.contains("responses"));
 }
 
@@ -118,12 +121,20 @@ async fn test_runtime_config_operations() {
         ),
     );
     let state = frona::core::state::AppState::new(
-        db,
-        &config,
+        db.clone(),
+        {
+            let mut loaded = frona::core::config::ConfigService::load(
+                tempfile::tempdir().unwrap().path().join("config.yaml"),
+            )
+            .unwrap();
+            loaded.config = config.clone();
+            frona::core::config::ConfigService::new(loaded).unwrap()
+        },
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        crate::helpers::app_state::catalogs(&config),
     );
 
     let val = state.get_runtime_config("setup_completed").await.unwrap();
@@ -152,14 +163,14 @@ async fn test_runtime_config_operations() {
 
 /// Regression: https://github.com/fronalabs/frona/issues/27
 ///
-/// `persist_config` strips fields equal to `Config::default()` for compactness.
-/// `Config::load()` then has to be able to reconstruct them - partial structs
+/// `strip_defaults` strips fields equal to `Config::default()` for compactness.
+/// `ConfigService::load()` then has to be able to reconstruct them - partial structs
 /// on disk must deserialize. Before fixing this, editing a single
 /// `RetryConfig` field through the GUI persisted a partial `retry: {...}` and
 /// crashed the server on next startup.
 #[test]
 fn retry_config_survives_strip_defaults_round_trip() {
-    use frona::core::config::persist_config;
+    use frona::core::config::strip_defaults;
 
     let mut value = json!({
         "auth": { "encryption_secret": "aaaa" },
@@ -185,7 +196,8 @@ fn retry_config_survives_strip_defaults_round_trip() {
         .to_string_lossy()
         .into_owned();
 
-    persist_config(&mut value, &path).unwrap();
+    strip_defaults(&mut value);
+    std::fs::write(&path, serde_yaml::to_string(&value).unwrap()).unwrap();
     let written = std::fs::read_to_string(&path).unwrap();
 
     assert!(written.contains("max_retries: 3"));
@@ -202,10 +214,7 @@ fn retry_config_survives_strip_defaults_round_trip() {
         .expect("load must succeed after persist trims retry fields");
 
     let primary = loaded.models.get("primary").expect("primary model present");
-    assert!(matches!(
-        primary.provider,
-        frona::core::config::ProviderModel::OpenRouter { .. }
-    ));
+    assert_eq!(primary.provider.as_str(), "openrouter");
     let retry = &primary.common.retry;
     assert_eq!(retry.max_retries, 3);
     assert_eq!(retry.initial_backoff_ms, 1000);
@@ -220,7 +229,7 @@ fn retry_config_survives_strip_defaults_round_trip() {
 /// stripped output must still load back into an equivalent Config.
 #[test]
 fn default_config_survives_strip_defaults_round_trip() {
-    use frona::core::config::persist_config;
+    use frona::core::config::strip_defaults;
 
     // Set one non-default field per vulnerable struct so the entry survives
     // strip_defaults and we exercise the deserializer with a partial shape
@@ -246,7 +255,8 @@ fn default_config_survives_strip_defaults_round_trip() {
         .join("config.yaml")
         .to_string_lossy()
         .into_owned();
-    persist_config(&mut value, &path).unwrap();
+    strip_defaults(&mut value);
+    std::fs::write(&path, serde_yaml::to_string(&value).unwrap()).unwrap();
     let written = std::fs::read_to_string(&path).unwrap();
 
     let loaded: Config = ::config::Config::builder()

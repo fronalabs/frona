@@ -98,6 +98,7 @@ pub enum InferenceKind {
     },
     /// Background PKM consolidation - turning a transcript (or a User Vault note)
     /// into KB structure. Attributed to the **user** only (top-level `user_id`);
+
     /// it carries no agent/chat because it runs async, detached from any turn, and
     /// may have no originating chat at all (sync ingest). Distinct from
     /// `Compaction` (context-window distillation). Mirrors `CompactionTarget::User`.

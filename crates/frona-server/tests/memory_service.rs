@@ -20,19 +20,13 @@ async fn test_db() -> Surreal<Db> {
     db
 }
 
-fn make_memory_service(db: Surreal<Db>) -> BasicMemoryService {
-    let inference = frona::core::config::InferenceConfig::default();
-    let provider_registry = frona::inference::ModelProviderRegistry::from_config(
-        frona::inference::config::ModelRegistryConfig::auto_discover(),
-        frona::chat::broadcast::BroadcastService::new(),
-        &inference,
-        &frona::inference::metadata::ModelCatalogSnapshot::empty(),
-    )
-    .unwrap();
+async fn make_memory_service(db: Surreal<Db>) -> BasicMemoryService {
+    let provider_registry =
+        helpers::test_model_service(Default::default(), Default::default()).await;
 
     let usage_service = frona::inference::usage::UsageService::new(
-        frona::inference::metadata::ModelCatalogStore::new(
-            frona::inference::metadata::ModelCatalogSnapshot::empty(),
+        frona_model_catalog::ModelCatalogStore::new(
+            frona_model_catalog::ModelCatalogSnapshot::empty(),
         ),
         SurrealRepo::new(db.clone()),
         frona::chat::broadcast::BroadcastService::new(),
@@ -58,7 +52,7 @@ fn make_memory_service(db: Surreal<Db>) -> BasicMemoryService {
 #[tokio::test]
 async fn test_store_memory_entry_persists_to_db() {
     let db = test_db().await;
-    let svc = make_memory_service(db.clone());
+    let svc = make_memory_service(db.clone()).await;
 
     svc.store_memory_entry("agent-1", "User likes Rust", Some("chat-1"))
         .await
@@ -75,7 +69,7 @@ async fn test_store_memory_entry_persists_to_db() {
 #[tokio::test]
 async fn test_store_user_memory_entry_persists_with_user_id() {
     let db = test_db().await;
-    let svc = make_memory_service(db.clone());
+    let svc = make_memory_service(db.clone()).await;
 
     svc.store_user_memory_entry("user-1", "Name is Alice", Some("chat-1"))
         .await
@@ -92,7 +86,7 @@ async fn test_store_user_memory_entry_persists_with_user_id() {
 #[tokio::test]
 async fn test_compact_entries_if_needed_skips_below_threshold() {
     let db = test_db().await;
-    let svc = make_memory_service(db.clone());
+    let svc = make_memory_service(db.clone()).await;
 
     svc.store_memory_entry("agent-1", "Short memory 1", None)
         .await
@@ -119,7 +113,7 @@ async fn test_compact_entries_if_needed_skips_below_threshold() {
 #[tokio::test]
 async fn test_store_user_memory_tool_rejects_a_blank_memory() {
     let db = test_db().await;
-    let svc = make_memory_service(db.clone());
+    let svc = make_memory_service(db.clone()).await;
     let tool = frona::memory::basic::tools::StoreUserMemoryTool::new(
         svc,
         None,

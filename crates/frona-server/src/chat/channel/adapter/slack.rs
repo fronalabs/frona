@@ -55,8 +55,9 @@ pub struct SlackAdapter {
 
 impl From<SlackConfig> for SlackAdapter {
     fn from(cfg: SlackConfig) -> Self {
-        let connector = SlackClientHyperConnector::new()
-            .expect("Slack TLS connector init failed — rustls provider should be installed by AppState::new");
+        let connector = SlackClientHyperConnector::new().expect(
+            "Slack TLS connector init failed: rustls provider should be installed at startup",
+        );
         Self {
             bot_token: SlackApiToken::new(SlackApiTokenValue::from(cfg.bot_token)),
             app_token: SlackApiToken::new(SlackApiTokenValue::from(cfg.app_token)),
@@ -748,12 +749,12 @@ mod tests {
 
     /// Tests that construct `SlackAdapter::from(...)` must call this: rustls
     /// panics without an installed `CryptoProvider`, and tests don't go
-    /// through `AppState::new` where prod installs it.
+    /// through server startup where production installs it.
     fn install_crypto_provider() {
         use std::sync::Once;
         static INIT: Once = Once::new();
         INIT.call_once(|| {
-            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+            crate::initialize_tls();
         });
     }
 

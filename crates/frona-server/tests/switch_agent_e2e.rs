@@ -22,7 +22,6 @@ use frona::db::init as db_init;
 use frona::db::repo::agents::SurrealAgentRepo;
 use frona::db::repo::generic::SurrealRepo;
 use frona::inference::conversation::DefaultConversationBuilder;
-use frona::inference::registry::ModelProviderRegistry;
 use frona::storage::StorageService;
 use helpers::{MockModelProvider, MockResponse, test_model_group};
 use surrealdb::Surreal;
@@ -83,18 +82,26 @@ async fn build_state(
 
     let mut state = AppState::new(
         db.clone(),
-        &config,
+        {
+            let mut loaded = frona::core::config::ConfigService::load(
+                tempfile::tempdir().unwrap().path().join("config.yaml"),
+            )
+            .unwrap();
+            loaded.config = config.clone();
+            frona::core::config::ConfigService::new(loaded).unwrap()
+        },
         Some(frona::inference::config::ModelRegistryConfig::empty()),
         storage,
         metrics_handle,
         resource_manager,
+        crate::helpers::app_state::catalogs(&config),
     );
 
     let mut providers = HashMap::new();
     providers.insert("mock".to_string(), provider);
     let mut groups = HashMap::new();
     groups.insert("primary".to_string(), test_model_group());
-    let mock_registry = ModelProviderRegistry::for_testing(providers, groups);
+    let mock_registry = crate::helpers::test_model_service(providers, groups).await;
 
     let chat_service = ChatService::new(
         SurrealRepo::new(db.clone()),
@@ -133,8 +140,6 @@ async fn build_state(
     state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(
         state.harness.clone(),
     ));
-
-    state.tool_manager.init(&state);
     state.policy_service.sync_base_policies().await.unwrap();
     (state, tmp)
 }

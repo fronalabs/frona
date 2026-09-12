@@ -576,12 +576,12 @@ mod tests {
 
     /// Tests that construct `DiscordAdapter::from(...)` must call this: rustls
     /// panics without an installed `CryptoProvider`, and tests don't go
-    /// through `AppState::new` where prod installs it.
+    /// through server startup where production installs it.
     fn install_crypto_provider() {
         use std::sync::Once;
         static INIT: Once = Once::new();
         INIT.call_once(|| {
-            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+            crate::initialize_tls();
         });
     }
 

@@ -18,7 +18,7 @@ use crate::core::execution::{
 };
 use crate::core::state::ActiveSessions;
 use crate::credential::vault::service::VaultService;
-use crate::inference::config::ModelGroup;
+use crate::inference::ModelGroup;
 use crate::inference::conversation::{ConversationBuilder, DefaultConversationBuilder};
 use crate::inference::hitl::{HitlOutcome, HitlResponse, ResolveOutcome};
 use crate::inference::request::{InferenceContext, InferenceRequest, InferenceResponse};
@@ -130,7 +130,6 @@ impl Harness {
         T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
     {
         crate::inference::structured_inference::<T>(
-            self.chat_service.provider_registry(),
             model_group,
             system,
             history,
@@ -149,7 +148,6 @@ impl Harness {
         usage_ctx: UsageContext,
     ) -> Result<String, AppError> {
         crate::inference::text_inference(
-            self.chat_service.provider_registry(),
             model_group,
             system,
             history,
@@ -229,7 +227,6 @@ impl Harness {
         let ctx =
             InferenceContext::new_detached(user, agent, self.shutdown_token.clone(), cancel_token);
         crate::inference::structured::text_inference_with_tools(
-            self.chat_service.provider_registry(),
             model_group,
             system,
             history,
@@ -267,7 +264,6 @@ impl Harness {
         T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
     {
         let user_id = &usage_ctx.user_id;
-        let registry = self.chat_service.provider_registry();
 
         let agent = self
             .agent_service
@@ -288,7 +284,6 @@ impl Harness {
 
         if tools.is_empty() {
             return crate::inference::structured_inference::<T>(
-                registry,
                 model_group,
                 system,
                 history,
@@ -336,7 +331,6 @@ impl Harness {
             ),
         };
         crate::inference::structured_inference_with_tools::<T>(
-            registry,
             model_group,
             system,
             history,
@@ -404,7 +398,6 @@ impl Harness {
         T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
     {
         let user_id = &usage_ctx.user_id;
-        let registry = self.chat_service.provider_registry();
 
         let agent = self
             .agent_service
@@ -458,7 +451,6 @@ impl Harness {
             ),
         };
         Ok(crate::inference::StructuredConversation::new(
-            registry,
             &self.usage_service,
             tools,
             ctx,
@@ -668,7 +660,7 @@ impl Harness {
             mut system_prompt,
             model_group,
             mut rig_history,
-            registry,
+
             mut tool_registry,
             tool_ctx,
             ..
@@ -697,7 +689,6 @@ impl Harness {
         }
 
         let inference = crate::inference::inference(InferenceRequest {
-            registry,
             model_group,
             system_prompt,
             history: rig_history,

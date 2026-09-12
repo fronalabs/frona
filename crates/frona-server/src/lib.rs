@@ -1,5 +1,9 @@
 extern crate self as frona;
 
+#[cfg(test)]
+#[path = "../tests/helpers/app_state.rs"]
+mod app_state_fixture;
+
 pub mod agent;
 pub mod api;
 pub mod app;

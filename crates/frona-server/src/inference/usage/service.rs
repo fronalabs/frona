@@ -9,9 +9,9 @@ use rig_core::completion::request::Usage;
 use crate::chat::broadcast::BroadcastService;
 use crate::core::repository::{Repository, new_id};
 use crate::db::repo::generic::SurrealRepo;
-use crate::inference::metadata::ModelCatalogStore;
-use crate::inference::provider::ModelRef;
+use crate::inference::provider::ModelConfig;
 use crate::inference::usage::UsageContext;
+use frona_model_catalog::ModelCatalogStore;
 
 use super::models::InferenceUsage;
 
@@ -32,6 +32,11 @@ pub const MODEL_METADATA_ENTRIES: &str = "frona_model_metadata_entries";
 pub const MODEL_METADATA_REFRESH_AGE_SECONDS: &str =
     "frona_model_metadata_refresh_seconds_since_last";
 
+fn record_catalog_size(snapshot: &frona_model_catalog::ModelCatalogSnapshot) {
+    gauge!(MODEL_METADATA_ENTRIES, "version" => snapshot.version.clone())
+        .set(snapshot.entries.len() as f64);
+}
+
 /// Latency reading captured by the retry layer for a single recorded call.
 /// `retry_overhead_ms` + `retry_count` describe retries within the recorded
 /// model only; cross-model fallback is captured by `fallback_index`.
@@ -45,7 +50,7 @@ pub struct LatencyMetrics {
 
 #[derive(Clone)]
 pub struct UsageService {
-    /// Cloned from `AppState.model_catalog`. `ModelCatalogStore` is internally
+    /// Shared with `CatalogSources.models`. `ModelCatalogStore` is internally
     /// `Arc`-wrapped, so all clones share the same underlying ArcSwap - the
     /// scheduler can `swap()` from outside this service and we observe it.
     catalog: ModelCatalogStore,
@@ -59,6 +64,7 @@ impl UsageService {
         repo: SurrealRepo<InferenceUsage>,
         broadcast: BroadcastService,
     ) -> Self {
+        record_catalog_size(&catalog.current());
         Self {
             catalog,
             repo,
@@ -70,12 +76,14 @@ impl UsageService {
     pub async fn record(
         &self,
         usage_ctx: &UsageContext,
-        model_ref: &ModelRef,
+        model_ref: &ModelConfig,
         usage: &Usage,
         fallback_index: u8,
         latency: LatencyMetrics,
     ) {
-        let (cost_usd, pricing_version) = self.catalog.compute(model_ref, usage);
+        let snapshot = self.catalog.current();
+        record_catalog_size(&snapshot);
+        let (cost_usd, pricing_version) = super::pricing::compute(&snapshot, model_ref, usage);
         if cost_usd.is_none() {
             counter!(MODEL_METADATA_LOOKUP_MISSES_TOTAL, "model_ref" => model_ref.as_str())
                 .increment(1);
@@ -193,7 +201,7 @@ fn emit_metrics(row: &InferenceUsage) {
 
 fn build_row(
     usage_ctx: &UsageContext,
-    model_ref: &ModelRef,
+    model_ref: &ModelConfig,
     usage: &Usage,
     fallback_index: u8,
     latency: LatencyMetrics,

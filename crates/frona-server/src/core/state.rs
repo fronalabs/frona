@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use metrics_exporter_prometheus::PrometheusHandle;
 use tokio::sync::Mutex;
@@ -125,7 +125,7 @@ pub struct AppState {
     pub voice_provider: Option<Arc<dyn VoiceProvider>>,
     pub skill_service: SkillService,
     pub task_executor: Arc<TaskExecutor>,
-    pub signal_service: Arc<OnceLock<Arc<SignalService>>>,
+    pub signal_service: Arc<SignalService>,
     pub config: Arc<Config>,
     pub storage_service: StorageService,
     pub prompts: PromptLoader,
@@ -631,6 +631,17 @@ impl AppState {
         );
         let contact_service =
             ContactService::new(SurrealRepo::new(db.clone()), broadcast_service.clone());
+        let task_service =
+            TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone());
+        let signal_service = Arc::new(SignalService::new(
+            task_service.clone(),
+            task_executor.clone(),
+            agent_service.clone(),
+            contact_service.clone(),
+            policy_service.clone(),
+            prompt_loader.clone(),
+            usage_service.clone(),
+        ));
         let channel_supervisor = Arc::new(crate::chat::channel::ChannelSupervisor::new(
             config_arc.clone(),
             shutdown_token.clone(),
@@ -650,7 +661,7 @@ impl AppState {
             task_executor.clone(),
         ));
 
-        Self {
+        let state = Self {
             config_service,
             model_provider_service,
             pkm_sync,
@@ -669,7 +680,7 @@ impl AppState {
             catalog_sources,
             contact_service,
             chat_service,
-            task_service: TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
+            task_service,
             broadcast_service: broadcast_service.clone(),
             browser_session_manager: Arc::new(BrowserSessionManager::new(config.browser.clone())),
             active_sessions,
@@ -684,7 +695,7 @@ impl AppState {
             voice_provider,
             skill_service,
             task_executor,
-            signal_service: Arc::new(OnceLock::new()),
+            signal_service,
             config: config_arc,
             storage_service: storage,
             prompts: prompt_loader,
@@ -704,7 +715,9 @@ impl AppState {
             channel_service,
             http_client,
             harness,
-        }
+        };
+        state.tool_manager.initialize(&state);
+        state
     }
 
     pub async fn get_runtime_config(
@@ -730,22 +743,8 @@ impl AppState {
             .is_some_and(|v| v == "true")
     }
 
-    pub fn init_signal_service(&self) -> Arc<SignalService> {
-        let svc = Arc::new(SignalService::new(
-            self.task_service.clone(),
-            self.task_executor.clone(),
-            self.agent_service.clone(),
-            self.contact_service.clone(),
-            self.policy_service.clone(),
-            self.prompts.clone(),
-            self.usage_service.clone(),
-        ));
-        let _ = self.signal_service.set(svc.clone());
-        svc
-    }
-
-    pub fn signal_service(&self) -> Option<Arc<SignalService>> {
-        self.signal_service.get().cloned()
+    pub fn signal_service(&self) -> Arc<SignalService> {
+        self.signal_service.clone()
     }
 
     pub fn is_shutting_down(&self) -> bool {

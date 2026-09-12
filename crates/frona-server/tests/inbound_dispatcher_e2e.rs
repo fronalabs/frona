@@ -134,7 +134,16 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
     state.task_executor = Arc::new(frona::agent::task::executor::TaskExecutor::new(
         state.harness.clone(),
     ));
-    state.init_signal_service();
+    // This fixture replaces the inference executor, so rebuild its dependent signal service.
+    state.signal_service = Arc::new(frona::agent::signal::service::SignalService::new(
+        state.task_service.clone(),
+        state.task_executor.clone(),
+        state.agent_service.clone(),
+        state.contact_service.clone(),
+        state.policy_service.clone(),
+        state.prompts.clone(),
+        state.usage_service.clone(),
+    ));
 
     state.policy_service.sync_base_policies().await.unwrap();
 

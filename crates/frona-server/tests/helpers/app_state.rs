@@ -45,8 +45,6 @@ pub async fn build(db: &Surreal<Db>) -> Fixture {
         ),
         catalogs(&config),
     );
-    state.init_signal_service();
-    state.tool_manager.init(&state);
     state.vault_service.sync_config_connections().await.unwrap();
     Fixture {
         state,

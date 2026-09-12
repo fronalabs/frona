@@ -143,13 +143,18 @@ impl ToolManager {
         }
     }
 
-    pub fn init(&self, state: &AppState) {
+    pub(crate) fn initialize(&self, state: &AppState) {
         let tools = create_builtin_tools(state);
-        let _ = self.builtins.set(tools);
+        assert!(
+            self.builtins.set(tools).is_ok(),
+            "built-in tools already initialized"
+        );
     }
 
     fn builtins(&self) -> &[Arc<dyn AgentTool>] {
-        self.builtins.get().map(|v| v.as_slice()).unwrap_or(&[])
+        self.builtins
+            .get()
+            .expect("AppState must initialize built-in tools before use")
     }
 
     pub async fn register_user_tool(&self, user_id: &str, tool: Arc<dyn AgentTool>) {
@@ -317,6 +322,17 @@ impl ToolManager {
     }
 }
 
+#[cfg(test)]
+mod initialization_tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "AppState must initialize built-in tools before use")]
+    fn incomplete_assembly_does_not_silently_hide_tools() {
+        ToolManager::new(false).builtins();
+    }
+}
+
 fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
     use super::browser::tool::BrowserTool;
     use super::cli::CliTool;
@@ -434,7 +450,8 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
         state.config.server.timezone.clone(),
     )));
 
-    if let Some(signal_service) = state.signal_service() {
+    {
+        let signal_service = state.signal_service();
         tools.push(Arc::new(super::await_signal::AwaitSignalTool::new(
             state.task_service.clone(),
             signal_service.clone(),

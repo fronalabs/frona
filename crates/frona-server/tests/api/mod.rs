@@ -103,6 +103,21 @@ pub async fn telegram_mock_api() -> MockProviderApi {
     m
 }
 
+#[tokio::test]
+async fn state_construction_initializes_required_signal_and_tool_dependencies() {
+    let (state, _tmp) = test_app_state().await;
+    assert!(std::sync::Arc::ptr_eq(
+        &state.signal_service(),
+        &state.signal_service()
+    ));
+    for name in ["request_credentials", "annotate_message", "shell"] {
+        assert!(
+            state.tool_manager.find_tool_for_resume(name).is_some(),
+            "missing built-in {name}"
+        );
+    }
+}
+
 async fn test_app_state() -> (AppState, tempfile::TempDir) {
     test_app_state_with_sandbox(false).await
 }
@@ -203,6 +218,7 @@ fn build_app(state: AppState) -> Router {
         .merge(routes::navigation::router())
         .merge(routes::messages::router())
         .merge(routes::vaults::router())
+        .merge(routes::credential_logins::router())
         .merge(routes::tools::router())
         .merge(routes::well_known::router())
         .merge(routes::metrics::router())

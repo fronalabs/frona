@@ -50,7 +50,8 @@ async fn build_mcp_supervisor() -> (
     let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> = Arc::new(
         SurrealRepo::<frona::policy::models::Policy>::new(db.clone()),
     );
-    let policy_tool_manager = Arc::new(frona::tool::manager::ToolManager::new(false));
+    let tool_fixture = helpers::app_state::build(&db).await;
+    let policy_tool_manager = tool_fixture.state.tool_manager.clone();
     let storage = frona::storage::StorageService::new(&frona::core::config::Config::default());
     let user_service = frona::auth::UserService::new(
         SurrealRepo::new(db.clone()),
@@ -155,7 +156,8 @@ async fn build_mcp_supervisor() -> (
         900,
         604_800,
     );
-    let tool_manager = Arc::new(frona::tool::manager::ToolManager::new(false));
+    let tool_fixture = helpers::app_state::build(&db).await;
+    let tool_manager = tool_fixture.state.tool_manager.clone();
 
     let service = Arc::new(McpServerService::new(
         mcp_repo.clone(),
@@ -278,3 +280,5 @@ async fn label_is_mcp() {
     let (supervisor, _repo, _tmp) = build_mcp_supervisor().await;
     assert_eq!(supervisor.label(), "mcp");
 }
+
+mod helpers;

@@ -195,9 +195,7 @@ impl Scheduler {
                 );
                 continue;
             }
-            if let Some(ref svc) = signal_service {
-                svc.unregister(&task.user_id, &task.id).await;
-            }
+            signal_service.unregister(&task.user_id, &task.id).await;
         }
         Ok(())
     }

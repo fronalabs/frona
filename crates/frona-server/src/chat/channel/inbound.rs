@@ -359,20 +359,11 @@ async fn handle_inbound_message(
     let chat_type = ChatType::from_chat(&chat);
     let sender = msg.from_address.as_deref();
 
-    let awaiting_categories = match state.signal_service() {
-        Some(svc) => svc.pending_category_hints(user_id).await,
-        None => Vec::new(),
-    };
+    let signal_service = state.signal_service();
+    let awaiting_categories = signal_service.pending_category_hints(user_id).await;
 
     if matches!(mode, DispatchMode::Signal) {
         // dispatch_mode=Signal causes `attempt_send` to refuse delivery.
-        let Some(signal_service) = state.signal_service() else {
-            tracing::warn!(
-                channel_id = %channel_row.id,
-                "Signal-mode dispatch but signal_service unavailable; skipping",
-            );
-            return Ok(());
-        };
         signal_service
             .process_inbound_extract(
                 &state.chat_service,

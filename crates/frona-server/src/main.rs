@@ -101,8 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.browser_session_manager.kill_all_sessions().await;
     state.skill_service.start_watcher();
 
-    let signal_service = state.init_signal_service();
-    state.tool_manager.init(&state);
+    let signal_service = state.signal_service();
     state.policy_service.sync_base_policies().await?;
     if let Err(e) = signal_service.start().await {
         tracing::warn!(error = %e, "Failed to start signal service");

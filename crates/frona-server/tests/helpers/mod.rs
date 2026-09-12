@@ -1077,9 +1077,6 @@ pub async fn test_harness(
         app_state::catalogs(config),
     );
 
-    state.init_signal_service();
-    state.tool_manager.init(&state);
-
     // ChatService wired to the mock provider so all harness inference hits it.
     let mut providers: HashMap<String, Arc<dyn ModelProvider>> = HashMap::new();
     providers.insert("mock".to_string(), mock_provider);

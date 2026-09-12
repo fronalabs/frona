@@ -88,9 +88,7 @@ async fn evaluate_signal(
         content: req.content,
     };
 
-    let signal_service = state
-        .signal_service()
-        .ok_or_else(|| AppError::Internal("Signal service not initialized".into()))?;
+    let signal_service = state.signal_service();
     let fired_watches = signal_service.evaluate(&auth.user_id, candidate).await?;
     Ok(Json(EvaluateSignalResponse { fired_watches }))
 }

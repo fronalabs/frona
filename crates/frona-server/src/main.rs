@@ -302,6 +302,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .merge(routes::voice::router())
         .merge(routes::system::router())
         .merge(routes::config::router())
+        .merge(routes::providers::router())
         .merge(routes::credential_logins::router())
         .merge(routes::provider_models::router());
     // Register the PKM sync API only when PKM is the active backend - a Basic install
@@ -339,7 +340,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             HeaderName::from_static("x-xss-protection"),
             HeaderValue::from_static("1; mode=block"),
         ))
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(|request: &axum::http::Request<axum::body::Body>| {
+            // Old clients may still send credentials in a query. Rejection must
+            // not copy those values into the request span.
+            tracing::debug_span!("http_request", method = %request.method(), path = request.uri().path())
+        }))
         .with_state(state.clone())
         .fallback_service(
             ServeDir::new(&config.server.static_dir).fallback(axum::routing::get({

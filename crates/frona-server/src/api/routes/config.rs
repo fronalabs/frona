@@ -14,7 +14,25 @@ use crate::core::state::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/config/schema", get(get_schema))
+        .route(
+            "/api/config/environment-variables",
+            get(environment_variables),
+        )
         .route("/api/config", get(get_config).put(update_config))
+}
+
+async fn environment_variables(_admin: AdminUser) -> Json<Vec<String>> {
+    let mut names: Vec<String> = std::env::vars_os()
+        .filter_map(|(name, _)| name.into_string().ok())
+        .filter(|name| {
+            let name = name.to_ascii_uppercase();
+            ["API", "KEY", "TOKEN", "SECRET", "CREDENTIAL"]
+                .iter()
+                .any(|keyword| name.contains(keyword))
+        })
+        .collect();
+    names.sort_unstable();
+    Json(names)
 }
 
 async fn get_schema(

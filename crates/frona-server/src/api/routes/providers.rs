@@ -436,6 +436,11 @@ mod tests {
         let nil = Uuid::nil().to_string();
         let cases = vec![
             ("GET", "/api/config/provider-catalog".to_string(), json!({})),
+            (
+                "GET",
+                "/api/config/environment-variables".to_string(),
+                json!({}),
+            ),
             ("GET", "/api/config".to_string(), json!({})),
             ("GET", "/api/config/schema".to_string(), json!({})),
             (

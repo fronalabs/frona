@@ -17,7 +17,6 @@ use crate::core::execution::{
     ExecutionKind, ExecutionRegistry, ExecutionSource, ExecutionSourceKind, NewExecution,
 };
 use crate::core::state::ActiveSessions;
-use crate::credential::vault::service::VaultService;
 use crate::inference::ModelGroup;
 use crate::inference::conversation::{ConversationBuilder, DefaultConversationBuilder};
 use crate::inference::hitl::{HitlOutcome, HitlResponse, ResolveOutcome};
@@ -56,7 +55,6 @@ pub struct Harness {
     pub(crate) memory_service: Arc<dyn MemoryService>,
     pub(crate) skill_service: SkillService,
     pub(crate) task_service: TaskService,
-    pub(crate) vault_service: VaultService,
     pub(crate) mcp_service: Arc<McpServerService>,
     pub(crate) tool_manager: Arc<ToolManager>,
     pub(crate) policy_service: PolicyService,
@@ -80,7 +78,6 @@ impl Harness {
         memory_service: Arc<dyn MemoryService>,
         skill_service: SkillService,
         task_service: TaskService,
-        vault_service: VaultService,
         mcp_service: Arc<McpServerService>,
         tool_manager: Arc<ToolManager>,
         policy_service: PolicyService,
@@ -104,7 +101,6 @@ impl Harness {
             memory_service,
             skill_service,
             task_service,
-            vault_service,
             mcp_service,
             tool_manager,
             policy_service,
@@ -943,10 +939,7 @@ impl Harness {
             Err(e) => {
                 tracing::warn!(message_id, error = %e, "agent loop failed");
                 if let Ok(msg) = self.chat_service.get_message(user_id, message_id).await {
-                    let _ = self
-                        .chat_service
-                        .fail_agent_message(msg, e.to_string())
-                        .await;
+                    let _ = self.chat_service.fail_agent_message(msg, e.to_string()).await;
                 }
             }
         }

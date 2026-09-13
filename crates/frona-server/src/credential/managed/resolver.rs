@@ -288,6 +288,103 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn consumer_startup_obeys_cache_expiry_and_binding_removal() {
+        use crate::core::{Principal, repository::Repository};
+        use crate::credential::vault::{models::*, service::VaultService};
+        use crate::db::repo::generic::SurrealRepo;
+        for policy in [
+            CachePolicy::NoCache,
+            CachePolicy::UntilChanged,
+            CachePolicy::Until(DateTime::from_timestamp(200, 0).unwrap()),
+        ] {
+            let db = db().await;
+            let v = vault(&db, GLOBAL_CONNECTION_ID, "key").await;
+            let status = entry(&v, "one").await;
+            let clock = Arc::new(AtomicI64::new(100));
+            let integration = Arc::new(Integration::new(policy));
+            let r = resolver(integration.clone(), clock.clone());
+            let config = crate::core::config::Config::default();
+            let svc = VaultService::new(
+                Arc::new(SurrealRepo::new(db.clone())),
+                Arc::new(SurrealRepo::new(db.clone())),
+                Arc::new(SurrealRepo::new(db.clone())),
+                Arc::new(SurrealRepo::new(db.clone())),
+                Arc::new(SurrealRepo::new(db.clone())),
+                "key",
+                Default::default(),
+                "/tmp/test-data".into(),
+                crate::storage::StorageService::new(&config),
+                crate::auth::UserService::new(SurrealRepo::new(db.clone()), &Default::default()),
+                v.clone(),
+                r,
+                crate::credential::managed::login::ManagedLoginService::registered(),
+            );
+            svc.sync_config_connections().await.unwrap();
+            let principal = Principal::agent("agent");
+            let mut grant = svc
+                .create_grant(
+                    "user",
+                    principal.clone(),
+                    "managed",
+                    &status.item_id.to_string(),
+                    "login",
+                    &GrantDuration::Permanent,
+                )
+                .await
+                .unwrap();
+            svc.create_binding(
+                "user",
+                principal.clone(),
+                "login",
+                "managed",
+                &status.item_id.to_string(),
+                CredentialTarget::Prefix {
+                    env_var_prefix: "LOGIN".into(),
+                },
+                BindingScope::Durable,
+                None,
+            )
+            .await
+            .unwrap();
+            for _ in 0..2 {
+                let env = svc.resolve_env("user", &principal, None).await.unwrap();
+                assert_eq!(env.len(), 2);
+                assert!(
+                    env.iter()
+                        .any(|(k, v)| k == "LOGIN_TOKEN" && v == "synthetic-secret")
+                );
+            }
+            assert_eq!(
+                integration.calls.load(Ordering::SeqCst),
+                if policy == CachePolicy::NoCache { 2 } else { 1 }
+            );
+            if matches!(policy, CachePolicy::Until(_)) {
+                clock.store(200, Ordering::SeqCst);
+                let error = svc.resolve_env("user", &principal, None).await.unwrap_err();
+                assert!(!error.to_string().contains("private-refresh"));
+                assert_eq!(integration.calls.load(Ordering::SeqCst), 2);
+                clock.store(100, Ordering::SeqCst);
+            }
+            // A cached map cannot extend an expired grant.
+            grant.expires_at = Some(Utc::now() - chrono::Duration::seconds(1));
+            SurrealRepo::<VaultGrant>::new(db.clone())
+                .update(&grant)
+                .await
+                .unwrap();
+            assert!(svc.resolve_env("user", &principal, None).await.is_err());
+            svc.delete_bindings_for_principal("user", &principal)
+                .await
+                .unwrap();
+            assert!(
+                svc.resolve_env("user", &principal, None)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
     async fn entry(v: &ManagedVault, name: &str) -> Status {
         v.create(
             "test",

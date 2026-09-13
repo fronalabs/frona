@@ -35,6 +35,24 @@ async fn create_test_connection(svc: &VaultService, user_id: &str) -> VaultConne
 }
 
 fn build_service(db: &surrealdb::Surreal<surrealdb::engine::local::Db>) -> VaultService {
+    build_service_with_managed(
+        db,
+        frona::credential::managed::ManagedVault::new(
+            Arc::new(frona::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone())),
+            "test-secret",
+            "managed".into(),
+        ),
+        Arc::new(frona::credential::managed::resolver::ManagedResolver::new(
+            std::collections::HashMap::new(),
+        )),
+    )
+}
+
+fn build_service_with_managed(
+    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    managed_vault: frona::credential::managed::ManagedVault,
+    managed_resolver: Arc<frona::credential::managed::resolver::ManagedResolver>,
+) -> VaultService {
     let connection_repo: Arc<dyn VaultConnectionRepository> =
         Arc::new(SurrealRepo::<VaultConnection>::new(db.clone()));
     let grant_repo: Arc<dyn VaultGrantRepository> =
@@ -68,16 +86,421 @@ fn build_service(db: &surrealdb::Surreal<surrealdb::engine::local::Db>) -> Vault
         std::path::PathBuf::from("/tmp/test-data"),
         storage,
         user_service,
-        frona::credential::managed::ManagedVault::new(
-            Arc::new(frona::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone())),
-            "test-secret",
-            "managed".into(),
-        ),
-        Arc::new(frona::credential::managed::resolver::ManagedResolver::new(
-            std::collections::HashMap::new(),
-        )),
+        managed_vault,
+        managed_resolver,
         frona::credential::managed::login::ManagedLoginService::registered(),
     )
+}
+
+mod managed {
+    use super::*;
+    use frona::core::error::AppError;
+    use frona::credential::managed::integration::{
+        CachePolicy, ManagedIntegration, ResolvedSecret, SecretContext, register,
+    };
+    use frona::credential::managed::resolver::ManagedResolver;
+    use frona::credential::managed::{ManagedVault, Status};
+    use frona::db::repo::managed_vault::SurrealManagedVaultRepo;
+    use serde_json::{Value, json};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
+
+    struct Integration {
+        calls: Arc<AtomicUsize>,
+        gate: Option<(Arc<Notify>, Arc<Notify>)>,
+    }
+    #[async_trait::async_trait]
+    impl ManagedIntegration for Integration {
+        type Credentials = std::collections::HashMap<String, String>;
+        async fn get_secret(
+            &self,
+            doc: Value,
+            _: &mut SecretContext,
+        ) -> Result<ResolvedSecret<std::collections::HashMap<String, String>>, AppError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some((started, release)) = &self.gate {
+                started.notify_one();
+                release.notified().await;
+            }
+            Ok(ResolvedSecret {
+                expires_at: None,
+                credentials: serde_json::from_value(doc["fields"].clone()).unwrap(),
+                cache: CachePolicy::UntilChanged,
+            })
+        }
+    }
+    fn storage(
+        db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+        connection_id: &str,
+    ) -> ManagedVault {
+        ManagedVault::new(
+            Arc::new(SurrealManagedVaultRepo::new(db.clone())),
+            "test-secret",
+            connection_id.into(),
+        )
+    }
+    fn service(
+        db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+        integration: Arc<Integration>,
+    ) -> VaultService {
+        let registry = register([(
+            "fixture".into(),
+            integration as Arc<dyn frona::credential::managed::integration::RegisteredIntegration>,
+        )])
+        .unwrap();
+        build_service_with_managed(
+            db,
+            storage(db, "managed"),
+            Arc::new(ManagedResolver::new(registry)),
+        )
+    }
+    async fn entry(v: &ManagedVault, value: &str) -> Status {
+        v.create(
+            "fixture",
+            json!({"name":"login"}),
+            json!({"fields":{"API_KEY":value,"ACCOUNT":"first"},"refresh_token":"private"}),
+        )
+        .await
+        .unwrap()
+    }
+    async fn binding(
+        svc: &VaultService,
+        id: &str,
+        scope: BindingScope,
+        target: CredentialTarget,
+    ) -> PrincipalCredentialBinding {
+        svc.create_binding(
+            "user1",
+            Principal::agent("agent1"),
+            "login",
+            "managed",
+            id,
+            target,
+            scope,
+            None,
+        )
+        .await
+        .unwrap()
+    }
+    fn prefix() -> CredentialTarget {
+        CredentialTarget::Prefix {
+            env_var_prefix: "LOGIN".into(),
+        }
+    }
+    async fn grant(svc: &VaultService, id: &str) -> VaultGrant {
+        svc.create_grant(
+            "user1",
+            Principal::agent("agent1"),
+            "managed",
+            id,
+            "login",
+            &GrantDuration::Permanent,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn existing_grants_control_cached_maps_and_survive_account_updates() {
+        let db = setup_db().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let svc = service(
+            &db,
+            Arc::new(Integration {
+                calls: calls.clone(),
+                gate: None,
+            }),
+        );
+        svc.sync_config_connections().await.unwrap();
+        let v = storage(&db, "managed");
+        let first = entry(&v, "one").await;
+        let id = first.item_id.to_string();
+        assert_eq!(
+            svc.search_items("user1", "managed", "login", 10)
+                .await
+                .unwrap()[0]
+                .id,
+            id
+        );
+        let b = binding(&svc, &id, BindingScope::Durable, prefix()).await;
+        let principal = Principal::agent("agent1");
+        assert!(
+            svc.resolve_binding("user1", &principal, &b, Some("chat"))
+                .await
+                .is_err()
+        );
+        let g = grant(&svc, &id).await;
+        for _ in 0..2 {
+            let secret = svc
+                .resolve_binding("user1", &principal, &b, Some("chat"))
+                .await
+                .unwrap();
+            assert_eq!(secret.fields["API_KEY"], "one");
+            assert!(!secret.fields.contains_key("refresh_token"));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let second = v.replace_by_id(first.item_id, first.version, "fixture", json!({}), json!({"fields":{"API_KEY":"two","ACCOUNT":"other-subscription","EXTRA":"added"},"refresh_token":"still-private"})).await.unwrap();
+        assert_eq!(first.item_id, second.item_id);
+        let secret = svc
+            .resolve_binding("user1", &principal, &b, Some("chat"))
+            .await
+            .unwrap();
+        assert_eq!(secret.fields["ACCOUNT"], "other-subscription");
+        assert!(
+            frona::credential::vault::service::project_target(&secret, &b.target)
+                .unwrap()
+                .contains(&("LOGIN_EXTRA".into(), "added".into()))
+        );
+        let single = binding(
+            &svc,
+            &id,
+            BindingScope::Durable,
+            CredentialTarget::Single {
+                env_var: "KEY".into(),
+                field: VaultField::Custom {
+                    name: "API_KEY".into(),
+                },
+            },
+        )
+        .await;
+        let secret = svc
+            .resolve_binding("user1", &principal, &single, Some("chat"))
+            .await
+            .unwrap();
+        assert_eq!(
+            frona::credential::vault::service::project_target(&secret, &single.target).unwrap(),
+            vec![("KEY".into(), "two".into())]
+        );
+        assert!(
+            svc.resolve_binding("user2", &principal, &b, Some("chat"))
+                .await
+                .is_err()
+        );
+        assert!(
+            svc.resolve_binding("user1", &Principal::agent("other"), &b, Some("chat"))
+                .await
+                .is_err()
+        );
+        let login = v
+            .replace_by_id(
+                second.item_id,
+                second.version,
+                "fixture",
+                json!({"name":"login"}),
+                json!({"fields":{"API_KEY":"three","ACCOUNT":"first"},"refresh_token":"private"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login.item_id, first.item_id);
+        assert_eq!(
+            svc.resolve_binding("user1", &principal, &b, Some("chat"))
+                .await
+                .unwrap()
+                .fields["API_KEY"],
+            "three"
+        );
+        svc.revoke_grant("user1", &g.id).await.unwrap();
+        assert!(
+            svc.resolve_binding("user1", &principal, &b, Some("chat"))
+                .await
+                .is_err()
+        );
+        grant(&svc, &id).await;
+        let b = binding(&svc, &id, BindingScope::Durable, prefix()).await;
+        v.delete_by_id(login.item_id, login.version).await.unwrap();
+        let recreated = entry(&v, "four").await;
+        assert_ne!(recreated.item_id, first.item_id);
+        assert!(
+            svc.resolve_binding("user1", &principal, &b, Some("chat"))
+                .await
+                .is_err()
+        );
+        let fresh_binding = binding(
+            &svc,
+            &recreated.item_id.to_string(),
+            BindingScope::Durable,
+            prefix(),
+        )
+        .await;
+        assert!(
+            svc.resolve_binding("user1", &principal, &fresh_binding, Some("chat"))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn personal_and_global_entries_are_isolated_with_colliding_names() {
+        let db = setup_db().await;
+        let svc = service(
+            &db,
+            Arc::new(Integration {
+                calls: Arc::new(AtomicUsize::new(0)),
+                gate: None,
+            }),
+        );
+        svc.sync_config_connections().await.unwrap();
+        let alice_connection = svc
+            .create_connection(
+                "user1",
+                CreateVaultConnectionRequest {
+                    name: "Alice".into(),
+                    provider: VaultProviderType::Managed,
+                    config: VaultConnectionConfig::Managed {},
+                },
+            )
+            .await
+            .unwrap()
+            .id;
+        let bob_connection = svc
+            .create_connection(
+                "user2",
+                CreateVaultConnectionRequest {
+                    name: "Bob".into(),
+                    provider: VaultProviderType::Managed,
+                    config: VaultConnectionConfig::Managed {},
+                },
+            )
+            .await
+            .unwrap()
+            .id;
+        let global = entry(&storage(&db, "managed"), "global").await;
+        let alice = entry(&storage(&db, &alice_connection), "alice").await;
+        let bob = entry(&storage(&db, &bob_connection), "bob").await;
+        assert_eq!(
+            svc.search_items("user1", &alice_connection, "login", 10)
+                .await
+                .unwrap()[0]
+                .id,
+            alice.item_id.to_string()
+        );
+        assert_eq!(
+            svc.search_items("user2", &bob_connection, "login", 10)
+                .await
+                .unwrap()[0]
+                .id,
+            bob.item_id.to_string()
+        );
+        assert!(
+            svc.get_secret("user2", &alice_connection, &alice.item_id.to_string())
+                .await
+                .is_err()
+        );
+        assert!(
+            svc.get_secret("user1", "managed", &alice.item_id.to_string())
+                .await
+                .is_err()
+        );
+        assert!(
+            svc.get_secret("user1", &alice_connection, &global.item_id.to_string())
+                .await
+                .is_err()
+        );
+        let json =
+            serde_json::to_string(&svc.search_all("user1", "login", 10).await.unwrap()).unwrap();
+        assert!(!json.contains("private"));
+        assert!(!json.contains("refresh_token"));
+    }
+
+    #[tokio::test]
+    async fn chat_approval_expiry_and_required_field_checks_use_existing_bindings() {
+        let db = setup_db().await;
+        let svc = service(
+            &db,
+            Arc::new(Integration {
+                calls: Arc::new(AtomicUsize::new(0)),
+                gate: None,
+            }),
+        );
+        svc.sync_config_connections().await.unwrap();
+        let first = entry(&storage(&db, "managed"), "one").await;
+        let id = first.item_id.to_string();
+        let principal = Principal::agent("agent1");
+        let b = binding(
+            &svc,
+            &id,
+            BindingScope::Chat {
+                chat_id: "chat1".into(),
+            },
+            prefix(),
+        )
+        .await;
+        assert!(
+            svc.resolve_binding("user1", &principal, &b, Some("chat1"))
+                .await
+                .is_ok()
+        );
+        assert!(
+            svc.resolve_binding("user1", &principal, &b, Some("chat2"))
+                .await
+                .is_err()
+        );
+        let missing = binding(
+            &svc,
+            &id,
+            BindingScope::Chat {
+                chat_id: "chat1".into(),
+            },
+            CredentialTarget::Single {
+                env_var: "MISSING".into(),
+                field: VaultField::Custom {
+                    name: "absent".into(),
+                },
+            },
+        )
+        .await;
+        assert!(
+            svc.resolve_binding("user1", &principal, &missing, Some("chat1"))
+                .await
+                .is_err()
+        );
+        let durable = binding(&svc, &id, BindingScope::Durable, prefix()).await;
+        svc.create_grant(
+            "user1",
+            principal.clone(),
+            "managed",
+            &id,
+            "expired",
+            &GrantDuration::Hours(0),
+        )
+        .await
+        .unwrap();
+        assert!(
+            svc.resolve_binding("user1", &principal, &durable, None)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn revocation_during_resolution_prevents_delivery() {
+        let db = setup_db().await;
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let svc = service(
+            &db,
+            Arc::new(Integration {
+                calls: Arc::new(AtomicUsize::new(0)),
+                gate: Some((started.clone(), release.clone())),
+            }),
+        );
+        svc.sync_config_connections().await.unwrap();
+        let first = entry(&storage(&db, "managed"), "one").await;
+        let id = first.item_id.to_string();
+        let g = grant(&svc, &id).await;
+        let b = binding(&svc, &id, BindingScope::Durable, prefix()).await;
+        let task = {
+            let svc = svc.clone();
+            tokio::spawn(async move {
+                svc.resolve_binding("user1", &Principal::agent("agent1"), &b, Some("chat"))
+                    .await
+            })
+        };
+        started.notified().await;
+        svc.revoke_grant("user1", &g.id).await.unwrap();
+        release.notify_one();
+        assert!(task.await.unwrap().is_err());
+    }
 }
 
 #[tokio::test]
@@ -108,8 +531,15 @@ async fn create_and_list_connections() {
     assert!(!resp.system_managed);
 
     let list = svc.list_connections("user1").await.unwrap();
-    // Should have: user-created + local (system-managed)
-    assert!(list.len() >= 2);
+    // Managed connections are always available, even with an empty integration registry.
+    assert_eq!(
+        list.iter()
+            .filter(|c| c.provider == VaultProviderType::Managed && c.system_managed)
+            .count(),
+        1
+    );
+    assert!(list.iter().any(|c| c.id == "managed" && c.system_managed));
+    assert!(list.len() >= 3);
     assert!(list.iter().any(|c| c.name == "My Vault"));
     assert!(list.iter().any(|c| c.id == "local" && c.system_managed));
 }
@@ -467,19 +897,19 @@ async fn once_grant_not_created() {
 }
 
 #[tokio::test]
-async fn hydrate_returns_empty_when_no_bindings() {
+async fn startup_returns_empty_when_no_bindings() {
     let db = setup_db().await;
     let svc = build_service(&db);
 
     let env_vars = svc
-        .hydrate_chat_env_vars("user1", "chat1", "agent1")
+        .resolve_env("user1", &Principal::agent("agent1"), Some("chat1"))
         .await
         .unwrap();
     assert!(env_vars.is_empty());
 }
 
 #[tokio::test]
-async fn hydrate_projects_durable_bindings_into_env_vars() {
+async fn startup_projects_authorized_durable_bindings_into_env_vars() {
     let db = setup_db().await;
     let svc = build_service(&db);
     svc.sync_config_connections().await.unwrap();
@@ -511,8 +941,19 @@ async fn hydrate_projects_durable_bindings_into_env_vars() {
     .await
     .unwrap();
 
+    svc.create_grant(
+        "user1",
+        Principal::agent("agent1"),
+        "local",
+        &credential.id,
+        "github",
+        &GrantDuration::Permanent,
+    )
+    .await
+    .unwrap();
+
     let env: std::collections::HashMap<String, String> = svc
-        .hydrate_chat_env_vars("user1", "any-chat", "agent1")
+        .resolve_env("user1", &Principal::agent("agent1"), Some("any-chat"))
         .await
         .unwrap()
         .into_iter()
@@ -526,7 +967,7 @@ async fn hydrate_projects_durable_bindings_into_env_vars() {
 }
 
 #[tokio::test]
-async fn hydrate_honors_chat_scope_isolation() {
+async fn startup_honors_chat_scope_isolation() {
     let db = setup_db().await;
     let svc = build_service(&db);
     svc.sync_config_connections().await.unwrap();
@@ -561,13 +1002,13 @@ async fn hydrate_honors_chat_scope_isolation() {
     .unwrap();
 
     let in_chat = svc
-        .hydrate_chat_env_vars("user1", "chat1", "agent1")
+        .resolve_env("user1", &Principal::agent("agent1"), Some("chat1"))
         .await
         .unwrap();
     assert!(!in_chat.is_empty(), "chat1 should see its own binding");
 
     let other_chat = svc
-        .hydrate_chat_env_vars("user1", "chat2", "agent1")
+        .resolve_env("user1", &Principal::agent("agent1"), Some("chat2"))
         .await
         .unwrap();
     assert!(

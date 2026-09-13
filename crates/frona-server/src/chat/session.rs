@@ -284,16 +284,6 @@ impl ChatSessionContext {
         tool_ctx.file_paths = file_paths;
         tool_ctx.task = task;
 
-        let vault_env = harness
-            .vault_service
-            .hydrate_chat_env_vars(user_id, &chat.id, &chat.agent_id)
-            .await
-            .unwrap_or_default();
-        if !vault_env.is_empty() {
-            let mut vault_vars = tool_ctx.vault_env_vars.write().await;
-            vault_vars.extend(vault_env);
-        }
-
         {
             let mut mcx = crate::memory::service::MemoryContext::new(
                 &mut system_prompt,

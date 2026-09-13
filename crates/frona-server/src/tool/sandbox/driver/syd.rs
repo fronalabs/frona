@@ -174,7 +174,7 @@ impl SydArgsBuilder {
                 "trace/allow_unsafe_exec_ldso:1".into(),
                 // Syd's lib profile strips env vars whose names contain PASSWORD,
                 // CREDENTIAL, TOKEN, or KEY. We manage secrets ourselves via
-                // vault_env_vars, so disable the filter.
+                // resolved vault credentials, so disable the filter.
                 "-m".into(),
                 "trace/allow_unsafe_env:1".into(),
                 // uv uses base64-encoded temp filenames in its cache

@@ -335,34 +335,143 @@ impl VaultService {
 
     /// Resolve under the current binding and grant, including a recheck after
     /// remote integration work. Chat-only approval is represented by its binding.
-    pub async fn hydrate_chat_env_vars(
+    pub async fn resolve_binding(
         &self,
         user_id: &str,
-        chat_id: &str,
-        agent_id: &str,
-    ) -> Result<Vec<(String, String)>, AppError> {
-        let principal = Principal::agent(agent_id);
-        let bindings = self
-            .binding_repo
-            .find_for_chat(user_id, &principal, chat_id)
+        principal: &Principal,
+        binding: &PrincipalCredentialBinding,
+        chat_id: Option<&str>,
+    ) -> Result<VaultSecret, AppError> {
+        self.authorize_binding(user_id, principal, binding, chat_id)
             .await?;
-        let mut env_vars = Vec::new();
-        for binding in bindings {
-            match self
-                .get_secret(user_id, &binding.connection_id, &binding.vault_item_id)
-                .await
-            {
-                Ok(secret) => env_vars.extend(project_target(&secret, &binding.target)),
-                Err(e) => {
-                    tracing::warn!(
-                        vault_item_id = %binding.vault_item_id,
-                        error = %e,
-                        "Failed to fetch secret for binding"
-                    );
-                }
-            }
+        let secret = self
+            .get_secret(user_id, &binding.connection_id, &binding.vault_item_id)
+            .await?;
+        self.authorize_binding(user_id, principal, binding, chat_id)
+            .await?;
+        project_target(&secret, &binding.target)?;
+        Ok(secret)
+    }
+
+    async fn authorize_binding(
+        &self,
+        user_id: &str,
+        principal: &Principal,
+        binding: &PrincipalCredentialBinding,
+        chat_id: Option<&str>,
+    ) -> Result<(), AppError> {
+        ensure_non_user_principal(principal)?;
+        let denied = || {
+            AppError::Forbidden(format!(
+                "vault binding {} is no longer authorized",
+                binding.id
+            ))
+        };
+        let current = self
+            .binding_repo
+            .find_by_id(&binding.id)
+            .await?
+            .ok_or_else(denied)?;
+        if current.user_id != user_id
+            || &current.principal != principal
+            || current.connection_id != binding.connection_id
+            || current.vault_item_id != binding.vault_item_id
+            || current.target != binding.target
+            || current.scope != binding.scope
+            || current
+                .expires_at
+                .is_some_and(|expiry| expiry <= Utc::now())
+        {
+            return Err(denied());
         }
-        Ok(env_vars)
+        match &current.scope {
+            BindingScope::Chat { chat_id: expected } if chat_id == Some(expected.as_str()) => {}
+            BindingScope::Durable
+                if self
+                    .has_grant_for_item(
+                        user_id,
+                        principal,
+                        &current.connection_id,
+                        &current.vault_item_id,
+                    )
+                    .await? => {}
+            _ => return Err(denied()),
+        }
+        let connection = self
+            .connection_repo
+            .find_by_id(&current.connection_id)
+            .await?
+            .ok_or_else(denied)?;
+        if !connection.enabled || (!connection.system_managed && connection.user_id != user_id) {
+            return Err(denied());
+        }
+        Ok(())
+    }
+
+    /// Resolve a fresh environment for one consumer start. Never retain it on a
+    /// chat or merge it with credential values from a previous start.
+    pub async fn resolve_env(
+        &self,
+        user_id: &str,
+        principal: &Principal,
+        chat_id: Option<&str>,
+    ) -> Result<Vec<(String, String)>, AppError> {
+        let bindings = self.startup_bindings(user_id, principal, chat_id).await?;
+        let mut env = Vec::new();
+        for binding in &bindings {
+            let secret = self
+                .resolve_binding(user_id, principal, binding, chat_id)
+                .await
+                .map_err(|_| {
+                    AppError::Validation(format!(
+                        "required vault binding {} for item {} could not be resolved",
+                        binding.id, binding.vault_item_id,
+                    ))
+                })?;
+            env.extend(project_target(&secret, &binding.target)?);
+        }
+        // A slow later integration must not let a revoked earlier binding
+        // deliver its already-resolved fields.
+        for binding in &bindings {
+            self.authorize_binding(user_id, principal, binding, chat_id)
+                .await?;
+        }
+        let current = self.startup_bindings(user_id, principal, chat_id).await?;
+        let ids = |items: &[PrincipalCredentialBinding]| {
+            items
+                .iter()
+                .map(|b| b.id.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        if ids(&current) != ids(&bindings) {
+            return Err(AppError::Conflict(
+                "vault bindings changed during startup".into(),
+            ));
+        }
+        Ok(env)
+    }
+
+    async fn startup_bindings(
+        &self,
+        user_id: &str,
+        principal: &Principal,
+        chat_id: Option<&str>,
+    ) -> Result<Vec<PrincipalCredentialBinding>, AppError> {
+        ensure_non_user_principal(principal)?;
+        match chat_id {
+            Some(chat_id) => {
+                self.binding_repo
+                    .find_for_chat(user_id, principal, chat_id)
+                    .await
+            }
+            None => Ok(self
+                .binding_repo
+                .find_for_principal(user_id, principal)
+                .await?
+                .into_iter()
+                .filter(|b| matches!(b.scope, BindingScope::Durable))
+                .collect()),
+        }
     }
 
     pub async fn has_grant_for_item(
@@ -459,24 +568,32 @@ impl VaultService {
     }
 }
 
-pub fn project_target(secret: &VaultSecret, target: &CredentialTarget) -> Vec<(String, String)> {
+pub fn project_target(
+    secret: &VaultSecret,
+    target: &CredentialTarget,
+) -> Result<Vec<(String, String)>, AppError> {
     match target {
-        CredentialTarget::Prefix { env_var_prefix } => secret.to_env_vars(env_var_prefix),
+        CredentialTarget::Prefix { env_var_prefix } => Ok(secret.to_env_vars(env_var_prefix)),
         CredentialTarget::Single { env_var, field } => {
-            let value = match field {
-                VaultField::Password => secret.password.clone(),
-                VaultField::Username => secret.username.clone(),
-                VaultField::Custom { name } => secret.fields.get(name).cloned().or_else(|| {
-                    secret
-                        .fields
-                        .iter()
-                        .find(|(k, _)| k.eq_ignore_ascii_case(name))
-                        .map(|(_, v)| v.clone())
-                }),
+            let custom = |name: &str| {
+                secret.fields.get(name).cloned().or_else(|| {
+                    secret.fields.iter().find_map(|(key, value)| {
+                        (key.to_uppercase().replace(' ', "_") == name.to_uppercase())
+                            .then(|| value.clone())
+                    })
+                })
             };
-            value
-                .map(|v| vec![(env_var.clone(), v)])
-                .unwrap_or_default()
+            let value = match field {
+                VaultField::Password => secret.password.clone().or_else(|| custom("PASSWORD")),
+                VaultField::Username => secret.username.clone().or_else(|| custom("USERNAME")),
+                VaultField::Custom { name } => custom(name),
+            };
+            value.map(|v| vec![(env_var.clone(), v)]).ok_or_else(|| {
+                AppError::Validation(format!(
+                    "required field is missing from vault item {}",
+                    secret.id
+                ))
+            })
         }
     }
 }
@@ -1129,8 +1246,10 @@ mod tests {
         let target = CredentialTarget::Prefix {
             env_var_prefix: "GH".into(),
         };
-        let vars: std::collections::HashMap<_, _> =
-            project_target(&secret, &target).into_iter().collect();
+        let vars: std::collections::HashMap<_, _> = project_target(&secret, &target)
+            .unwrap()
+            .into_iter()
+            .collect();
         assert_eq!(vars.get("GH_USERNAME").map(String::as_str), Some("octocat"));
         assert_eq!(vars.get("GH_PASSWORD").map(String::as_str), Some("ghp_xxx"));
         assert_eq!(
@@ -1158,7 +1277,10 @@ mod tests {
         let target = CredentialTarget::Prefix {
             env_var_prefix: "HOME_ASSISTANT".into(),
         };
-        let vars: HashMap<_, _> = project_target(&secret, &target).into_iter().collect();
+        let vars: HashMap<_, _> = project_target(&secret, &target)
+            .unwrap()
+            .into_iter()
+            .collect();
         assert_eq!(vars.len(), 3);
         assert_eq!(
             vars.get("HOME_ASSISTANT_HOSTNAME").map(String::as_str),
@@ -1181,7 +1303,7 @@ mod tests {
             env_var: "GITHUB_TOKEN".into(),
             field: VaultField::Password,
         };
-        let vars = project_target(&secret, &target);
+        let vars = project_target(&secret, &target).unwrap();
         assert_eq!(
             vars,
             vec![("GITHUB_TOKEN".to_string(), "ghp_xxx".to_string())]
@@ -1195,7 +1317,7 @@ mod tests {
             env_var: "GH_USER".into(),
             field: VaultField::Username,
         };
-        let vars = project_target(&secret, &target);
+        let vars = project_target(&secret, &target).unwrap();
         assert_eq!(vars, vec![("GH_USER".to_string(), "octocat".to_string())]);
     }
 
@@ -1208,7 +1330,7 @@ mod tests {
                 name: "api_key".into(),
             },
         };
-        let vars = project_target(&secret, &target);
+        let vars = project_target(&secret, &target).unwrap();
         assert_eq!(
             vars,
             vec![("API_KEY".to_string(), "ghp_custom".to_string())]
@@ -1216,18 +1338,54 @@ mod tests {
     }
 
     #[test]
-    fn project_target_single_returns_empty_when_field_missing() {
+    fn project_target_single_resolves_map_fields_using_picker_names() {
+        let secret = VaultSecret {
+            id: "managed".into(),
+            name: "Composite".into(),
+            username: None,
+            password: None,
+            notes: None,
+            fields: HashMap::from([
+                ("password".into(), "token".into()),
+                ("service account".into(), "account".into()),
+            ]),
+        };
+        for (field, expected) in [
+            (VaultField::Password, "token"),
+            (
+                VaultField::Custom {
+                    name: "SERVICE_ACCOUNT".into(),
+                },
+                "account",
+            ),
+        ] {
+            assert_eq!(
+                project_target(
+                    &secret,
+                    &CredentialTarget::Single {
+                        env_var: "SELECTED".into(),
+                        field,
+                    }
+                )
+                .unwrap(),
+                vec![("SELECTED".into(), expected.into())],
+            );
+        }
+    }
+
+    #[test]
+    fn project_target_single_rejects_missing_when_field_missing() {
         let mut secret = sample_secret();
         secret.password = None;
         let target = CredentialTarget::Single {
             env_var: "GITHUB_TOKEN".into(),
             field: VaultField::Password,
         };
-        assert!(project_target(&secret, &target).is_empty());
+        assert!(project_target(&secret, &target).is_err());
     }
 
     #[test]
-    fn project_target_single_returns_empty_for_unknown_custom_field() {
+    fn project_target_single_rejects_missing_for_unknown_custom_field() {
         let secret = sample_secret();
         let target = CredentialTarget::Single {
             env_var: "X".into(),
@@ -1235,7 +1393,7 @@ mod tests {
                 name: "nonexistent".into(),
             },
         };
-        assert!(project_target(&secret, &target).is_empty());
+        assert!(project_target(&secret, &target).is_err());
     }
 
     #[test]

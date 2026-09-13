@@ -89,27 +89,6 @@ async fn build_mcp_supervisor() -> (
         3600,
         86400,
     );
-    let sandbox_manager = Arc::new(frona::tool::sandbox::SandboxManager::new(
-        factory,
-        policy_service.clone(),
-        supervisor_skill_service,
-        storage.clone(),
-        supervisor_token_service,
-        supervisor_keypair_service,
-        "http://localhost".to_string(),
-        300,
-        "UTC".to_string(),
-    ));
-    let manager = Arc::new(McpManager::new(
-        sandbox_manager,
-        storage_for_mcp.clone(),
-        4100,
-        4200,
-        user_service.clone(),
-        frona::build_http_client(),
-    ));
-    let mcp_repo: Arc<dyn McpServerRepository> =
-        Arc::new(SurrealRepo::<McpServer>::new(db.clone()));
     let vault_storage = frona::storage::StorageService::new(&frona::core::config::Config {
         storage: frona::core::config::StorageConfig {
             data_dir: tmp.path().to_string_lossy().into_owned(),
@@ -138,6 +117,28 @@ async fn build_mcp_supervisor() -> (
         )),
         frona::credential::managed::login::ManagedLoginService::registered(),
     );
+    let sandbox_manager = Arc::new(frona::tool::sandbox::SandboxManager::new(
+        factory,
+        policy_service.clone(),
+        supervisor_skill_service,
+        storage.clone(),
+        supervisor_token_service,
+        supervisor_keypair_service,
+        vault.clone(),
+        "http://localhost".to_string(),
+        300,
+        "UTC".to_string(),
+    ));
+    let manager = Arc::new(McpManager::new(
+        sandbox_manager,
+        storage_for_mcp.clone(),
+        4100,
+        4200,
+        user_service.clone(),
+        frona::build_http_client(),
+    ));
+    let mcp_repo: Arc<dyn McpServerRepository> =
+        Arc::new(SurrealRepo::<McpServer>::new(db.clone()));
     let registry: Arc<dyn McpRegistryClient> = Arc::new(PrebuiltMcpRegistryClient::new(
         frona::build_http_client(),
         tmp.path().join("registry"),

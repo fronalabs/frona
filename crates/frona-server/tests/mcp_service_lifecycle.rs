@@ -200,6 +200,7 @@ async fn build_test_harness(
         storage.clone(),
         lifecycle_token_service,
         lifecycle_keypair_service,
+        vault.clone(),
         "http://localhost".to_string(),
         300,
         "UTC".to_string(),

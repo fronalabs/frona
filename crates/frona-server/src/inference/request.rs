@@ -1,7 +1,4 @@
-use std::sync::Arc;
-
 use rig_core::completion::Message as RigMessage;
-use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::models::Agent;
@@ -27,7 +24,6 @@ pub struct InferenceContext {
     pub chat: Option<Chat>,
     pub task: Option<Task>,
     pub event_tx: EventSender,
-    pub vault_env_vars: Arc<RwLock<Vec<(String, String)>>>,
     /// Resolved filesystem paths for files shared in this chat (from message attachments).
     pub file_paths: Vec<String>,
     pub shutdown_token: CancellationToken,
@@ -52,7 +48,6 @@ impl InferenceContext {
             chat: Some(chat),
             task: None,
             event_tx,
-            vault_env_vars: Arc::new(RwLock::new(Vec::new())),
             file_paths: Vec::new(),
             shutdown_token,
             cancel_token,
@@ -74,7 +69,6 @@ impl InferenceContext {
             chat: None,
             task: None,
             event_tx: EventSender::noop(),
-            vault_env_vars: Arc::new(RwLock::new(Vec::new())),
             file_paths: Vec::new(),
             shutdown_token,
             cancel_token,

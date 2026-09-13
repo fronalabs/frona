@@ -122,7 +122,8 @@ impl SandboxFactory {
 /// the Cedar policy + workspace + token + env machinery and exposes one
 /// constructor per principal kind:
 /// - [`SandboxManager::for_tool`] - agent inference tools (`CliTool`,
-///   the typed file tools). Adds skill paths + ephemeral token + vault env.
+///   the typed file tools). Adds skill paths and an ephemeral token.
+/// - [`SandboxManager::for_command`] - command tools, including current vault bindings.
 /// - [`SandboxManager::for_app`] - App processes under an agent workspace.
 /// - [`SandboxManager::for_mcp`] - MCP servers in their own workspace.
 ///
@@ -140,6 +141,7 @@ pub struct SandboxManager {
     api_base_url: String,
     ephemeral_token_expiry_secs: u64,
     server_timezone: String,
+    vault_service: crate::credential::vault::service::VaultService,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -151,6 +153,7 @@ impl SandboxManager {
         storage_service: crate::storage::service::StorageService,
         token_service: crate::auth::token::service::TokenService,
         keypair_service: crate::credential::keypair::service::KeyPairService,
+        vault_service: crate::credential::vault::service::VaultService,
         api_base_url: String,
         ephemeral_token_expiry_secs: u64,
         server_timezone: String,
@@ -165,7 +168,27 @@ impl SandboxManager {
             api_base_url,
             ephemeral_token_expiry_secs,
             server_timezone,
+            vault_service,
         }
+    }
+
+    /// Build a command sandbox with freshly authorized credentials.
+    pub async fn for_command(
+        &self,
+        ctx: &crate::inference::request::InferenceContext,
+    ) -> Result<Sandbox, AppError> {
+        let mut sandbox = self.for_tool(ctx).await?;
+        let env = self
+            .vault_service
+            .resolve_env(
+                &ctx.user.id,
+                &Principal::agent(&ctx.agent.id),
+                ctx.chat.as_ref().map(|chat| chat.id.as_str()),
+            )
+            .await?;
+        // Reserved Frona variables stay last, as in the other launch paths.
+        sandbox.extra_env_vars.splice(0..0, env);
+        Ok(sandbox)
     }
 
     /// Underlying factory - useful for callers that need things like
@@ -177,9 +200,8 @@ impl SandboxManager {
 
     /// Build a fully-configured Sandbox for an agent: Cedar policy + skill
     /// grants + workspace + ctx.file_paths + ephemeral token guard +
-    /// vault/API env vars. Used by both `CliTool` (which then calls
-    /// `.execute()`) and the typed file tools (which call `.is_readable()`
-    /// / `.is_writable()` and drop).
+    /// API env vars. File tools use this for path checks without resolving
+    /// credentials. Command tools use `for_command` before execution.
     pub async fn for_tool(
         &self,
         ctx: &crate::inference::request::InferenceContext,
@@ -266,16 +288,17 @@ impl SandboxManager {
         sandbox = sandbox.with_read_files(vec![token_guard.path().to_string_lossy().into_owned()]);
 
         {
-            let mut extra_vars = ctx.vault_env_vars.read().await.clone();
-            extra_vars.push((
-                "TZ".to_string(),
-                ctx.user.resolved_timezone(&self.server_timezone),
-            ));
-            extra_vars.push((
-                "FRONA_TOKEN_FILE".to_string(),
-                token_guard.path().to_string_lossy().into_owned(),
-            ));
-            extra_vars.push(("FRONA_API_URL".to_string(), self.api_base_url.clone()));
+            let extra_vars = vec![
+                (
+                    "TZ".to_string(),
+                    ctx.user.resolved_timezone(&self.server_timezone),
+                ),
+                (
+                    "FRONA_TOKEN_FILE".to_string(),
+                    token_guard.path().to_string_lossy().into_owned(),
+                ),
+                ("FRONA_API_URL".to_string(), self.api_base_url.clone()),
+            ];
             sandbox = sandbox.with_extra_env_vars(extra_vars);
         }
 

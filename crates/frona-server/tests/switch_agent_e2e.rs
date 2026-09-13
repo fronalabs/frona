@@ -125,7 +125,6 @@ async fn build_state(
         helpers::test_memory_service(&state, &db),
         state.skill_service.clone(),
         state.task_service.clone(),
-        state.vault_service.clone(),
         state.mcp_service.clone(),
         state.tool_manager.clone(),
         state.policy_service.clone(),

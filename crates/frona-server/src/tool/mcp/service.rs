@@ -637,41 +637,11 @@ impl McpServerService {
     async fn resolve_env(&self, server: &McpServer) -> Result<BTreeMap<String, String>, AppError> {
         let mut out = server.env.clone();
         let principal = Principal::mcp_server(&server.id);
-        let bindings = self
-            .vault
-            .list_bindings_for_principal(&server.user_id, &principal)
-            .await?;
-        for binding in bindings {
-            let authorized = self
-                .vault
-                .has_grant_for_item(
-                    &server.user_id,
-                    &principal,
-                    &binding.connection_id,
-                    &binding.vault_item_id,
-                )
-                .await?;
-            if !authorized {
-                return Err(AppError::Forbidden(format!(
-                    "grant missing for vault item {} in connection {} — re-approve it",
-                    binding.vault_item_id, binding.connection_id,
-                )));
-            }
-
-            let secret = self
-                .vault
-                .get_secret(
-                    &server.user_id,
-                    &binding.connection_id,
-                    &binding.vault_item_id,
-                )
-                .await?;
-            for (k, v) in
-                crate::credential::vault::service::project_target(&secret, &binding.target)
-            {
-                out.insert(k, v);
-            }
-        }
+        out.extend(
+            self.vault
+                .resolve_env(&server.user_id, &principal, None)
+                .await?,
+        );
         Ok(out)
     }
 }

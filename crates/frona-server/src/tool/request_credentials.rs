@@ -90,7 +90,7 @@ impl RequestCredentialsTool {
         {
             let secret = self
                 .vault_service
-                .get_secret(&ctx.user.id, &binding.connection_id, &binding.vault_item_id)
+                .resolve_binding(&ctx.user.id, &principal, &binding, Some(&chat.id))
                 .await?;
 
             self.vault_service
@@ -107,13 +107,11 @@ impl RequestCredentialsTool {
                 .await?;
 
             let env_vars =
-                crate::credential::vault::service::project_target(&secret, &binding.target);
+                crate::credential::vault::service::project_target(&secret, &binding.target)?;
             let var_names: Vec<String> = env_vars.iter().map(|(k, _)| k.clone()).collect();
-            let mut vault_vars = ctx.vault_env_vars.write().await;
-            vault_vars.extend(env_vars);
 
             return Ok(ToolOutput::text(format!(
-                "Credentials loaded into environment variables: {}. Use these in CLI commands.",
+                "Credentials approved for command startup: {}. Each command resolves current values.",
                 var_names.join(", ")
             )));
         }
@@ -197,13 +195,11 @@ impl RequestCredentialsTool {
                     )
                     .await?;
 
-                let env_vars = crate::credential::vault::service::project_target(&secret, &target);
+                let env_vars = crate::credential::vault::service::project_target(&secret, &target)?;
                 let var_names: Vec<String> = env_vars.iter().map(|(k, _)| k.clone()).collect();
-                let mut vault_vars = ctx.vault_env_vars.write().await;
-                vault_vars.extend(env_vars);
 
                 Ok(HitlOutcome::Resolved(format!(
-                    "Credentials loaded into environment variables: {}. Use these in CLI commands.",
+                    "Credentials approved for command startup: {}. Each command resolves current values.",
                     var_names.join(", "),
                 )))
             }

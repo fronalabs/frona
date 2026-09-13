@@ -9,7 +9,7 @@ use crate::core::error::AppError;
 use crate::core::principal::Principal;
 use crate::core::supervisor::Supervisor;
 use crate::credential::vault::models::{BindingScope, CredentialTarget};
-use crate::credential::vault::service::{VaultService, project_target};
+use crate::credential::vault::service::VaultService;
 use crate::tool::mcp::models::CredentialBinding;
 
 use super::models::{
@@ -384,37 +384,12 @@ impl ChannelService {
         }
 
         let principal = Principal::channel(&channel.id);
-        let bindings = self
+        for (key, value) in self
             .vault
-            .list_bindings_for_principal(&channel.user_id, &principal)
-            .await?;
-        for binding in bindings {
-            let authorized = self
-                .vault
-                .has_grant_for_item(
-                    &channel.user_id,
-                    &principal,
-                    &binding.connection_id,
-                    &binding.vault_item_id,
-                )
-                .await?;
-            if !authorized {
-                return Err(AppError::Forbidden(format!(
-                    "grant missing for vault item {} in connection {} — re-approve it",
-                    binding.vault_item_id, binding.connection_id,
-                )));
-            }
-            let secret = self
-                .vault
-                .get_secret(
-                    &channel.user_id,
-                    &binding.connection_id,
-                    &binding.vault_item_id,
-                )
-                .await?;
-            for (k, v) in project_target(&secret, &binding.target) {
-                out.insert(k, serde_json::Value::String(v));
-            }
+            .resolve_env(&channel.user_id, &principal, None)
+            .await?
+        {
+            out.insert(key, serde_json::Value::String(value));
         }
 
         for field in &manifest.config_fields {

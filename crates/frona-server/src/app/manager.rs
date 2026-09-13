@@ -478,6 +478,27 @@ mod tests {
             >::new(db.clone()));
         let keypair_service =
             crate::credential::keypair::service::KeyPairService::new("test-secret", keypair_repo);
+        let vault = crate::credential::vault::service::VaultService::new(
+            Arc::new(crate::db::repo::generic::SurrealRepo::new(db.clone())),
+            Arc::new(crate::db::repo::generic::SurrealRepo::new(db.clone())),
+            Arc::new(crate::db::repo::generic::SurrealRepo::new(db.clone())),
+            Arc::new(crate::db::repo::generic::SurrealRepo::new(db.clone())),
+            Arc::new(crate::db::repo::generic::SurrealRepo::new(db.clone())),
+            "test-secret",
+            Default::default(),
+            std::env::temp_dir().join("frona-test-app-vault"),
+            storage.clone(),
+            user_service.clone(),
+            crate::credential::managed::ManagedVault::new(
+                Arc::new(crate::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone())),
+                "test-secret",
+                "managed".into(),
+            ),
+            Arc::new(crate::credential::managed::resolver::ManagedResolver::new(
+                std::collections::HashMap::new(),
+            )),
+            crate::credential::managed::login::ManagedLoginService::registered(),
+        );
         let token_repo: Arc<
             crate::db::repo::generic::SurrealRepo<crate::auth::token::models::ApiToken>,
         > = Arc::new(crate::db::repo::generic::SurrealRepo::new(db));
@@ -496,6 +517,7 @@ mod tests {
             storage,
             token_service,
             keypair_service,
+            vault,
             "http://localhost".to_string(),
             300,
             "UTC".to_string(),

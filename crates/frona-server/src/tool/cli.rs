@@ -122,7 +122,7 @@ impl AgentTool for CliTool {
 
         let agent_id = &ctx.agent.id;
 
-        let sandbox = self.sandbox_manager.for_tool(ctx).await?;
+        let sandbox = self.sandbox_manager.for_command(ctx).await?;
 
         let timeout = ctx
             .agent
@@ -274,7 +274,11 @@ pub fn load_cli_tool_configs(prompts: &PromptLoader) -> Vec<CliToolConfig> {
 mod tests {
     use super::*;
 
-    async fn mock_token_services() -> (TokenService, KeyPairService) {
+    async fn mock_token_services() -> (
+        TokenService,
+        KeyPairService,
+        crate::credential::vault::service::VaultService,
+    ) {
         use crate::auth::jwt::JwtService;
         use crate::db::repo::generic::SurrealRepo;
 
@@ -293,11 +297,33 @@ mod tests {
         let tokens = TokenService::new(
             Arc::new(SurrealRepo::new(db.clone())),
             JwtService::new(),
-            user_service,
+            user_service.clone(),
             900,
             604_800,
         );
-        (tokens, keypair)
+        let storage = crate::storage::StorageService::new(&crate::core::config::Config::default());
+        let vault = crate::credential::vault::service::VaultService::new(
+            Arc::new(SurrealRepo::new(db.clone())),
+            Arc::new(SurrealRepo::new(db.clone())),
+            Arc::new(SurrealRepo::new(db.clone())),
+            Arc::new(SurrealRepo::new(db.clone())),
+            Arc::new(SurrealRepo::new(db.clone())),
+            "test-secret",
+            Default::default(),
+            "/tmp/test-data".into(),
+            storage,
+            user_service,
+            crate::credential::managed::ManagedVault::new(
+                Arc::new(crate::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone())),
+                "test-secret",
+                "managed".into(),
+            ),
+            Arc::new(crate::credential::managed::resolver::ManagedResolver::new(
+                std::collections::HashMap::new(),
+            )),
+            crate::credential::managed::login::ManagedLoginService::registered(),
+        );
+        (tokens, keypair, vault)
     }
 
     #[test]
@@ -367,7 +393,8 @@ mod tests {
             std::sync::Arc::new(SurrealRepo::<crate::policy::models::Policy>::new(
                 db.clone(),
             ));
-        let tool_manager = std::sync::Arc::new(crate::tool::manager::ToolManager::new(false));
+        let tool_fixture = crate::app_state_fixture::build(&db).await;
+        let tool_manager = tool_fixture.state.tool_manager.clone();
         let storage = crate::storage::StorageService::new(&crate::core::config::Config::default());
         let user_service = crate::auth::UserService::new(
             SurrealRepo::new(db),
@@ -428,7 +455,7 @@ mod tests {
             ),
         ));
         let storage = crate::storage::StorageService::new(&crate::core::config::Config::default());
-        let (tokens, keypair) = mock_token_services().await;
+        let (tokens, keypair, vault) = mock_token_services().await;
         Arc::new(SandboxManager::new(
             factory,
             mock_policy_service().await,
@@ -436,6 +463,7 @@ mod tests {
             storage,
             tokens,
             keypair,
+            vault,
             "http://localhost".into(),
             300,
             "UTC".to_string(),
@@ -525,7 +553,7 @@ mod tests {
         let mut config_obj = crate::core::config::Config::default();
         config_obj.storage.data_dir = tmp.to_string_lossy().into_owned();
         let storage = crate::storage::StorageService::new(&config_obj);
-        let (tokens, keypair) = mock_token_services().await;
+        let (tokens, keypair, vault) = mock_token_services().await;
         let factory = Arc::new(crate::tool::sandbox::SandboxFactory::new(
             false,
             Arc::new(
@@ -541,6 +569,7 @@ mod tests {
             storage,
             tokens,
             keypair,
+            vault,
             "http://localhost".into(),
             300,
             "UTC".to_string(),

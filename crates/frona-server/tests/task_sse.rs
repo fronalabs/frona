@@ -160,7 +160,6 @@ async fn test_app_state_with_mock(mock: Arc<MockModelProvider>) -> (AppState, te
         memory_service,
         state.skill_service.clone(),
         state.task_service.clone(),
-        state.vault_service.clone(),
         state.mcp_service.clone(),
         state.tool_manager.clone(),
         state.policy_service.clone(),

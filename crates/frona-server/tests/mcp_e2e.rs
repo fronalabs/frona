@@ -127,6 +127,27 @@ async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
         Arc::new(frona::db::repo::generic::SurrealRepo::new(db.clone()));
     let keypair_service =
         frona::credential::keypair::service::KeyPairService::new("test-secret", keypair_repo);
+    let vault = frona::credential::vault::service::VaultService::new(
+        Arc::new(frona::db::repo::generic::SurrealRepo::new(db.clone())),
+        Arc::new(frona::db::repo::generic::SurrealRepo::new(db.clone())),
+        Arc::new(frona::db::repo::generic::SurrealRepo::new(db.clone())),
+        Arc::new(frona::db::repo::generic::SurrealRepo::new(db.clone())),
+        Arc::new(frona::db::repo::generic::SurrealRepo::new(db.clone())),
+        "test-secret",
+        Default::default(),
+        tmp.to_path_buf(),
+        storage.clone(),
+        user_service.clone(),
+        frona::credential::managed::ManagedVault::new(
+            Arc::new(frona::db::repo::managed_vault::SurrealManagedVaultRepo::new(db.clone())),
+            "test-secret",
+            "managed".into(),
+        ),
+        Arc::new(frona::credential::managed::resolver::ManagedResolver::new(
+            std::collections::HashMap::new(),
+        )),
+        frona::credential::managed::login::ManagedLoginService::registered(),
+    );
     let token_repo: Arc<
         frona::db::repo::generic::SurrealRepo<frona::auth::token::models::ApiToken>,
     > = Arc::new(frona::db::repo::generic::SurrealRepo::new(db));
@@ -144,6 +165,7 @@ async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
         storage.clone(),
         token_service,
         keypair_service,
+        vault,
         "http://localhost".to_string(),
         300,
         "UTC".to_string(),

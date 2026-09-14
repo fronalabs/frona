@@ -39,6 +39,7 @@ fn msg(created: DateTime<Utc>, status: Option<MessageStatus>) -> MessageResponse
         attachments: Vec::new(),
         contact_id: None,
         status,
+        error: None,
         reasoning: None,
         from_address: None,
         delivery: None,

@@ -939,7 +939,7 @@ impl Harness {
             Err(e) => {
                 tracing::warn!(message_id, error = %e, "agent loop failed");
                 if let Ok(msg) = self.chat_service.get_message(user_id, message_id).await {
-                    let _ = self.chat_service.fail_agent_message(msg, e.to_string()).await;
+                    let _ = self.chat_service.fail_agent_message(msg, (&e).into()).await;
                 }
             }
         }

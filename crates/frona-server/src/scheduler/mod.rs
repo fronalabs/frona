@@ -563,7 +563,7 @@ async fn execute_heartbeat(
             if let Ok(msg) = state.chat_service.get_message(user_id, &agent_msg_id).await {
                 let _ = state
                     .chat_service
-                    .fail_agent_message(msg, e.to_string())
+                    .fail_agent_message(msg, (&e).into())
                     .await;
             }
             tracing::error!(error = %e, chat_id = %chat_id, "Heartbeat agent tool loop failed");

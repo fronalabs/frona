@@ -149,6 +149,7 @@ pub struct Message {
     pub attachments: Vec<Attachment>,
     pub contact_id: Option<String>,
     pub status: Option<MessageStatus>,
+    pub error: Option<super::error::MessageError>,
     pub reasoning: Option<Reasoning>,
     pub from_address: Option<String>,
     pub delivery: Option<MessageDelivery>,
@@ -269,6 +270,7 @@ impl MessageBuilder {
             attachments: self.attachments,
             contact_id: self.contact_id,
             status: self.status,
+            error: None,
             reasoning: self.reasoning,
             from_address: self.from_address,
             delivery: self.delivery,
@@ -354,6 +356,8 @@ pub struct MessageResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<MessageStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<super::error::MessageError>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from_address: Option<String>,
@@ -380,6 +384,7 @@ impl From<Message> for MessageResponse {
             attachments: msg.attachments,
             contact_id: msg.contact_id,
             status: msg.status,
+            error: msg.error,
             reasoning: msg.reasoning.map(|r| r.content),
             from_address: msg.from_address,
             delivery: msg.delivery,

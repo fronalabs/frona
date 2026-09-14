@@ -71,6 +71,7 @@ fn test_message_at(chat_id: &str, content: &str, created_at: chrono::DateTime<Ut
         attachments: vec![],
         contact_id: None,
         status: None,
+        error: None,
         reasoning: None,
         from_address: None,
         delivery: None,

@@ -1,6 +1,63 @@
 mod helpers;
 
 #[tokio::test]
+async fn streaming_failure_reports_retries_and_fallback_context() {
+    use frona::chat::message::error::{ErrorCategory, MessageError, MessageErrorDetails};
+    let primary = Arc::new(MockModelProvider::new(vec![
+        MockResponse::Error(InferenceError::RateLimited {
+            retry_after_secs: 1,
+        }),
+        MockResponse::Error(InferenceError::RateLimited {
+            retry_after_secs: 1,
+        }),
+    ]));
+    let fallback = Arc::new(MockModelProvider::new(vec![MockResponse::Error(
+        InferenceError::CompletionFailed(rig_core::completion::CompletionError::HttpError(
+            rig_core::http_client::Error::InvalidStatusCodeWithMessage(
+                axum::http::StatusCode::BAD_REQUEST,
+                "Model unavailable for this account".into(),
+            ),
+        )),
+    )]));
+    let mut providers = test_providers("mock", primary.clone());
+    Arc::make_mut(&mut providers).insert("subscription".into(), fallback.clone());
+    let group = frona::inference::ModelGroup {
+        providers,
+        ..test_model_group_with_fallback("subscription", "gpt-5.3-codex")
+    };
+    let (events, _, _) = test_event_sender().await;
+    let error = group
+        .stream_inference(
+            frona::inference::ModelRequest {
+                system_prompt: "system",
+                history: vec![RigMessage::user("hi")],
+                tools: vec![],
+                usage_service: &test_metrics_ctx(),
+                usage_context: &test_usage_ctx(),
+                overrides: Default::default(),
+            },
+            &events,
+            &CancellationToken::new(),
+            &mut String::new(),
+        )
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(primary.calls(), 2);
+    assert_eq!(fallback.calls(), 1);
+    let failure = MessageError::from(&error);
+    let MessageErrorDetails::Inference(details) = failure.details else {
+        panic!("expected inference failure")
+    };
+    assert_eq!(details.retry_count, Some(1));
+    assert_eq!(details.fallback_count, Some(1));
+    assert_eq!(details.provider.as_deref(), Some("subscription"));
+    assert_eq!(details.model.as_deref(), Some("gpt-5.3-codex"));
+    assert_eq!(details.category, ErrorCategory::InvalidRequest);
+    assert_eq!(details.http_status, Some(400));
+}
+
+#[tokio::test]
 async fn streaming_skips_unavailable_primary_and_uses_fallback_without_catalogs() {
     use frona::inference::retry::StreamResult;
     let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text(

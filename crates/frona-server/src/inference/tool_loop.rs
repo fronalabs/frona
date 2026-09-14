@@ -61,7 +61,8 @@ pub enum InferenceEventKind {
         reason: String,
     },
     Failed {
-        error: String,
+        error: crate::chat::message::error::MessageError,
+        message_id: String,
     },
     /// Loop is parked, waiting for something external (the human, a sibling
     /// task, a webhook) to resume it. The `reason` carries WHY; the message
@@ -651,7 +652,12 @@ pub async fn run_tool_loop(
         if turn == max_tool_turns - 1 {
             event_tx.send(InferenceEvent {
                 kind: InferenceEventKind::Failed {
-                    error: "Max tool turns reached".to_string(),
+                    error: crate::chat::message::error::MessageError::from(&AppError::from(
+                        crate::inference::error::InferenceError::InferenceFailed(
+                            "Max tool turns reached".into(),
+                        ),
+                    )),
+                    message_id: message_id.to_string(),
                 },
             });
         }

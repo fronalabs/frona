@@ -329,7 +329,7 @@ async fn handle_voice_turn(
                     .chat_service
                     .fail_agent_message(
                         response,
-                        AppError::Internal("voice inference unexpected branch".into()).to_string(),
+                        (&AppError::Internal("voice inference unexpected branch".into())).into(),
                     )
                     .await;
                 return Ok((String::new(), false));

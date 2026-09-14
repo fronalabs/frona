@@ -34,6 +34,7 @@ fn make_message(id: &str, status: MessageStatus) -> Message {
         attachments: vec![],
         contact_id: None,
         status: Some(status),
+        error: None,
         reasoning: None,
         from_address: None,
         delivery: None,

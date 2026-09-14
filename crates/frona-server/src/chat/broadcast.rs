@@ -265,9 +265,9 @@ pub(crate) fn map_event_to_sse(event: &BroadcastEvent) -> Option<Event> {
                     "inference_cancelled",
                     serde_json::json!({ "chat_id": chat_id, "reason": reason }),
                 )),
-                InferenceEventKind::Failed { error } => Some(sse_event(
+                InferenceEventKind::Failed { error, message_id } => Some(sse_event(
                     "inference_error",
-                    serde_json::json!({ "chat_id": chat_id, "error": error }),
+                    serde_json::json!({ "chat_id": chat_id, "error": error, "message_id": message_id }),
                 )),
                 InferenceEventKind::Paused { reason, message } => Some(sse_event(
                     "inference_paused",

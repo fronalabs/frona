@@ -134,17 +134,28 @@ impl AgentToolRegistry {
         arguments: Value,
         ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
-        let owner = self
-            .tool_name_to_owner
-            .get(tool_name)
-            .ok_or_else(|| AppError::Tool(format!("Unknown tool: {tool_name}")))?;
+        let owner =
+            self.tool_name_to_owner
+                .get(tool_name)
+                .ok_or_else(|| AppError::ToolExecution {
+                    tool_name: tool_name.into(),
+                    source: Box::new(AppError::NotFound(format!("Unknown tool: {tool_name}"))),
+                })?;
 
         let tool = self
             .tools
             .get(owner)
-            .ok_or_else(|| AppError::Tool(format!("Tool owner not found: {owner}")))?;
+            .ok_or_else(|| AppError::ToolExecution {
+                tool_name: tool_name.into(),
+                source: Box::new(AppError::NotFound(format!("Tool owner not found: {owner}"))),
+            })?;
 
-        tool.execute(tool_name, arguments, ctx).await
+        tool.execute(tool_name, arguments, ctx)
+            .await
+            .map_err(|source| AppError::ToolExecution {
+                tool_name: tool_name.to_string(),
+                source: Box::new(source),
+            })
     }
 
     pub fn definitions(&self) -> &[ToolDefinition] {

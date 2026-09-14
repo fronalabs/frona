@@ -2,7 +2,6 @@ use serde_json::Value;
 
 use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
-use crate::inference::ModelGroup;
 use crate::memory::basic::BasicMemoryService;
 use frona_derive::agent_tool;
 
@@ -10,19 +9,13 @@ use crate::tool::{InferenceContext, ToolOutput, active_chat, str_arg};
 
 pub struct StoreAgentMemoryTool {
     memory_service: BasicMemoryService,
-    compaction_group: Option<ModelGroup>,
     prompts: PromptLoader,
 }
 
 impl StoreAgentMemoryTool {
-    pub fn new(
-        memory_service: BasicMemoryService,
-        compaction_group: Option<ModelGroup>,
-        prompts: PromptLoader,
-    ) -> Self {
+    pub fn new(memory_service: BasicMemoryService, prompts: PromptLoader) -> Self {
         Self {
             memory_service,
-            compaction_group,
             prompts,
         }
     }
@@ -59,11 +52,13 @@ impl StoreAgentMemoryTool {
             .store_memory_entry(agent_id, memory, Some(chat_id))
             .await?;
 
-        if let Some(ref group) = self.compaction_group {
+        let group = self
+            .memory_service
+            .compaction_model_group(&ctx.agent.model_group);
+        if let Ok(group) = group {
             let ms = self.memory_service.clone();
             let aid = agent_id.clone();
             let uid = ctx.user.id.clone();
-            let group = group.clone();
             if overrides {
                 tracing::debug!(agent_id = %aid, "Spawning forced memory compaction (overrides=true)");
                 tokio::spawn(async move {
@@ -79,6 +74,8 @@ impl StoreAgentMemoryTool {
                     }
                 });
             }
+        } else if let Err(error) = group {
+            tracing::warn!(error = %error, "Stored memory without compaction: no model group available");
         }
 
         Ok(ToolOutput::text(format!("Stored: {memory}")))
@@ -87,19 +84,13 @@ impl StoreAgentMemoryTool {
 
 pub struct StoreUserMemoryTool {
     memory_service: BasicMemoryService,
-    compaction_group: Option<ModelGroup>,
     prompts: PromptLoader,
 }
 
 impl StoreUserMemoryTool {
-    pub fn new(
-        memory_service: BasicMemoryService,
-        compaction_group: Option<ModelGroup>,
-        prompts: PromptLoader,
-    ) -> Self {
+    pub fn new(memory_service: BasicMemoryService, prompts: PromptLoader) -> Self {
         Self {
             memory_service,
-            compaction_group,
             prompts,
         }
     }
@@ -136,10 +127,12 @@ impl StoreUserMemoryTool {
             .store_user_memory_entry(user_id, memory, Some(chat_id))
             .await?;
 
-        if let Some(ref group) = self.compaction_group {
+        let group = self
+            .memory_service
+            .compaction_model_group(&ctx.agent.model_group);
+        if let Ok(group) = group {
             let ms = self.memory_service.clone();
             let uid = user_id.clone();
-            let group = group.clone();
             if overrides {
                 tracing::debug!(user_id = %uid, "Spawning forced user memory compaction (overrides=true)");
                 tokio::spawn(async move {
@@ -155,6 +148,8 @@ impl StoreUserMemoryTool {
                     }
                 });
             }
+        } else if let Err(error) = group {
+            tracing::warn!(error = %error, "Stored memory without compaction: no model group available");
         }
 
         Ok(ToolOutput::text(format!("Stored for user: {memory}")))

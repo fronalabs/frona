@@ -116,7 +116,6 @@ async fn test_store_user_memory_tool_rejects_a_blank_memory() {
     let svc = make_memory_service(db.clone()).await;
     let tool = frona::memory::basic::tools::StoreUserMemoryTool::new(
         svc,
-        None,
         PromptLoader::new(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("..")
@@ -144,4 +143,142 @@ async fn test_store_user_memory_tool_rejects_a_blank_memory() {
         repo.find_by_user_id("test-user").await.unwrap().is_empty(),
         "nothing was stored"
     );
+}
+
+#[tokio::test]
+async fn memory_tools_use_chat_model_unless_memory_group_is_configured() {
+    use frona::inference::provider::ModelProvider;
+    use frona::memory::service::MemoryService;
+    use helpers::{MockModelProvider, MockResponse};
+
+    for (memory_group_name, with_primary) in [
+        ("memory", false),
+        ("", false),
+        ("dedicated", false),
+        ("memory", true),
+    ] {
+        let db = test_db().await;
+        let chat_provider = Arc::new(MockModelProvider::new(vec![
+            MockResponse::Text("chat summary".into()),
+            MockResponse::Text("chat summary".into()),
+        ]));
+        let memory_provider = Arc::new(MockModelProvider::new(vec![
+            MockResponse::Text("memory summary".into()),
+            MockResponse::Text("memory summary".into()),
+        ]));
+        let mut chat_group = helpers::test_model_group();
+        chat_group.name = "chat-model".into();
+        let mut groups = [(chat_group.name.clone(), chat_group)]
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        if memory_group_name == "dedicated" {
+            let mut memory_group = helpers::test_model_group();
+            memory_group.name = "dedicated".into();
+            memory_group.main.provider_handle = frona::handle!("memory-provider");
+            groups.insert(memory_group.name.clone(), memory_group);
+        }
+        if with_primary {
+            let mut primary = helpers::test_model_group();
+            primary.name = "primary".into();
+            primary.main.provider_handle = frona::handle!("memory-provider");
+            groups.insert(primary.name.clone(), primary);
+        }
+        let providers = helpers::test_model_service(
+            [
+                (
+                    "mock".into(),
+                    chat_provider.clone() as Arc<dyn ModelProvider>,
+                ),
+                (
+                    "memory-provider".into(),
+                    memory_provider.clone() as Arc<dyn ModelProvider>,
+                ),
+            ]
+            .into(),
+            groups,
+        )
+        .await;
+        let svc = BasicMemoryService::new(
+            SurrealRepo::new(db.clone()),
+            SurrealRepo::new(db.clone()),
+            SurrealRepo::new(db.clone()),
+            SurrealRepo::new(db.clone()),
+            Arc::new(providers),
+            PromptLoader::new(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../resources/prompts"),
+            ),
+            frona::inference::usage::UsageService::new(
+                frona_model_catalog::ModelCatalogStore::new(
+                    frona_model_catalog::ModelCatalogSnapshot::empty(),
+                ),
+                SurrealRepo::new(db.clone()),
+                frona::chat::broadcast::BroadcastService::new(),
+            ),
+            frona::core::config::MemoryConfig {
+                model_group: memory_group_name.into(),
+                ..Default::default()
+            },
+        );
+        let mut ctx = helpers::mock_context();
+        ctx.agent.model_group = "chat-model".into();
+        for (tool, (tool_name, source_type, source_id)) in svc.tools().into_iter().zip([
+            (
+                "store_agent_memory",
+                MemorySourceType::Agent,
+                ctx.agent.id.as_str(),
+            ),
+            (
+                "store_user_memory",
+                MemorySourceType::User,
+                ctx.user.id.as_str(),
+            ),
+        ]) {
+            tool.execute(
+                tool_name,
+                serde_json::json!({"memory": "Remember this", "overrides": true}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+            let summary = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if let Some(summary) = svc
+                        .get_memory(source_type.clone(), source_id)
+                        .await
+                        .unwrap()
+                    {
+                        break summary;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("background memory compaction did not finish");
+            assert_eq!(
+                summary.content,
+                if memory_group_name == "dedicated" {
+                    "memory summary"
+                } else {
+                    "chat summary"
+                }
+            );
+        }
+        assert_eq!(
+            *chat_provider.call_count.lock().unwrap(),
+            if memory_group_name == "dedicated" {
+                0
+            } else {
+                2
+            }
+        );
+        assert_eq!(
+            *memory_provider.call_count.lock().unwrap(),
+            if memory_group_name == "dedicated" {
+                2
+            } else {
+                0
+            }
+        );
+    }
 }

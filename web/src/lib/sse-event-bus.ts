@@ -1,5 +1,5 @@
 import { ensureAccessToken, API_URL } from "./api-client";
-import type { MessageResponse, Notification, PauseReason } from "./types";
+import type { MessageError, MessageResponse, Notification, PauseReason } from "./types";
 
 
 export type ChatSSEEvent =
@@ -12,7 +12,7 @@ export type ChatSSEEvent =
   | { type: "inference_start" }
   | { type: "inference_done"; message: MessageResponse }
   | { type: "inference_cancelled"; reason: string }
-  | { type: "inference_error"; error: string }
+  | { type: "inference_error"; error: MessageError; messageId?: string }
   | { type: "inference_paused"; reason: PauseReason; message: MessageResponse }
   | { type: "inference_resume"; message: MessageResponse }
   | { type: "usage_recorded"; usage: UsageRecorded };
@@ -335,7 +335,7 @@ export class SSEEventBus {
         this.dispatchChat(chatId, { type: "inference_cancelled", reason: parsed.reason as string });
         break;
       case "inference_error":
-        this.dispatchChat(chatId, { type: "inference_error", error: parsed.error as string });
+        this.dispatchChat(chatId, { type: "inference_error", error: parsed.error as MessageError, messageId: parsed.message_id as string | undefined });
         break;
       case "inference_paused":
         this.dispatchChat(chatId, {

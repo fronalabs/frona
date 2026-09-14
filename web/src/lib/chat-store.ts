@@ -1,5 +1,5 @@
 import type { ChatSSEEvent, UsageRecorded } from "./sse-event-bus";
-import type { MessageResponse, MessageStatus, Attachment, ToolCall } from "./types";
+import type { MessageError, MessageResponse, MessageStatus, Attachment, ToolCall } from "./types";
 import { api } from "./api-client";
 
 export interface RunningTotals {
@@ -492,8 +492,11 @@ export class ChatStore {
       }
 
       case "inference_cancelled":
-      case "inference_error":
         this.clearStreaming();
+        break;
+
+      case "inference_error":
+        this.failMessage(event.error, event.messageId);
         break;
 
       case "usage_recorded": {
@@ -671,6 +674,28 @@ export class ChatStore {
         break;
       }
     }
+  }
+
+  failMessage(error: MessageError, messageId?: string) {
+    const display = this.getDisplayMessages();
+    const last = display[display.length - 1];
+    const existing = messageId ? display.find((message) => message.id === messageId) : undefined;
+    const current = existing ?? (last?.role === "agent" && last.status === "executing" ? last : undefined);
+    const failed: MessageResponse = {
+      ...current,
+      id: messageId ?? (current?.id !== "__streaming__" ? current?.id : undefined) ?? `__error_${crypto.randomUUID()}`,
+      chat_id: current?.chat_id ?? "",
+      role: "agent",
+      content: current?.content ?? "",
+      status: "failed",
+      error,
+      created_at: current?.created_at ?? new Date().toISOString(),
+    };
+    const index = this.messages.findIndex((message) => message.id === failed.id);
+    if (index >= 0) this.messages[index] = failed;
+    else this.messages.push(failed);
+    this.clearStreaming();
+    this.notify(true);
   }
 
   clearStreaming() {

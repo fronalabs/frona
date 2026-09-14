@@ -318,6 +318,20 @@ export type MessageCommand =
   | { type: "skill"; name: string; prompt: string }
   | { type: "command"; name: string; args: string };
 
+export type ErrorCategory = "authentication" | "permission" | "model_unavailable" | "rate_limit"
+  | "timeout" | "network" | "invalid_request" | "invalid_response" | "configuration" | "internal" | "unknown";
+
+type FailureDetails = { category: ErrorCategory; retryable: boolean; http_status?: number };
+
+export type MessageError = {
+  message: string;
+  timestamp: string;
+  details:
+    | { subsystem: "inference"; data: FailureDetails & { provider?: string; model?: string; retry_count?: number; fallback_count?: number } }
+    | { subsystem: "tool_execution"; data: FailureDetails & { tool_name?: string } }
+    | { subsystem: "message_processing"; data: FailureDetails };
+};
+
 export interface MessageResponse {
   id: string;
   chat_id: string;
@@ -328,6 +342,7 @@ export interface MessageResponse {
   attachments?: Attachment[];
   contact_id?: string;
   status?: MessageStatus;
+  error?: MessageError;
   reasoning?: string;
   tool_calls?: ToolCall[];
   /** Set when the user typed `/skill ...`, `/command ...`, or `@agent ...`. */

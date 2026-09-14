@@ -10,6 +10,7 @@ import { sendMessage as apiSendMessage, cancelGeneration, api, uploadFile } from
 import { computeTimeMarkers, useTimezone } from "./format-time";
 import type { MessageResponse, ChatResponse, Attachment } from "./types";
 import { renderMessageBody } from "./task-result-render";
+import { messageProcessingError } from "./message-error";
 
 
 const backendAttachmentRegistry = new Map<string, Attachment>();
@@ -276,7 +277,13 @@ export function convertMessage(msg: MessageResponse) {
       role: "assistant" as const,
       content: finalContent,
       createdAt: new Date(msg.created_at),
-      status: msg.tool_calls?.some(te => te.hitl?.status === "pending")
+      status: msg.status === "failed"
+        ? {
+            type: "incomplete" as const,
+            reason: "error" as const,
+            error: msg.error ?? "Message processing failed.",
+          }
+        : msg.tool_calls?.some(te => te.hitl?.status === "pending")
         ? { type: "requires-action" as const, reason: "tool-calls" as const }
         : inFlight
           ? { type: "running" as const }
@@ -391,39 +398,38 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     }
 
     let sendChatId = currentChatIdRef.current;
-    if (!sendChatId) {
-      // Standalone composers (home/space page) handle chat creation themselves.
-      // Only create a chat here if there's a promotion callback.
-      if (!onChatCreatedRef.current) return;
-      const chat = await api.post<ChatResponse>("/api/chats", { agent_id: agentId });
-      sendChatId = chat.id;
-      currentChatIdRef.current = sendChatId;
-
-      // Eagerly subscribe to SSE events NOW, before the React effect fires.
-      // This eliminates the race window where events could arrive unbuffered.
-      const eager = new AbortController();
-      eagerSubRef.current = eager;
-      const events = sseBus.subscribe(sendChatId, eager.signal);
-      (async () => {
-        for await (const event of events) {
-          store.handleEvent(event);
-        }
-      })();
-
-      // This triggers slot promotion → chatId prop change → SSE effect adopts the eager sub.
-      onChatCreatedRef.current(chat);
-    }
-
+    if (!sendChatId && !onChatCreatedRef.current) return;
     store.addUserMessage(text, attachments.length ? attachments : undefined);
 
-    const body = attachments.length
-      ? { content: text, attachments }
-      : { content: text };
-
     try {
+      if (!sendChatId) {
+        // Standalone composers (home/space page) handle chat creation themselves.
+        // Only create a chat here if there's a promotion callback.
+        const chat = await api.post<ChatResponse>("/api/chats", { agent_id: agentId });
+        sendChatId = chat.id;
+        currentChatIdRef.current = sendChatId;
+
+        // Eagerly subscribe to SSE events NOW, before the React effect fires.
+        // This eliminates the race window where events could arrive unbuffered.
+        const eager = new AbortController();
+        eagerSubRef.current = eager;
+        const events = sseBus.subscribe(sendChatId, eager.signal);
+        (async () => {
+          for await (const event of events) {
+            store.handleEvent(event);
+          }
+        })();
+
+        // This triggers slot promotion -> chatId prop change -> SSE effect adopts the eager sub.
+        onChatCreatedRef.current!(chat);
+      }
+
+      const body = attachments.length
+        ? { content: text, attachments }
+        : { content: text };
       await apiSendMessage(sendChatId, body);
-    } catch {
-      store.clearStreaming();
+    } catch (error) {
+      store.failMessage(messageProcessingError(error));
     }
   }, [agentId, store]);
 

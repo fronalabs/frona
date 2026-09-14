@@ -1,3 +1,4 @@
+import { makeMessageError } from "./fixtures/message-error";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ChatStore, mergeConsecutiveMessages } from "../chat-store";
 import type { ChatSSEEvent } from "../sse-event-bus";
@@ -585,10 +586,44 @@ describe("ChatStore", () => {
 
     it("clears streaming state on error", () => {
       store.handleEvent({ type: "token", content: "partial" });
-      store.handleEvent({ type: "inference_error", error: "model error" });
+      store.handleEvent({ type: "inference_error", error: makeMessageError("model error") });
 
       expect(store.isRunning).toBe(false);
       expect(store.streamingText).toBe("");
+    });
+
+    it("keeps the failed reply and its error visible after streaming stops", () => {
+      store.handleEvent({ type: "token", content: "Partial reply" });
+      store.handleEvent({ type: "inference_error", error: makeMessageError("The model is not supported for this account.") });
+
+      expect(store.getSnapshot().messages).toEqual([
+        expect.objectContaining({
+          role: "agent",
+          status: "failed",
+          content: "Partial reply",
+          error: makeMessageError("The model is not supported for this account."),
+        }),
+      ]);
+    });
+
+    it("attaches failures to the server message without duplicating the reply", () => {
+      store.messages = [makeAgentMessage({ status: "executing", content: "Saved text. " })];
+      store.handleEvent({ type: "token", content: "Partial reply" });
+      store.handleEvent({ type: "inference_error", error: makeMessageError("Processing failed"), messageId: "msg-1" });
+      store.handleEvent({ type: "inference_error", error: makeMessageError("Processing failed"), messageId: "msg-1" });
+      expect(store.getSnapshot().messages).toHaveLength(1);
+      expect(store.getSnapshot().messages[0]).toMatchObject({
+        id: "msg-1", status: "failed", content: "Saved text. Partial reply", error: makeMessageError("Processing failed"),
+      });
+    });
+
+    it("shows request failures before inference starts", () => {
+      store.addUserMessage("Hello");
+      store.failMessage(makeMessageError("Unable to process this message"));
+      expect(store.getSnapshot().isRunning).toBe(false);
+      expect(store.getSnapshot().messages[1]).toMatchObject({
+        status: "failed", error: makeMessageError("Unable to process this message"),
+      });
     });
   });
 

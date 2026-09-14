@@ -1,3 +1,6 @@
+import type { MessageError } from "./types";
+import { isMessageError } from "./message-error";
+
 export const API_URL = process.env.NEXT_PUBLIC_FRONA_SERVER_BACKEND_URL || "";
 
 /// `kind: "unavailable"` (network failure or 5xx) means "don't infer
@@ -7,6 +10,7 @@ class ApiError extends Error {
     public status: number,
     message: string,
     public kind: "http" | "unavailable" = "http",
+    public messageError?: MessageError,
   ) {
     super(message);
   }
@@ -121,11 +125,12 @@ async function request<T>(
   const res = await apiFetch(path, { ...options, headers });
 
   if (!res.ok) {
-    if (res.status >= 500) {
-      throw new ApiError(res.status, "Server error", "unavailable");
-    }
     const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new ApiError(res.status, body.error || "Request failed");
+    const messageError = isMessageError(body.message_error) ? body.message_error : undefined;
+    if (res.status >= 500) {
+      throw new ApiError(res.status, "Server error", "unavailable", messageError);
+    }
+    throw new ApiError(res.status, body.error || "Request failed", "http", messageError);
   }
 
   if (res.status === 204 || res.headers.get("content-length") === "0") {

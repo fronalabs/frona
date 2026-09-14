@@ -1,3 +1,4 @@
+import { makeMessageError } from "./fixtures/message-error";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { SSEEventBus, type ChatSSEEvent, type GlobalSSEEvent } from "../sse-event-bus";
 
@@ -196,10 +197,10 @@ describe("SSEEventBus: chat event routing", () => {
     const controller = new AbortController();
     const iter = bus.subscribe("chat-1", controller.signal)[Symbol.asyncIterator]();
 
-    bus.routeEvent("inference_error", "chat-1", { error: "model error" });
+    bus.routeEvent("inference_error", "chat-1", { error: makeMessageError("model error"), message_id: "message-1" });
 
     const r = await iter.next();
-    expect(r.value).toEqual({ type: "inference_error", error: "model error" });
+    expect(r.value).toEqual({ type: "inference_error", error: makeMessageError("model error"), messageId: "message-1" });
 
     controller.abort();
   });

@@ -1,3 +1,4 @@
+import { makeMessageError } from "./fixtures/message-error";
 import { describe, it, expect } from "vitest";
 import { appendTurnText, convertMessage, type AssistantContentPart } from "../use-chat-runtime";
 import type { MessageResponse, ToolCall } from "../types";
@@ -31,6 +32,21 @@ function makeToolCall(overrides: Partial<ToolCall> = {}): ToolCall {
     ...overrides,
   };
 }
+
+it("marks a saved failed reply as an error rather than a completed response", () => {
+  expect(convertMessage(makeAgentMessage({ status: "failed", content: "" }))?.status)
+    .toEqual({ type: "incomplete", reason: "error", error: "Message processing failed." });
+});
+
+it("preserves the saved provider error and partial reply", () => {
+  const message = convertMessage(makeAgentMessage({
+    content: "Partial reply",
+    status: "failed",
+    error: makeMessageError("This model is not supported for your account."),
+  }));
+  expect(message?.status).toEqual({ type: "incomplete", reason: "error", error: makeMessageError("This model is not supported for your account.") });
+  expect(message?.content).toContainEqual({ type: "text", text: "Partial reply" });
+});
 
 
 describe("convertMessage: user messages", () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { InformationCircleIcon } from "@heroicons/react/16/solid";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import type { SensitiveField } from "@/lib/config-types";
@@ -33,13 +33,14 @@ export function HelpTip({ content }: { content: string }) {
 interface FieldProps {
   label: string;
   description?: string;
+  htmlFor?: string;
   children: React.ReactNode;
 }
 
-export function Field({ label, description, children }: FieldProps) {
+export function Field({ label, description, htmlFor, children }: FieldProps) {
   return (
     <div className="space-y-1">
-      <label className="inline-flex items-center gap-1 text-sm font-medium text-text-secondary">
+      <label htmlFor={htmlFor} className="inline-flex items-center gap-1 text-sm font-medium text-text-secondary">
         {label}
         {description && (
           <HelpTip content={description} />
@@ -57,17 +58,27 @@ interface TextInputProps {
   onChange: (value: string) => void;
   placeholder?: string;
   type?: string;
+  disabled?: boolean;
+  required?: boolean;
+  autoComplete?: string;
+  onBlur?: () => void;
 }
 
-export function TextInput({ label, description, value, onChange, placeholder, type = "text" }: TextInputProps) {
+export function TextInput({ label, description, value, onChange, placeholder, type = "text", disabled, required, autoComplete, onBlur }: TextInputProps) {
+  const id = useId();
   return (
-    <Field label={label} description={description}>
+    <Field label={label} description={description} htmlFor={id}>
       <input
+        id={id}
         type={type}
+        disabled={disabled}
+        required={required}
+        autoComplete={autoComplete}
+        onBlur={onBlur}
         value={value ?? ""}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+        className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
       />
     </Field>
   );
@@ -113,16 +124,22 @@ interface ToggleProps {
   value: boolean;
   onChange: (value: boolean) => void;
   warning?: string;
+  disabled?: boolean;
 }
 
-export function Toggle({ label, description, value, onChange, warning }: ToggleProps) {
+export function Toggle({ label, description, value, onChange, warning, disabled }: ToggleProps) {
+  const id = useId();
   return (
-    <Field label={label} description={description}>
+    <Field label={label} description={description} htmlFor={id}>
       <div className="flex items-center gap-3">
         <button
           type="button"
+          id={id}
+          role="switch"
+          aria-checked={value}
+          disabled={disabled}
           onClick={() => onChange(!value)}
-          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+          className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
             value ? "bg-accent" : "bg-surface-tertiary"
           }`}
         >

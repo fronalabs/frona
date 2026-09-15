@@ -18,6 +18,7 @@ interface ComboboxInputProps {
   placeholder?: string;
   allowFreeText?: boolean;
   disabled?: boolean;
+  hideLabel?: boolean;
 }
 
 export function ComboboxInput({
@@ -30,14 +31,14 @@ export function ComboboxInput({
   allowFreeText = true,
   onBlur,
   disabled = false,
+  hideLabel = false,
 }: ComboboxInputProps) {
-  const [filteredItems, setFilteredItems] = useState(items);
-  const [prevItemsLen, setPrevItemsLen] = useState(items.length);
-
-  if (items.length !== prevItemsLen) {
-    setPrevItemsLen(items.length);
-    setFilteredItems(items);
-  }
+  const [query, setQuery] = useState<string | null>(null);
+  const selectedItem = items.find(item => item.value === value) ?? null;
+  const displayValue = selectedItem?.label ?? value;
+  const filteredItems = query
+    ? items.filter(item => item.label.toLowerCase().includes(query.toLowerCase()) || item.value.toLowerCase().includes(query.toLowerCase()))
+    : items;
 
   const {
     isOpen,
@@ -49,53 +50,36 @@ export function ComboboxInput({
     highlightedIndex,
   } = useCombobox({
     items: filteredItems,
-    inputValue: value,
+    inputValue: query ?? displayValue,
+    selectedItem,
     itemToString: (item) => item?.label ?? "",
+    itemToKey: (item) => item?.value ?? "",
     onInputValueChange: ({ inputValue, type }) => {
       if (type === useCombobox.stateChangeTypes.InputChange) {
-        const query = (inputValue ?? "").toLowerCase();
-        setFilteredItems(
-          query
-            ? items.filter(
-                (item) =>
-                  item.value === value ||
-                  item.label.toLowerCase().includes(query) ||
-                  item.value.toLowerCase().includes(query)
-              )
-            : items
-        );
-        if (allowFreeText) {
-          onChange(inputValue ?? "");
-        }
+        setQuery(inputValue ?? "");
+        if (allowFreeText) onChange(inputValue ?? "");
       }
     },
     onSelectedItemChange: ({ selectedItem }) => {
       if (selectedItem) {
         onChange(selectedItem.value);
-        setFilteredItems(items);
+        setQuery(null);
+      }
+    },
+    onStateChange: ({ type }) => {
+      if (type === useCombobox.stateChangeTypes.InputBlur || type === useCombobox.stateChangeTypes.InputKeyDownEscape) {
+        setQuery(null);
       }
     },
     onIsOpenChange: ({ isOpen: nowOpen }) => {
-      if (nowOpen) {
-        setFilteredItems(items);
-      }
-    },
-    stateReducer: (_state, actionAndChanges) => {
-      const { changes, type } = actionAndChanges;
-      if (
-        type === useCombobox.stateChangeTypes.InputBlur ||
-        type === useCombobox.stateChangeTypes.InputKeyDownEscape
-      ) {
-        return { ...changes, inputValue: value };
-      }
-      return changes;
+      if (!nowOpen) setQuery(null);
     },
   });
 
   return (
-    <div className="space-y-1">
+    <div className={hideLabel && !description ? undefined : "space-y-1"}>
       <label
-        className="flex items-center gap-2 text-sm font-medium text-text-secondary"
+        className={hideLabel ? "sr-only" : "flex items-center gap-2 text-sm font-medium text-text-secondary"}
         {...getLabelProps()}
       >
         {label}
@@ -108,6 +92,7 @@ export function ComboboxInput({
           <input
             {...getInputProps({
               onBlur,
+              disabled,
             })}
             placeholder={placeholder}
             disabled={disabled}
@@ -115,8 +100,8 @@ export function ComboboxInput({
           />
           <button
             type="button"
-            {...getToggleButtonProps()}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-primary"
+            {...getToggleButtonProps({ disabled })}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-text-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
             aria-label="toggle menu"
           >
             <svg
@@ -137,10 +122,10 @@ export function ComboboxInput({
         <ul
           {...getMenuProps()}
           className={`absolute z-10 mt-1 w-full max-h-60 overflow-y-auto rounded-lg border border-border bg-surface shadow-lg ${
-            !(isOpen && filteredItems.length > 0) ? "hidden" : ""
+            !(isOpen && !disabled && filteredItems.length > 0) ? "hidden" : ""
           }`}
         >
-          {isOpen &&
+          {isOpen && !disabled &&
             filteredItems.map((item, index) => (
               <li
                 key={item.value}

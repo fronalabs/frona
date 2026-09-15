@@ -105,6 +105,8 @@ export interface GeminiThinkingConfig {
 export interface ModelGroupConfig {
   provider: string;
   model: string;
+  api?: import("./provider-admin").ProviderProtocol;
+  extra_params?: Record<string, unknown>;
   fallbacks?: ModelGroupConfig[];
   max_tokens?: number | null;
   temperature?: number | null;
@@ -144,9 +146,13 @@ export interface ModelGroupConfig {
 }
 
 export interface ModelProviderConfig {
-  api_key: SensitiveField;
+  credential_id?: string | null;
+  provider?: string;
+  adapter?: string;
+  api_key: SensitiveField | null;
   base_url: string | null;
   enabled: boolean;
+  [key: string]: unknown;
 }
 
 export interface InferenceConfig {
@@ -231,36 +237,62 @@ export interface JsonSchemaProperty {
 export interface JsonSchema {
   properties?: Record<string, JsonSchemaProperty>;
   definitions?: Record<string, JsonSchemaProperty>;
+  $defs?: Record<string, JsonSchemaProperty>;
   $ref?: string;
 }
 
 export interface ConfigUpdateResponse {
   config: Config;
+  authoring_document: Record<string, unknown>;
+  persisted_revision: string;
+  active_revision: string;
   restart_required: boolean;
+  parameter_overrides: Array<{ config_path: string; wire_path: string[] }>;
 }
 
 export function getConfigSchema(): Promise<JsonSchema> {
   return api.get<JsonSchema>("/api/config/schema");
 }
 
-export function getConfig(): Promise<Config> {
-  return api.get<Config>("/api/config");
+export async function getConfig(): Promise<Config> {
+  const result = await getConfigDocument();
+  return result.config;
 }
 
-function stripRedactedSensitiveFields(obj: unknown): unknown {
+export function getConfigDocument(): Promise<ConfigUpdateResponse> {
+  return api.get<ConfigUpdateResponse>("/api/config");
+}
+
+function stripRedactedSensitiveFields(obj: unknown, path: string[] = []): unknown {
   if (obj === null || obj === undefined) return obj;
   if (typeof obj !== "object") return obj;
-  if (Array.isArray(obj)) return obj.map(stripRedactedSensitiveFields);
+  if (Array.isArray(obj)) return obj.map((value, index) => stripRedactedSensitiveFields(value, [...path, String(index)]));
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
-    if (typeof value === "object" && value !== null && "is_set" in value) continue;
-    result[key] = stripRedactedSensitiveFields(value);
+    const nextPath = [...path, key];
+    const sensitive = (nextPath.length === 3 && nextPath[0] === "providers" && key === "api_key")
+      || (nextPath.length === 2 && [
+        ["auth", "encryption_secret"], ["sso", "client_secret"],
+        ["voice", "twilio_account_sid"], ["voice", "twilio_auth_token"],
+        ["vault", "onepassword_service_account_token"], ["vault", "bitwarden_client_secret"],
+        ["vault", "bitwarden_master_password"], ["vault", "hashicorp_token"], ["vault", "keepass_password"],
+      ].some(([section, field]) => nextPath[0] === section && key === field));
+    if (sensitive && typeof value === "object" && value !== null && "is_set" in value
+      && Object.keys(value).length === 1 && typeof value.is_set === "boolean") continue;
+    result[key] = stripRedactedSensitiveFields(value, nextPath);
   }
   return result;
 }
 
-export function updateConfig(patch: Record<string, unknown>): Promise<ConfigUpdateResponse> {
-  return api.put<ConfigUpdateResponse>("/api/config", stripRedactedSensitiveFields(patch) as Record<string, unknown>);
+export function updateConfig(
+  patch: Record<string, unknown>,
+  metadata?: { expectedPersistedRevision: string },
+): Promise<ConfigUpdateResponse> {
+  const cleaned = stripRedactedSensitiveFields(patch) as Record<string, unknown>;
+  return api.put<ConfigUpdateResponse>("/api/config", metadata ? {
+    patch: cleaned,
+    expected_persisted_revision: metadata.expectedPersistedRevision,
+  } : cleaned);
 }
 
 export interface ModelInfo {
@@ -270,17 +302,21 @@ export interface ModelInfo {
   max_tokens?: number;
 }
 
-export function getProviderModels(
+export async function getProviderModels(
   providerId: string,
   opts?: { apiKey?: string; baseUrl?: string }
 ): Promise<{ models: ModelInfo[] }> {
-  const params = new URLSearchParams();
-  if (opts?.apiKey) params.set("api_key", opts.apiKey);
-  if (opts?.baseUrl) params.set("base_url", opts.baseUrl);
-  const qs = params.toString();
-  return api.get<{ models: ModelInfo[] }>(
-    `/api/config/providers/${providerId}/models${qs ? `?${qs}` : ""}`
-  );
+  const { providerAdmin } = await import("./provider-admin");
+  if (opts?.apiKey) {
+    const config = { provider: providerId, base_url: opts.baseUrl };
+    const proof = await providerAdmin.validate(providerId, config, { source: "api_key", api_key: opts.apiKey });
+    const models = proof.models ?? (await providerAdmin.draftModels(providerId, {
+      config, validation_id: proof.validation_id, method: "api_key", source: "database",
+    })).models;
+    return { models: models.map(model => ({ id: model.id, name: model.name ?? undefined, context_window: model.context_window ?? undefined, max_tokens: model.max_tokens ?? undefined })) };
+  }
+  const result = await providerAdmin.models(providerId);
+  return { models: result.models.map(model => ({ id: model.id, name: model.name ?? undefined, context_window: model.context_window ?? undefined, max_tokens: model.max_tokens ?? undefined })) };
 }
 
 export function isSensitiveSet(value: SensitiveField): boolean {

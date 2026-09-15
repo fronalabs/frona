@@ -2,6 +2,7 @@
 
 import { useState, type ReactNode } from "react";
 import { useCombobox } from "downshift";
+import { InputResetButton } from "@/components/settings/field";
 
 interface ComboboxItem {
   value: string;
@@ -19,6 +20,8 @@ interface ComboboxInputProps {
   allowFreeText?: boolean;
   disabled?: boolean;
   hideLabel?: boolean;
+  onClear?: () => void;
+  clearLabel?: string;
 }
 
 export function ComboboxInput({
@@ -32,6 +35,8 @@ export function ComboboxInput({
   onBlur,
   disabled = false,
   hideLabel = false,
+  onClear,
+  clearLabel = "Reset to default",
 }: ComboboxInputProps) {
   const [query, setQuery] = useState<string | null>(null);
   const selectedItem = items.find(item => item.value === value) ?? null;
@@ -48,6 +53,7 @@ export function ComboboxInput({
     getInputProps,
     getItemProps,
     highlightedIndex,
+    closeMenu,
   } = useCombobox({
     items: filteredItems,
     inputValue: query ?? displayValue,
@@ -96,8 +102,10 @@ export function ComboboxInput({
             })}
             placeholder={placeholder}
             disabled={disabled}
-            className={`w-full rounded-lg border border-border bg-surface px-3 py-2 pr-8 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
+            className={`w-full rounded-lg border border-border bg-surface px-3 py-2 ${onClear ? "pr-14" : "pr-8"} text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
           />
+          {onClear && <InputResetButton label={clearLabel} className="absolute right-7 top-1/2 -translate-y-1/2"
+            onClick={() => { setQuery(null); closeMenu(); onClear(); }} />}
           <button
             type="button"
             {...getToggleButtonProps({ disabled })}

@@ -1,10 +1,18 @@
 "use client";
 
 import { useId, useState } from "react";
-import { InformationCircleIcon } from "@heroicons/react/16/solid";
+import { InformationCircleIcon, XMarkIcon } from "@heroicons/react/16/solid";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import type { SensitiveField } from "@/lib/config-types";
 import { isSensitiveSet } from "@/lib/config-types";
+
+export function InputResetButton({ label, onClick, className = "" }: { label: string; onClick: () => void; className?: string }) {
+  return <button type="button" title="Reset to default" aria-label={label}
+    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-tertiary hover:bg-surface-tertiary hover:text-text-primary focus-visible:outline-2 focus-visible:outline-accent ${className}`}
+    onMouseDown={event => event.preventDefault()} onClick={onClick}>
+    <XMarkIcon className="h-3.5 w-3.5" aria-hidden="true" />
+  </button>;
+}
 
 export function HelpTip({ content }: { content: string }) {
   return (
@@ -125,9 +133,10 @@ interface ToggleProps {
   onChange: (value: boolean) => void;
   warning?: string;
   disabled?: boolean;
+  action?: React.ReactNode;
 }
 
-export function Toggle({ label, description, value, onChange, warning, disabled }: ToggleProps) {
+export function Toggle({ label, description, value, onChange, warning, disabled, action }: ToggleProps) {
   const id = useId();
   return (
     <Field label={label} description={description} htmlFor={id}>
@@ -149,6 +158,7 @@ export function Toggle({ label, description, value, onChange, warning, disabled 
             }`}
           />
         </button>
+        {action}
         {warning && value && (
           <span className="text-xs text-warning">{warning}</span>
         )}

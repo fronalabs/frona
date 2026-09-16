@@ -558,9 +558,10 @@ export async function browseRepo(repo: string): Promise<RepoBrowseResult> {
   return request<RepoBrowseResult>(`/api/skills/browse?repo=${encodeURIComponent(repo)}`);
 }
 
-export type VaultProviderType = "local" | "one_password" | "bitwarden" | "hashicorp" | "kee_pass";
+export type VaultProviderType = "managed" | "local" | "one_password" | "bitwarden" | "hashicorp" | "kee_pass";
 
 export type VaultConnectionConfig =
+  | { type: "Managed" }
   | { type: "OnePassword"; service_account_token: string; default_vault_id: string | null }
   | { type: "Bitwarden"; client_id: string; client_secret: string; master_password: string; server_url: string | null }
   | { type: "Hashicorp"; address: string; token: string; mount_path: string | null }

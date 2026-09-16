@@ -558,17 +558,19 @@ const VAULT_CLEAR_FIELDS: Record<string, Partial<VaultConfig>> = {
   keepass: { keepass_path: null, keepass_password: { is_set: false } },
 };
 
-type ProviderId = "onepassword" | "bitwarden" | "hashicorp" | "keepass";
+type ProviderId = "managed" | "onepassword" | "bitwarden" | "hashicorp" | "keepass";
 
-const PROVIDER_TYPE_TO_ID: Record<VaultProviderType, ProviderId | "local"> = {
+const PROVIDER_TYPE_TO_ID: Record<VaultProviderType, ProviderId | "local" | "managed"> = {
   one_password: "onepassword",
   bitwarden: "bitwarden",
   hashicorp: "hashicorp",
   kee_pass: "keepass",
   local: "local",
+  managed: "managed",
 };
 
 const PROVIDER_OPTIONS: { id: ProviderId; name: string; provider: VaultProviderType }[] = [
+  { id: "managed", name: "Managed", provider: "managed" },
   { id: "onepassword", name: "1Password", provider: "one_password" },
   { id: "bitwarden", name: "Bitwarden", provider: "bitwarden" },
   { id: "hashicorp", name: "HashiCorp Vault", provider: "hashicorp" },
@@ -594,6 +596,8 @@ interface DraftConnection {
 
 function buildDraftConfig(draft: DraftConnection): VaultConnectionConfig | null {
   switch (draft.providerId) {
+    case "managed":
+      return { type: "Managed" };
     case "onepassword":
       if (!draft.onepassword_token?.trim()) return null;
       return {
@@ -635,7 +639,7 @@ function ConnectionRow({ connection, onDelete, onToggle, onTest }: {
   onTest: () => Promise<void>;
 }) {
   const providerId = PROVIDER_TYPE_TO_ID[connection.provider];
-  const Logo = providerId !== "local" ? VAULT_LOGOS[providerId] : undefined;
+  const Logo = providerId !== "local" && providerId !== "managed" ? VAULT_LOGOS[providerId] : undefined;
   const [menuOpen, setMenuOpen] = useState(false);
   const [testStatus, setTestStatus] = useState<TestStatus>("idle");
   const menuRef = useRef<HTMLDivElement>(null);
@@ -669,6 +673,7 @@ function ConnectionRow({ connection, onDelete, onToggle, onTest }: {
       <div className="flex items-center gap-2">
         <button
           type="button"
+          aria-label={`${connection.enabled ? "Disable" : "Enable"} ${connection.name}`}
           onClick={() => onToggle(!connection.enabled)}
           className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${connection.enabled ? "bg-accent" : "bg-surface-tertiary"}`}
         >
@@ -677,6 +682,7 @@ function ConnectionRow({ connection, onDelete, onToggle, onTest }: {
         <div className="relative" ref={menuRef}>
           <button
             type="button"
+            aria-label={`Actions for ${connection.name}`}
             onClick={() => setMenuOpen((v) => !v)}
             className="p-1 rounded text-text-tertiary hover:text-text-primary hover:bg-surface-tertiary transition"
           >
@@ -797,8 +803,10 @@ function AddConnectionDialog({ open, onClose, onCreated }: { open: boolean; onCl
     : `New ${selectedOption?.name ?? ""} connection`;
   const description = step === "pick"
     ? "Choose a vault provider to connect."
-    : "Enter the credentials this connection should use.";
-  const headerIcon = step === "configure" && selectedOption
+    : draft?.providerId === "managed"
+      ? "Create a personal vault for credentials managed by Frona."
+      : "Enter the credentials this connection should use.";
+  const headerIcon = step === "configure" && selectedOption && selectedOption.id !== "managed"
     ? VAULT_LOGOS[selectedOption.id] as React.ComponentType<{ className?: string }> | undefined
     : LockClosedIcon;
 
@@ -814,7 +822,7 @@ function AddConnectionDialog({ open, onClose, onCreated }: { open: boolean; onCl
       {step === "pick" && (
         <div className="space-y-2">
           {PROVIDER_OPTIONS.map((opt) => {
-            const Logo = VAULT_LOGOS[opt.id];
+            const Logo = opt.id === "managed" ? undefined : VAULT_LOGOS[opt.id];
             return (
               <button
                 key={opt.id}
@@ -977,6 +985,7 @@ function AddConnectionDialog({ open, onClose, onCreated }: { open: boolean; onCl
 }
 
 function PersonalConnectionsPanel() {
+  const [error, setError] = useState<string | null>(null);
   const [connections, setConnections] = useState<VaultConnection[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -993,11 +1002,14 @@ function PersonalConnectionsPanel() {
   useEffect(() => { reload(); }, [reload]);
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Delete this connection?")) return;
+    if (!confirm("Delete this connection? Managed vaults must be empty first.")) return;
+    setError(null);
     try {
       await deleteVaultConnection(id);
       await reload();
-    } catch {}
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete connection");
+    }
   };
 
   const handleToggle = async (id: string, enabled: boolean) => {
@@ -1009,6 +1021,7 @@ function PersonalConnectionsPanel() {
 
   return (
     <div className="space-y-2">
+      {error && <p role="alert" className="text-sm text-error-text">{error}</p>}
       {loading ? (
         <div className="flex items-center justify-center py-4">
           <svg className="h-4 w-4 animate-spin text-text-tertiary" viewBox="0 0 24 24" fill="none">

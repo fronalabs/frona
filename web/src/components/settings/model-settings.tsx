@@ -2,7 +2,7 @@
 import { useId, useState } from "react";
 import type { ModelGroupConfig } from "@/lib/config-types";
 import type { ModelSettingInfo } from "@/lib/provider-admin";
-import { applicable, object, removePointer, schemaError, type ProtocolInfo, type Schema } from "@/lib/model-authoring";
+import { applicable, modelSettingErrors, object, overrideWarnings, parseCustomPrimitive, pointerKey, removePointer, schemaError, type ProtocolInfo, type Schema } from "@/lib/model-authoring";
 import { readPointer, writePointer } from "@/lib/provider-drafts";
 import { ComboboxInput } from "@/components/settings/combobox";
 import { Field, InputResetButton, Toggle } from "@/components/settings/field";
@@ -86,6 +86,47 @@ export function SettingControl({ setting, group, settings, onChange, onError }: 
       onCommit={set} onError={error => onError(path!, error)} onClear={reset} />}
     {!writable && <p className="text-xs text-warning">{path ? "Not applicable with the selected settings" : "The adapter cannot write this setting"}</p>}
     {writable && !complexRaw && (value === undefined || value === null && setting.storage?.kind === "typed") && Object.hasOwn(schema, "default") && <button className={button} onClick={() => set(schema.default)}>Use suggested {JSON.stringify(schema.default)}</button>}
+  </div>;
+}
+
+export function CustomParameters({ group, protocol, onChange, onError }: { group: ModelGroupConfig; protocol: ProtocolInfo;
+  onChange: (group: ModelGroupConfig) => void; onError: (path: string, error: string | null) => void }) {
+  const [key, setKey] = useState("");
+  const [text, setText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const values = group.extra_params ?? {};
+  function update(next: Record<string, unknown>) { onChange({ ...group, extra_params: next }); }
+  function fail(message: string | null) { setError(message); onError("/extra_params/new", message); }
+  function add() {
+    try {
+      if (!key.trim()) throw new Error("Enter a custom parameter key");
+      if (Object.hasOwn(values, key)) throw new Error("That key already exists; edit its row instead");
+      const value = parseCustomPrimitive(text);
+      const next = { ...values, [key]: value };
+      const errors = modelSettingErrors({ ...group, extra_params: next }, protocol).filter(error => error.startsWith("/extra_params"));
+      if (errors.length) throw new Error(errors.join("; "));
+      update(next); setKey(""); setText(""); fail(null);
+    } catch (error) { fail(error instanceof Error ? error.message : "Invalid custom parameter"); }
+  }
+  return <div className="space-y-3">
+    <p className="text-xs">Keys are literal. Values accept JSON primitives; quoted JSON strings force string interpretation. Unknown keys are unverified.</p>
+    {Object.entries(values).map(([key, value]) => {
+      const path = `/extra_params/${pointerKey(key)}`;
+      const described = protocol.settings.find(setting => setting.catalog_path && setting.storage?.config_path === path);
+      if (described) return null;
+      return <div key={key} className="flex items-end gap-2">
+        {object(value) || Array.isArray(value) ? <div className="min-w-0 flex-1"><p className="text-sm">{key}</p><pre className="overflow-auto text-xs">{JSON.stringify(value)}</pre><p className="text-xs">Complex value preserved. Edit its internals in YAML.</p></div>
+          : <div className="flex-1"><ParsedInput label={`Custom ${key}`} value={value} parse={parseCustomPrimitive}
+            onCommit={value => update({ ...values, [key]: value })} onError={error => onError(path, error)} /></div>}
+        <button className={button} onClick={() => { const next = { ...values }; delete next[key]; update(next); onError(path, null); }}>Delete {key}</button>
+      </div>;
+    })}
+    <div className="grid grid-cols-2 gap-2"><label className="text-sm">Custom key<input className={`${input} block w-full`} value={key} onChange={event => { setKey(event.target.value); fail(null); }} /></label>
+      <label className="text-sm">Custom value<input className={`${input} block w-full`} value={text} onChange={event => { setText(event.target.value); fail(null); }} /></label></div>
+    <div className="flex gap-2"><button className={button} onClick={add}>Add custom parameter</button>
+      {Object.keys(values).length > 0 && <button className={button} onClick={() => { update({}); fail(null); for (const key of Object.keys(values)) onError(`/extra_params/${pointerKey(key)}`, null); }}>Clear custom parameters</button>}</div>
+    {error && <p role="alert" className="text-sm text-error-text">{error}</p>}
+    {overrideWarnings(group, protocol).map(warning => <p key={warning} className="text-sm text-warning">{warning}</p>)}
   </div>;
 }
 

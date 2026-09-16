@@ -1,6 +1,12 @@
 import { expect, it } from "vitest";
-import { modelGroupsPatch, removePointer, schemaError } from "../model-authoring";
+import { modelGroupsPatch, parseCustomPrimitive, removePointer, schemaError } from "../model-authoring";
 
+it.each([["true", true], ["false", false], ["null", null], ["0", 0], ["1.25", 1.25], ['"true"', "true"], ['"null"', "null"], [" ordinary text ", "ordinary text"]])("parses %s without changing its type", (text, expected) => {
+  expect(parseCustomPrimitive(String(text))).toEqual(expected);
+});
+it.each(["{}", "[]", '{"a":1}', "[true]", "9007199254740993", "1e999"])("rejects unsupported browser input %s", text => {
+  expect(() => parseCustomPrimitive(text)).toThrow();
+});
 it("diffs typed deletion, literal raw null, whole-object replacement and fallback arrays against the persisted baseline", () => {
   const before = { primary: { provider: "account", model: "exact", temperature: 0.5, extra_params: { complex: { nested: [1, null] }, obsolete: false } } };
   const after = { primary: { provider: "account", model: "exact", extra_params: { complex: { nested: [1, null] }, literal: null } } };

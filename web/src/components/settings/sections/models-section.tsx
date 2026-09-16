@@ -12,7 +12,7 @@ import { ComboboxInput } from "@/components/settings/combobox";
 import { DeleteConfirmDialog } from "@/components/nav/delete-confirm-dialog";
 import { CubeIcon, Cog6ToothIcon, ChevronDownIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { ModelSelector } from "@/components/settings/model-selector";
-import { ModelSettings, SettingControl } from "@/components/settings/model-settings";
+import { CustomParameters, ModelSettings, SettingControl } from "@/components/settings/model-settings";
 
 const EMPTY_PROVIDERS: Record<string, ModelProviderConfig> = {};
 const EMPTY_DRAFTS: ProviderDrafts = {};
@@ -220,6 +220,9 @@ function ModelEditor({ group, enabledProviders, configs, directory, loading, err
         {protocol && <ModelSettings key={editorEpoch} group={group} protocol={protocol} onChange={onChange} onError={onError} />}
         <button className={button} disabled={!group.provider || loading} onClick={onRefresh}>Refresh descriptions</button>
       </CollapsibleSection>
+      {protocol?.settings.some(setting => setting.storage?.config_path === "/extra_params") && <CollapsibleSection title="Custom request parameters">
+        <CustomParameters key={editorEpoch} group={group} protocol={protocol} onChange={onChange} onError={onError} />
+      </CollapsibleSection>}
       <CollapsibleSection title="Retry">
         {schemaError && <p className="text-sm text-warning">{schemaError}. Existing retry values are preserved.</p>}
         <div className="grid grid-cols-2 gap-4">{retrySettings.map(setting => <SettingControl key={setting.id} setting={setting} group={group} settings={retrySettings} onChange={onChange} onError={onError} />)}</div>

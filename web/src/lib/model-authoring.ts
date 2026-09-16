@@ -8,6 +8,15 @@ export const object = (value: unknown): value is Record<string, unknown> => !!va
 const equal = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
 export const pointerKey = (key: string) => key.replace(/~/g, "~0").replace(/\//g, "~1");
 
+export function parseCustomPrimitive(text: string): string | number | boolean | null {
+  const trimmed = text.trim();
+  let value: unknown;
+  try { value = JSON.parse(trimmed); } catch { return trimmed; }
+  if (value !== null && typeof value === "object") throw new Error("Objects and arrays cannot be entered here. Use YAML for complex values.");
+  if (typeof value === "number" && (!Number.isFinite(value) || Number.isInteger(value) && !Number.isSafeInteger(value))) throw new Error("This number is outside the browser's safe range. Use YAML.");
+  return value as string | number | boolean | null;
+}
+
 export function removePointer<T extends object>(value: T, path: string): T {
   const parts = path.slice(1).split("/").map(part => part.replace(/~1/g, "/").replace(/~0/g, "~"));
   function remove(current: Record<string, unknown>, index: number): Record<string, unknown> {

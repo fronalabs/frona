@@ -237,6 +237,52 @@ it("does not copy limits or defaults until accepted and never overwrites saved v
   expect(primary().queryByRole("button", { name: "Reset temperature to default" })).not.toBeInTheDocument();
 });
 
+it("adds primitive values, rejects objects, preserves complex YAML, and sends full replacement objects on deletion and clear", async () => {
+  const complex = { nested: [1, null, { enabled: true }] };
+  render(<Harness initial={{ primary: { provider: "account", model: "exact", api: "responses", extra_params: { complex, obsolete: false } } }} />);
+  await loaded();
+  expect(primary().getByRole("button", { name: "Custom request parameters" })).toHaveAttribute("aria-expanded", "false");
+  expect(primary().queryByLabelText("Custom key")).not.toBeInTheDocument();
+  fireEvent.click(primary().getByRole("button", { name: "Custom request parameters" }));
+  fireEvent.change(primary().getByLabelText("Custom key"), { target: { value: "a.b/c" } });
+  fireEvent.change(primary().getByLabelText("Custom value"), { target: { value: "{}" } });
+  fireEvent.click(primary().getByRole("button", { name: "Add custom parameter" }));
+  expect(primary().getByText("Objects and arrays cannot be entered here. Use YAML for complex values.")).toBeInTheDocument();
+  expect(draft().primary.extra_params).toEqual({ complex, obsolete: false });
+  fireEvent.change(primary().getByLabelText("Custom value"), { target: { value: "null" } });
+  fireEvent.click(primary().getByRole("button", { name: "Add custom parameter" }));
+  fireEvent.click(primary().getByRole("button", { name: "Delete obsolete" }));
+  expect(JSON.parse(screen.getByTestId("patch").textContent!).primary.extra_params).toEqual({ complex, "a.b/c": null });
+  expect(primary().getByText("Complex value preserved. Edit its internals in YAML.")).toBeInTheDocument();
+  fireEvent.click(primary().getByRole("button", { name: "Clear custom parameters" }));
+  expect(JSON.parse(screen.getByTestId("patch").textContent!).primary.extra_params).toEqual({});
+});
+
+it("enforces catalog ranges, applicability and reserved paths, and warns about typed overrides", async () => {
+  render(<Harness initial={{ primary: { provider: "account", model: "exact", api: "responses", temperature: 0 } }} />);
+  await loaded();
+  expect(primary().getByLabelText("conditional")).toBeEnabled();
+  fireEvent.change(primary().getByLabelText("temperature"), { target: { value: "3" } });
+  expect(primary().getByText("/temperature: must be at most 2")).toBeInTheDocument();
+  expect(primary().getByLabelText("conditional")).toBeDisabled();
+  fireEvent.change(primary().getByLabelText("temperature"), { target: { value: "0" } });
+  fireEvent.click(primary().getByRole("button", { name: "Custom request parameters" }));
+  const add = (key: string, value: string) => {
+    fireEvent.change(primary().getByLabelText("Custom key"), { target: { value: key } });
+    fireEvent.change(primary().getByLabelText("Custom value"), { target: { value } });
+    fireEvent.click(primary().getByRole("button", { name: "Add custom parameter" }));
+  };
+  add("model", '"other"');
+  expect(primary().getByText("/extra_params/model: reserved request field")).toBeInTheDocument();
+  add("temperature", "4");
+  expect(primary().getByText("/extra_params/temperature: must be at most 2")).toBeInTheDocument();
+  add("temperature", "1");
+  expect(primary().getByText("/extra_params/temperature overrides /temperature")).toBeInTheDocument();
+  expect(primary().getByLabelText("conditional")).toBeDisabled();
+  add("unknown-option", "false");
+  expect(draft().primary.extra_params["unknown-option"]).toBe(false);
+});
+
 it("supports manual IDs, draft-proof listing, explicit protocols for new fallbacks, and independent fallback edits", async () => {
   const proof = { config: configs.account, source: "database", method: "api_key" as const, validation_id: "exact-draft-proof",
     fingerprint: providerFingerprint(configs.account), expiresAt: Date.now() + 60_000 };

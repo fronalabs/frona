@@ -20,6 +20,7 @@ import { VoiceSection } from "@/components/settings/sections/voice-section";
 import { SandboxSettingsSection } from "@/components/settings/sections/sandbox-section";
 import { getConfigDocument, updateConfig, isSensitiveSet } from "@/lib/config-types";
 import type { Config, ConfigUpdateResponse } from "@/lib/config-types";
+import { modelGroupsPatch } from "@/lib/model-authoring";
 import { acceptProviderDrafts, type ProviderDrafts } from "@/lib/provider-drafts";
 import { Logo } from "@/components/logo";
 
@@ -177,7 +178,7 @@ function SetupComplete() {
 function SetupWizard() {
   const router = useRouter();
   const [config, setConfig] = useState<Config | null>(null);
-  const [, setSavedConfig] = useState<Config | null>(null);
+  const [savedConfig, setSavedConfig] = useState<Config | null>(null);
   const [patch, setPatch] = useState<Record<string, unknown>>({});
   const [persistedRevision, setPersistedRevision] = useState("");
   const [providerDrafts, setProviderDrafts] = useState<ProviderDrafts>({});
@@ -194,15 +195,16 @@ function SetupWizard() {
     setConfig((prev) => prev ? { ...prev, [section]: value } as Config : prev);
   }, []);
 
-  const updateModels = useCallback((models: Config["models"], removedGroups: string[] = []) => {
-    setPatch((prev) => {
-      const existing = (prev.models ?? {}) as Record<string, unknown>;
-      const modelPatch: Record<string, unknown> = { ...existing, ...models };
-      for (const name of removedGroups) modelPatch[name] = null;
-      return { ...prev, models: modelPatch };
+  const updateModels = useCallback((models: Config["models"]) => {
+    setPatch(previous => {
+      const next = { ...previous };
+      const changes = modelGroupsPatch(savedConfig?.models ?? {}, models);
+      if (Object.keys(changes).length) next.models = changes;
+      else delete next.models;
+      return next;
     });
-    setConfig((prev) => prev ? { ...prev, models } : prev);
-  }, []);
+    setConfig(previous => previous ? { ...previous, models } : previous);
+  }, [savedConfig]);
 
   const updateProviders = useCallback((providers: Config["providers"], removed: string[] = []) => {
     setPatch(previous => {
@@ -348,12 +350,12 @@ function SetupWizard() {
             {currentStep.id === "models" && (
               <ModelsSection
                 models={config.models}
-
+                savedModels={savedConfig?.models}
                 enabledProviders={Object.entries(config.providers)
                   .filter(([, provider]) => provider.enabled !== false)
                   .map(([id]) => id)}
                 providerConfigs={config.providers}
-
+                savedProviderConfigs={savedConfig?.providers} providerDrafts={providerDrafts}
                 onChange={updateModels}
                 onReadyChange={setModelsBlock}
               />

@@ -141,3 +141,21 @@ it("discarding an in-flight validation cannot restore the abandoned endpoint or 
   expect(screen.queryByRole("img", { name: "Connection validated" })).not.toBeInTheDocument();
   expect(api.put).not.toHaveBeenCalled();
 });
+
+it("sends typed deletions and complete custom replacement through the actual settings save envelope", async () => {
+  const original = vi.mocked(api.get).getMockImplementation()!;
+  vi.mocked(api.get).mockImplementation(async (path, ...args) => path === "/api/config" ? {
+    ...document(), config: { ...document().config, models: { primary: {
+      provider: "account", model: "exact", api: "responses", temperature: 0.5,
+      extra_params: { complex: { nested: [null] }, removed: true },
+    } } },
+  } : original(path, ...args));
+  window.history.replaceState(null, "", "/#models");
+  render(<AdminSettingsPage />);
+  fireEvent.click(await screen.findByRole("button", { name: "Edit model fixture" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(api.put).toHaveBeenCalledWith("/api/config", {
+    expected_persisted_revision: "persisted-before-edit",
+    patch: { models: { primary: { temperature: null, extra_params: { complex: { nested: [null] }, literal: null } } } },
+  }));
+});

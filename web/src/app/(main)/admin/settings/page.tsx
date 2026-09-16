@@ -26,6 +26,7 @@ import { SkillsSection } from "@/components/settings/sections/skills-section";
 import { SandboxSettingsSection } from "@/components/settings/sections/sandbox-section";
 import { getConfigDocument, updateConfig } from "@/lib/config-types";
 import type { Config, ConfigUpdateResponse } from "@/lib/config-types";
+import { modelGroupsPatch } from "@/lib/model-authoring";
 import { acceptProviderDrafts, type ProviderDrafts } from "@/lib/provider-drafts";
 
 const TABS = [
@@ -60,7 +61,7 @@ export default function AdminSettingsPage() {
   }, [user, hasAccess, router]);
 
   const [config, setConfig] = useState<Config | null>(null);
-  const [, setSavedConfig] = useState<Config | null>(null);
+  const [savedConfig, setSavedConfig] = useState<Config | null>(null);
   // The backend the server booted with - snapshot at load so it stays put while
   // the user edits the draft; it's what carries the "Active" badge (a backend
   // switch only takes effect after a restart + reload).
@@ -68,6 +69,7 @@ export default function AdminSettingsPage() {
   const [patch, setPatch] = useState<Record<string, unknown>>({});
   const [persistedRevision, setPersistedRevision] = useState("");
   const [providerDrafts, setProviderDrafts] = useState<ProviderDrafts>({});
+  const [modelBlock, setModelBlock] = useState<string | null>(null);
   const [providerBlock, setProviderBlock] = useState<string | null>(null);
   const [providerFormEpoch, setProviderFormEpoch] = useState(0);
   const [activeTab, setActiveTabState] = useState<TabId>(() => {
@@ -136,6 +138,7 @@ export default function AdminSettingsPage() {
     setError(null);
     try {
       if (patch.providers && providerBlock) throw new Error(providerBlock);
+      if (patch.models && modelBlock) throw new Error(modelBlock);
       if (Object.keys(patch).length > 0) {
         const acceptedPatch = await acceptProviderDrafts(patch, providerDrafts, (handle, connection) => {
           setConfig(previous => previous ? { ...previous, providers: { ...previous.providers, [handle]: connection } } : previous);
@@ -158,7 +161,7 @@ export default function AdminSettingsPage() {
     } finally {
       setSaving(false);
     }
-  }, [patch, hasPendingChanges, sectionHandlers, persistedRevision, providerBlock, providerDrafts]);
+  }, [patch, hasPendingChanges, sectionHandlers, persistedRevision, providerBlock, modelBlock, providerDrafts]);
 
   const handleDiscard = useCallback(() => {
     setProviderFormEpoch(epoch => epoch + 1);
@@ -179,15 +182,16 @@ export default function AdminSettingsPage() {
     setConfig((prev) => prev ? { ...prev, [section]: value } as Config : prev);
   }, []);
 
-  const updateModels = useCallback((models: Config["models"], removedGroups: string[] = []) => {
-    setPatch((prev) => {
-      const existing = (prev.models ?? {}) as Record<string, unknown>;
-      const modelPatch: Record<string, unknown> = { ...existing, ...models };
-      for (const name of removedGroups) modelPatch[name] = null;
-      return { ...prev, models: modelPatch };
+  const updateModels = useCallback((models: Config["models"]) => {
+    setPatch(previous => {
+      const next = { ...previous };
+      const changes = modelGroupsPatch(savedConfig?.models ?? {}, models);
+      if (Object.keys(changes).length) next.models = changes;
+      else delete next.models;
+      return next;
     });
-    setConfig((prev) => prev ? { ...prev, models } : prev);
-  }, []);
+    setConfig(previous => previous ? { ...previous, models } : previous);
+  }, [savedConfig]);
 
   const updateProviders = useCallback((providers: Config["providers"], removed: string[] = []) => {
     setPatch(previous => {
@@ -325,13 +329,13 @@ export default function AdminSettingsPage() {
                     <ModelsSection
                       key={providerFormEpoch}
                       models={config.models}
-
+                      savedModels={savedConfig?.models}
                       enabledProviders={Object.entries(config.providers)
                         .filter(([, provider]) => provider.enabled !== false)
                         .map(([id]) => id)}
                       providerConfigs={config.providers}
-
-                      onChange={updateModels}
+                      savedProviderConfigs={savedConfig?.providers} providerDrafts={providerDrafts}
+                      onChange={updateModels} onReadyChange={setModelBlock}
                     />
                   )}
                   {activeTab === "server" && (
@@ -424,8 +428,8 @@ export default function AdminSettingsPage() {
                 </button>
                 <button
                   onClick={handleSave}
-                  disabled={!hasPendingChanges || saving || !!(patch.providers && providerBlock)}
-                  title={(patch.providers && providerBlock || undefined) as string | undefined}
+                  disabled={!hasPendingChanges || saving || !!(patch.providers && providerBlock) || !!(patch.models && modelBlock)}
+                  title={(patch.providers && providerBlock || patch.models && modelBlock || undefined) as string | undefined}
                   className="w-28 rounded-lg bg-accent py-2 text-sm font-medium text-surface hover:bg-accent-hover disabled:opacity-50 transition"
                 >
                   {saving ? "Saving..." : "Save"}

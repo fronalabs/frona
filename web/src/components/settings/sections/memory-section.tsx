@@ -185,7 +185,11 @@ export function MemorySection({ memory, models, activeBackend, onChange }: Memor
 
         <SelectInput
           label="Model group"
-          description="Model group for background memory work (basic compaction / Ontology Memory consolidation — extract, classify, resolve, reason). Falls back to “primary” if undefined."
+          description={
+            effectiveBackend === "basic"
+              ? "Model group for memory compaction. If undefined, uses the chat agent's model. Scheduled user and space compaction uses the most recently active chat."
+              : "Model group for Ontology Memory consolidation. Falls back to primary if undefined."
+          }
           value={memory.model_group}
           allowEmpty={false}
           onChange={(model_group) =>

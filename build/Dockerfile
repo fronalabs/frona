@@ -1,3 +1,16 @@
+FROM rust:1.97.1-bookworm AS catalog-builder
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+RUN cargo build --release --locked -p frona-model-catalog
+
+FROM debian:bookworm-slim AS catalogs
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=catalog-builder /app/target/release/frona-model-catalog /usr/local/bin/frona-model-catalog
+COPY crates/frona-model-catalog/resources/modelparams-schema.json /catalogs/modelparams-schema.json
+RUN frona-model-catalog download --output /catalogs
+
 FROM node:24.19.0-slim AS frontend-builder
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json* ./
@@ -185,6 +198,7 @@ COPY --chown=frona:frona --from=backend-builder /app/target/release/frona /app/b
 COPY --chown=frona:frona --from=backend-builder /app/target/release/mcpctl /app/bin/mcpctl
 COPY --chown=frona:frona --from=frontend-builder /app/web/out /app/static
 COPY --chown=frona:frona resources /app/share
+COPY --chown=frona:frona --from=catalogs /catalogs /app/share/catalogs
 # After `resources`, so it lands at the path `storage.shared_config_dir` derives:
 # /app/share/ontology. Read-only here by design - anything the user adds goes to
 # `storage.ontology_dir` on the data volume, which survives a restart.

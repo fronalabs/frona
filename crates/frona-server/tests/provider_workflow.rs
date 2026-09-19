@@ -187,9 +187,16 @@ async fn ambient_aws_draft_proof_describes_manual_models_and_rejects_binding_cha
     frona::db::init::setup_schema(&db).await.unwrap();
     let directory = tempfile::tempdir().unwrap();
     let service = administration(&db, directory.path(), "fixture-encryption").await;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/foundation-models"))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&server)
+        .await;
     let handle = Handle::const_validated("bedrock");
     let config = ModelProviderConfig {
         provider: Some("amazon-bedrock".into()),
+        base_url: Some(server.uri()),
         aws_region: Some("us-east-1".into()),
         aws_profile: Some("fixture-profile".into()),
         ..Default::default()
@@ -224,9 +231,9 @@ async fn ambient_aws_draft_proof_describes_manual_models_and_rejects_binding_cha
         .await
         .unwrap();
     assert_eq!(listing.credential_method, Some(CredentialMethod::Aws));
-    assert_eq!(listing.source, "catalog_fallback");
-    // This offline fixture has no downloaded catalog. Manual models still work.
-    assert_eq!(listing.directory_status, "unavailable");
+    // Failed live discovery must remain an error, while manual models still work.
+    assert_eq!(listing.source, "live_error");
+    assert_eq!(listing.directory_status, "live_error");
     assert!(listing.manual_entry);
     let model = listing
         .models

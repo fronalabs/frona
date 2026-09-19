@@ -25,7 +25,17 @@ impl ConfigService {
     /// Read a startup snapshot without a database. A missing file uses defaults
     /// and environment overrides; malformed or unreadable input is an error.
     pub fn load(path: impl AsRef<Path>) -> Result<LoadedConfig, AppError> {
-        let data_dir = std::env::var("FRONA_SERVER_DATA_DIR").unwrap_or_else(|_| "data".into());
+        Self::load_with_env(path, std::env::vars().collect())
+    }
+
+    pub(super) fn load_with_env(
+        path: impl AsRef<Path>,
+        env: HashMap<String, String>,
+    ) -> Result<LoadedConfig, AppError> {
+        let data_dir = env
+            .get("FRONA_SERVER_DATA_DIR")
+            .cloned()
+            .unwrap_or_else(|| "data".into());
 
         let config_path = path.as_ref().to_path_buf();
         let bytes = super::document::read_file(&config_path)?;
@@ -58,7 +68,8 @@ impl ConfigService {
         }
 
         // FRONA_BROWSER_WS_URL -> browser__ws_url -> browser.ws_url
-        let frona_env: HashMap<String, String> = std::env::vars()
+        let frona_env: HashMap<String, String> = env
+            .into_iter()
             .filter(|(k, _)| k.starts_with(ENV_PREFIX) && !EXCLUDED_ENV_VARS.contains(&k.as_str()))
             .map(|(k, v)| {
                 let stripped = k[ENV_PREFIX.len()..].to_lowercase();

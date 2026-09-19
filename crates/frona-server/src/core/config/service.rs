@@ -238,8 +238,12 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn load(path: &Path) -> super::super::LoadedConfig {
+        ConfigService::load_with_env(path, Default::default()).unwrap()
+    }
+
     fn service(path: &Path) -> ConfigService {
-        ConfigService::new(ConfigService::load(path).unwrap()).unwrap()
+        ConfigService::new(load(path)).unwrap()
     }
 
     async fn seed(service: &ConfigService) {
@@ -268,7 +272,7 @@ mod tests {
         assert!(saved.restart_required);
         assert_eq!(saved.active_revision, previous.active_revision);
         assert_ne!(service.active().server.port, 4321);
-        let restarted = ConfigService::new(ConfigService::load(&path).unwrap()).unwrap();
+        let restarted = ConfigService::new(load(&path)).unwrap();
         assert_eq!(restarted.active().server.port, 4321);
         assert!(!restarted.persisted().unwrap().restart_required);
     }
@@ -304,7 +308,7 @@ mod tests {
             );
             // A manual edit after either crash point is authoritative.
             std::fs::write(&path, "server:\n  port: 4323\n").unwrap();
-            let restarted = ConfigService::new(ConfigService::load(&path).unwrap()).unwrap();
+            let restarted = ConfigService::new(load(&path)).unwrap();
             assert_eq!(restarted.active().server.port, 4323);
         }
     }
@@ -323,7 +327,7 @@ mod tests {
         let previous = service.persisted().unwrap().persisted_revision;
         std::fs::write(&path, "server:\n  port: 4323\n").unwrap();
         assert!(service.save(json!({}), Some(&previous)).await.is_err());
-        let loaded = ConfigService::load(&path).unwrap();
+        let loaded = load(&path);
         std::fs::write(&path, "server:\n  port: 4324\n").unwrap();
         assert!(ConfigService::new(loaded).is_err());
     }

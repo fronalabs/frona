@@ -113,45 +113,42 @@ fn provider_option_serialization_omits_none_values() {
 fn env_var_overrides_multi_word_field() {
     // The key remapping (replace first _ with __) means FRONA_BROWSER_WS_URL
     // becomes browser__ws_url, which separator("__") resolves to browser.ws_url.
-    unsafe { std::env::set_var("FRONA_BROWSER_WS_URL", "ws://custom:9999") };
-    let loaded = ConfigService::load(config_file_path()).unwrap();
+    let loaded = load_with_env_override("FRONA_BROWSER_WS_URL", "ws://custom:9999");
     assert_eq!(
         loaded.config.browser.as_ref().unwrap().ws_url,
         "ws://custom:9999"
     );
-    unsafe { std::env::remove_var("FRONA_BROWSER_WS_URL") };
+}
+
+fn load_with_env_override(key: &str, value: &str) -> LoadedConfig {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.yaml");
+    std::fs::write(&path, "server:\n  port: 4321\n").unwrap();
+    ConfigService::load_with_env(&path, [(key.into(), value.into())].into()).unwrap()
 }
 
 #[test]
 fn env_var_overrides_server_port() {
-    unsafe { std::env::set_var("FRONA_SERVER_PORT", "9999") };
-    let loaded = ConfigService::load(config_file_path()).unwrap();
+    let loaded = load_with_env_override("FRONA_SERVER_PORT", "9999");
     assert_eq!(loaded.config.server.port, 9999);
-    unsafe { std::env::remove_var("FRONA_SERVER_PORT") };
 }
 
 #[test]
 fn env_var_overrides_database_path() {
-    unsafe { std::env::set_var("FRONA_DATABASE_PATH", "/tmp/testdb") };
-    let loaded = ConfigService::load(config_file_path()).unwrap();
+    let loaded = load_with_env_override("FRONA_DATABASE_PATH", "/tmp/testdb");
     assert_eq!(loaded.config.database.path, "/tmp/testdb");
-    unsafe { std::env::remove_var("FRONA_DATABASE_PATH") };
 }
 
 #[test]
 fn env_var_overrides_sso_enabled() {
-    unsafe { std::env::set_var("FRONA_SSO_ENABLED", "true") };
-    let loaded = ConfigService::load(config_file_path()).unwrap();
+    let loaded = load_with_env_override("FRONA_SSO_ENABLED", "true");
     assert!(loaded.config.sso.enabled);
-    unsafe { std::env::remove_var("FRONA_SSO_ENABLED") };
 }
 
 #[test]
 fn env_var_overrides_auth_allow_registration() {
-    unsafe { std::env::set_var("FRONA_AUTH_ALLOW_REGISTRATION", "false") };
-    let loaded = ConfigService::load(config_file_path()).unwrap();
+    let loaded = load_with_env_override("FRONA_AUTH_ALLOW_REGISTRATION", "false");
     assert!(!loaded.config.auth.allow_registration);
-    unsafe { std::env::remove_var("FRONA_AUTH_ALLOW_REGISTRATION") };
 }
 
 #[test]

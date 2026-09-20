@@ -11,12 +11,12 @@ case "$(uname -m)" in
   *) echo 'This native artifact check supports Linux aarch64/x86_64.' >&2; exit 1 ;;
 esac
 test -x "$artifact_root/target/release/frona"
-test -f "$artifact_root/web/out/index.html"
-artifact_catalogs="$artifact_root/data/artifact-catalogs"
+test -f "$artifact_root/web/target/out/index.html"
+artifact_catalogs="$artifact_root/target/artifact-catalogs"
 cargo run --manifest-path "$artifact_root/Cargo.toml" -p frona-model-catalog -- download --output "$artifact_catalogs"
 exec "$artifact_runtime" run --rm --network none \
   -v "$artifact_root/target/release/frona:/artifact/frona:ro" \
-  -v "$artifact_root/web/out:/artifact/static:ro" \
+  -v "$artifact_root/web/target/out:/artifact/static:ro" \
   -v "$artifact_catalogs:/artifact/catalogs:ro" \
   -v "$artifact_root/build/validate-provider-artifact.mjs:/artifact/validate.mjs:ro" \
   -v "$artifact_libdir:/host-libs:ro" \

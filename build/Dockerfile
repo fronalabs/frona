@@ -153,7 +153,7 @@ ARG DEV_UID=1000
 ARG DEV_GID=1000
 RUN groupadd -g "$DEV_GID" frona \
     && useradd -u "$DEV_UID" -g "$DEV_GID" -m -s /bin/bash frona
-RUN mkdir -p /app /app/target /app/frontend/node_modules /app/data /app/bin \
+RUN mkdir -p /app /app/target /app/web/node_modules /app/web/.next /app/web/target /app/data /app/bin \
     /usr/local/cargo/registry /usr/local/cargo/git \
     && chown -R frona:frona /app /usr/local/cargo
 ENV PATH="/app/bin:${PATH}"
@@ -196,7 +196,7 @@ COPY --from=python-builder /install /usr/local
 RUN python3 -m compileall -q /usr/local/lib/python3.12
 COPY --chown=frona:frona --from=backend-builder /app/target/release/frona /app/bin/frona
 COPY --chown=frona:frona --from=backend-builder /app/target/release/mcpctl /app/bin/mcpctl
-COPY --chown=frona:frona --from=frontend-builder /app/web/out /app/static
+COPY --chown=frona:frona --from=frontend-builder /app/web/target/out /app/static
 COPY --chown=frona:frona resources /app/share
 COPY --chown=frona:frona --from=catalogs /catalogs /app/share/catalogs
 # After `resources`, so it lands at the path `storage.shared_config_dir` derives:

@@ -44,12 +44,14 @@ services:
       - ../crates:/app/crates
       - ../Cargo.toml:/app/Cargo.toml
       - ../Cargo.lock:/app/Cargo.lock
-      - cargo-cache:/app/target
+      - ../target:/app/target
       - ../target/sccache:/cache/sccache
       - cargo-registry:/usr/local/cargo/registry
       - cargo-git:/usr/local/cargo/git
-      - node-modules:/app/web/node_modules
       - ../web:/app/web
+      - ../web/node_modules:/app/web/node_modules
+      - ../web/.next:/app/web/.next
+      - ../web/target:/app/web/target
       - ../resources:/app/resources
       - ../build:/app/build
       - ../data:/app/data
@@ -131,7 +133,5 @@ services:
       - "4040:4040"
 
 volumes:
-  cargo-cache:
   cargo-registry:
   cargo-git:
-  node-modules:

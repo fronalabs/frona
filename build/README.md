@@ -69,3 +69,20 @@ This builds for both platforms and pushes to `ghcr.io/fronalabs/frona:latest`. S
 ## Releasing
 
 See [RELEASE.md](RELEASE.md) for the full release process, versioning scheme, and Docker tagging strategy.
+
+## Build storage
+
+Frona uses ordinary `npm ci`, `npm install`, and `npm run` commands. In dv,
+`target`, `web/node_modules`, `web/.next`, and `web/target` are separate mounts
+from one build dataset. Retained `data` uses its own dataset and is never cleaned.
+
+Next development and production intermediates use `web/.next`; production static
+exports use `web/target/out`. TypeScript incremental state and Vitest coverage use
+`web/target/tsconfig.tsbuildinfo` and `web/target/coverage`. These output settings
+also apply to ordinary checkouts and production images. Docker's final image
+copies the static export into `/app/static`. Development Compose explicitly
+binds all frontend artifact paths beneath the source mount.
+
+`mise run clean` empties the four build directories while preserving mount roots.
+`dv clean WORKSPACE` uses the configured build paths and leaves the workspace
+running. Stop build processes yourself before cleaning if needed.

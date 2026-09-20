@@ -140,6 +140,5 @@ run = "build/update-versions.sh"
 [tasks.clean]
 description = "Remove build artifacts and generated files"
 run = """
-cargo clean
-rm -rf web/.next web/node_modules web/out
+bash build/clean-artifacts.sh
 """

@@ -4,7 +4,7 @@
 
 # server:
 #   port: 3001
-#   static_dir: web/out
+#   static_dir: web/target/out
 #   issuer_url: ""
 #   max_concurrent_tasks: 10
 #   sandbox_disabled: false

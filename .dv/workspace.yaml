@@ -1,0 +1,12 @@
+schema_version: 1
+build:
+  backup: false
+  paths:
+    - target
+    - web/target
+    - web/node_modules
+    - web/.next
+data:
+  backup: true
+  paths:
+    - data

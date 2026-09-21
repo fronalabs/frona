@@ -108,7 +108,28 @@ fi
 
 # Podman requires bind-mount source paths to exist before container creation.
 # Create them as the workspace user so outer-container tooling can write there.
-mkdir -p data/browser_profiles web/node_modules web/.next web/target target/sccache
+# Prefer dv's owner-private shared remote; standalone clones get their own.
+if [[ -z "${KACHE_SHARED_DIR:-}" ]]; then
+  if [[ -d /dv/shared/kache ]]; then
+    export KACHE_SHARED_DIR=/dv/shared/kache
+  else
+    # Compose resolves relative bind sources from build/, not the repository root.
+    export KACHE_SHARED_DIR="$PWD/target/kache-shared"
+  fi
+fi
+# Keep the nested compiler cache across disposable workspace-image updates.
+if [[ -z "${KACHE_LOCAL_DIR:-}" && -d /dv/private ]]; then
+  export KACHE_LOCAL_DIR=/dv/private/kache/frona-podman
+fi
+if [[ "${KACHE_LOCAL_DIR:-}" == /* ]]; then
+  mkdir -p "$KACHE_LOCAL_DIR"
+fi
+mkdir -p data/browser_profiles web/node_modules web/.next web/target "$KACHE_SHARED_DIR"
 
-exec "$runtime" compose -f build/docker-compose.yml \
-  --profile "$profile" "$action" "$@"
+# podman-compose changes directory before opening files; -f paths must be absolute.
+compose_args=(-f "$PWD/build/docker-compose.yml")
+if [[ "$runtime" == podman && "$profile" == dev ]]; then
+  # Match the image user to the workspace owner without changing other services.
+  compose_args+=(-f "$PWD/build/dev/docker-compose.podman.yml")
+fi
+exec "$runtime" compose "${compose_args[@]}" --profile "$profile" "$action" "$@"

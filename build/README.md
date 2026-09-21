@@ -86,3 +86,44 @@ binds all frontend artifact paths beneath the source mount.
 `mise run clean` empties the four build directories while preserving mount roots.
 `dv clean WORKSPACE` uses the configured build paths and leaves the workspace
 running. Stop build processes yourself before cleaning if needed.
+
+## Development compiler cache
+
+The development image installs checksum-pinned Kache via `dev/install-kache.sh`.
+Compose selects it with `RUSTC_WRAPPER=kache`; `dev/watch.sh` starts its daemon
+before compiling. Production builds continue to use cargo-chef.
+
+Each development container has a local cache at `/cache/kache`. `KACHE_LOCAL_DIR`
+can select a host directory; dv defaults to `/dv/private/kache/frona-podman`,
+while standalone Compose uses the `kache-local` named volume. The filesystem
+backend is mounted at `/dv/shared/kache`: `KACHE_SHARED_DIR` selects its source,
+defaulting to dv's owner-private shared cache or `target/kache-shared` outside dv.
+Other workspaces can reuse artifacts through that shared backend.
+
+`dev/kache.toml` defines cache sizes and daemon behavior. Build-script caching
+is disabled and restore verification is enabled. These are intentional
+correctness settings, not benchmark switches.
+
+Cargo job and test-thread counts inherit `CARGO_BUILD_JOBS` and `RUST_TEST_THREADS`
+without project-specific limits. Development/test profiles retain reduced debug
+information. Run the launcher regression checks with Python 3 and Bash. The
+provider-parsing check also runs when Podman and podman-compose are installed:
+
+```bash
+python3 build/dev/test-container.py
+```
+
+## Development files
+
+Development-only files live in `build/dev/`:
+
+- `watch.sh`: Rust rebuilds.
+- `docker-compose.podman.yml`: rootless Podman development overrides.
+- `install-kache.sh` and `kache.toml`: compiler-cache setup.
+- `searxng-settings.yml`: search-service settings.
+- `pkgs/apt.txt` and `pkgs/rust-cargo.txt`: development package lists.
+- `test-container.py`: launcher and provider regression checks.
+
+The shared Dockerfile, Compose definition, and container launcher stay in
+`build/`. Builder and production package lists stay in `build/pkgs/`;
+`update-versions.sh` updates both package directories.

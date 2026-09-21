@@ -1,2 +1,1 @@
 cargo-watch=8.5.3
-sccache=0.17.0

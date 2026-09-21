@@ -1,0 +1,8 @@
+# Rootless Podman; keep the application non-root and bind writes owner-owned.
+# Per-service user namespaces cannot be combined with a shared Podman pod.
+x-podman:
+  in_pod: false
+services:
+  frona-dev:
+    user: "1000:1000"
+    userns_mode: keep-id

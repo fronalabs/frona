@@ -1,0 +1,6 @@
+# Keep development artifacts small; concurrency is inherited from the environment.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"

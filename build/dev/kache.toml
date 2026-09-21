@@ -1,0 +1,11 @@
+[cache]
+local_store = "/cache/kache/local"
+runtime_dir = "/tmp/dv-kache"
+local_max_size = "128GiB"
+input_predictions = false
+scheduler = false
+prefetch_enabled = false
+[cache.remote]
+type = "filesystem"
+path = "/dv/shared/kache"
+prefix = "artifacts"

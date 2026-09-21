@@ -111,7 +111,7 @@ RUN pip install --no-cache-dir --prefix=/install -r builder-python-pip.txt
 
 
 # Same base as prod so dev and prod share the exact Python 3.12 interpreter and the
-# same runtime deps; dev only layers on the Rust build toolchain (dev-apt.txt).
+# same runtime deps; dev only layers on the Rust build toolchain (dev/pkgs/apt.txt).
 FROM python:3.12-slim-bookworm AS dev
 RUN --mount=type=bind,source=build/pkgs/prod-apt.txt,target=/tmp/packages.txt \
   apt-get update \
@@ -121,7 +121,7 @@ RUN --mount=type=bind,source=build/pkgs/prod-apt.txt,target=/tmp/packages.txt \
   && apt-get install -y --no-install-recommends \
      $(grep '^nodejs=' /tmp/packages.txt) \
   && rm -rf /var/lib/apt/lists/*
-RUN --mount=type=bind,source=build/pkgs/dev-apt.txt,target=/tmp/packages.txt \
+RUN --mount=type=bind,source=build/dev/pkgs/apt.txt,target=/tmp/packages.txt \
   apt-get update \
   && apt-get install -y --no-install-recommends \
      $(grep -vE '^\s*(#|$)' /tmp/packages.txt | tr '\n' ' ') \
@@ -141,13 +141,16 @@ COPY --from=python-builder /install /usr/local
 # (syd sandbox blocks writes outside the agent workspace) - matches prod.
 RUN python3 -m compileall -q /usr/local/lib/python3.12
 
-RUN --mount=type=bind,source=build/pkgs/dev-rust-cargo.txt,target=/tmp/cargo.txt \
+RUN --mount=type=bind,source=build/dev/pkgs/rust-cargo.txt,target=/tmp/cargo.txt \
   for line in $(grep -vE '^\s*(#|$)' /tmp/cargo.txt); do \
     crate=${line%%=*}; version=${line#*=}; \
     cargo install "$crate" --version "$version"; \
   done
 
 COPY --from=cli-tools /usr/local/bin/op /usr/local/bin/bw /usr/local/bin/surreal /usr/local/bin/syd /usr/local/bin/
+COPY build/dev/install-kache.sh /tmp/install-kache.sh
+RUN sh /tmp/install-kache.sh && rm /tmp/install-kache.sh
+COPY build/dev/kache.toml /etc/kache/config.toml
 
 ARG DEV_UID=1000
 ARG DEV_GID=1000
@@ -155,13 +158,14 @@ RUN groupadd -g "$DEV_GID" frona \
     && useradd -u "$DEV_UID" -g "$DEV_GID" -m -s /bin/bash frona
 RUN mkdir -p /app /app/target /app/web/node_modules /app/web/.next /app/web/target /app/data /app/bin \
     /usr/local/cargo/registry /usr/local/cargo/git \
-    && chown -R frona:frona /app /usr/local/cargo
+    && mkdir -p /cache/kache \
+    && chown -R frona:frona /app /usr/local/cargo /cache/kache
 ENV PATH="/app/bin:${PATH}"
 USER frona
 WORKDIR /app
 COPY --chown=frona:frona web/package.json web/package-lock.json* web/
 RUN cd web && npm install
-CMD ["bash", "-c", "cd web && npm install && cd /app && cargo watch -w crates/ -w Cargo.toml -w Cargo.lock --delay 3 -s /app/build/dev-watch.sh & cd web && npm run dev & wait"]
+CMD ["bash", "-c", "cd web && npm install && cd /app && cargo watch -w crates/ -w Cargo.toml -w Cargo.lock --delay 3 -s /app/build/dev/watch.sh & cd web && npm run dev & wait"]
 
 
 FROM python:3.12-slim-bookworm AS prod

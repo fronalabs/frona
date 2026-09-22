@@ -128,5 +128,72 @@ class CargoEnvironmentTests(unittest.TestCase):
             self.assertEqual(entries, [key])
 
 
+class ParallelBuildTests(unittest.TestCase):
+    def test_up_builds_missing_images_with_parallel_jobs(self):
+        cases = [
+            # args, image probe exit status, build exit status, expected builds, exit
+            ([], 1, 0, 1, 0),
+            ([], 0, 0, 0, 0),
+            (["--build"], 0, 0, 1, 0),
+            (["--no-build"], 1, 0, 0, 0),
+            (["--help"], 1, 0, 0, 0),
+            ([], 1, 9, 1, 9),
+            ([], 125, 0, 0, 125),
+        ]
+        with tempfile.TemporaryDirectory(prefix="frona-parallel-test-") as directory:
+            root = Path(directory)
+            build = root / "build"
+            build.mkdir()
+            launcher = build / "container.sh"
+            shutil.copyfile(BUILD_DIR / "container.sh", launcher)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            runtime = bin_dir / "podman"
+            runtime.write_text(
+                f"#!{sys.executable}\n"
+                "import json, os, sys\n"
+                "args = sys.argv[1:]\n"
+                "with open(os.environ['FRONA_TEST_CALLS'], 'a') as log:\n"
+                "    log.write(json.dumps(args) + '\\n')\n"
+                "if args[:2] == ['image', 'exists']:\n"
+                "    sys.exit(int(os.environ['FRONA_TEST_IMAGE_STATUS']))\n"
+                "if args[0] == 'build':\n"
+                "    sys.exit(int(os.environ['FRONA_TEST_BUILD_STATUS']))\n"
+            )
+            runtime.chmod(0o700)
+            for index, (args, image_status, build_status, count, status) in enumerate(cases):
+                with self.subTest(args=args, image_status=image_status, build_status=build_status):
+                    calls_file = root / f"calls-{index}.jsonl"
+                    env = dict(os.environ)
+                    env.update(
+                        PATH=f"{bin_dir}{os.pathsep}{env.get('PATH', '')}",
+                        CONTAINER_RUNTIME="podman", CONTAINER_BUILD_JOBS="64",
+                        KACHE_SHARED_DIR=str(root / "shared"),
+                        KACHE_LOCAL_DIR=str(root / "local"),
+                        FRONA_TEST_CALLS=str(calls_file),
+                        FRONA_TEST_IMAGE_STATUS=str(image_status),
+                        FRONA_TEST_BUILD_STATUS=str(build_status),
+                    )
+                    result = subprocess.run(
+                        ["bash", str(launcher), "dev", *args], env=env,
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    calls = [json.loads(line) for line in calls_file.read_text().splitlines()]
+                    builds = [call for call in calls if call[0] == "build"]
+                    self.assertEqual(len(builds), count, calls)
+                    self.assertEqual(result.returncode, status, result.stderr)
+                    for call in builds:
+                        self.assertEqual(call[call.index("--jobs") + 1], "64")
+                        self.assertEqual(call[call.index("--target") + 1], "dev")
+                    compose = [call for call in calls if call[0] == "compose"]
+                    if status:
+                        self.assertEqual(compose, [], calls)
+                    elif "--help" not in args:
+                        self.assertIn("--no-build", compose[0])
+                        self.assertNotIn("--build", compose[0])
+                        if builds:
+                            self.assertLess(calls.index(builds[0]), calls.index(compose[0]))
+
+
 if __name__ == "__main__":
     unittest.main()

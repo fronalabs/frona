@@ -64,14 +64,14 @@ else
   export CONTAINER_RESTART_POLICY="${CONTAINER_RESTART_POLICY:-unless-stopped}"
 fi
 
-# podman-compose does not pass Podman's --jobs option through to image builds.
-# Prebuild explicitly so independent Dockerfile stages can use all available CPUs.
+# Prebuild explicitly so both missing-image startup and requested rebuilds use
+# parallel stages rather than podman-compose's default serial image build.
 if [[ "$runtime" == podman ]]; then
   build_jobs="${CONTAINER_BUILD_JOBS:-$(nproc)}"
   image="localhost/frona-${profile}:local"
   build_image() {
     local -a build_args=(
-      build --layers --jobs "$build_jobs"
+      build --layers --jobs "$build_jobs" --file build/Dockerfile
       --target "$profile"
       --tag "$image"
     )
@@ -92,17 +92,30 @@ if [[ "$runtime" == podman ]]; then
   if [[ "$action" == up ]]; then
     filtered_args=()
     requested_build=false
+    skip_build=false
+    show_help=false
     for arg in "$@"; do
-      if [[ "$arg" == --build ]]; then
-        requested_build=true
-      else
-        filtered_args+=("$arg")
-      fi
+      case "$arg" in
+        --build) requested_build=true ;;
+        --no-build) skip_build=true; filtered_args+=("$arg") ;;
+        -h | --help) show_help=true; filtered_args+=("$arg") ;;
+        *) filtered_args+=("$arg") ;;
+      esac
     done
-    if [[ "$requested_build" == true ]]; then
-      build_image
-      set -- "${filtered_args[@]}"
+    if [[ "$show_help" == false && "$skip_build" == false ]]; then
+      if [[ "$requested_build" == true ]]; then
+        build_image
+      elif "$runtime" image exists "$image"; then
+        : # Reuse the existing image without invoking the builder.
+      else
+        image_status=$?
+        # Exit 1 means absent; storage/runtime failures must not trigger a build.
+        if [[ "$image_status" -ne 1 ]]; then exit "$image_status"; fi
+        build_image
+      fi
+      filtered_args=(--no-build ${filtered_args[@]+"${filtered_args[@]}"})
     fi
+    set -- ${filtered_args[@]+"${filtered_args[@]}"}
   fi
 fi
 

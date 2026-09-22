@@ -87,6 +87,19 @@ binds all frontend artifact paths beneath the source mount.
 `dv clean WORKSPACE` uses the configured build paths and leaves the workspace
 running. Stop build processes yourself before cleaning if needed.
 
+## Podman image build parallelism
+
+`mise run container:dev` reuses an existing development image. If it is missing,
+the launcher builds it directly with Podman before starting Compose. Explicit
+rebuilds (`mise run container:dev:build`) use the same path. Both pass
+`--jobs=$(nproc)` so independent Dockerfile stages can run concurrently; set
+`CONTAINER_BUILD_JOBS` to override the count (`0` means unlimited stages).
+Compose is then started with `--no-build` to avoid a second, serial build.
+Passing `--no-build` yourself skips the automatic build entirely.
+
+This controls image stages, not Cargo jobs. Instructions within a stage and
+stages that depend on earlier outputs still execute in dependency order.
+
 ## Development compiler cache
 
 The development image installs checksum-pinned Kache via `dev/install-kache.sh`.

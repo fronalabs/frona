@@ -1,4 +1,4 @@
-use super::document::{read_file, revision};
+use super::document::{read_file, revision, strip_defaults_against};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
@@ -20,6 +20,7 @@ pub struct ConfigService {
     path: PathBuf,
     active_revision: String,
     active: Arc<Config>,
+    defaults: Arc<Config>,
     writes: Arc<Mutex<()>>,
 }
 
@@ -62,6 +63,7 @@ impl ConfigService {
             path: loaded.path,
             active_revision: loaded.revision,
             active: Arc::new(loaded.config),
+            defaults: Arc::new(loaded.defaults),
             writes: Arc::new(Mutex::new(())),
         })
     }
@@ -133,6 +135,8 @@ impl ConfigService {
         .validate_model_groups()
         .map_err(validation)?;
 
+        strip_defaults_against(&mut target, &self.defaults);
+        validate_document(&target)?;
         let yaml = serde_yaml::to_string(&target)
             .map_err(validation)?
             .into_bytes();
@@ -254,6 +258,139 @@ mod tests {
             )
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn saves_strip_defaults_from_full_setup_sections() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = service(&directory.path().join("config.yaml"));
+        let mut submitted = serde_json::to_value(Config::default()).unwrap();
+        submitted["auth"]["encryption_secret"] = json!("setup-test-secret");
+        submitted["memory"]["backend"] = json!("basic");
+        submitted["server"]["timezone"] = json!("America/Los_Angeles");
+        submitted["providers"] = json!({"openai":{"provider":"openai","enabled":true,"credential_id":"00000000-0000-0000-0000-000000000001"}});
+        submitted["models"] = json!({"primary":{"provider":"openai","model":"test","api":"completions","reasoning_effort":"medium",
+            "extra_params":{"enabled":true,"temperature":null,"nested":{}}}});
+        let expected = json!({
+            "auth":{"encryption_secret":"setup-test-secret"},
+            "memory":{"backend":"basic"},
+            "server":{"timezone":"America/Los_Angeles"},
+            "providers":{"openai":{"provider":"openai","credential_id":"00000000-0000-0000-0000-000000000001"}},
+            "models":submitted["models"],
+        });
+        let saved = service.save(submitted.clone(), None).await.unwrap();
+        assert_eq!(saved.config, expected);
+        let written: Value =
+            serde_yaml::from_slice(&std::fs::read(&service.path).unwrap()).unwrap();
+        assert_eq!(written, expected);
+        assert_eq!(
+            serde_json::to_value(validate_document(&written).unwrap()).unwrap(),
+            serde_json::to_value(validate_document(&submitted).unwrap()).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn saving_preserves_explicit_paths_with_environment_defaults() {
+        for data_dir in ["data", "/srv/frona"] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("config.yaml");
+            let env = [("FRONA_SERVER_DATA_DIR".into(), data_dir.into())].into();
+            let document = json!({
+                "database": {"path": "data/db"},
+                "storage": {
+                    "data_dir": "data",
+                    "skills_dir": "data/skills",
+                    "cache_dir": "data/system/cache",
+                    "ontology_dir": "data/ontology",
+                },
+            });
+            std::fs::write(&path, serde_yaml::to_string(&document).unwrap()).unwrap();
+            let loaded = ConfigService::load_with_env(&path, env).unwrap();
+            let before = loaded.config.clone();
+            let service = ConfigService::new(loaded).unwrap();
+            let saved = service
+                .save(json!({"server": {"port": 4321}}), None)
+                .await
+                .unwrap();
+            let env = [("FRONA_SERVER_DATA_DIR".into(), data_dir.into())].into();
+            let after = ConfigService::load_with_env(&path, env).unwrap().config;
+            assert_eq!(after.database.path, before.database.path);
+            assert_eq!(
+                serde_json::to_value(&after.storage).unwrap(),
+                serde_json::to_value(&before.storage).unwrap()
+            );
+            if data_dir == "data" {
+                assert_eq!(saved.config, json!({"server": {"port": 4321}}));
+            } else {
+                assert_eq!(saved.config["database"], document["database"]);
+                assert_eq!(saved.config["storage"], document["storage"]);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn saving_preserves_required_generic_model_provider() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.yaml");
+        let service = service(&path);
+        let saved = service
+            .save(
+                json!({
+                    "providers": {"generic": {"provider": "openai"}},
+                    "models": {"primary": {"provider": "generic", "model": "test"}},
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved.config["models"]["primary"]["provider"], "generic");
+        let restarted = ConfigService::new(load(&path)).unwrap();
+        assert_eq!(
+            restarted.active().models["primary"].provider.as_str(),
+            "generic"
+        );
+        restarted
+            .save(json!({"server": {"port": 4321}}), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            load(&path).config.models["primary"].provider.as_str(),
+            "generic"
+        );
+    }
+
+    #[tokio::test]
+    async fn saving_a_default_removes_the_previous_override() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = service(&directory.path().join("config.yaml"));
+        service
+            .save(json!({"server":{"port":4321}}), None)
+            .await
+            .unwrap();
+        let saved = service
+            .save(json!({"server":{"port":3001}}), None)
+            .await
+            .unwrap();
+        assert_eq!(saved.config, json!({}));
+        assert_eq!(load(&service.path).config.server.port, 3001);
+    }
+
+    #[tokio::test]
+    async fn stripping_defaults_keeps_explicit_provider_connections() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = service(&directory.path().join("config.yaml"));
+        let saved = service
+            .save(
+                json!({
+                    "providers":{"openai":{"enabled":true}},
+                    "models":{"primary":{"provider":"openai","model":"test"}},
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(saved.config["providers"]["openai"], json!({}));
+        assert!(load(&service.path).config.providers.contains_key("openai"));
     }
 
     #[tokio::test]

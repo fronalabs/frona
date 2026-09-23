@@ -273,6 +273,7 @@ fn strip_defaults_removes_provider_entry_defaults() {
         value,
         serde_json::json!({
             "providers": {
+                "anthropic": {},
                 "openai": { "api_key": "sk-123" },
             },
         })
@@ -280,14 +281,14 @@ fn strip_defaults_removes_provider_entry_defaults() {
 }
 
 #[test]
-fn strip_defaults_removes_providers_key_when_all_default() {
+fn strip_defaults_keeps_provider_connections_when_all_fields_are_default() {
     let mut value = serde_json::json!({
         "providers": {
             "anthropic": { "base_url": null, "enabled": true },
         },
     });
     strip_defaults(&mut value);
-    assert_eq!(value, serde_json::json!({}));
+    assert_eq!(value, serde_json::json!({"providers": {"anthropic": {}}}));
 }
 
 #[test]

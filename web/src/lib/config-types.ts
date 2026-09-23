@@ -286,13 +286,36 @@ function stripRedactedSensitiveFields(obj: unknown, path: string[] = []): unknow
 
 export function updateConfig(
   patch: Record<string, unknown>,
-  metadata?: { expectedPersistedRevision: string },
+  metadata?: { expectedPersistedRevision: string; baseline?: Config | null },
 ): Promise<ConfigUpdateResponse> {
   const cleaned = stripRedactedSensitiveFields(patch) as Record<string, unknown>;
+  const changes = metadata?.baseline ? changedConfigFields(metadata.baseline, cleaned) : cleaned;
   return api.put<ConfigUpdateResponse>("/api/config", metadata ? {
-    patch: cleaned,
+    patch: changes,
     expected_persisted_revision: metadata.expectedPersistedRevision,
-  } : cleaned);
+  } : changes);
+}
+
+/** Section editors return full values; only send fields changed from the loaded view.
+ * Arrays and model extra_params remain complete replacements, including {} clears.
+ * Missing patch keys are untouched, while explicit nulls retain deletion semantics.
+ */
+function changedConfigFields(before: object, patch: Record<string, unknown>, path: string[] = []): Record<string, unknown> {
+  const baseline = before as Record<string, unknown>;
+  const changes: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (JSON.stringify(baseline[key]) === JSON.stringify(value)) continue;
+    const previous = baseline[key];
+    if (previous && value && typeof previous === "object" && typeof value === "object"
+      && !Array.isArray(previous) && !Array.isArray(value)
+      && !(path[0] === "models" && key === "extra_params")) {
+      const nested = changedConfigFields(previous, value as Record<string, unknown>, [...path, key]);
+      if (Object.keys(nested).length) changes[key] = nested;
+    } else {
+      changes[key] = value;
+    }
+  }
+  return changes;
 }
 
 export interface ModelInfo {

@@ -266,7 +266,7 @@ function SetupWizard() {
         setPatch(previous => ({ ...previous, providers: { ...(previous.providers as Record<string, unknown>), [handle]: connection } }));
         setProviderDrafts(previous => { const next = { ...previous }; delete next[handle]; return next; });
       });
-      const result = await updateConfig(acceptedPatch, { expectedPersistedRevision: persistedRevision });
+      const result = await updateConfig(acceptedPatch, { expectedPersistedRevision: persistedRevision, baseline: savedConfig });
       setConfig(result.config); setSavedConfig(result.config);
       setPersistedRevision(result.persisted_revision);
       setProviderDrafts({});
@@ -277,7 +277,7 @@ function SetupWizard() {
     } finally {
       setSaving(false);
     }
-  }, [patch, persistedRevision, providersBlock, modelsBlock, providerDrafts]);
+  }, [patch, persistedRevision, providersBlock, modelsBlock, providerDrafts, savedConfig]);
 
   if (loading) {
     return (

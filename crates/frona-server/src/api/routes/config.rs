@@ -81,8 +81,16 @@ async fn update_config(
     response(result)
 }
 
-pub(super) fn response(mut result: SaveResult) -> Result<Json<Value>, ApiError> {
-    let parsed = crate::core::config::validate_document(&result.config)?;
+pub(super) fn response(result: SaveResult) -> Result<Json<Value>, ApiError> {
+    response_with_env(result, std::env::vars().collect())
+}
+
+fn response_with_env(
+    mut result: SaveResult,
+    env: std::collections::HashMap<String, String>,
+) -> Result<Json<Value>, ApiError> {
+    let parsed =
+        crate::core::config::ConfigService::resolve_document_with_env(&result.config, env)?;
     let parameter_overrides = crate::inference::config::ModelRegistryConfig {
         providers: parsed.providers.clone(),
         models: parsed.models.clone(),
@@ -113,6 +121,95 @@ mod tests {
         db::repo::generic::SurrealRepo,
     };
     use std::sync::Arc;
+
+    #[test]
+    fn config_response_reflects_environment_overrides_without_changing_authoring_document() {
+        for document in [
+            serde_json::json!({}),
+            serde_json::json!({
+                "server": {"port": 4321, "backend_url": "http://old", "frontend_url": "http://old", "cors_origins": "http://old"},
+                "browser": null,
+                "search": {"searxng_base_url": "http://old"},
+            }),
+        ] {
+            let result = SaveResult {
+                config: document.clone(),
+                persisted_revision: "persisted".into(),
+                active_revision: "active".into(),
+                restart_required: true,
+            };
+            let env = [
+                ("FRONA_SERVER_CORS_ORIGINS", "https://app.example.com"),
+                ("FRONA_SERVER_BACKEND_URL", "https://api.example.com"),
+                ("FRONA_SERVER_FRONTEND_URL", "https://app.example.com"),
+                ("FRONA_LOG_LEVEL", "debug"),
+                ("FRONA_BROWSER_WS_URL", "ws://browserless:3333"),
+                ("FRONA_SEARCH_SEARXNG_BASE_URL", "http://searxng:8080"),
+                ("FRONA_SERVER_PORT", "3001"),
+                ("FRONA_AUTH_ENCRYPTION_SECRET", "test-env-secret"),
+                ("FRONA_SERVER_DATA_DIR", "/srv/frona"),
+            ]
+            .into_iter()
+            .map(|(key, value)| (key.into(), value.into()))
+            .collect();
+            let response = response_with_env(result, env)
+                .map_err(|error| error.0)
+                .unwrap()
+                .0;
+            let config = &response["config"];
+            assert_eq!(config["browser"]["ws_url"], "ws://browserless:3333");
+            assert_eq!(config["search"]["searxng_base_url"], "http://searxng:8080");
+            assert_eq!(config["server"]["cors_origins"], "https://app.example.com");
+            assert_eq!(config["server"]["backend_url"], "https://api.example.com");
+            assert_eq!(config["server"]["frontend_url"], "https://app.example.com");
+            assert_eq!(config["server"]["port"], 3001);
+            assert_eq!(config["database"]["path"], "/srv/frona/db");
+            assert_eq!(config["storage"]["data_dir"], "/srv/frona");
+            assert_eq!(
+                config["auth"]["encryption_secret"],
+                serde_json::json!({"is_set": true})
+            );
+            assert!(!response.to_string().contains("test-env-secret"));
+            assert_eq!(response["authoring_document"], document);
+            assert_eq!(response["persisted_revision"], "persisted");
+            assert_eq!(response["active_revision"], "active");
+            assert_eq!(response["restart_required"], true);
+        }
+    }
+
+    #[test]
+    fn config_response_preserves_pending_edits_and_literal_model_parameters() {
+        let parameters = serde_json::json!({"a.b": "${LITERAL_PARAMETER}", "CamelCase": null});
+        let document = serde_json::json!({
+            "server": {"port": 4321},
+            "providers": {"openai": {"api_key": "${CONFIG_TEST_PROVIDER_KEY}"}},
+            "models": {"primary": {"provider": "openai", "model": "test", "extra_params": parameters}},
+        });
+        let result = SaveResult {
+            config: document,
+            persisted_revision: "persisted".into(),
+            active_revision: "active".into(),
+            restart_required: true,
+        };
+        let response = response_with_env(result, Default::default())
+            .map_err(|error| error.0)
+            .unwrap()
+            .0;
+        assert_eq!(response["config"]["server"]["port"], 4321);
+        assert_eq!(
+            response["config"]["models"]["primary"]["extra_params"],
+            parameters
+        );
+        assert_eq!(
+            response["authoring_document"]["models"]["primary"]["extra_params"],
+            parameters
+        );
+        assert_eq!(
+            response["config"]["providers"]["openai"]["api_key"],
+            serde_json::json!({"is_set": true})
+        );
+        assert_eq!(response["restart_required"], true);
+    }
 
     fn auth(user: &User) -> AdminUser {
         AdminUser(crate::api::middleware::auth::AuthUser {
@@ -231,7 +328,12 @@ mod tests {
             .map_err(|error| error.0)
             .unwrap()
             .0;
-        assert_eq!(authoring["config"]["server"]["port"], 4321);
+        assert_eq!(authoring["authoring_document"]["server"]["port"], 4321);
+        let reloaded = crate::core::config::ConfigService::load(&path).unwrap();
+        assert_eq!(
+            authoring["config"]["server"]["port"],
+            reloaded.config.server.port
+        );
         let raw = serde_json::json!({"temperature":null,"nested":{"value":null},"array":[null,{"is_set":true}],"is_set":true,"a.b":"literal","template":"${RAW_LITERAL_DO_NOT_EXPAND}"});
         let saved = update_config(auth(&admin), State(state.clone()), Json(serde_json::json!({
             "patch":{"providers":{"openai":{"api_key":{"is_set":true}}}, "models":{"primary":{"provider":"openai","model":"fixture","temperature":0.4,"extra_params":raw}}},

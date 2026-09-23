@@ -145,7 +145,7 @@ export default function AdminSettingsPage() {
           setPatch(previous => ({ ...previous, providers: { ...(previous.providers as Record<string, unknown>), [handle]: connection } }));
           setProviderDrafts(previous => { const next = { ...previous }; delete next[handle]; return next; });
         });
-        const result = await updateConfig(acceptedPatch, { expectedPersistedRevision: persistedRevision });
+        const result = await updateConfig(acceptedPatch, { expectedPersistedRevision: persistedRevision, baseline: savedConfig });
         setConfig(result.config); setSavedConfig(result.config);
         setPersistedRevision(result.persisted_revision);
         setProviderDrafts({});
@@ -161,7 +161,7 @@ export default function AdminSettingsPage() {
     } finally {
       setSaving(false);
     }
-  }, [patch, hasPendingChanges, sectionHandlers, persistedRevision, providerBlock, modelBlock, providerDrafts]);
+  }, [patch, hasPendingChanges, sectionHandlers, persistedRevision, providerBlock, modelBlock, providerDrafts, savedConfig]);
 
   const handleDiscard = useCallback(() => {
     setProviderFormEpoch(epoch => epoch + 1);

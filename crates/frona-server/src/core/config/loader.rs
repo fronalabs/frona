@@ -17,6 +17,7 @@ const EXCLUDED_ENV_VARS: &[&str] = &[
 pub struct LoadedConfig {
     pub(super) path: PathBuf,
     pub(super) revision: String,
+    pub(super) defaults: Config,
     pub config: Config,
     pub models: Option<crate::inference::config::ModelRegistryConfig>,
 }
@@ -32,11 +33,6 @@ impl ConfigService {
         path: impl AsRef<Path>,
         env: HashMap<String, String>,
     ) -> Result<LoadedConfig, AppError> {
-        let data_dir = env
-            .get("FRONA_SERVER_DATA_DIR")
-            .cloned()
-            .unwrap_or_else(|| "data".into());
-
         let config_path = path.as_ref().to_path_buf();
         let bytes = super::document::read_file(&config_path)?;
         let revision = super::document::revision(&bytes);
@@ -48,6 +44,63 @@ impl ConfigService {
                     .map_err(|error| AppError::Validation(error.to_string()))?,
             )
         };
+
+        let defaults = Self::resolve_yaml_with_env(None, env.clone())?;
+        let mut config = Self::resolve_yaml_with_env(yaml_content.as_deref(), env)?;
+        resolve_server_timezone(&mut config.server);
+
+        let models = if !config.models.is_empty() || !config.providers.is_empty() {
+            Some(crate::inference::config::ModelRegistryConfig {
+                providers: config.providers.clone().into_iter().collect(),
+                models: config.models.clone().into_iter().collect(),
+                skip_auto_discover: false,
+            })
+        } else {
+            None
+        };
+
+        if yaml_content.is_some() {
+            tracing::info!(path = %config_path.display(), "Loaded config from YAML");
+        } else {
+            tracing::info!("No config file found, using defaults and env vars");
+        }
+
+        if let Ok(mut v) = serde_json::to_value(&config) {
+            redact_config_for_log(&mut v);
+            tracing::debug!(
+                "Effective config:\n{}",
+                serde_json::to_string_pretty(&v).unwrap_or_default()
+            );
+        }
+
+        Ok(LoadedConfig {
+            config,
+            defaults,
+            models,
+            path: config_path,
+            revision,
+        })
+    }
+
+    /// Resolve the settings view with the same defaults and environment precedence
+    /// as startup, without adding environment values to the authoring document.
+    pub(crate) fn resolve_document_with_env(
+        document: &serde_json::Value,
+        env: HashMap<String, String>,
+    ) -> Result<Config, AppError> {
+        let yaml = serde_yaml::to_string(document)
+            .map_err(|error| AppError::Validation(error.to_string()))?;
+        Self::resolve_yaml_with_env(Some(&yaml), env)
+    }
+
+    fn resolve_yaml_with_env(
+        yaml_content: Option<&str>,
+        env: HashMap<String, String>,
+    ) -> Result<Config, AppError> {
+        let data_dir = env
+            .get("FRONA_SERVER_DATA_DIR")
+            .cloned()
+            .unwrap_or_else(|| "data".into());
 
         let mut builder = config::Config::builder()
             .set_default("database.path", format!("{data_dir}/db"))
@@ -61,7 +114,7 @@ impl ConfigService {
             .set_default("storage.ontology_dir", format!("{data_dir}/ontology"))
             .unwrap();
 
-        if let Some(ref content) = yaml_content {
+        if let Some(content) = yaml_content {
             let expanded = expand_config_env_vars(content)?;
             builder =
                 builder.add_source(config::File::from_str(&expanded, config::FileFormat::Yaml));
@@ -98,7 +151,7 @@ impl ConfigService {
 
         // Preserve provider credential source references for runtime precedence.
         // Other configuration fields retain the existing expansion behavior.
-        if let Some(content) = &yaml_content {
+        if let Some(content) = yaml_content {
             let raw: serde_yaml::Value = serde_yaml::from_str(content)
                 .map_err(|error| AppError::Validation(error.to_string()))?;
             if let Some(providers) = raw.get("providers").and_then(serde_yaml::Value::as_mapping) {
@@ -118,37 +171,6 @@ impl ConfigService {
             }
         }
 
-        resolve_server_timezone(&mut config.server);
-
-        let models = if !config.models.is_empty() || !config.providers.is_empty() {
-            Some(crate::inference::config::ModelRegistryConfig {
-                providers: config.providers.clone().into_iter().collect(),
-                models: config.models.clone().into_iter().collect(),
-                skip_auto_discover: false,
-            })
-        } else {
-            None
-        };
-
-        if yaml_content.is_some() {
-            tracing::info!(path = %config_path.display(), "Loaded config from YAML");
-        } else {
-            tracing::info!("No config file found, using defaults and env vars");
-        }
-
-        if let Ok(mut v) = serde_json::to_value(&config) {
-            redact_config_for_log(&mut v);
-            tracing::debug!(
-                "Effective config:\n{}",
-                serde_json::to_string_pretty(&v).unwrap_or_default()
-            );
-        }
-
-        Ok(LoadedConfig {
-            config,
-            models,
-            path: config_path,
-            revision,
-        })
+        Ok(config)
     }
 }

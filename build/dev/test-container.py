@@ -195,5 +195,86 @@ class ParallelBuildTests(unittest.TestCase):
                             self.assertLess(calls.index(builds[0]), calls.index(compose[0]))
 
 
+class ContainerLifecycleTests(unittest.TestCase):
+    def test_foreground_cleanup_and_detached_passthrough(self):
+        import signal
+        import time
+
+        with tempfile.TemporaryDirectory(prefix="frona-lifecycle-test-") as directory:
+            root = Path(directory)
+            build = root / "build"
+            build.mkdir()
+            (build / "dev").mkdir()
+            launcher = build / "container.sh"
+            shutil.copyfile(BUILD_DIR / "container.sh", launcher)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            runtime = bin_dir / "podman"
+            runtime.write_text(
+                f"#!{sys.executable}\n"
+                "import json, os, signal, sys, time\n"
+                "from pathlib import Path\n"
+                "args = sys.argv[1:]\n"
+                "with open(os.environ['FRONA_TEST_CALLS'], 'a') as log:\n"
+                "    log.write(json.dumps(args) + '\\n')\n"
+                "if 'up' in args and not any(a in args for a in ('-d', '--detach', '--no-start')):\n"
+                "    if os.environ['FRONA_TEST_MODE'] == 'failure': sys.exit(7)\n"
+                "    signal.signal(signal.SIGINT, lambda *_: sys.exit(130))\n"
+                "    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))\n"
+                "    Path(os.environ['FRONA_TEST_READY']).touch()\n"
+                "    while True: time.sleep(.05)\n"
+            )
+            runtime.chmod(0o700)
+            cases = [
+                ([], signal.SIGINT, 130),
+                ([], signal.SIGTERM, 143),
+                ([], None, 7),
+                (["-d"], None, 0),
+                (["--detach"], None, 0),
+                (["--no-start"], None, 0),
+            ]
+            for index, (args, stop_signal, expected_exit) in enumerate(cases):
+                with self.subTest(args=args, signal=stop_signal):
+                    calls_file = root / f"calls-{index}.jsonl"
+                    ready = root / f"ready-{index}"
+                    env = dict(os.environ)
+                    env.update(
+                        PATH=f"{bin_dir}{os.pathsep}{env.get('PATH', '')}",
+                        CONTAINER_RUNTIME="podman",
+                        CONTAINER_BUILD_JOBS="1",
+                        KACHE_SHARED_DIR=str(root / "shared-cache"),
+                        KACHE_LOCAL_DIR=str(root / "local-cache"),
+                        FRONA_TEST_CALLS=str(calls_file),
+                        FRONA_TEST_READY=str(ready),
+                        FRONA_TEST_MODE="failure" if expected_exit == 7 else "running",
+                    )
+                    process = subprocess.Popen(
+                        ["bash", str(launcher), "dev", *args], cwd=root.parent,
+                        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        text=True, start_new_session=True,
+                    )
+                    try:
+                        if stop_signal is not None:
+                            deadline = time.monotonic() + 5
+                            while not ready.exists() and time.monotonic() < deadline:
+                                if process.poll() is not None:
+                                    break
+                                time.sleep(.02)
+                            self.assertTrue(ready.exists(), "Foreground runtime never started")
+                            os.killpg(process.pid, stop_signal)
+                        _, stderr = process.communicate(timeout=5)
+                        self.assertEqual(process.returncode, expected_exit, stderr)
+                        calls = [json.loads(line) for line in calls_file.read_text().splitlines()]
+                        actions = [call[call.index("--profile") + 2] for call in calls if call[0] == "compose"]
+                        self.assertEqual(actions, ["up"] if args else ["up", "down"])
+                        if not args:
+                            self.assertEqual(calls[-1][-3:], ["down", "--timeout", "10"])
+                            self.assertNotIn("--volumes", calls[-1])
+                    finally:
+                        if process.poll() is None:
+                            os.killpg(process.pid, signal.SIGKILL)
+                            process.communicate()
+
+
 if __name__ == "__main__":
     unittest.main()

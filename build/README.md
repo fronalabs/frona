@@ -126,16 +126,28 @@ provider-parsing check also runs when Podman and podman-compose are installed:
 python3 build/dev/test-container.py
 ```
 
+## Development shutdown
+
+The development entrypoint starts the Rust and frontend watchers in separate
+process groups. SIGINT/SIGTERM stop both groups; if either watcher exits, its
+sibling is stopped too.
+
+For foreground Podman development, exiting `mise run container:dev` also runs
+Compose `down` without `--volumes`. This removes stopped containers and the
+project network so the next launch does not collide with stale names. Named
+volumes, bind-mounted data, and caches are retained. Detached runs (`-d`) and
+`--no-start` are not automatically torn down.
+
 ## Development files
 
 Development-only files live in `build/dev/`:
 
-- `watch.sh`: Rust rebuilds.
+- `start.sh` and `watch.sh`: process supervision and Rust rebuilds.
 - `docker-compose.podman.yml`: rootless Podman development overrides.
 - `install-kache.sh` and `kache.toml`: compiler-cache setup.
 - `searxng-settings.yml`: search-service settings.
 - `pkgs/apt.txt` and `pkgs/rust-cargo.txt`: development package lists.
-- `test-container.py`: launcher and provider regression checks.
+- `test-container.py`: launcher, provider, and shutdown regression checks.
 
 The shared Dockerfile, Compose definition, and container launcher stay in
 `build/`. Builder and production package lists stay in `build/pkgs/`;

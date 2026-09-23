@@ -165,7 +165,7 @@ USER frona
 WORKDIR /app
 COPY --chown=frona:frona web/package.json web/package-lock.json* web/
 RUN cd web && npm install
-CMD ["bash", "-c", "cd web && npm install && cd /app && cargo watch -w crates/ -w Cargo.toml -w Cargo.lock --delay 3 -s /app/build/dev/watch.sh & cd web && npm run dev & wait"]
+CMD ["bash", "/app/build/dev/start.sh"]
 
 
 FROM python:3.12-slim-bookworm AS prod

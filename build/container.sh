@@ -145,4 +145,33 @@ if [[ "$runtime" == podman && "$profile" == dev ]]; then
   # Match the image user to the workspace owner without changing other services.
   compose_args+=(-f "$PWD/build/dev/docker-compose.podman.yml")
 fi
-exec "$runtime" compose "${compose_args[@]}" --profile "$profile" "$action" "$@"
+# Foreground development owns its stack; detached and non-starting commands do not.
+foreground=true
+for arg in "$@"; do
+  case "$arg" in
+    -d | --detach | --no-start | -h | --help) foreground=false ;;
+  esac
+done
+if [[ "$runtime" == podman && "$profile" == dev && "$action" == up && "$foreground" == true ]]; then
+  compose_pid=
+  cleanup() {
+    local status=$? cleanup_status=0
+    trap - EXIT
+    trap '' INT TERM
+    # No --volumes: keep project data and compiler caches across development runs.
+    "$runtime" compose "${compose_args[@]}" --profile "$profile" down --timeout 10 || cleanup_status=$?
+    if [[ -n "$compose_pid" ]]; then
+      wait "$compose_pid" 2>/dev/null || true
+    fi
+    if [[ "$status" -eq 0 ]]; then status=$cleanup_status; fi
+    exit "$status"
+  }
+  trap cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  "$runtime" compose "${compose_args[@]}" --profile "$profile" "$action" "$@" &
+  compose_pid=$!
+  wait "$compose_pid"
+else
+  exec "$runtime" compose "${compose_args[@]}" --profile "$profile" "$action" "$@"
+fi

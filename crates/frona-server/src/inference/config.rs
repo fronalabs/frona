@@ -21,18 +21,6 @@ pub struct ModelRegistryConfig {
     pub skip_auto_discover: bool,
 }
 
-fn default_surface(adapter: &str) -> ApiSurface {
-    match adapter {
-        "anthropic" => ApiSurface::AnthropicMessages,
-        "gemini" => ApiSurface::GoogleGenerateContent,
-        "bedrock" => ApiSurface::AmazonBedrockConverse,
-        "cohere" => ApiSurface::CohereChat,
-        "ollama" => ApiSurface::Ollama,
-        "huggingface" => ApiSurface::HuggingFace,
-        _ => ApiSurface::Completions,
-    }
-}
-
 fn typed_params<T: DeserializeOwned>(
     path: &str,
     adapter: &str,
@@ -66,7 +54,7 @@ pub(crate) fn compile_request(
         crate::inference::provider::adapter::azure::validate_deployment(&config.common.model)?;
     }
     let adapter = resolved.request_adapter_name();
-    let surface = config.api.unwrap_or_else(|| default_surface(adapter));
+    let surface = config.api.unwrap_or(resolved.protocols[0]);
     if !resolved.supports_model_protocol(&config.common.model, surface) {
         return Err(unsupported_surface(path, adapter));
     }
@@ -520,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_protocol_defaults_are_compiled_without_catalogs() {
+    fn openai_defaults_to_responses_without_catalogs() {
         let registry = registry(
             "providers:\n  openai:\n    api_key: literal\nmodels:\n  primary:\n    provider: openai\n    model: unknown\n",
         );
@@ -530,7 +518,31 @@ mod tests {
         let ProviderModel::OpenAI { api, .. } = &groups["primary"].main.provider else {
             panic!("expected OpenAI request");
         };
-        assert_eq!(*api, Some(OpenAiApi::ChatCompletions));
+        assert_eq!(*api, Some(OpenAiApi::Responses));
+    }
+
+    #[test]
+    fn compatible_providers_and_explicit_chat_completions_keep_their_protocol() {
+        for (connection, api) in [
+            ("provider: openai", "api: completions"),
+            (
+                "provider: custom\n    adapter: openai\n    base_url: https://example.com/v1",
+                "",
+            ),
+        ] {
+            let groups = registry(&format!(
+                "providers:\n  account:\n    {connection}\nmodels:\n  primary:\n    provider: account\n    model: gpt-5.6-luna\n    {api}\n"
+            ))
+            .parse_model_groups(&InferenceConfig::default(), Default::default())
+            .unwrap();
+            assert!(matches!(
+                groups["primary"].main.provider,
+                ProviderModel::OpenAI {
+                    api: Some(OpenAiApi::ChatCompletions),
+                    ..
+                }
+            ));
+        }
     }
 
     #[test]

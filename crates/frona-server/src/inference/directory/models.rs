@@ -202,14 +202,19 @@ impl ModelDirectoryService {
                     exact_suggestion = Some(protocol.api);
                 }
             }
-            model.suggested_protocol =
-                exact_suggestion.or(model.suggested_protocol).or_else(|| {
-                    model
-                        .protocols
-                        .iter()
-                        .find(|protocol| protocol.available)
-                        .map(|protocol| protocol.api)
-                });
+            let catalog_suggestion = model.suggested_protocol.filter(|api| {
+                model
+                    .protocols
+                    .iter()
+                    .any(|protocol| protocol.api == *api && protocol.available)
+            });
+            model.suggested_protocol = catalog_suggestion.or(exact_suggestion).or_else(|| {
+                model
+                    .protocols
+                    .iter()
+                    .find(|protocol| protocol.available)
+                    .map(|protocol| protocol.api)
+            });
         }
         for (name, source) in [
             ("models.dev", Source::Models),
@@ -798,6 +803,64 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn openai_defaults_to_responses_in_model_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = ModelDirectoryService::new(CatalogSources::load(temp.path()));
+        let connection = connection();
+        for surfaces in [
+            vec![],
+            vec!["completions", "responses"],
+            vec!["completions"],
+        ] {
+            let mut parameters = frona_model_catalog::parameters::ParameterCatalogSnapshot::empty();
+            parameters.models = surfaces
+                .iter()
+                .map(|surface| {
+                    serde_json::from_value(serde_json::json!({
+                        "provider":"openai", "authType":"api_key", "apiSurface":surface,
+                        "model":"gpt-5.6-luna", "wireId":"gpt-5.6-luna", "params":[]
+                    }))
+                    .unwrap()
+                })
+                .collect();
+            directory.catalogs.parameters.store(Arc::new(parameters));
+            // A partial parameter catalog must not override the model's API hint.
+            if surfaces == ["completions"] {
+                let mut models = ModelCatalogSnapshot::empty();
+                models
+                    .protocol_defaults
+                    .insert("openai/gpt-5.6-luna".into(), "@ai-sdk/openai".into());
+                directory.catalogs.models.swap(models);
+            }
+            let listing = directory.listing(
+                &connection,
+                Some(CredentialMethod::ApiKey),
+                connection.protocols,
+                BTreeMap::new(),
+                &["gpt-5.6-luna".into()],
+                Inventory::Account(vec![]),
+            );
+            assert_eq!(
+                listing.models[0].suggested_protocol,
+                Some(ApiSurface::Responses)
+            );
+            assert_eq!(listing.models[0].protocols[0].api, ApiSurface::Responses);
+        }
+        let listing = directory.listing(
+            &connection,
+            Some(CredentialMethod::ApiKey),
+            &[ApiSurface::Completions],
+            BTreeMap::new(),
+            &["gpt-5.6-luna".into()],
+            Inventory::Account(vec![]),
+        );
+        assert_eq!(
+            listing.models[0].suggested_protocol,
+            Some(ApiSurface::Completions)
+        );
     }
 
     fn snapshot() -> ModelCatalogSnapshot {

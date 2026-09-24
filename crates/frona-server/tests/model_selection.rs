@@ -46,8 +46,8 @@ async fn title_override_and_fallback_defaults_reach_the_provider_transport() {
         .unwrap();
     let config: frona::core::config::Config = serde_json::from_value(json!({
         "providers":{"work-openai":{"provider":"openai","base_url":server.uri(),"api_key":"fixture"}},
-        "models":{"primary":{"provider":"work-openai","model":"main","max_tokens":8192,"temperature":0.7,
-            "retry":{"max_retries":0},"fallbacks":[{"provider":"work-openai","model":"backup","max_tokens":2048,"temperature":0.3}]}}
+        "models":{"primary":{"provider":"work-openai","model":"main","api":"completions","max_tokens":8192,"temperature":0.7,
+            "retry":{"max_retries":0},"fallbacks":[{"provider":"work-openai","model":"backup","api":"completions","max_tokens":2048,"temperature":0.3}]}}
     })).unwrap();
     let runtime = frona::inference::credential::runtime::RuntimeCredentials::new(
         config.providers.clone(),

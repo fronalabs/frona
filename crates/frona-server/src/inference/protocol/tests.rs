@@ -85,6 +85,49 @@ async fn capture(provider: &dyn ModelProvider, model: &ModelConfig, stream: bool
 }
 
 #[tokio::test]
+async fn openai_defaults_to_responses_with_reasoning_and_tools() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(502))
+        .mount(&server)
+        .await;
+    let (provider, model) = setup(
+        "openai",
+        &server.uri(),
+        json!({"model":"gpt-5.6-luna","reasoning_effort":"medium"}),
+    );
+    for stream in [false, true] {
+        let tools = vec![ToolDefinition {
+            name: "lookup".into(),
+            description: "Look up a value".into(),
+            parameters: json!({"type":"object","properties":{}}),
+        }];
+        let history = vec![Message::user("hello")];
+        let result = if stream {
+            let (tx, _rx) = tokio::sync::mpsc::channel(16);
+            provider
+                .stream_inference(&model, "system", history, tools, tx, None, None)
+                .await
+        } else {
+            provider
+                .inference(&model, "system", history, tools, None, None)
+                .await
+        };
+        assert!(result.is_err(), "fixture intentionally returns HTTP 502");
+    }
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in requests {
+        assert_eq!(request.url.path(), "/responses");
+        let body: Value = request.body_json().unwrap();
+        assert_eq!(body["model"], "gpt-5.6-luna");
+        assert_eq!(body["reasoning"]["effort"], "medium");
+        assert_eq!(body["tools"][0]["name"], "lookup");
+        assert!(body.get("reasoning_effort").is_none());
+    }
+}
+
+#[tokio::test]
 async fn request_overrides_reach_normal_streaming_and_structured_wire_bodies() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -94,7 +137,7 @@ async fn request_overrides_reach_normal_streaming_and_structured_wire_bodies() {
     let (provider, model) = setup(
         "openai",
         &server.uri(),
-        json!({"max_tokens":8192,"temperature":0.7}),
+        json!({"api":"completions","max_tokens":8192,"temperature":0.7}),
     );
     let normal = provider.inference(
         &model,
@@ -197,9 +240,8 @@ async fn final_http_bodies_all_existing_adapters_normal_and_streaming() {
             );
             assert_eq!(body["literal.dot"], true, "{brand}");
             let (max, temp) = match brand {
-                "openai" | "galadriel" | "custom-brand" => {
-                    ("/max_completion_tokens", "/temperature")
-                }
+                "openai" => ("/max_output_tokens", "/temperature"),
+                "galadriel" | "custom-brand" => ("/max_completion_tokens", "/temperature"),
                 "google" => (
                     "/generationConfig/maxOutputTokens",
                     "/generationConfig/temperature",
@@ -511,7 +553,7 @@ async fn structured_and_tool_calls_keep_envelope_and_custom_body() {
     let (provider, model) = setup(
         "openai",
         &server.uri(),
-        json!({"extra_params":{"service_tier":"priority"}}),
+        json!({"api":"completions","extra_params":{"service_tier":"priority"}}),
     );
     let schema = json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]});
     let result = provider
@@ -620,7 +662,7 @@ async fn fallback_requests_use_their_own_settings() {
         let body: Value = request.body_json().unwrap();
         assert_eq!(body["model"], expected);
         assert_eq!(body["fixture"], expected);
-        assert_eq!(body["max_completion_tokens"], max);
+        assert_eq!(body["max_output_tokens"], max);
     }
 }
 

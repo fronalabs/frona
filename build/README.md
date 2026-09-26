@@ -152,3 +152,8 @@ Development-only files live in `build/dev/`:
 The shared Dockerfile, Compose definition, and container launcher stay in
 `build/`. Builder and production package lists stay in `build/pkgs/`;
 `update-versions.sh` updates both package directories.
+
+Run `mise run container:update-versions` to refresh the dependency pins, or
+`bash build/update-versions.sh --dry-run` to preview changes. The updater uses
+Podman when installed, falling back to Docker. Set `CONTAINER_RUNTIME` to
+`docker` or `podman` to choose explicitly.

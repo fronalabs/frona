@@ -5,10 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DOCKERFILE="$SCRIPT_DIR/Dockerfile"
 PKGS_DIR="$SCRIPT_DIR/pkgs"
 DRY_RUN=false
+RUNTIME="${CONTAINER_RUNTIME:-}"
 
 usage() {
 	echo "Usage: $(basename "$0") [--dry-run]"
 	echo "  --dry-run  Show resolved versions without writing files"
+	echo "  CONTAINER_RUNTIME selects the runtime; otherwise Podman is preferred over Docker."
 	exit 0
 }
 
@@ -23,6 +25,24 @@ parse_args() {
 			;;
 		esac
 	done
+}
+
+select_runtime() {
+	if [[ -z "$RUNTIME" ]]; then
+		if command -v podman >/dev/null 2>&1; then
+			RUNTIME=podman
+		elif command -v docker >/dev/null 2>&1; then
+			RUNTIME=docker
+		else
+			echo "Neither Podman nor Docker is installed." >&2
+			exit 1
+		fi
+	fi
+
+	if ! command -v "$RUNTIME" >/dev/null 2>&1; then
+		echo "Container runtime not found: $RUNTIME" >&2
+		exit 1
+	fi
 }
 
 # Extract package names from a package list file (strips =version and comments)
@@ -49,7 +69,7 @@ update_apt_file() {
 	local names changed=false
 	names=$(pkg_names "$file")
 	local prep="apt-get update -qq >/dev/null 2>&1 && apt-get install -y --no-install-recommends curl ca-certificates gnupg >/dev/null 2>&1"
-	APT_CACHE=$(docker run --rm "$image" bash -c \
+	APT_CACHE=$("$RUNTIME" run --rm "$image" bash -c \
 		"${pre_cmd:+$prep && $pre_cmd >/dev/null 2>&1 && }apt-get update -qq >/dev/null 2>&1 && apt-cache policy $names")
 
 	local tmpfile
@@ -123,7 +143,7 @@ update_pip_file() {
 	local packages
 	packages=$(awk -F'==' '{print $1}' "$file" | tr '\n' ' ')
 	local pip_output
-	pip_output=$(docker run --rm "$image" bash -c \
+	pip_output=$("$RUNTIME" run --rm "$image" bash -c \
 		"pip install --dry-run --no-deps $packages 2>/dev/null | grep 'Would install'" || true)
 
 	if [[ -z "$pip_output" ]]; then
@@ -249,12 +269,16 @@ write_or_print() {
 
 main() {
 	parse_args "$@"
+	select_runtime
 
 	local rust_image python_image node_major
-	rust_image=$(awk '/^FROM .* AS planner/{print $2}' "$DOCKERFILE")
-	python_image=$(awk '/^FROM .* AS python-builder/{print $2}' "$DOCKERFILE")
+	# These stages use official Docker Hub images. Qualify them so Podman does
+	# not need a short-name alias or an interactive registry selection.
+	rust_image=$(awk '/^FROM .* AS planner/{print "docker.io/library/" $2}' "$DOCKERFILE")
+	python_image=$(awk '/^FROM .* AS python-builder/{print "docker.io/library/" $2}' "$DOCKERFILE")
 	node_major=$(grep 'nodesource.com/setup_' "$DOCKERFILE" | head -1 | sed 's/.*setup_\([0-9]*\).*/\1/')
 
+	echo "==> Container runtime: $RUNTIME"
 	echo "==> Base images (from Dockerfile):"
 	echo "    rust:   $rust_image"
 	echo "    python: $python_image"

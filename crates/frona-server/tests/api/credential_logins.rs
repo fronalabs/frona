@@ -423,10 +423,20 @@ async fn revocation_during_exchange_prevents_create_and_replace_for_completion_a
                     )
                 };
                 let app = build_app(state.clone());
-                let completion = tokio::spawn(async move { app.oneshot(request).await.unwrap() });
-                tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
-                    .await
-                    .unwrap();
+                let mut completion =
+                    tokio::spawn(async move { app.oneshot(request).await.unwrap() });
+                // Synchronize on the exchange, not a wall-clock startup budget:
+                // authentication and database work can be slow under suite load.
+                tokio::select! {
+                    _ = entered.notified() => {}
+                    response = &mut completion => {
+                        let response = response.expect("login request task failed before exchange");
+                        panic!(
+                            "login request returned {} before entering the exchange (global={global}, replace={replace}, polling={polling})",
+                            response.status()
+                        );
+                    }
+                }
                 if global {
                     let mut revoked = original_user.clone();
                     revoked.groups.clear();

@@ -97,6 +97,22 @@ run = "build/build.sh"
 description = "Release: bump version, git tag, build and push Docker image"
 run = "build/release.sh"
 
+[tasks."release:prepare"]
+description = "Test and prepare an unpushed release bundle"
+run = "build/release.sh prepare"
+
+[tasks."release:build"]
+description = "Build one native architecture from a prepared release"
+run = "build/release.sh build"
+
+[tasks."release:push"]
+description = "Verify and publish release images, then push the Git commit and tag"
+run = "build/release.sh push"
+
+[tasks."test:release"]
+description = "Test release scripts with temporary Git repositories and fake build tools"
+run = "bash build/test-release.sh"
+
 [tasks."container:publish"]
 description = "Build production image and push to GHCR"
 run = "build/publish.sh"

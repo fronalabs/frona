@@ -63,7 +63,9 @@ xml-rs = "1"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7", features = ["cors", "fs", "trace", "set-header"] }
 tower_governor = "0.8"
-surrealdb = { version = "3.0.0", features = ["kv-rocksdb"] }
+# 3.3.0 overflows the default test-thread stack during indexed inserts.
+# Keep the SDK and its internal crates locked together at 3.2.4.
+surrealdb = { version = "=3.2.4", features = ["kv-rocksdb"] }
 futures = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
 frona-derive = { path = "../frona-derive" }
@@ -98,7 +100,8 @@ cron = "0.17"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 vaultrs = { version = "0.8", default-features = false, features = ["rustls"] }
-keepass = "0.13"
+# 0.13.23–0.13.25 allow AES 0.8 with cipher 0.5, which fails to compile.
+keepass = "=0.13.22"
 cookie = "0.18.1"
 minijinja = "2"
 schemars = { version = "1", features = ["chrono04"] }
@@ -120,7 +123,7 @@ infer = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 agent-skills = "0.2"
 notify = "8"
-rmcp = { version = "3", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "3.4.1", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 xz2 = "0.1"
 inventory = "0.3"
 jsonschema = { version = "0.49", default-features = false }
@@ -187,9 +190,9 @@ aws-smithy-eventstream = "0.61"
 aws-smithy-async = "1"
 aws-runtime = "1"
 approx = "0.5"
-surrealdb = { version = "3.0.0", features = ["kv-mem"] }
+surrealdb = { version = "=3.2.4", features = ["kv-mem"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
-rmcp = { version = "3", features = ["client", "server", "macros", "transport-child-process", "transport-async-rw"] }
+rmcp = { version = "3.4.1", features = ["client", "server", "macros", "transport-child-process", "transport-async-rw"] }
 wiremock = "0.6"

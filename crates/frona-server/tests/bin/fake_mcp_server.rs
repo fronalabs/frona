@@ -6,7 +6,7 @@
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock, JsonObject, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ContentBlock, JsonObject, ServerCapabilities, ServerConfig};
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 
 #[derive(Clone)]
@@ -44,8 +44,8 @@ impl EchoServer {
 
 #[tool_handler]
 impl ServerHandler for EchoServer {
-    fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::default();
+    fn get_info(&self) -> ServerConfig {
+        let mut info = ServerConfig::default();
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info
     }

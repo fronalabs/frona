@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useId } from "react";
 import { api } from "@/lib/api-client";
+import { VaultItemPicker, type CredentialOption, type PickerConnection } from "@/components/vault-item-picker";
 import type { CredentialTarget, GrantDuration, HitlResponse, ToolCall, VaultField } from "@/lib/types";
 import { ApprovalButtons } from "./approval-parts";
 
@@ -80,19 +81,6 @@ export function TakeoverContent({ te, onResolve }: ToolContentProps) {
   );
 }
 
-interface VaultItem {
-  id: string;
-  name: string;
-  username?: string;
-}
-
-interface VaultConnection {
-  id: string;
-  name: string;
-  provider: string;
-  enabled: boolean;
-}
-
 function defaultPrefix(query: string): string {
   return query.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 }
@@ -102,72 +90,84 @@ export function CredentialContent({ te, onResolve }: ToolContentProps) {
   const queryStr = hitl?.request.type === "Credential" ? hitl.request.data.query : "";
   const reasonStr = hitl?.request.type === "Credential" ? hitl.request.data.reason : "";
 
-  const [connections, setConnections] = useState<VaultConnection[]>([]);
-  const [selectedConnection, setSelectedConnection] = useState("");
-  const [items, setItems] = useState<VaultItem[]>([]);
-  const [selectedItem, setSelectedItem] = useState("");
+  const [connections, setConnections] = useState<PickerConnection[]>([]);
+  const [selection, setSelection] = useState<CredentialOption | null>(null);
+  const [loadingConnections, setLoadingConnections] = useState(true);
+  const [connectionError, setConnectionError] = useState(false);
+  const [connectionVersion, setConnectionVersion] = useState(0);
   const [duration, setDuration] = useState<GrantDuration>("once");
-  const [searchQuery, setSearchQuery] = useState(queryStr);
-  const [searching, setSearching] = useState(false);
   const [bindingMode, setBindingMode] = useState<"prefix" | "single">("prefix");
   const [envVarPrefix, setEnvVarPrefix] = useState(defaultPrefix(queryStr));
-  const [envVar, setEnvVar] = useState("");
-  const [fieldKind, setFieldKind] = useState<"Password" | "Username" | "Custom">("Password");
-  const [customFieldName, setCustomFieldName] = useState("");
+  const [envVar, setEnvVar] = useState<string | null>(null);
+  const [fields, setFields] = useState<string[]>([]);
+  const [selectedField, setSelectedField] = useState("");
+  const [loadingFields, setLoadingFields] = useState(false);
+  const [fieldError, setFieldError] = useState(false);
+  const [fieldVersion, setFieldVersion] = useState(0);
+  const inputId = useId();
+  const selectedConnectionId = selection?.connection_id;
+  const selectedItemId = selection?.id;
 
   useEffect(() => {
-    api.get<VaultConnection[]>("/api/vaults").then((conns) => {
-      const enabled = conns.filter((c) => c.enabled);
-      setConnections(enabled);
-      if (enabled.length > 0) setSelectedConnection(enabled[0].id);
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!selectedConnection || !searchQuery) return;
-    setSearching(true);
-    api
-      .get<VaultItem[]>(`/api/vaults/${selectedConnection}/items?q=${encodeURIComponent(searchQuery)}`)
-      .then((results) => {
-        setItems(results);
-        if (results.length > 0) setSelectedItem(results[0].id);
+    setFields([]);
+    setSelectedField("");
+    setFieldError(false);
+    setLoadingFields(!!selectedItemId);
+    if (!selectedConnectionId || !selectedItemId) return;
+    const controller = new AbortController();
+    api.get<string[]>(`/api/vaults/${encodeURIComponent(selectedConnectionId)}/items/${encodeURIComponent(selectedItemId)}/fields`)
+      .then((availableFields) => {
+        if (controller.signal.aborted) return;
+        setFields(availableFields);
+        setSelectedField(availableFields.includes("PASSWORD") ? "PASSWORD" : availableFields[0] ?? "");
       })
-      .finally(() => setSearching(false));
-  }, [selectedConnection, searchQuery]);
+      .catch(() => { if (!controller.signal.aborted) setFieldError(true); })
+      .finally(() => { if (!controller.signal.aborted) setLoadingFields(false); });
+    return () => controller.abort();
+  }, [selectedConnectionId, selectedItemId, fieldVersion]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoadingConnections(true);
+    setConnectionError(false);
+    api.get<PickerConnection[]>("/api/vaults")
+      .then((conns) => { if (!controller.signal.aborted) setConnections(conns); })
+      .catch(() => { if (!controller.signal.aborted) setConnectionError(true); })
+      .finally(() => { if (!controller.signal.aborted) setLoadingConnections(false); });
+    return () => controller.abort();
+  }, [connectionVersion]);
 
   if (!hitl || hitl.request.type !== "Credential") return null;
 
+  const prefix = envVarPrefix.trim();
+  const variableName = envVar ?? (selectedField ? `${prefix ? `${prefix}_` : ""}${selectedField}` : "");
+  const fieldsReady = !!selection && !loadingFields && !fieldError && fields.length > 0;
+
   const buildTarget = (): CredentialTarget | null => {
     if (bindingMode === "prefix") {
-      const prefix = envVarPrefix.trim();
       if (!prefix) return null;
       return { Prefix: { env_var_prefix: prefix } };
     }
-    const name = envVar.trim();
-    if (!name) return null;
-    let field: VaultField;
-    if (fieldKind === "Custom") {
-      const cn = customFieldName.trim();
-      if (!cn) return null;
-      field = { Custom: { name: cn } };
-    } else {
-      field = fieldKind;
-    }
+    const name = variableName.trim();
+    if (!name || !selectedField) return null;
+    const field: VaultField = selectedField === "PASSWORD" ? "Password"
+      : selectedField === "USERNAME" ? "Username"
+      : { Custom: { name: selectedField } };
     return { Single: { env_var: name, field } };
   };
 
   const target = buildTarget();
 
   const handleApprove = () => {
-    if (!selectedItem || !target) return;
+    if (!selection || !target || !fieldsReady) return;
     onResolve(
       {
         type: "Vault",
         data: {
           type: "Granted",
           data: {
-            connection_id: selectedConnection,
-            vault_item_id: selectedItem,
+            connection_id: selection.connection_id,
+            vault_item_id: selection.id,
             grant_duration: duration,
             target,
           },
@@ -187,116 +187,111 @@ export function CredentialContent({ te, onResolve }: ToolContentProps) {
     <div className="space-y-3">
       <p className="text-sm text-text-tertiary">{reasonStr}</p>
 
-      <div>
-        <Label>Vault</Label>
-        <select
-          value={selectedConnection}
-          onChange={(e) => setSelectedConnection(e.target.value)}
-          className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary"
-        >
-          {connections.map((c) => (
-            <option key={c.id} value={c.id}>{c.name}</option>
-          ))}
-        </select>
-      </div>
-
-      <div>
-        <Label>Search</Label>
-        <input
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search vault items..."
-          className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary"
+      {loadingConnections ? (
+        <p role="status" className="text-xs text-text-tertiary">Loading vaults...</p>
+      ) : connectionError ? (
+        <p role="alert" className="text-xs text-danger">
+          Could not load vaults.{" "}
+          <button type="button" onClick={() => setConnectionVersion((version) => version + 1)} className="underline">Retry</button>
+        </p>
+      ) : (
+        <VaultItemPicker
+          connections={connections}
+          selection={selection}
+          onSelect={(item) => {
+            setSelection(item);
+            setFields([]);
+            setSelectedField("");
+            setLoadingFields(!!item);
+            setFieldVersion((version) => version + 1);
+            if (item && !envVarPrefix) setEnvVarPrefix(defaultPrefix(queryStr) || defaultPrefix(item.name) || "CREDENTIAL");
+          }}
+          initialQuery={queryStr}
         />
-      </div>
+      )}
 
-      <div>
-        <Label>Item</Label>
-        {searching ? (
-          <p className="text-xs text-text-tertiary py-1">Searching...</p>
-        ) : items.length > 0 ? (
-          <div className="space-y-1">
-            {items.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setSelectedItem(item.id)}
-                className={`w-full rounded-lg border px-3 py-2 text-left text-sm transition ${
-                  selectedItem === item.id
-                    ? "border-accent bg-accent/10 text-accent"
-                    : "border-border text-text-secondary hover:border-accent"
-                }`}
-              >
-                <span className="font-medium">{item.name}</span>
-                {item.username && (
-                  <span className="ml-2 text-text-tertiary">({item.username})</span>
-                )}
-              </button>
-            ))}
-          </div>
-        ) : (
-          <p className="text-xs text-text-tertiary py-1">No items found</p>
-        )}
-      </div>
-
-      <div>
-        <Label>Expose as</Label>
-        <div className="flex gap-1.5 mb-2">
-          <button
-            onClick={() => setBindingMode("prefix")}
-            className={`flex-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
-              bindingMode === "prefix"
-                ? "border-accent bg-accent/10 text-accent"
-                : "border-border text-text-secondary hover:border-accent"
-            }`}
-          >
-            All fields under prefix
-          </button>
-          <button
-            onClick={() => setBindingMode("single")}
-            className={`flex-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
-              bindingMode === "single"
-                ? "border-accent bg-accent/10 text-accent"
-                : "border-border text-text-secondary hover:border-accent"
-            }`}
-          >
-            One field
-          </button>
+      {selection && <fieldset className="space-y-2">
+        <legend className="block text-sm font-medium text-text-tertiary mb-2">What should the agent use?</legend>
+        <div className="flex gap-1.5">
+          {([
+            { value: "prefix", label: "Entire credential" },
+            { value: "single", label: "A specific field" },
+          ] as const).map((mode) => (
+            <button
+              key={mode.value}
+              type="button"
+              aria-pressed={bindingMode === mode.value}
+              onClick={() => setBindingMode(mode.value)}
+              className={`flex-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
+                bindingMode === mode.value
+                  ? "border-accent bg-accent/10 text-accent"
+                  : "border-border text-text-secondary hover:border-accent"
+              }`}
+            >
+              {mode.label}
+            </button>
+          ))}
         </div>
-        {bindingMode === "prefix" ? (
-          <input
-            value={envVarPrefix}
-            onChange={(e) => setEnvVarPrefix(e.target.value)}
-            placeholder="DB"
-            className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-tertiary"
-          />
-        ) : (
+        {loadingFields ? (
+          <p role="status" className="text-xs text-text-tertiary">Loading fields...</p>
+        ) : fieldError ? (
+          <p role="alert" className="text-xs text-danger">
+            Could not load credential fields.{" "}
+            <button type="button" className="underline" onClick={() => setFieldVersion((version) => version + 1)}>Retry</button>
+          </p>
+        ) : fields.length === 0 ? (
+          <p className="text-xs text-text-tertiary">This credential has no available fields.</p>
+        ) : bindingMode === "single" ? (
           <div className="space-y-2">
-            <input
-              value={envVar}
-              onChange={(e) => setEnvVar(e.target.value)}
-              placeholder="DB_PASSWORD"
-              className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-tertiary"
-            />
             <select
-              value={fieldKind}
-              onChange={(e) => setFieldKind(e.target.value as "Password" | "Username" | "Custom")}
+              id={`${inputId}-field`}
+              aria-label="Field to share"
+              value={selectedField}
+              onChange={(e) => setSelectedField(e.target.value)}
               className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary"
             >
-              <option value="Password">Password</option>
-              <option value="Username">Username</option>
-              <option value="Custom">Custom field…</option>
+              {fields.map((field) => (
+                <option key={field} value={field}>
+                  {field === "PASSWORD" ? "Password" : field === "USERNAME" ? "Username" : field === "API_KEY" ? "API key" : field}
+                </option>
+              ))}
             </select>
-            {fieldKind === "Custom" && (
+          </div>
+        ) : null}
+
+        {fieldsReady && target && (
+            <div className="flex flex-wrap gap-1.5" aria-label="Environment variable preview" aria-live="polite">
+              {(bindingMode === "prefix" ? fields.map((field) => `${prefix}_${field}`) : [variableName.trim()]).map((name) => (
+                <code key={name} className="rounded bg-surface-tertiary px-2 py-1 text-xs text-text-primary">{name}</code>
+              ))}
+            </div>
+        )}
+
+        <details className="text-xs text-text-tertiary">
+          <summary className="cursor-pointer py-1">Advanced</summary>
+          <div className="space-y-2 pt-2">
+            {bindingMode === "prefix" ? (<>
+              <label htmlFor={`${inputId}-prefix`} className="block font-medium">Variable name prefix</label>
               <input
-                value={customFieldName}
-                onChange={(e) => setCustomFieldName(e.target.value)}
-                placeholder="api_key"
+                id={`${inputId}-prefix`}
+                value={envVarPrefix}
+                onChange={(e) => setEnvVarPrefix(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ""))}
+                placeholder="DB"
                 className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-tertiary"
               />
-            )}
+            </>) : (<>
+              <label htmlFor={`${inputId}-variable`} className="block font-medium">Environment variable name</label>
+              <input
+                id={`${inputId}-variable`}
+                value={variableName}
+                onChange={(e) => setEnvVar(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ""))}
+                placeholder="DB_PASSWORD"
+                className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-tertiary"
+              />
+            </>)}
           </div>
-        )}
-      </div>
+        </details>
+      </fieldset>}
 
       <div>
         <Label>Duration</Label>
@@ -318,7 +313,7 @@ export function CredentialContent({ te, onResolve }: ToolContentProps) {
         </select>
       </div>
 
-      <ApprovalButtons loading={false} onApprove={handleApprove} onDeny={handleDeny} approveDisabled={!selectedItem || !target} />
+      <ApprovalButtons loading={false} onApprove={handleApprove} onDeny={handleDeny} approveDisabled={!fieldsReady || !target} />
     </div>
   );
 }

@@ -1,26 +1,28 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { SectionHeader } from "@/components/settings/field";
-import { KeyIcon, TrashIcon, PlusIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
+import { KeyIcon, TrashIcon, PlusIcon } from "@heroicons/react/24/outline";
 import { CheckIcon, MinusIcon } from "@heroicons/react/16/solid";
 import * as Checkbox from "@radix-ui/react-checkbox";
 import { Si1password, SiBitwarden, SiVault, SiKeepassxc } from "@icons-pack/react-simple-icons";
 import { api } from "@/lib/api-client";
+import { VaultItemPicker, type CredentialOption } from "@/components/vault-item-picker";
 
 const PROVIDER_ICONS: Record<string, React.ComponentType<{ className?: string; size?: number }>> = {
   one_password: Si1password,
   bitwarden: SiBitwarden,
   hashicorp: SiVault,
-  keepass: SiKeepassxc,
+  kee_pass: SiKeepassxc,
 };
 
 const PROVIDER_LABELS: Record<string, string> = {
   local: "Local",
+  managed: "Managed",
   one_password: "1Password",
   bitwarden: "Bitwarden",
   hashicorp: "HashiCorp",
-  keepass: "KeePass",
+  kee_pass: "KeePass",
 };
 
 export interface VaultGrant {
@@ -39,12 +41,6 @@ export interface VaultConnection {
   name: string;
   provider: string;
   enabled: boolean;
-}
-
-interface VaultItem {
-  id: string;
-  name: string;
-  username: string | null;
 }
 
 export interface CredsSectionProps {
@@ -107,12 +103,16 @@ export function AddCredentialForm({
   onCreated: (grant: VaultGrant) => void;
   deferred?: (pending: PendingCredential) => void;
 }) {
-  const enabledConns = Array.from(connections.values()).filter((c) => c.enabled);
-  const [selectedConnection, setSelectedConnection] = useState(initialSelection?.connection_id ?? enabledConns[0]?.id ?? "");
-  const [items, setItems] = useState<VaultItem[]>([]);
-  const [selectedItem, setSelectedItem] = useState(initialSelection?.vault_item_id ?? "");
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searching, setSearching] = useState(false);
+  const enabledConns = useMemo(() => Array.from(connections.values()).filter((c) => c.enabled), [connections]);
+  const localConn = enabledConns.find((c) => c.provider === "local");
+  const [selection, setSelection] = useState<CredentialOption | null>(() => initialSelection ? {
+    id: initialSelection.vault_item_id,
+    connection_id: initialSelection.connection_id,
+    name: "",
+    username: null,
+  } : null);
+  const selectedConnection = selection?.connection_id ?? "";
+  const selectedItem = selection?.id ?? "";
   const [envVar, setEnvVar] = useState("");
   const [envVarManuallyEdited, setEnvVarManuallyEdited] = useState(false);
   const [bindingMode, setBindingMode] = useState<"prefix" | "all" | "single">("prefix");
@@ -127,66 +127,49 @@ export function AddCredentialForm({
   const [newApiKey, setNewApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const [fieldError, setFieldError] = useState<string | null>(null);
+  const [fieldVersion, setFieldVersion] = useState(0);
 
-  // Latest predicate values consumed by the search effect — captured in a ref
-  // so the search doesn't refire when only these guards change.
-  const searchGuardsRef = useRef({ selectedItem, envVarManuallyEdited, bindingMode });
-  searchGuardsRef.current = { selectedItem, envVarManuallyEdited, bindingMode };
+  const bindingRef = useRef({ envVarManuallyEdited, bindingMode, selection });
+  bindingRef.current = { envVarManuallyEdited, bindingMode, selection };
 
   useEffect(() => {
-    if (!selectedConnection) return;
+    setFields([]);
+    setSelectedField("");
+    setFieldError(null);
+    setLoadingFields(!!selectedItem);
+    if (!selectedItem || !selectedConnection) return;
     const controller = new AbortController();
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(async () => {
-      setSearching(true);
-      try {
-        const results = await api.get<VaultItem[]>(`/api/vaults/${selectedConnection}/items?q=${encodeURIComponent(searchQuery)}`);
-        if (!controller.signal.aborted) {
-          setItems(results);
-          const guards = searchGuardsRef.current;
-          if (results.length > 0 && !guards.selectedItem) {
-            const first = results[0];
-            setSelectedItem(first.id);
-            if (!guards.envVarManuallyEdited) setEnvVar(first.name.toUpperCase().replace(/[^A-Z0-9]/g, "_"));
-            setLoadingFields(true);
-            api.get<string[]>(`/api/vaults/${selectedConnection}/items/${first.id}/fields`)
-              .then((f) => {
-                setFields(f);
-                if (f.length > 0) {
-                  setSelectedField(f[0]);
-                  if (!guards.envVarManuallyEdited && guards.bindingMode === "single") {
-                    setEnvVar(`${first.name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_${f[0]}`);
-                  }
-                }
-              })
-              .catch(() => setFields([]))
-              .finally(() => setLoadingFields(false));
-          }
+    api.get<string[]>(`/api/vaults/${encodeURIComponent(selectedConnection)}/items/${encodeURIComponent(selectedItem)}/fields`)
+      .then((f) => {
+        if (controller.signal.aborted) return;
+        setFields(f);
+        setSelectedField(f[0] ?? "");
+        const current = bindingRef.current;
+        if (!current.envVarManuallyEdited && current.bindingMode === "single" && f.length > 0) {
+          setEnvVar(`${current.selection?.name ?? ""}_${f[0]}`.toUpperCase().replace(/[^A-Z0-9_]/g, "_"));
         }
-      } catch {
-        if (!controller.signal.aborted) setItems([]);
-      } finally {
-        if (!controller.signal.aborted) setSearching(false);
-      }
-    }, 300);
-    return () => { controller.abort(); if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [selectedConnection, searchQuery]);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setFieldError("Could not load credential fields. Select the credential again to retry.");
+      })
+      .finally(() => { if (!controller.signal.aborted) setLoadingFields(false); });
+    return () => controller.abort();
+  }, [selectedItem, selectedConnection, fieldVersion]);
 
-  const initialVaultItemId = initialSelection?.vault_item_id;
-  const didLoadInitialFieldsRef = useRef(false);
-  useEffect(() => {
-    if (didLoadInitialFieldsRef.current) return;
-    if (initialVaultItemId && selectedConnection) {
-      didLoadInitialFieldsRef.current = true;
-      api.get<string[]>(`/api/vaults/${selectedConnection}/items/${initialVaultItemId}/fields`)
-        .then((f) => { setFields(f); if (f.length > 0) setSelectedField(f[0]); })
-        .catch(() => setFields([]));
-    }
-  }, [initialVaultItemId, selectedConnection]);
+  const selectItem = (item: CredentialOption | null) => {
+    setSelection(item);
+    setFieldVersion((version) => version + 1);
+    setFields([]);
+    setSelectedField("");
+    setLoadingFields(!!item);
+    setFieldError(null);
+    setError(null);
+    if (item && !envVarManuallyEdited) setEnvVar(bindingMode === "all" ? "" : item.name.toUpperCase().replace(/[^A-Z0-9]/g, "_"));
+  };
 
   const createLocalItem = async () => {
-    if (!newName.trim()) return;
+    if (!newName.trim() || !localConn) return;
     const body = newType === "ApiKey"
       ? { type: "ApiKey", name: newName.trim(), api_key: newApiKey.trim() }
       : { type: "UsernamePassword", name: newName.trim(), username: newUsername.trim(), password: newPassword.trim() };
@@ -194,18 +177,9 @@ export function AddCredentialForm({
     setError(null);
     try {
       const created = await api.post<{ id: string; name: string }>("/api/vaults/local/items", body);
-      // Auto-select local vault if not already
-      const localConn = Array.from(connections.values()).find((c) => c.provider === "local");
-      if (localConn && selectedConnection !== localConn.id) setSelectedConnection(localConn.id);
-      setSelectedItem(created.id);
-      if (!envVar) setEnvVar(newName.trim().toUpperCase().replace(/[^A-Z0-9]/g, "_"));
+      selectItem({ ...created, connection_id: localConn.id, username: newType === "UsernamePassword" ? newUsername.trim() : null });
       setCreating(false);
       setNewName(""); setNewUsername(""); setNewPassword(""); setNewApiKey("");
-      const connId = localConn?.id ?? selectedConnection;
-      const results = await api.get<VaultItem[]>(`/api/vaults/${connId}/items?q=${encodeURIComponent(searchQuery)}`);
-      setItems(results);
-      api.get<string[]>(`/api/vaults/${connId}/items/${created.id}/fields`)
-        .then((f) => { setFields(f); if (f.length > 0) setSelectedField(f[0]); }).catch(() => setFields([]));
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to create credential");
     } finally {
@@ -236,11 +210,10 @@ export function AddCredentialForm({
         target,
       };
       if (deferred) {
-        const item = items.find((i) => i.id === selectedItem);
         const conn = connections.get(selectedConnection);
         deferred({
           ...payload,
-          item_name: item?.name ?? query,
+          item_name: selection?.name || query,
           connection_name: conn?.name ?? "Unknown",
           fields: [...fields],
         });
@@ -259,14 +232,14 @@ export function AddCredentialForm({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative w-full max-w-lg rounded-xl border border-border bg-surface-secondary p-5 shadow-xl mx-4 space-y-3">
+      <div className="relative w-full max-w-lg max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-xl border border-border bg-surface-secondary p-5 shadow-xl mx-4 space-y-3">
       <SectionHeader
         title={creating ? "New credential" : "Add credential"}
         description={creating
           ? "Create a new credential in the local vault"
           : targetEnvVar
             ? `Select a credential for ${targetEnvVar}`
-            : "Select a credential from your vault"}
+            : "Search passwords and secrets across all your vaults"}
         icon={KeyIcon}
       />
 
@@ -353,90 +326,18 @@ export function AddCredentialForm({
         </div>
       ) : (<>
 
-      {/* Vault selector */}
-      <div>
-        <label className="block text-xs font-medium text-text-tertiary mb-1">Vault</label>
-        <select
-          value={selectedConnection}
-          onChange={(e) => { setSelectedConnection(e.target.value); setItems([]); setSelectedItem(""); }}
-          className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-text-primary"
-        >
-          {enabledConns.map((c) => (
-            <option key={c.id} value={c.id}>{c.name}</option>
-          ))}
-        </select>
-      </div>
-
-      {/* Search */}
-      <div>
-        <label className="block text-xs font-medium text-text-tertiary mb-1">Search</label>
-        <div className="relative">
-          <MagnifyingGlassIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-text-tertiary" />
-          <input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search vault items..."
-            className="w-full rounded-lg border border-border bg-surface pl-8 pr-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
-          />
-        </div>
-      </div>
-
-      {/* Items */}
-      <div>
-        <label className="block text-xs font-medium text-text-tertiary mb-1">Item</label>
-        {searching ? (
-          <p className="text-xs text-text-tertiary py-1">Searching...</p>
-        ) : items.length > 0 ? (
-          <div className="space-y-1 max-h-40 overflow-y-auto rounded-lg border border-border p-1">
-            {items.map((item) => {
-              const alreadyGranted = !targetEnvVar && existingGrants.some(
-                (g) => g.connection_id === selectedConnection && g.vault_item_id === item.id
-              );
-              return (
-                <button
-                  key={item.id}
-                  disabled={alreadyGranted}
-                  onClick={() => {
-                    setSelectedItem(item.id);
-                    const itemPrefix = item.name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
-                    if (!envVarManuallyEdited) setEnvVar(itemPrefix);
-                    setFields([]);
-                    setSelectedField("");
-                    setLoadingFields(true);
-                    api.get<string[]>(`/api/vaults/${selectedConnection}/items/${item.id}/fields`)
-                      .then((f) => {
-                        setFields(f);
-                        if (f.length > 0) {
-                          setSelectedField(f[0]);
-                          if (!envVarManuallyEdited && bindingMode === "single") {
-                            setEnvVar(`${itemPrefix}_${f[0]}`);
-                          }
-                        }
-                      }).catch(() => setFields([]))
-                      .finally(() => setLoadingFields(false));
-                  }}
-                  className={`w-full rounded-lg border px-3 py-2 text-left text-sm transition ${
-                    alreadyGranted
-                      ? "border-border text-text-tertiary opacity-50 cursor-not-allowed"
-                      : selectedItem === item.id
-                        ? "border-accent bg-accent/10 text-accent"
-                        : "border-border text-text-secondary hover:border-accent"
-                  }`}
-                >
-                  <span className="font-medium">{item.name}</span>
-                  {item.username && <span className="ml-2 text-text-tertiary">({item.username})</span>}
-                  {alreadyGranted && <span className="ml-2 text-[10px] text-text-tertiary">already assigned</span>}
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <p className="text-xs text-text-tertiary py-1">No items found</p>
+      <VaultItemPicker
+        connections={enabledConns}
+        selection={selection}
+        onSelect={selectItem}
+        onSelectionResolved={setSelection}
+        isAssigned={(item) => !targetEnvVar && existingGrants.some(
+          (grant) => grant.connection_id === item.connection_id && grant.vault_item_id === item.id
         )}
-      </div>
+      />
 
       {/* Target configuration */}
-      {targetEnvVar ? (
+      {selection && (targetEnvVar ? (
         loadingFields ? (
           <p className="text-xs text-text-tertiary py-1">Loading fields...</p>
         ) : fields.length > 0 ? (
@@ -476,10 +377,10 @@ export function AddCredentialForm({
                   setBindingMode(opt.value);
                   setEnvVarManuallyEdited(false);
                   if (opt.value === "single" && selectedItem && selectedField) {
-                    const itemName = items.find((i) => i.id === selectedItem)?.name ?? "";
+                    const itemName = selection.name;
                     setEnvVar(`${itemName}_${selectedField}`.toUpperCase().replace(/[^A-Z0-9_]/g, "_"));
                   } else if (opt.value === "prefix" && selectedItem) {
-                    const itemName = items.find((i) => i.id === selectedItem)?.name ?? "";
+                    const itemName = selection.name;
                     setEnvVar(itemName.toUpperCase().replace(/[^A-Z0-9]/g, "_"));
                   } else if (opt.value === "all") {
                     setEnvVar("");
@@ -541,7 +442,7 @@ export function AddCredentialForm({
                         onClick={() => {
                           setSelectedField(f);
                           if (!envVarManuallyEdited) {
-                            const itemName = items.find((i) => i.id === selectedItem)?.name ?? "";
+                            const itemName = selection.name;
                             setEnvVar(`${itemName}_${f}`.toUpperCase().replace(/[^A-Z0-9_]/g, "_"));
                           }
                         }}
@@ -560,12 +461,13 @@ export function AddCredentialForm({
             </div>
           )}
         </div>
-      )}
+      ))}
 
+      {fieldError && <p role="alert" className="text-xs text-danger">{fieldError}</p>}
       {error && <p className="text-xs text-danger">{error}</p>}
 
       <div className="flex items-center gap-2">
-        {!creating && (
+        {localConn && (
           <button
             onClick={() => setCreating(true)}
             className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium text-text-secondary hover:bg-surface-tertiary transition"
@@ -583,7 +485,7 @@ export function AddCredentialForm({
         </button>
         <button
           onClick={submit}
-          disabled={!selectedItem || (bindingMode === "prefix" && !targetEnvVar && !envVar.trim()) || (bindingMode === "single" && !targetEnvVar && (!envVar.trim() || !selectedField)) || saving}
+          disabled={!selectedItem || !connections.get(selectedConnection)?.enabled || loadingFields || !!fieldError || ((!!targetEnvVar || bindingMode === "single") && !selectedField) || (bindingMode === "prefix" && !targetEnvVar && !envVar.trim()) || (bindingMode === "single" && !targetEnvVar && !envVar.trim()) || saving}
           className="w-24 inline-flex items-center justify-center rounded-lg bg-accent py-2 text-sm font-medium text-surface hover:bg-accent-hover disabled:opacity-50 transition"
         >
           {saving ? "Adding..." : "Add"}

@@ -164,6 +164,9 @@ impl SydArgsBuilder {
                 "sandbox/read:on".into(),
                 "-m".into(),
                 "sandbox/stat:on".into(),
+                // Bash probes the root directory during startup.
+                "-m".into(),
+                "allow/stat+/".into(),
                 "-m".into(),
                 "sandbox/write:on".into(),
                 // Allow non-PIE executables (e.g. Node.js)
@@ -220,7 +223,7 @@ impl SydArgsBuilder {
 
         // Allow read+stat on each ancestor of the workspace dir so tools
         // (e.g. Node.js realpathSync) can traverse the directory tree.
-        // Syd hides non-allowed siblings, so this doesn't leak other workspaces.
+        // These exact ancestor rules do not grant access to sibling files.
         {
             let mut ancestor = std::path::Path::new(&config.workspace_dir);
             while let Some(parent) = ancestor.parent() {

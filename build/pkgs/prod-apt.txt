@@ -11,8 +11,8 @@ git=1:2.39.5-0+deb12u3
 openssh-client=1:9.2p1-2+deb12u10
 
 unzip=6.0-28+deb12u1
-xz-utils=5.4.1-1+deb12u1
-zip=3.0-13
+xz-utils=5.4.1-1+deb12u2
+zip=3.0-13+deb12u1
 
 imagemagick-6.q16=8:6.9.11.60+dfsg-1.6+deb12u13
 libjpeg62-turbo=1:2.1.5-2
@@ -36,4 +36,4 @@ rsync=3.2.7-1+deb12u6
 smbclient=2:4.17.12+dfsg-0+deb12u4
 fd-find=8.6.0-3
 
-nodejs=24.19.0-1nodesource1
+nodejs=24.21.0-1nodesource1

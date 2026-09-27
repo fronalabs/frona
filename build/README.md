@@ -10,7 +10,7 @@ The Dockerfile is a multi-stage build with two final targets: `dev` and `prod`.
 4. **cli-tools** — downloads arch-specific binaries (1Password CLI, Bitwarden CLI, SydBox, SurrealDB) using Docker's `TARGETARCH`
 5. **python-builder** — pip installs into a `/install` prefix
 6. **prod** — minimal `python:3.12-slim-bookworm` image with the compiled binary, static frontend, CLI tools, and Python packages
-7. **dev** — full `rust:1.89-bookworm` toolchain with cargo-watch hot-reload and Node.js
+7. **dev** — the same Python base with Rust 1.98.1, cargo-watch hot-reload, and Node.js
 
 Rust dependency caching relies on [cargo-chef](https://github.com/LukeMathWalker/cargo-chef) — dependencies are compiled once from `recipe.json` and cached across builds as long as `Cargo.toml`/`Cargo.lock` don't change.
 
@@ -24,7 +24,8 @@ Build dependencies are version-locked in `build/pkgs/` text files (`name=version
 
 SurrealDB is the exception — its version is extracted from `Cargo.lock` at build time so it always matches the Rust dependency.
 
-Base images are pinned to major/minor versions. APT packages (`*-apt.txt`) are not version-pinned and resolve at build time.
+Base image versions are specified in the Dockerfile. APT packages (`*-apt.txt`)
+are version-pinned and refreshed by `update-versions.sh`.
 
 ## Multi-Architecture Docker Builds
 

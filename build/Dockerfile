@@ -11,7 +11,7 @@ COPY --from=catalog-builder /app/target/release/frona-model-catalog /usr/local/b
 COPY crates/frona-model-catalog/resources/modelparams-schema.json /catalogs/modelparams-schema.json
 RUN frona-model-catalog download --output /catalogs
 
-FROM node:24.19.0-slim AS frontend-builder
+FROM node:24.21.0-slim AS frontend-builder
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json* ./
 RUN npm ci

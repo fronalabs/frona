@@ -7,7 +7,7 @@ clang=1:14.0-55.7~deb12u1
 lld=1:14.0-55.7~deb12u1
 pkg-config=1.8.1-1
 # OpenSSL headers for openssl-sys + libsqlite3-sys (SQLCipher, -DSQLITE_HAS_CODEC).
-libssl-dev=3.0.20-1~deb12u2
+libssl-dev=3.0.22-1~deb12u1
 # bindgen for native -sys crates (e.g. libsqlite3-sys and Signal deps).
 libclang-dev=1:14.0-55.7~deb12u1
 # presage's transitive proto build-scripts.

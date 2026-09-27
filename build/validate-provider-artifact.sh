@@ -22,4 +22,4 @@ exec "$artifact_runtime" run --rm --network none \
   -v "$artifact_libdir:/host-libs:ro" \
   -v /etc/ssl/certs:/etc/ssl/certs:ro \
   -e "FRONA_ARTIFACT_LOADER=/host-libs/$artifact_loader" \
-  docker.io/library/node:24.19.0-slim node /artifact/validate.mjs /artifact/frona
+  docker.io/library/node:24.21.0-slim node /artifact/validate.mjs /artifact/frona

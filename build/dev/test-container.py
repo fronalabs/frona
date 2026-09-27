@@ -17,6 +17,33 @@ FORWARDED_KEYS = ("CARGO_BUILD_JOBS", "RUST_TEST_THREADS")
 
 
 class CargoEnvironmentTests(unittest.TestCase):
+    def test_dev_compose_mounts_bacon_jobs(self):
+        source = (BUILD_DIR / "docker-compose.yml").read_text()
+        service = re.search(r"^  frona-dev:\n(.*?)(?=^  \S|\Z)", source, re.M | re.S)
+        self.assertIsNotNone(service)
+        self.assertIn("../bacon.toml:/app/bacon.toml:ro", service.group(1))
+
+    def test_old_dev_image_fails_before_starting_frontend(self):
+        with tempfile.TemporaryDirectory(prefix="frona-old-dev-image-") as directory:
+            root = Path(directory)
+            (root / "build/dev").mkdir(parents=True)
+            shutil.copyfile(BUILD_DIR / "dev/start.sh", root / "build/dev/start.sh")
+            (root / "web").mkdir()
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            npm = bin_dir / "npm"
+            npm.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nPath('../npm-started').touch()\n")
+            npm.chmod(0o700)
+            # No Bacon in this simulated old image; Bash and dirname still work.
+            os.symlink(shutil.which("dirname"), bin_dir / "dirname")
+            result = subprocess.run(
+                [shutil.which("bash"), str(root / "build/dev/start.sh")],
+                env=dict(os.environ, PATH=str(bin_dir)), capture_output=True, text=True, timeout=5,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("mise run container:dev:build", result.stderr)
+            self.assertFalse((root / "npm-started").exists())
+
     def test_launcher_preserves_environment(self):
         with tempfile.TemporaryDirectory(prefix="frona-launcher-test-") as directory:
             root = Path(directory)

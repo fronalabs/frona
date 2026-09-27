@@ -143,7 +143,7 @@ RUN --mount=type=bind,source=build/dev/pkgs/apt.txt,target=/tmp/packages.txt \
      $(grep -vE '^\s*(#|$)' /tmp/packages.txt | tr '\n' ' ') \
   && rm -rf /var/lib/apt/lists/*
 
-# Rust toolchain via rustup (dev compiles live via cargo-watch; prod copies release
+# Rust toolchain via rustup (dev compiles live via Bacon; prod copies release
 # binaries from backend-builder).
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
@@ -157,11 +157,8 @@ COPY --from=python-builder /install /usr/local
 # (syd sandbox blocks writes outside the agent workspace) - matches prod.
 RUN python3 -m compileall -q /usr/local/lib/python3.12
 
-RUN --mount=type=bind,source=build/dev/pkgs/rust-cargo.txt,target=/tmp/cargo.txt \
-  for line in $(grep -vE '^\s*(#|$)' /tmp/cargo.txt); do \
-    crate=${line%%=*}; version=${line#*=}; \
-    cargo install "$crate" --version "$version"; \
-  done
+COPY build/dev/install-bacon.sh /tmp/install-bacon.sh
+RUN sh /tmp/install-bacon.sh && rm /tmp/install-bacon.sh
 
 COPY --from=cli-tools /usr/local/bin/op /usr/local/bin/bw /usr/local/bin/surreal /usr/local/bin/
 COPY --from=syd-builder /usr/local/bin/syd /usr/local/bin/syd

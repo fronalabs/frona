@@ -288,7 +288,6 @@ main() {
 	update_apt_file "$PKGS_DIR/prod-apt.txt" "$python_image" "$nodesource_setup"
 	update_apt_file "$SCRIPT_DIR/dev/pkgs/apt.txt" "$python_image"
 	update_cargo_file "$PKGS_DIR/builder-rust-cargo.txt"
-	update_cargo_file "$SCRIPT_DIR/dev/pkgs/rust-cargo.txt"
 	update_pip_file "$PKGS_DIR/builder-python-pip.txt" "$python_image"
 
 	echo ""

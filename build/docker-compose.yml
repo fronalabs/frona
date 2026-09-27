@@ -44,6 +44,7 @@ services:
       - ../crates:/app/crates
       - ../Cargo.toml:/app/Cargo.toml
       - ../Cargo.lock:/app/Cargo.lock
+      - ../bacon.toml:/app/bacon.toml:ro
       - ../target:/app/target
       - ${KACHE_LOCAL_DIR:-kache-local}:/cache/kache
       - ${KACHE_SHARED_DIR:-../target/kache-shared}:/dv/shared/kache

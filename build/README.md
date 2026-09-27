@@ -11,7 +11,7 @@ The Dockerfile is a multi-stage build with two final targets: `dev` and `prod`.
 5. **syd-builder** — compiles the tagged Syd source with upstream's builder image and Makefile for the target architecture
 6. **python-builder** — pip installs into a `/install` prefix
 7. **prod** — minimal `python:3.12-slim-bookworm` image with the compiled binary, static frontend, CLI tools, and Python packages
-8. **dev** — the same Python base with Rust 1.98.1, cargo-watch hot-reload, and Node.js
+8. **dev** — the same Python base with Rust 1.98.1, Bacon hot-reload, and Node.js
 
 Rust dependency caching relies on [cargo-chef](https://github.com/LukeMathWalker/cargo-chef) — dependencies are compiled once from `recipe.json` and cached across builds as long as `Cargo.toml`/`Cargo.lock` don't change.
 
@@ -149,11 +149,56 @@ provider-parsing check also runs when Podman and podman-compose are installed:
 python3 build/dev/test-container.py
 ```
 
+## Bacon development workflow
+
+The development image downloads Bacon 3.26.0 from the upstream release archive
+and verifies its SHA-256 checksum. Bacon is not built from source or required
+on the host. The version and checksum are pinned in `dev/install-bacon.sh`.
+
+From the repository root:
+
+```nu
+mise run container:dev
+```
+
+Bacon also provides workspace check, test, and Clippy jobs in the development
+container. Each Bacon session runs one job.
+
+The shared `bacon.toml` watches crate sources/resources and root Cargo manifests
+and lockfile. The container server job waits three seconds before each build to group
+nearby writes (Bacon's grace period, not a sliding debounce). Changes stop the
+old server, rebuild incrementally through Cargo, and launch a new process.
+A failed build leaves the server stopped until a successful rebuild.
+
+Containers use the headless `server-container` job, preserving the Kache setup
+and `mcpctl` build/copy steps in `dev/watch.sh`. Rebuild an existing dev image
+with `mise run container:dev:build` to install Bacon.
+Compose mounts the shared `bacon.toml` read-only at `/app/bacon.toml`.
+Startup checks for the binary and job configuration before launching either
+watcher, so an old image reports the rebuild command immediately.
+
+Run the isolated watcher regression checks in the built development image,
+from the repository root (rootless Podman):
+
+```nu
+podman run --rm --network none --userns keep-id --volume .:/app:ro --entrypoint python3 localhost/frona-dev:local build/dev/test-bacon.py
+```
+
+These checks exercise restarts, build-failure recovery, file coverage, and child
+shutdown using fixture commands; they do not build or start Frona.
+
 ## Development shutdown
 
 The development entrypoint starts the Rust and frontend watchers in separate
 process groups. SIGINT/SIGTERM stop both groups; if either watcher exits, its
 sibling is stopped too.
+
+The container job launches `dev/watch.sh`, which supervises its build and server
+processes using `dev/run-command.sh`. The container entrypoint also wraps Bacon
+because headless Bacon can exit on a signal without stopping its job. Both wait
+for the whole process group. The server job allows ten seconds for graceful
+shutdown; the watcher wrapper allows twelve seconds so the job can finish
+cleanup first.
 
 For foreground Podman development, exiting `mise run container:dev` also runs
 Compose `down` without `--volumes`. This removes stopped containers and the
@@ -165,12 +210,14 @@ volumes, bind-mounted data, and caches are retained. Detached runs (`-d`) and
 
 Development-only files live in `build/dev/`:
 
-- `start.sh` and `watch.sh`: process supervision and Rust rebuilds.
+- `start.sh`, `run-command.sh`, and `watch.sh`: process supervision and Rust rebuilds.
+- `install-bacon.sh`: checksum-pinned prebuilt Bacon installer.
 - `docker-compose.podman.yml`: rootless Podman development overrides.
 - `install-kache.sh` and `kache.toml`: compiler-cache setup.
 - `searxng-settings.yml`: search-service settings.
-- `pkgs/apt.txt` and `pkgs/rust-cargo.txt`: development package lists.
+- `pkgs/apt.txt`: development system packages.
 - `test-container.py`: launcher, provider, and shutdown regression checks.
+- `test-bacon.py`: Bacon restart, recovery, and shutdown regression checks.
 
 The shared Dockerfile, Compose definition, and container launcher stay in
 `build/`. Builder and production package lists stay in `build/pkgs/`;

@@ -182,7 +182,6 @@ The Frona application runs in one OCI container and works with any OCI-compatibl
 All commands use [mise](https://mise.jdx.dev/) as the task runner:
 
 ```bash
-mise run dev              # Run the backend and frontend on the host
 mise run container:dev    # Run the containerized dev stack with hot-reload
 mise run container:prod   # Build and run the production container stack
 

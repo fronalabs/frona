@@ -2,7 +2,6 @@
 rust = "1.98.1"
 node = "24.21.0"
 rust-analyzer = "latest"
-"cargo:cargo-watch" = "latest"
 
 [env]
 FRONA_DATABASE_PATH = "data/db"
@@ -13,19 +12,6 @@ FRONA_SERVER_PORT = "3001"
 FRONA_SERVER_CORS_ORIGINS = "http://localhost:3000"
 FRONA_BROWSER_WS_URL = "ws://localhost:3333"
 FRONA_BROWSER_PROFILES_PATH = "/profiles"
-
-[tasks.dev]
-description = "Run backend + frontend in parallel"
-depends = ["install-frontend", "dev:frontend", "dev:backend"]
-
-[tasks."dev:frontend"]
-description = "Run Next.js dev server"
-dir = "web"
-run = "npm run dev"
-
-[tasks."dev:backend"]
-description = "Run backend with cargo-watch"
-run = "cargo watch -w crates/ -w Cargo.toml -w Cargo.lock --delay 3 -x 'run -p frona-server'"
 
 [tasks.install-frontend]
 description = "Install frontend dependencies"

@@ -185,21 +185,10 @@ latest_bw_version() {
 		python3 -c 'import json, sys; releases = json.load(sys.stdin); print(next(item["tag_name"].removeprefix("cli-v") for item in releases if item["tag_name"].startswith("cli-v")))'
 }
 
-latest_syd_binary_version() {
-	local versions version
-	versions=$(curl -sf -H 'User-Agent: frona-update-versions (https://github.com/fronalabs/frona)' \
-		"https://gitlab.exherbo.org/api/v4/projects/sydbox%2Fsydbox/repository/tags?per_page=100" |
-		python3 -c 'import json, re, sys; versions = [item["name"][1:] for item in json.load(sys.stdin) if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", item["name"])]; print("\n".join(sorted(versions, key=lambda value: tuple(map(int, value.split("."))), reverse=True)))')
-
-	while IFS= read -r version; do
-		if curl -sfIL "https://distfiles.exherbo.org/sydbox%2Fsyd-${version}-x86_64-pc-linux-gnu.tar.xz" >/dev/null &&
-			curl -sfIL "https://distfiles.exherbo.org/sydbox%2Fsyd-${version}-aarch64-unknown-linux-gnueabi.tar.xz" >/dev/null; then
-			echo "$version"
-			return 0
-		fi
-	done <<<"$versions"
-
-	return 1
+latest_syd_version() {
+	curl -sf -H 'User-Agent: frona-update-versions (https://github.com/fronalabs/frona)' \
+		"https://crates.io/api/v1/crates/syd" |
+		python3 -c 'import json, sys; print(json.load(sys.stdin)["crate"]["max_stable_version"])'
 }
 
 resolve_binary_version() {
@@ -217,7 +206,10 @@ resolve_binary_version() {
 		curl -sfIL "https://github.com/bitwarden/clients/releases/download/cli-v${version}/bw-linux-${version}.zip" >/dev/null
 		curl -sfIL "https://github.com/bitwarden/clients/releases/download/cli-v${version}/bw-linux-arm64-${version}.zip" >/dev/null
 		;;
-	syd) version=$(latest_syd_binary_version) ;;
+	syd)
+		version=$(latest_syd_version) || return 1
+		curl -sfIL "https://gitlab.exherbo.org/api/v4/projects/sydbox%2Fsydbox/repository/archive.tar.gz?sha=v${version}" >/dev/null || return 1
+		;;
 	*) return 1 ;;
 	esac
 

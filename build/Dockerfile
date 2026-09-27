@@ -1,3 +1,5 @@
+ARG TARGETARCH
+
 FROM rust:1.98.1-bookworm AS catalog-builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
@@ -72,6 +74,27 @@ RUN mkdir -p /ontology && cd /ontology \
   && ls *.ttl.gz >/dev/null \
   && echo "ontology release $(jq -r .tag_name /tmp/release.json): $(ls | tr '\n' ' ')"
 
+# Use the same architecture-specific toolchains as Syd's upstream CI.
+FROM docker.io/exherbo/syd-builder:x86_64-pc-linux-gnu@sha256:caadb818ccea63e6ed4b215fced041e16ca9469de9c87fe6fa9c08913c6e9746 AS syd-builder-amd64
+FROM docker.io/exherbo/syd-builder:aarch64-unknown-linux-gnueabi@sha256:d199f9f01bcc0e38e76ea84f1f470b294c2eeed46693780c2c46f8aaf3954345 AS syd-builder-arm64
+
+FROM syd-builder-${TARGETARCH} AS syd-builder
+WORKDIR /src/syd
+RUN --mount=type=bind,source=build/pkgs/prod-pkgs.txt,target=/tmp/pkgs.txt \
+  SYD_VER=$(grep '^syd=' /tmp/pkgs.txt | cut -d= -f2) \
+  && curl -fsSL "https://gitlab.exherbo.org/api/v4/projects/sydbox%2Fsydbox/repository/archive.tar.gz?sha=v${SYD_VER}" -o /tmp/syd.tar.gz \
+  && tar xzf /tmp/syd.tar.gz --strip-components=1 \
+  && rm /tmp/syd.tar.gz
+RUN CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=debuginfo \
+    make release CARGOFEATS=trusted CARGOFLAGS="--bin syd" \
+  && install -Dm755 "target/$(rustc --print=host-tuple)/release/syd" /usr/local/bin/syd \
+  && syd --version
+# Keep license notices in the runtime images; source stays in this build stage.
+RUN mkdir -p /usr/local/share/doc/syd \
+  && cp COPYING /usr/local/share/doc/syd/COPYING \
+  && curl -fsSL "https://raw.githubusercontent.com/seccomp/libseccomp/v$(pkg-config --modversion libseccomp)/LICENSE" \
+     -o /usr/local/share/doc/syd/libseccomp-LICENSE
+
 FROM debian:bookworm-slim AS cli-tools
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends curl unzip xz-utils ca-certificates && rm -rf /var/lib/apt/lists/*
@@ -87,14 +110,6 @@ RUN --mount=type=bind,source=build/pkgs/prod-pkgs.txt,target=/tmp/pkgs.txt \
   && unzip -o /tmp/bw.zip -d /usr/local/bin \
   && chmod +x /usr/local/bin/bw \
   && rm /tmp/bw.zip
-RUN --mount=type=bind,source=build/pkgs/prod-pkgs.txt,target=/tmp/pkgs.txt \
-  SYD_VER=$(grep '^syd=' /tmp/pkgs.txt | cut -d= -f2) \
-  && SYD_TRIPLE=$([ "$TARGETARCH" = "amd64" ] && echo "x86_64-pc-linux-gnu" || echo "aarch64-unknown-linux-gnueabi") \
-  && curl -sSfL "https://distfiles.exherbo.org/sydbox%2Fsyd-${SYD_VER}-${SYD_TRIPLE}.tar.xz" -o /tmp/syd.tar.xz \
-  && tar xf /tmp/syd.tar.xz -C /tmp \
-  && cp /tmp/syd-${SYD_VER}-${SYD_TRIPLE}/bin/syd /usr/local/bin/syd \
-  && chmod +x /usr/local/bin/syd \
-  && rm -rf /tmp/syd*
 COPY Cargo.lock /tmp/Cargo.lock
 RUN SURREAL_VER=$(grep -A1 'name = "surrealdb"' /tmp/Cargo.lock | grep version | sed 's/.*"\(.*\)".*/\1/') \
   && curl -sSfL "https://github.com/surrealdb/surrealdb/releases/download/v${SURREAL_VER}/surreal-v${SURREAL_VER}.linux-${TARGETARCH}.tgz" \
@@ -147,7 +162,9 @@ RUN --mount=type=bind,source=build/dev/pkgs/rust-cargo.txt,target=/tmp/cargo.txt
     cargo install "$crate" --version "$version"; \
   done
 
-COPY --from=cli-tools /usr/local/bin/op /usr/local/bin/bw /usr/local/bin/surreal /usr/local/bin/syd /usr/local/bin/
+COPY --from=cli-tools /usr/local/bin/op /usr/local/bin/bw /usr/local/bin/surreal /usr/local/bin/
+COPY --from=syd-builder /usr/local/bin/syd /usr/local/bin/syd
+COPY --from=syd-builder /usr/local/share/doc/syd /usr/local/share/doc/syd
 COPY build/dev/install-kache.sh /tmp/install-kache.sh
 RUN sh /tmp/install-kache.sh && rm /tmp/install-kache.sh
 COPY build/dev/kache.toml /etc/kache/config.toml
@@ -188,7 +205,9 @@ RUN --mount=type=bind,source=build/pkgs/prod-apt.txt,target=/tmp/packages.txt \
      $(grep '^nodejs=' /tmp/packages.txt) \
   && rm -rf /var/lib/apt/lists/*
 
-COPY --from=cli-tools /usr/local/bin/op /usr/local/bin/bw /usr/local/bin/surreal /usr/local/bin/syd /usr/local/bin/
+COPY --from=cli-tools /usr/local/bin/op /usr/local/bin/bw /usr/local/bin/surreal /usr/local/bin/
+COPY --from=syd-builder /usr/local/bin/syd /usr/local/bin/syd
+COPY --from=syd-builder /usr/local/share/doc/syd /usr/local/share/doc/syd
 
 RUN groupadd -g 1000 frona && useradd -u 1000 -g frona -d /app -s /bin/bash frona
 RUN mkdir -p /app /app/bin /data && chown -R frona:frona /app /data

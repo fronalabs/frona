@@ -7,10 +7,11 @@ The Dockerfile is a multi-stage build with two final targets: `dev` and `prod`.
 1. **frontend-builder** — `npm ci` + `npm run build` to produce a static export
 2. **planner** — `cargo chef prepare` to fingerprint Rust dependencies
 3. **backend-builder** — `cargo chef cook` (cached dependency build) then `cargo build --release`
-4. **cli-tools** — downloads arch-specific binaries (1Password CLI, Bitwarden CLI, SydBox, SurrealDB) using Docker's `TARGETARCH`
-5. **python-builder** — pip installs into a `/install` prefix
-6. **prod** — minimal `python:3.12-slim-bookworm` image with the compiled binary, static frontend, CLI tools, and Python packages
-7. **dev** — the same Python base with Rust 1.98.1, cargo-watch hot-reload, and Node.js
+4. **cli-tools** — downloads arch-specific binaries (1Password CLI, Bitwarden CLI, SurrealDB) using Docker's `TARGETARCH`
+5. **syd-builder** — compiles the tagged Syd source with upstream's builder image and Makefile for the target architecture
+6. **python-builder** — pip installs into a `/install` prefix
+7. **prod** — minimal `python:3.12-slim-bookworm` image with the compiled binary, static frontend, CLI tools, and Python packages
+8. **dev** — the same Python base with Rust 1.98.1, cargo-watch hot-reload, and Node.js
 
 Rust dependency caching relies on [cargo-chef](https://github.com/LukeMathWalker/cargo-chef) — dependencies are compiled once from `recipe.json` and cached across builds as long as `Cargo.toml`/`Cargo.lock` don't change.
 
@@ -26,6 +27,27 @@ SurrealDB is the exception — its version is extracted from `Cargo.lock` at bui
 
 Base image versions are specified in the Dockerfile. APT packages (`*-apt.txt`)
 are version-pinned and refreshed by `update-versions.sh`.
+
+Syd's version comes from `prod-pkgs.txt`. The updater selects stable releases
+published to crates.io and verifies the matching Git tag archive is available.
+The `syd-builder` stage uses upstream's `exherbo/syd-builder` images, pinned by
+digest for amd64 and arm64, and the tagged source's `make release` target. It
+builds only `syd` with the `trusted` feature and upstream's static linking
+defaults. The builder images supply the compiler and libseccomp; Frona does not
+maintain a separate Syd build script or dependency toolchain.
+
+The source comes from [Syd's upstream repository](https://gitlab.exherbo.org/sydbox/sydbox).
+Its Makefile uses Cargo.lock. Frona runs
+`make release CARGOFEATS=trusted CARGOFLAGS="--bin syd"`, strips debug information,
+and installs `target/<rust-host-tuple>/release/syd`.
+
+Both images include the Syd binary at `/usr/local/bin/syd` and license notices in
+`/usr/local/share/doc/syd/`. Source, dependencies, and build tools remain
+in the `syd-builder` stage; no source archive is included in either runtime image.
+Syd is a separate GPL-3.0-only executable; Frona retains its BSL license.
+Syd's license is in `COPYING`, and the statically linked
+[libseccomp](https://github.com/seccomp/libseccomp) LGPL-2.1 license is in
+`libseccomp-LICENSE` in that directory.
 
 ## Multi-Architecture Docker Builds
 

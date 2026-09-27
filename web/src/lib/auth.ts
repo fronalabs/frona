@@ -136,6 +136,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [probe]);
 
   const initiateSso = useCallback(() => {
+    // SSO requires a full-page navigation to the backend's authorization endpoint.
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     window.location.href = `${API_URL}/api/auth/sso/authorize`;
   }, []);
 

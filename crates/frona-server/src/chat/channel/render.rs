@@ -85,7 +85,9 @@ pub fn render_result_markdown(schema: &Value, value: &Value) -> Option<String> {
                     .iter()
                     .map(|(label, val)| format!("**{label}**: {val}"))
                     .collect::<Vec<_>>()
-                    .join("\n"),
+                    // Single newlines are Markdown soft breaks and collapse
+                    // to spaces in channel converters such as Signal's.
+                    .join("\n\n"),
             )
         }
         _ => Some(render_value_md(value)),
@@ -187,7 +189,29 @@ mod tests {
         let msg = task_completion(r#"{"symbol":"AAPL","price":234}"#, Some(schema));
         assert_eq!(
             render_message_body(&msg),
-            "**ticker**: AAPL\n**current price (USD)**: 234"
+            "**ticker**: AAPL\n\n**current price (USD)**: 234"
+        );
+    }
+
+    #[test]
+    fn task_completion_fields_remain_separate_paragraphs_in_signal() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "amazon": {"type": "string", "description": "Amazon news summary with stock price"},
+                "anthropic": {"type": "string", "description": "Anthropic news summary"}
+            }
+        });
+        let msg = task_completion(
+            r#"{"amazon":"AMZN $246.53.","anthropic":"Private/no ticker."}"#,
+            Some(schema),
+        );
+        let markdown = render_message_body(&msg);
+        let signal = crate::chat::channel::adapter::markdown::to_signal(&markdown);
+
+        assert_eq!(
+            signal.body,
+            "Amazon news summary with stock price: AMZN $246.53.\n\nAnthropic news summary: Private/no ticker."
         );
     }
 
@@ -228,7 +252,7 @@ mod tests {
         let value = json!({"symbol": "AAPL", "price": 234});
         assert_eq!(
             render_result_markdown(&schema, &value),
-            Some("**ticker**: AAPL\n**price**: 234".to_string())
+            Some("**ticker**: AAPL\n\n**price**: 234".to_string())
         );
     }
 

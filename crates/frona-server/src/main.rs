@@ -39,7 +39,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(EnvFilter::new(&log_filter))
         .init();
 
-    info!("Frona v{}", env!("CARGO_PKG_VERSION"));
+    if let Some(revision) = option_env!("FRONA_BUILD_REVISION")
+        .filter(|revision| !revision.is_empty() && *revision != "unknown")
+    {
+        info!("Frona v{} ({:.12})", env!("CARGO_PKG_VERSION"), revision);
+    } else {
+        info!("Frona v{}", env!("CARGO_PKG_VERSION"));
+    }
 
     let mut loaded = ConfigService::load(config_file_path())?;
     let config = loaded.config.clone();

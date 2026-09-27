@@ -47,7 +47,8 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY resources/ resources/
-RUN cargo build --release -p frona-server -p frona-cli-mcp
+ARG REVISION=unknown
+RUN FRONA_BUILD_REVISION="$REVISION" cargo build --release -p frona-server -p frona-cli-mcp
 
 #
 # The reference ontologies are a published artifact of `frona-ontologies`, fetched at

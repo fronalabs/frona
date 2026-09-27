@@ -7,6 +7,7 @@ import { Dialog } from "@/components/dialog";
 
 interface SystemInfo {
   version: string;
+  revision?: string | null;
   cpus: number;
   total_memory_bytes: number;
   sandbox_driver: string;
@@ -63,7 +64,7 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
       icon={InformationCircleIcon}
     >
       <div>
-        {row("Version", info?.version ?? "…")}
+        {row("Version", info ? `${info.version}${info.revision ? ` (${info.revision.slice(0, 12)})` : ""}` : "…")}
         {row("CPUs", info ? `${info.cpus} cores` : "…")}
         {row("Memory", info ? formatBytes(info.total_memory_bytes) : "…")}
         {row("Sandbox", info ? (SANDBOX_LABELS[info.sandbox_driver] ?? info.sandbox_driver) : "…")}

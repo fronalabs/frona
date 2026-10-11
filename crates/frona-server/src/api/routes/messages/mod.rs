@@ -125,6 +125,9 @@ async fn resolve_tool_calls(
             .get_tool_call(&resolution.tool_call_id)
             .await
             .map_err(ApiError::from)?
+            // Authorizing the URL's chat does not authorize an arbitrary tool
+            // call ID. Bind it before either resolution path can have effects.
+            .filter(|te| te.chat_id == chat_id)
             .ok_or_else(|| {
                 ApiError::from(crate::core::error::AppError::NotFound(format!(
                     "Tool call not found: {}",

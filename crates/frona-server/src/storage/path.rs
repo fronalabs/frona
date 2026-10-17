@@ -1,5 +1,5 @@
 use std::fmt;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use crate::core::error::AppError;
 
@@ -106,6 +106,80 @@ pub fn validate_no_traversal(resolved: &Path, base: &str) -> Result<(), AppError
     Ok(())
 }
 
+/// Resolve a filesystem destination, including the missing tail of a new file.
+/// Existing symlinks are resolved before `..`; only missing components are
+/// normalized lexically. Callers must authorize the returned absolute path.
+/// This does not pin the path against replacement between checking and I/O.
+pub fn resolve_filesystem_path(path: &Path) -> Result<PathBuf, AppError> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(filesystem_path_error)?
+            .join(path)
+    };
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(prefix) => resolved.push(prefix.as_os_str()),
+            Component::RootDir => resolved.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                match std::fs::metadata(&resolved) {
+                    Ok(metadata) if !metadata.is_dir() => {
+                        return Err(AppError::Validation(
+                            "Path component is not a directory".into(),
+                        ));
+                    }
+                    Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(filesystem_path_error(error));
+                    }
+                    _ => {}
+                }
+                resolved.pop();
+            }
+            Component::Normal(name) => {
+                resolved.push(name);
+                match std::fs::symlink_metadata(&resolved) {
+                    Ok(_) => {
+                        // Fail on dangling symlinks rather than treating them as
+                        // ordinary missing filenames that could redirect writes.
+                        resolved =
+                            std::fs::canonicalize(&resolved).map_err(filesystem_path_error)?;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(filesystem_path_error(error)),
+                }
+            }
+        }
+    }
+    Ok(resolved)
+}
+
+/// Resolve a path against a workspace and require the final destination to be
+/// inside it. Equality is permitted for directory reads; writers retain their
+/// normal filesystem errors for directory targets. This is a check, not a lock.
+pub fn resolve_workspace_path(root: &Path, path: &Path) -> Result<PathBuf, AppError> {
+    let root = resolve_filesystem_path(root)?;
+    let resolved = resolve_filesystem_path(&root.join(path))?;
+    if !resolved.starts_with(&root) {
+        return Err(AppError::Validation(
+            "Path escapes allowed directory".into(),
+        ));
+    }
+    Ok(resolved)
+}
+
+fn filesystem_path_error(error: std::io::Error) -> AppError {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => AppError::NotFound("Path not found".into()),
+        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::NotADirectory => {
+            AppError::Validation(format!("Invalid filesystem path: {error}"))
+        }
+        _ => AppError::Internal(format!("Failed to resolve filesystem path: {error}")),
+    }
+}
+
 pub fn validate_relative_path(path: &str) -> Result<(), AppError> {
     if path.contains("..") {
         return Err(AppError::Validation("Path traversal not allowed".into()));
@@ -202,6 +276,34 @@ mod tests {
     #[test]
     fn validate_relative_path_accepts_valid() {
         assert!(validate_relative_path("subdir/file.txt").is_ok());
+    }
+
+    #[test]
+    fn filesystem_resolution_preserves_symlink_parent_semantics() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let root = base.join("root");
+        std::fs::create_dir_all(root.join("real/deep")).unwrap();
+        std::os::unix::fs::symlink(root.join("real/deep"), root.join("link")).unwrap();
+        assert_eq!(
+            resolve_workspace_path(&root, Path::new("link/../new/file.txt")).unwrap(),
+            root.join("real/new/file.txt")
+        );
+        assert_eq!(
+            resolve_workspace_path(&root, Path::new("missing/../file.txt")).unwrap(),
+            root.join("file.txt")
+        );
+        assert_eq!(
+            resolve_workspace_path(&root, &root.join("real/../report..txt")).unwrap(),
+            root.join("report..txt")
+        );
+        assert!(resolve_workspace_path(&root, &base.join("root-other/file.txt")).is_err());
+        assert!(resolve_workspace_path(&root, Path::new("../../outside.txt")).is_err());
+        assert!(resolve_filesystem_path(Path::new("bad\0name")).is_err());
+        std::fs::write(root.join("file.txt"), "file").unwrap();
+        assert!(resolve_filesystem_path(&root.join("file.txt/../new.txt")).is_err());
+        std::os::unix::fs::symlink(base.join("missing"), root.join("dangling")).unwrap();
+        assert!(resolve_workspace_path(&root, Path::new("dangling/new.txt")).is_err());
     }
 
     #[test]

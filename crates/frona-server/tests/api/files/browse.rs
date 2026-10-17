@@ -999,3 +999,164 @@ async fn file_endpoints_reject_no_auth() {
         );
     }
 }
+
+#[tokio::test]
+async fn search_scopes_reject_escaped_paths_and_outward_symlinks() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(
+        &state,
+        "search-escape",
+        "searchescape@example.com",
+        "password123",
+    )
+    .await;
+    let agent = create_agent(&state, &token, "SearchEscape").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let roots = [
+        tmp.path().join("users/search-escape/files"),
+        tmp.path()
+            .join("users/search-escape/agents")
+            .join(agent["handle"].as_str().unwrap()),
+    ];
+    let app = build_app(state);
+    for (prefix, root) in ["user:".to_string(), format!("agent:{agent_id}/")]
+        .iter()
+        .zip(roots)
+    {
+        fs::create_dir_all(root.join("nested")).await.unwrap();
+        let outside_name = format!("{}-other", root.file_name().unwrap().to_string_lossy());
+        let outside = root.with_file_name(&outside_name);
+        fs::create_dir(&outside).await.unwrap();
+        fs::write(outside.join("secret.txt"), "secret")
+            .await
+            .unwrap();
+        fs::symlink(&outside, root.join("outward")).await.unwrap();
+        fs::symlink(outside.join("missing"), root.join("dangling"))
+            .await
+            .unwrap();
+        for path in [
+            outside.to_string_lossy().into_owned(),
+            format!("../{outside_name}"),
+            format!("nested/../../{outside_name}"),
+            "outward".to_string(),
+            "outward/..".to_string(),
+            "dangling".to_string(),
+            "bad\0path".to_string(),
+        ] {
+            let encoded = path
+                .replace('/', "%2F")
+                .replace('.', "%2e")
+                .replace('\0', "%00");
+            let resp = app
+                .clone()
+                .oneshot(auth_get(
+                    &format!("/api/files/search?q=secret&scope={prefix}{encoded}"),
+                    &token,
+                ))
+                .await
+                .unwrap();
+            assert!(
+                resp.status().is_client_error(),
+                "{prefix}{path}: {}",
+                resp.status()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn search_scopes_accept_contained_absolute_parent_and_symlink_paths() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(
+        &state,
+        "search-resolve",
+        "searchresolve@example.com",
+        "password123",
+    )
+    .await;
+    let agent = create_agent(&state, &token, "SearchResolve").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let roots = [
+        tmp.path().join("users/search-resolve/files"),
+        tmp.path()
+            .join("users/search-resolve/agents")
+            .join(agent["handle"].as_str().unwrap()),
+    ];
+    let app = build_app(state);
+    for (prefix, root) in ["user:".to_string(), format!("agent:{agent_id}/")]
+        .iter()
+        .zip(roots)
+    {
+        fs::create_dir_all(root.join("reports..old/deep"))
+            .await
+            .unwrap();
+        fs::create_dir(root.join("reports")).await.unwrap();
+        fs::create_dir(root.join(".git")).await.unwrap();
+        fs::write(root.join(".gitignore"), "report-ignored.txt\n")
+            .await
+            .unwrap();
+        fs::write(root.join("reports..old/report..txt"), "inside")
+            .await
+            .unwrap();
+        fs::write(root.join("reports..old/report-ignored.txt"), "ignored")
+            .await
+            .unwrap();
+        fs::write(root.join("reports..old/.report-hidden.txt"), "hidden")
+            .await
+            .unwrap();
+        fs::symlink(root.join("reports..old/deep"), root.join("link"))
+            .await
+            .unwrap();
+        let outside = root.with_file_name(format!(
+            "{}-other",
+            root.file_name().unwrap().to_string_lossy()
+        ));
+        fs::create_dir_all(&outside).await.unwrap();
+        fs::write(outside.join("secret.txt"), "outside")
+            .await
+            .unwrap();
+        fs::symlink(
+            outside.join("secret.txt"),
+            root.join("reports..old/report-link.txt"),
+        )
+        .await
+        .unwrap();
+        let absolute = std::fs::canonicalize(root.join("reports..old")).unwrap();
+        for path in [
+            "reports..old",
+            "reports/../reports..old",
+            "link/..",
+            absolute.to_str().unwrap(),
+        ] {
+            let encoded = path.replace('/', "%2F");
+            let resp = app
+                .clone()
+                .oneshot(auth_get(
+                    &format!("/api/files/search?q=report&scope={prefix}{encoded}"),
+                    &token,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{prefix}{path}");
+            let json = body_json(resp).await;
+            let results = json.as_array().unwrap();
+            assert_eq!(results.len(), 1, "{prefix}{path}: {json}");
+            assert!(
+                results[0]["id"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(":/reports..old/report..txt")
+            );
+        }
+        let resp = app
+            .clone()
+            .oneshot(auth_get(
+                &format!("/api/files/search?q=report&scope={prefix}missing"),
+                &token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(body_json(resp).await.as_array().unwrap().is_empty());
+    }
+}

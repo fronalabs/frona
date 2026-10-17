@@ -33,13 +33,14 @@ pub fn resolve_path(
             "virtual-path URIs are not supported here: {input}",
         )));
     }
-    if input.starts_with('/') {
-        return Ok(std::path::PathBuf::from(input));
-    }
-    crate::storage::path::validate_relative_path(input)?;
-    Ok(storage
-        .agent_workspace_path(user_handle, agent_handle)
-        .join(input))
+    // Use the same absolute destination for the existing sandbox-policy check
+    // and subsequent I/O. The policy, including explicit sibling grants, owns
+    // authorization; resolving a native path does not imply workspace-only access.
+    crate::storage::path::resolve_filesystem_path(
+        &storage
+            .agent_workspace_path(user_handle, agent_handle)
+            .join(input),
+    )
 }
 
 /// Atomically writes `content` to `target` via a tempfile in the same parent.
@@ -129,10 +130,11 @@ mod resolve_path_tests {
     }
 
     #[test]
-    fn absolute_path_passes_through() {
+    fn absolute_path_is_resolved() {
+        let file = tempfile::NamedTempFile::new().unwrap();
         assert_eq!(
-            run("/etc/hostname", "mina", "system", "/app/data").unwrap(),
-            PathBuf::from("/etc/hostname")
+            run(file.path().to_str().unwrap(), "mina", "system", "/app/data").unwrap(),
+            std::fs::canonicalize(file.path()).unwrap()
         );
     }
 
@@ -152,9 +154,21 @@ mod resolve_path_tests {
     }
 
     #[test]
-    fn traversal_in_bare_path_is_rejected() {
-        assert!(run("../etc/passwd", "mina", "system", "/app/data").is_err());
-        assert!(run("subdir/../../etc/passwd", "mina", "system", "/app/data").is_err());
+    fn parent_paths_resolve_before_existing_policy_authorizes_them() {
+        assert_eq!(
+            run("reports/../file.txt", "mina", "system", "/app/data").unwrap(),
+            PathBuf::from("/app/data/users/mina/agents/system/file.txt")
+        );
+        assert_eq!(
+            run(
+                "missing/../../sibling/file.txt",
+                "mina",
+                "system",
+                "/app/data"
+            )
+            .unwrap(),
+            PathBuf::from("/app/data/users/mina/agents/sibling/file.txt")
+        );
     }
 
     #[test]

@@ -68,6 +68,16 @@ async fn delete_task(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<(), ApiError> {
+    let task = state
+        .task_service
+        .find_by_id(&id)
+        .await?
+        .ok_or_else(|| crate::core::error::AppError::NotFound("Task not found".into()))?;
+
+    if task.user_id != auth.user_id {
+        return Err(crate::core::error::AppError::Forbidden("Not your task".into()).into());
+    }
+
     // Fire tokens before DB teardown so in-flight tokios unwind cleanly.
     state.task_executor.cancel_task(&id).await;
     state.task_service.delete(&auth.user_id, &id).await?;

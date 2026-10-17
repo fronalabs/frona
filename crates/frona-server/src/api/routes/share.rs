@@ -1,8 +1,9 @@
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 
+use super::files::FileResponseQuery;
 use crate::api::error::anonymous_not_found;
 use crate::core::state::AppState;
 use crate::credential::share::models::ShareKind;
@@ -11,7 +12,11 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/s/{id}", get(resolve_share))
 }
 
-async fn resolve_share(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+async fn resolve_share(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<FileResponseQuery>,
+) -> Response {
     // "Not found" and "expired" return the SAME response so the route is
     // not an oracle for "does this id exist".
     let row = match state.share_service.resolve(&id).await {
@@ -33,7 +38,7 @@ async fn resolve_share(State(state): State<AppState>, Path(id): Path<String>) ->
             path,
             public,
         } => {
-            let target = if public {
+            let mut target = if public {
                 match state
                     .presign_service
                     .sign_by_user_id(&owner, &path, &row.user_id)
@@ -67,6 +72,16 @@ async fn resolve_share(State(state): State<AppState>, Path(id): Path<String>) ->
                 };
                 format!("/api/files/{segment}")
             };
+
+            // Forward presentation without changing the share's authorization or
+            // the exact file claim in its presign. Private shares still need auth.
+            if query.download {
+                target.push_str(if public {
+                    "&download=true"
+                } else {
+                    "?download=true"
+                });
+            }
 
             // `Redirect::to` is 303 — the standard URL-shortener redirect
             // for GET. One-time hop semantics, no "the resource may

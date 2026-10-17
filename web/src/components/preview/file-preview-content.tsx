@@ -10,7 +10,7 @@ const EXT_TO_LANGUAGE: Record<string, string> = {
   c: "c", cpp: "cpp", h: "c", hpp: "cpp", cs: "csharp",
   swift: "swift", kt: "kotlin", scala: "scala", php: "php",
   sh: "bash", bash: "bash", zsh: "bash", fish: "fish",
-  html: "html", css: "css", scss: "scss", less: "less",
+  html: "html", htm: "html", css: "css", scss: "scss", less: "less",
   json: "json", yaml: "yaml", yml: "yaml", toml: "toml", xml: "xml",
   sql: "sql", graphql: "graphql", gql: "graphql",
   md: "markdown", mdx: "mdx", tex: "latex",
@@ -29,7 +29,7 @@ export function languageFromFilename(filename: string): string | null {
 export function canPreviewFile(contentType: string, filename: string): boolean {
   if (contentType.startsWith("text/")) return true;
   if (contentType === "application/json") return true;
-  if (contentType === "application/xml") return true;
+  if (contentType === "application/xml" || contentType === "application/xhtml+xml") return true;
   if (languageFromFilename(filename)) return true;
   return false;
 }
@@ -45,6 +45,21 @@ export function FilePreviewContent({
   contentType: string;
 }) {
   const lang = languageFromFilename(filename);
+  const mime = contentType.split(";")[0].trim().toLowerCase();
+  if (mime === "text/html" || mime === "application/xhtml+xml" || /\.html?$/i.test(filename)) {
+    // Never add allow-same-origin: fetched HTML (including blobs) is untrusted.
+    // The opaque origin permits scripts/CDN assets, but denies app DOM/storage.
+    // Relative private assets and persistent storage are intentionally unsupported.
+    return (
+      <iframe
+        title={filename}
+        srcDoc={content}
+        sandbox="allow-scripts"
+        referrerPolicy="no-referrer"
+        className="w-full min-h-[60vh] border-0 bg-white"
+      />
+    );
+  }
   const isMarkdown =
     contentType === "text/markdown" ||
     filename.endsWith(".md") ||

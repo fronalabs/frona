@@ -251,6 +251,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 HeaderName::from_static("content-type"),
                 HeaderName::from_static("authorization"),
             ])
+            .expose_headers([HeaderName::from_static("content-disposition")])
             .allow_credentials(true)
     });
 

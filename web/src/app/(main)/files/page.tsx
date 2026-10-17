@@ -1,5 +1,7 @@
 "use client";
 
+import { downloadFile } from "@/lib/file-transfer";
+
 import { useState, useEffect, useCallback, useRef } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
@@ -528,18 +530,7 @@ export default function FilesPage() {
         if (!info) return;
         try {
           const url = await presignFile(info.owner, info.path);
-          const res = await fetch(url);
-          if (!res.ok) throw new Error(`Download failed: ${res.statusText}`);
-          const blob = await res.blob();
-          const blobUrl = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = blobUrl;
-          a.download = ev.id.split("/").pop() || "download";
-          a.style.display = "none";
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(blobUrl);
+          await downloadFile(url, ev.id.split("/").pop() || "download");
         } catch (error) {
           setOperationError(error instanceof Error ? error.message : "Download failed");
         }

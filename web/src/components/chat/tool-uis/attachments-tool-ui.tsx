@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { makeAssistantToolUI, useAuiState } from "@assistant-ui/react";
 import { ArrowDownTrayIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { FilePreviewContent, canPreviewFile, languageFromFilename } from "@/components/preview/file-preview-content";
+import { FileDownloadButton } from "@/components/preview/file-download-button";
+import { fetchFile } from "@/lib/file-transfer";
 import type { Attachment } from "@/lib/types";
 
 function FilePreviewModal({ attachment, onClose }: { attachment: Attachment; onClose: () => void }) {
@@ -12,13 +14,13 @@ function FilePreviewModal({ attachment, onClose }: { attachment: Attachment; onC
   const isMarkdown = attachment.content_type === "text/markdown" || attachment.filename.endsWith(".md") || attachment.filename.endsWith(".mdx");
   const isCode = !isMarkdown && !!languageFromFilename(attachment.filename);
 
-  useState(() => {
+  useEffect(() => {
     if (!attachment.url) return;
-    fetch(attachment.url)
-      .then((r) => r.text())
+    fetchFile(attachment.url)
+      .then((r) => { if (!r.ok) throw new Error("Failed to load file"); return r.text(); })
       .then((text) => { setContent(text); setLoading(false); })
       .catch(() => { setContent("Failed to load file."); setLoading(false); });
-  });
+  }, [attachment.url]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
@@ -29,14 +31,14 @@ function FilePreviewModal({ attachment, onClose }: { attachment: Attachment; onC
         <div className="flex items-center justify-between px-4 py-3 border-b border-border">
           <span className="text-sm font-medium text-text-primary truncate">{attachment.filename}</span>
           <div className="flex items-center gap-2">
-            <a
-              href={attachment.url}
-              download={attachment.filename}
+            <FileDownloadButton
+              url={attachment.url!}
+              filename={attachment.filename}
               className="flex items-center gap-1.5 rounded-md bg-surface-tertiary px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-secondary transition-colors"
             >
               <ArrowDownTrayIcon className="h-3.5 w-3.5" />
               Download
-            </a>
+            </FileDownloadButton>
             <button onClick={onClose} className="text-text-tertiary hover:text-text-primary transition-colors">
               <XMarkIcon className="h-5 w-5" />
             </button>
@@ -89,14 +91,14 @@ function AttachmentItem({ attachment }: { attachment: Attachment }) {
   }
 
   return (
-    <a
-      href={url}
-      download={attachment.filename}
+    <FileDownloadButton
+      url={url}
+      filename={attachment.filename}
       className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-tertiary px-3 py-2 text-xs text-text-secondary cursor-pointer hover:bg-surface-secondary transition-colors"
     >
       <span className="truncate max-w-[200px]">{attachment.filename}</span>
       <ArrowDownTrayIcon className="h-3.5 w-3.5 text-text-tertiary" />
-    </a>
+    </FileDownloadButton>
   );
 }
 

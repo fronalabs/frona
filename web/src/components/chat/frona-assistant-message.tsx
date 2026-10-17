@@ -9,9 +9,9 @@ import { useNavigation } from "@/lib/navigation-context";
 import { useRetryInfo } from "@/lib/retry-context";
 import { formatFullTimestamp, formatTime, useTimezone } from "@/lib/format-time";
 import { TimeMarkers } from "./time-markers";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { CodeBlock } from "@/components/ui/code-block";
+import { FilePreviewContent, canPreviewFile } from "@/components/preview/file-preview-content";
+import { FileDownloadButton } from "@/components/preview/file-download-button";
+import { fetchFile } from "@/lib/file-transfer";
 import { agentDisplayName } from "@/lib/types";
 import type { Attachment } from "@/lib/types";
 import { isMessageError } from "@/lib/message-error";
@@ -203,18 +203,14 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function isPreviewable(contentType: string) {
-  return contentType.startsWith("text/") || contentType === "application/json";
-}
-
 function FilePreviewModal({ attachment, onClose }: { attachment: Attachment; onClose: () => void }) {
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!attachment.url) return;
-    fetch(attachment.url)
-      .then((r) => r.text())
+    fetchFile(attachment.url)
+      .then((r) => { if (!r.ok) throw new Error("Failed to load file"); return r.text(); })
       .then((text) => { setContent(text); setLoading(false); })
       .catch(() => { setContent("Failed to load file."); setLoading(false); });
   }, [attachment.url]);
@@ -228,14 +224,14 @@ function FilePreviewModal({ attachment, onClose }: { attachment: Attachment; onC
         <div className="flex items-center justify-between px-4 py-3 border-b border-border">
           <span className="text-sm font-medium text-text-primary truncate">{attachment.filename}</span>
           <div className="flex items-center gap-2">
-            <a
-              href={attachment.url}
-              download={attachment.filename}
+            <FileDownloadButton
+              url={attachment.url!}
+              filename={attachment.filename}
               className="flex items-center gap-1.5 rounded-md bg-surface-tertiary px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-surface-secondary transition-colors"
             >
               <ArrowDownTrayIcon className="h-3.5 w-3.5" />
               Download
-            </a>
+            </FileDownloadButton>
             <button onClick={onClose} className="text-text-tertiary hover:text-text-primary transition-colors">
               <XMarkIcon className="h-5 w-5" />
             </button>
@@ -244,24 +240,8 @@ function FilePreviewModal({ attachment, onClose }: { attachment: Attachment; onC
         <div className="flex-1 overflow-auto p-4">
           {loading ? (
             <p className="text-sm text-text-tertiary">Loading...</p>
-          ) : attachment.content_type === "text/markdown" ? (
-            <div className="prose prose-sm max-w-none text-text-primary prose-headings:text-text-primary prose-strong:text-text-primary prose-a:text-accent prose-code:text-text-primary prose-code:before:content-none prose-code:after:content-none prose-blockquote:text-text-secondary prose-blockquote:border-border">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                  code({ className, children, ...props }) {
-                    const match = /language-(\w+)/.exec(className || "");
-                    const code = String(children).replace(/\n$/, "");
-                    if (match) return <CodeBlock code={code} language={match[1]} />;
-                    return <code className={className} {...props}>{children}</code>;
-                  },
-                }}
-              >
-                {content ?? ""}
-              </ReactMarkdown>
-            </div>
           ) : (
-            <pre className="whitespace-pre-wrap text-sm text-text-primary font-mono">{content}</pre>
+            <FilePreviewContent content={content ?? ""} filename={attachment.filename} contentType={attachment.content_type} />
           )}
         </div>
       </div>
@@ -272,7 +252,7 @@ function FilePreviewModal({ attachment, onClose }: { attachment: Attachment; onC
 function AttachmentItem({ attachment }: { attachment: Attachment }) {
   const url = attachment.url;
   const isImage = attachment.content_type.startsWith("image/");
-  const canPreview = isPreviewable(attachment.content_type);
+  const canPreview = canPreviewFile(attachment.content_type, attachment.filename);
   const [showPreview, setShowPreview] = useState(false);
 
   if (!url) return null;
@@ -291,17 +271,20 @@ function AttachmentItem({ attachment }: { attachment: Attachment }) {
 
   return (
     <>
-      <button
-        onClick={canPreview ? () => setShowPreview(true) : undefined}
-        className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-tertiary px-3 py-2 text-xs text-text-secondary cursor-pointer hover:bg-surface-secondary transition-colors"
-      >
-        <span className="truncate max-w-[200px]">{attachment.filename}</span>
-        {!canPreview && (
-          <a href={url} download={attachment.filename} onClick={(e) => e.stopPropagation()}>
-            <ArrowDownTrayIcon className="h-3.5 w-3.5 text-text-tertiary hover:text-text-primary" />
-          </a>
-        )}
-      </button>
+      {canPreview ? (
+        <button
+          onClick={() => setShowPreview(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-tertiary px-3 py-2 text-xs text-text-secondary cursor-pointer hover:bg-surface-secondary transition-colors"
+        >
+          <span className="truncate max-w-[200px]">{attachment.filename}</span>
+        </button>
+      ) : (
+        <FileDownloadButton url={url} filename={attachment.filename}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-tertiary px-3 py-2 text-xs text-text-secondary cursor-pointer hover:bg-surface-secondary transition-colors">
+          <span className="truncate max-w-[200px]">{attachment.filename}</span>
+          <ArrowDownTrayIcon className="h-3.5 w-3.5 text-text-tertiary hover:text-text-primary" />
+        </FileDownloadButton>
+      )}
       {showPreview && <FilePreviewModal attachment={attachment} onClose={() => setShowPreview(false)} />}
     </>
   );

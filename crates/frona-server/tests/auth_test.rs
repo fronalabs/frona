@@ -5,10 +5,11 @@ use frona::auth::AuthService;
 use frona::auth::User;
 use frona::auth::UserService;
 use frona::auth::jwt::JwtService;
-use frona::auth::token::models::CreatePatRequest;
+use frona::auth::token::models::{ApiToken, CreatePatRequest};
 use frona::auth::token::repository::TokenRepository;
 use frona::auth::token::service::TokenService;
 use frona::core::config::CacheConfig;
+use frona::core::error::AppError;
 use frona::core::repository::Repository;
 use frona::credential::keypair::service::KeyPairService;
 use frona::db::init as db;
@@ -178,6 +179,16 @@ async fn test_token_refresh_rotation() {
 
     let old_refresh_result = token_svc.validate(&keypair_svc, &refresh_jwt).await;
     assert!(old_refresh_result.is_err());
+    assert!(token_svc.refresh(&keypair_svc, &refresh_jwt).await.is_err());
+    assert_eq!(
+        token_svc
+            .repo()
+            .find_by_user_id(&user.id)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
 
     let new_refresh_claims = token_svc
         .validate(&keypair_svc, &new_refresh)
@@ -582,3 +593,461 @@ async fn test_refresh_cookie_round_trip() {
 }
 
 mod helpers;
+
+// Keep the real database implementation and gate only entry to consumption, so
+// both service instances have validated and read the same live pair before racing.
+struct GatedTokenRepo {
+    inner: SurrealRepo<ApiToken>,
+    gate: Arc<tokio::sync::Barrier>,
+}
+
+#[async_trait::async_trait]
+impl Repository<ApiToken> for GatedTokenRepo {
+    async fn create(&self, token: &ApiToken) -> Result<ApiToken, AppError> {
+        self.inner.create(token).await
+    }
+    async fn find_by_id(&self, id: &str) -> Result<Option<ApiToken>, AppError> {
+        self.inner.find_by_id(id).await
+    }
+    async fn update(&self, token: &ApiToken) -> Result<ApiToken, AppError> {
+        self.inner.update(token).await
+    }
+    async fn delete(&self, id: &str) -> Result<(), AppError> {
+        self.inner.delete(id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl TokenRepository for GatedTokenRepo {
+    async fn find_by_user_id(&self, id: &str) -> Result<Vec<ApiToken>, AppError> {
+        self.inner.find_by_user_id(id).await
+    }
+    async fn find_active_by_id(&self, id: &str) -> Result<Option<ApiToken>, AppError> {
+        self.inner.find_active_by_id(id).await
+    }
+    async fn find_by_refresh_pair(&self, id: &str) -> Result<Vec<ApiToken>, AppError> {
+        self.inner.find_by_refresh_pair(id).await
+    }
+    async fn update_last_used(&self, id: &str) -> Result<(), AppError> {
+        self.inner.update_last_used(id).await
+    }
+    async fn delete_expired(&self) -> Result<u64, AppError> {
+        self.inner.delete_expired().await
+    }
+    async fn consume_refresh_pair(&self, token_id: &str, pair_id: &str) -> Result<bool, AppError> {
+        self.gate.wait().await;
+        self.inner.consume_refresh_pair(token_id, pair_id).await
+    }
+    async fn delete_by_refresh_pair(&self, id: &str) -> Result<(), AppError> {
+        self.inner.delete_by_refresh_pair(id).await
+    }
+    async fn delete_by_user_id(&self, id: &str) -> Result<(), AppError> {
+        self.inner.delete_by_user_id(id).await
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refresh_has_one_winner_across_independent_services_on_rocksdb() {
+    let directory = tempfile::tempdir().unwrap();
+    let db = Surreal::new::<surrealdb::engine::local::RocksDb>(directory.path().join("db"))
+        .await
+        .unwrap();
+    db::setup_schema(&db).await.unwrap();
+    let user = test_user();
+    SurrealRepo::new(db.clone()).create(&user).await.unwrap();
+    let (keys, service) = setup_services(&db);
+
+    // Each instance has its own service, repository, and caches. Only persistent
+    // storage and a test barrier are shared; production has no process-local lock.
+    let gate = Arc::new(tokio::sync::Barrier::new(2));
+    let make_contender = || {
+        let (keys, _) = setup_services(&db);
+        let service = TokenService::new(
+            Arc::new(GatedTokenRepo {
+                inner: SurrealRepo::new(db.clone()),
+                gate: gate.clone(),
+            }),
+            JwtService::new(),
+            UserService::new(SurrealRepo::new(db.clone()), &CacheConfig::default()),
+            900,
+            604800,
+        );
+        (keys, service)
+    };
+    let (keys_a, contender_a) = make_contender();
+    let (keys_b, contender_b) = make_contender();
+
+    for _ in 0..12 {
+        let (old_access, old_refresh) = service.create_session_pair(&keys, &user).await.unwrap();
+        let (a, b) = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            tokio::join!(
+                contender_a.refresh(&keys_a, &old_refresh),
+                contender_b.refresh(&keys_b, &old_refresh)
+            )
+        })
+        .await
+        .expect("both contenders must reach consumption");
+        assert_eq!(
+            usize::from(a.is_ok()) + usize::from(b.is_ok()),
+            1,
+            "a={a:?}, b={b:?}"
+        );
+        let (access, refresh, _) = a.or(b).unwrap();
+        assert!(service.validate(&keys, &old_access).await.is_err());
+        assert!(service.refresh(&keys, &old_refresh).await.is_err());
+        service.validate(&keys, &access).await.unwrap();
+        service.validate(&keys, &refresh).await.unwrap();
+        let rows = service.repo().find_by_user_id(&user.id).await.unwrap();
+        assert_eq!(rows.len(), 2, "only the winning replacement pair may exist");
+        service
+            .revoke_session(rows[0].refresh_pair_id.as_ref().unwrap())
+            .await
+            .unwrap();
+    }
+}
+
+// Upgrade sentinel for the RocksDB primitive used by consume_refresh_pair.
+// Keep these two DELETE statements and typed bindings aligned with that method.
+// The service race above checks its caller; this test forces both database
+// transactions to delete the same row provisionally before either can commit.
+#[tokio::test]
+async fn refresh_consumption_conflicts_at_commit_on_rocksdb() {
+    use frona::auth::token::models::TokenType;
+    use surrealdb::types::{RecordId, Value};
+
+    let directory = tempfile::tempdir().unwrap();
+    let db = Surreal::new::<surrealdb::engine::local::RocksDb>(directory.path().join("db"))
+        .await
+        .unwrap();
+    db::setup_schema(&db).await.unwrap();
+    db.query("DEFINE TABLE refresh_commit_marker SCHEMALESS")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let user = test_user();
+    SurrealRepo::new(db.clone()).create(&user).await.unwrap();
+    let (keys, service) = setup_services(&db);
+
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        for reverse in [false, true] {
+            service.create_session_pair(&keys, &user).await.unwrap();
+            let old_pair = service.repo().find_by_user_id(&user.id).await.unwrap();
+            assert_eq!(old_pair.len(), 2);
+            let refresh = old_pair
+                .iter()
+                .find(|token| token.token_type == TokenType::Refresh)
+                .unwrap();
+            let refresh_id = RecordId::new("api_token", refresh.id.clone());
+            let pair_id = refresh.refresh_pair_id.clone().unwrap();
+            for contender in ["a", "b"] {
+                db.query("CREATE $marker SET contender = $contender, reverse = $reverse, committed = false")
+                    .bind(("marker", RecordId::new("refresh_commit_marker", format!("{reverse}-{contender}"))))
+                    .bind(("contender", contender.to_owned()))
+                    .bind(("reverse", reverse))
+                    .await.unwrap().check().unwrap();
+            }
+            let a = db.clone().begin().await.unwrap();
+            let b = db.clone().begin().await.unwrap();
+
+            for (transaction, contender) in [(&a, "a"), (&b, "b")] {
+                let mut response = transaction
+                    .query(
+                        "DELETE api_token WHERE id = $id AND refresh_pair_id = $pair_id
+                     AND token_type = $refresh_type AND expires_at > $now
+                     RETURN BEFORE",
+                    )
+                    .bind(("id", refresh_id.clone()))
+                    .bind(("pair_id", pair_id.clone()))
+                    .bind(("refresh_type", TokenType::Refresh))
+                    .bind(("now", Utc::now()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                let deleted: Vec<Value> = response.take(0).unwrap();
+                assert_eq!(
+                    deleted.len(),
+                    1,
+                    "both transactions must provisionally consume the token"
+                );
+                let Value::Object(deleted) = &deleted[0] else {
+                    panic!("RETURN BEFORE must return the deleted record");
+                };
+                assert_eq!(
+                    deleted.get("id"),
+                    Some(&Value::RecordId(refresh_id.clone()))
+                );
+                transaction
+                    .query("DELETE api_token WHERE refresh_pair_id = $pair_id")
+                    .bind(("pair_id", pair_id.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+
+                let mut response = transaction
+                    .query(
+                        "SELECT VALUE meta::id(id) FROM api_token WHERE refresh_pair_id = $pair_id",
+                    )
+                    .bind(("pair_id", pair_id.clone()))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+                let remaining: Vec<String> = response.take(0).unwrap();
+                assert!(
+                    remaining.is_empty(),
+                    "each transaction must have provisionally deleted the whole pair"
+                );
+                // Updating distinct existing, unindexed records cannot itself
+                // cause the conflict. The loser's marker update must roll back.
+                transaction.query("UPDATE $marker SET committed = true")
+                    .bind(("marker", RecordId::new("refresh_commit_marker", format!("{reverse}-{contender}"))))
+                    .await.unwrap().check().unwrap();
+            }
+
+            let visible = service.repo().find_by_refresh_pair(&pair_id).await.unwrap();
+            assert_eq!(
+                visible.len(),
+                2,
+                "neither provisional deletion may be visible outside its transaction"
+            );
+            assert!(
+                old_pair
+                    .iter()
+                    .all(|old| visible.iter().any(|row| row.id == old.id))
+            );
+
+            let (winner, loser, expected_marker) = if reverse { (b, a, "b") } else { (a, b, "a") };
+            winner
+                .commit()
+                .await
+                .expect("the first commit must succeed");
+            let conflict = loser
+                .commit()
+                .await
+                .expect_err("the second commit must reject the stale deletion");
+            // The 3.2.4 local SDK's Commit path wraps the engine error with
+            // std_error_to_types_error, dropping QueryError::TransactionConflict.
+            // Assert its conflict message rather than accepting any commit error.
+            assert!(conflict.message().starts_with("Transaction conflict:"), "{conflict:?}");
+            assert!(
+                service
+                    .repo()
+                    .find_by_refresh_pair(&pair_id)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            let mut response = db
+                .query("SELECT VALUE contender FROM refresh_commit_marker WHERE reverse = $reverse AND committed = true")
+                .bind(("reverse", reverse))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+            let markers: Vec<String> = response.take(0).unwrap();
+            assert_eq!(
+                markers,
+                [expected_marker],
+                "only the winner's other writes may be committed"
+            );
+        }
+    })
+    .await
+    .expect("overlapping deletions and commits must complete without blocking");
+}
+
+#[tokio::test]
+async fn refresh_requires_a_live_pair_even_after_validation() {
+    let db = test_db().await;
+    let user = test_user();
+    SurrealRepo::new(db.clone()).create(&user).await.unwrap();
+    let (keys, service) = setup_services(&db);
+    let (_, refresh) = service.create_session_pair(&keys, &user).await.unwrap();
+    let claims = service.validate(&keys, &refresh).await.unwrap();
+    let mut token = service
+        .repo()
+        .find_active_by_id(&claims.token_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let pair_id = token.refresh_pair_id.take().unwrap();
+    service.repo().update(&token).await.unwrap();
+    assert!(service.refresh(&keys, &refresh).await.is_err());
+    assert_eq!(
+        service
+            .repo()
+            .find_by_user_id(&user.id)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+
+    assert!(
+        !service
+            .repo()
+            .consume_refresh_pair(&claims.token_id, &pair_id)
+            .await
+            .unwrap()
+    );
+    service.revoke_session(&pair_id).await.unwrap();
+    // The refresh row now has no pair, so revoke the row separately.
+    service.repo().delete(&claims.token_id).await.unwrap();
+    service
+        .repo()
+        .update_last_used(&claims.token_id)
+        .await
+        .unwrap();
+    assert!(
+        service
+            .repo()
+            .find_by_id(&claims.token_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "a late usage update must not resurrect a consumed row"
+    );
+}
+
+#[tokio::test]
+async fn consumption_rejects_missing_expired_and_non_refresh_rows() {
+    let db = test_db().await;
+    let user = test_user();
+    SurrealRepo::new(db.clone()).create(&user).await.unwrap();
+    let (keys, service) = setup_services(&db);
+    let (access, refresh) = service.create_session_pair(&keys, &user).await.unwrap();
+    let access = service.validate(&keys, &access).await.unwrap();
+    let refresh = service.validate(&keys, &refresh).await.unwrap();
+    let mut row = service
+        .repo()
+        .find_active_by_id(&refresh.token_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let pair = row.refresh_pair_id.clone().unwrap();
+    assert!(
+        !service
+            .repo()
+            .consume_refresh_pair("missing", &pair)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !service
+            .repo()
+            .consume_refresh_pair(&access.token_id, &pair)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !service
+            .repo()
+            .consume_refresh_pair(&refresh.token_id, "other-pair")
+            .await
+            .unwrap()
+    );
+    row.expires_at = Utc::now() - Duration::seconds(1);
+    service.repo().update(&row).await.unwrap();
+    assert!(
+        !service
+            .repo()
+            .consume_refresh_pair(&refresh.token_id, &pair)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        service
+            .repo()
+            .find_by_user_id(&user.id)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    service.revoke_session(&pair).await.unwrap();
+    service.revoke_session(&pair).await.unwrap();
+    assert!(
+        !service
+            .repo()
+            .consume_refresh_pair(&refresh.token_id, &pair)
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn failed_pair_deletion_rolls_back_and_never_mints_or_hides_revocation_errors() {
+    let db = test_db().await;
+    let user = test_user();
+    SurrealRepo::new(db.clone()).create(&user).await.unwrap();
+    let (keys, service) = setup_services(&db);
+    let (access, refresh) = service.create_session_pair(&keys, &user).await.unwrap();
+    let claims = service.validate(&keys, &refresh).await.unwrap();
+    let pair = service
+        .repo()
+        .find_active_by_id(&claims.token_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .refresh_pair_id
+        .unwrap();
+    // Fail the second deletion, after the refresh row was provisionally consumed.
+    db.query("DEFINE EVENT reject_delete ON api_token WHEN $event = 'DELETE' AND $before.name = 'session' THEN { THROW 'injected delete failure'; }")
+        .await.unwrap().check().unwrap();
+    assert!(matches!(
+        service.refresh(&keys, &refresh).await,
+        Err(AppError::Database(_))
+    ));
+    assert!(matches!(
+        service.revoke_session(&pair).await,
+        Err(AppError::Database(_))
+    ));
+    assert!(matches!(
+        service.repo().delete_by_user_id(&user.id).await,
+        Err(AppError::Database(_))
+    ));
+    assert_eq!(
+        service
+            .repo()
+            .find_by_user_id(&user.id)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    service.validate(&keys, &access).await.unwrap();
+    service.validate(&keys, &refresh).await.unwrap();
+    db.query("REMOVE EVENT reject_delete ON api_token")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    service.refresh(&keys, &refresh).await.unwrap();
+}
+
+#[tokio::test]
+async fn malformed_stored_refresh_token_fails_closed() {
+    let db = test_db().await;
+    let user = test_user();
+    SurrealRepo::new(db.clone()).create(&user).await.unwrap();
+    let (keys, service) = setup_services(&db);
+    let (_, refresh) = service.create_session_pair(&keys, &user).await.unwrap();
+    db.query("UPDATE api_token SET scopes = 42 WHERE name = 'refresh'")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert!(matches!(
+        service.refresh(&keys, &refresh).await,
+        Err(AppError::Database(_))
+    ));
+    let mut result = db
+        .query("SELECT VALUE token_type FROM api_token")
+        .await
+        .unwrap();
+    let types: Vec<frona::auth::token::models::TokenType> = result.take(0).unwrap();
+    assert_eq!(types.len(), 2);
+}

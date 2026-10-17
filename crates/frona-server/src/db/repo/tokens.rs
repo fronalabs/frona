@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::auth::token::models::ApiToken;
+use crate::auth::token::models::{ApiToken, TokenType};
 use crate::auth::token::repository::TokenRepository;
 use crate::core::error::AppError;
 
@@ -89,11 +89,70 @@ impl TokenRepository for SurrealRepo<ApiToken> {
         Ok(0)
     }
 
+    async fn consume_refresh_pair(&self, token_id: &str, pair_id: &str) -> Result<bool, AppError> {
+        let tx = self
+            .db()
+            .clone()
+            .begin()
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let consumed = async {
+            let mut result = tx
+                .query(
+                    "DELETE api_token WHERE id = $id AND refresh_pair_id = $pair_id
+                     AND token_type = $refresh_type AND expires_at > $now
+                     RETURN BEFORE",
+                )
+                .bind(("id", surrealdb::types::RecordId::new("api_token", token_id)))
+                .bind(("pair_id", pair_id.to_owned()))
+                .bind(("refresh_type", TokenType::Refresh))
+                .bind(("now", Utc::now()))
+                .await?
+                .check()?;
+            let deleted: Vec<surrealdb::types::Value> = result.take(0)?;
+            if deleted.is_empty() {
+                return Ok(false);
+            }
+
+            tx.query("DELETE api_token WHERE refresh_pair_id = $pair_id")
+                .bind(("pair_id", pair_id.to_owned()))
+                .await?
+                .check()?;
+            Ok::<_, surrealdb::Error>(true)
+        }
+        .await;
+
+        match consumed {
+            Ok(true) => {
+                // SurrealDB 3.2.4's RocksDB engine tracks the deleted key for
+                // optimistic conflict detection. Both contenders can see a row,
+                // but only one can commit its deletion. Never report success
+                // from RETURN alone: the commit may still fail with a conflict.
+                tx.commit()
+                    .await
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                Ok(true)
+            }
+            Ok(false) => {
+                tx.cancel()
+                    .await
+                    .map_err(|e| AppError::Database(e.to_string()))?;
+                Ok(false)
+            }
+            Err(error) => {
+                let _ = tx.cancel().await;
+                Err(AppError::Database(error.to_string()))
+            }
+        }
+    }
+
     async fn delete_by_refresh_pair(&self, pair_id: &str) -> Result<(), AppError> {
         self.db()
             .query("DELETE FROM api_token WHERE refresh_pair_id = $pair_id")
             .bind(("pair_id", pair_id.to_string()))
             .await
+            .and_then(|response| response.check())
             .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
     }
@@ -103,6 +162,7 @@ impl TokenRepository for SurrealRepo<ApiToken> {
             .query("DELETE FROM api_token WHERE user_id = $uid")
             .bind(("uid", user_id.to_string()))
             .await
+            .and_then(|response| response.check())
             .map_err(|e| AppError::Database(e.to_string()))?;
         Ok(())
     }

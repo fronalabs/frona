@@ -298,6 +298,10 @@ async fn refresh(
             code: AuthErrorCode::TokenInvalid,
         })?;
 
+    // A competing tab may already have rotated this cookie. On failure, leave
+    // cookies alone so a delayed response cannot erase the winning replacement.
+    // The losing tab can retry with the shared cookie; cross-tab retry coordination
+    // is a separate client concern.
     let (access_jwt, new_refresh_jwt, _claims) = state
         .token_service
         .refresh(&state.keypair_service, refresh_token)

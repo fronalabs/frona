@@ -1003,3 +1003,155 @@ async fn refresh_refuses_deactivated_user() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn competing_refresh_responses_preserve_the_winning_cookie() {
+    let (state, _tmp) = test_app_state().await;
+    let (_, user_id) =
+        register_user(&state, "refresh-race", "race@example.com", "password123").await;
+    let user = state
+        .user_service
+        .find_by_id(&user_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let (_, refresh) = state
+        .token_service
+        .create_session_pair(&state.keypair_service, &user)
+        .await
+        .unwrap();
+    let cookie = format!("refresh_token={refresh}");
+    let request = |cookie: &str| {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/auth/refresh")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap();
+        with_connect_info(&mut request);
+        request
+    };
+
+    let mut other = state.clone();
+    other.token_service = frona::auth::token::service::TokenService::new(
+        std::sync::Arc::new(SurrealRepo::new(state.db.clone())),
+        frona::auth::jwt::JwtService::new(),
+        state.user_service.clone(),
+        900,
+        604800,
+    );
+    let (a, b) = tokio::join!(
+        build_app(state.clone()).oneshot(request(&cookie)),
+        build_app(other).oneshot(request(&cookie)),
+    );
+    let (a, b) = (a.unwrap(), b.unwrap());
+    assert_eq!(
+        usize::from(a.status() == StatusCode::OK) + usize::from(b.status() == StatusCode::OK),
+        1
+    );
+    let (winner, loser) = if a.status() == StatusCode::OK {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    assert!(matches!(
+        loser.status(),
+        StatusCode::UNAUTHORIZED | StatusCode::INTERNAL_SERVER_ERROR
+    ));
+    assert!(
+        !loser.headers().contains_key("set-cookie"),
+        "a delayed loser must not erase the winning cookie"
+    );
+    let replacement_cookie = winner
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    assert_ne!(replacement_cookie, cookie);
+    let access = body_json(winner).await["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let replay = build_app(state.clone())
+        .oneshot(request(&cookie))
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::UNAUTHORIZED);
+    assert!(!replay.headers().contains_key("set-cookie"));
+    state
+        .token_service
+        .validate(&state.keypair_service, &access)
+        .await
+        .unwrap();
+    let retry = build_app(state)
+        .oneshot(request(&replacement_cookie))
+        .await
+        .unwrap();
+    assert_eq!(
+        retry.status(),
+        StatusCode::OK,
+        "the shared winning cookie remains usable for a later retry"
+    );
+}
+
+#[tokio::test]
+async fn refresh_and_logout_report_database_revocation_failures_without_clearing_cookie() {
+    let (state, _tmp) = test_app_state().await;
+    let (_, user_id) = register_user(
+        &state,
+        "refresh-failure",
+        "failure@example.com",
+        "password123",
+    )
+    .await;
+    let user = state
+        .user_service
+        .find_by_id(&user_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let (access, refresh) = state
+        .token_service
+        .create_session_pair(&state.keypair_service, &user)
+        .await
+        .unwrap();
+    state.db.query("DEFINE EVENT reject_delete ON api_token WHEN $event = 'DELETE' AND $before.name = 'session' THEN { THROW 'injected delete failure'; }")
+        .await.unwrap().check().unwrap();
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/api/auth/refresh")
+        .header("cookie", format!("refresh_token={refresh}"))
+        .body(Body::empty())
+        .unwrap();
+    with_connect_info(&mut request);
+    let response = build_app(state.clone()).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(!response.headers().contains_key("set-cookie"));
+
+    let response = build_app(state.clone())
+        .oneshot(auth_post_json(
+            "/api/auth/logout",
+            &access,
+            serde_json::json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(!response.headers().contains_key("set-cookie"));
+    state
+        .token_service
+        .validate(&state.keypair_service, &access)
+        .await
+        .unwrap();
+    state
+        .token_service
+        .validate(&state.keypair_service, &refresh)
+        .await
+        .unwrap();
+}

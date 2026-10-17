@@ -1,4 +1,7 @@
 use axum::http::StatusCode;
+use http_body_util::BodyExt;
+use std::io::Write;
+use std::time::Duration;
 use tower::ServiceExt;
 
 use super::*;
@@ -250,4 +253,173 @@ async fn stop_installed_server_returns_ok() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+async fn log_path(state: &AppState, server_id: &str) -> std::path::PathBuf {
+    let server = state.mcp_service.find_by_id(server_id).await.unwrap();
+    let dir = std::path::PathBuf::from(server.workspace_dir).join("logs");
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join("server.log")
+}
+
+async fn read_log_event(body: &mut axum::body::Body) -> String {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut text = String::new();
+        loop {
+            let frame = body.frame().await.unwrap().unwrap();
+            if let Some(data) = frame.data_ref() {
+                text.push_str(std::str::from_utf8(data).unwrap());
+                if text.contains("\n\n") {
+                    return text;
+                }
+            }
+        }
+    })
+    .await
+    .expect("log event should arrive promptly")
+}
+
+#[tokio::test]
+async fn logs_reject_foreign_server_before_reading_or_streaming() {
+    let (state, _tmp) = test_app_state().await;
+    let (owner_token, _) =
+        register_user(&state, "log-owner", "log-owner@example.com", "password123").await;
+    let (other_token, _) =
+        register_user(&state, "log-other", "log-other@example.com", "password123").await;
+    let server = install_via_manifest(&state, &owner_token, sample_manifest()).await;
+    let id = server["id"].as_str().unwrap();
+    let path = log_path(&state, id).await;
+    std::fs::write(&path, "private-existing-line\n").unwrap();
+
+    for suffix in ["logs", "logs/stream"] {
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            build_app(state.clone()).oneshot(auth_get(
+                &format!("/api/mcp/servers/{id}/{suffix}"),
+                &other_token,
+            )),
+        )
+        .await
+        .expect("unauthorized logs should reject promptly")
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{suffix}");
+        assert_ne!(
+            response.headers().get("content-type").unwrap(),
+            "text/event-stream"
+        );
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(file, "private-appended-line").unwrap();
+        let body = tokio::time::timeout(Duration::from_secs(5), response.into_body().collect())
+            .await
+            .expect("rejected response should finish without following logs")
+            .unwrap()
+            .to_bytes();
+        let text = std::str::from_utf8(&body).unwrap();
+        assert!(!text.contains("private-existing-line"));
+        assert!(!text.contains("private-appended-line"));
+    }
+}
+
+#[tokio::test]
+async fn logs_reject_missing_server_before_reading_or_streaming() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(
+        &state,
+        "log-missing",
+        "log-missing@example.com",
+        "password123",
+    )
+    .await;
+
+    for suffix in ["logs", "logs/stream"] {
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            build_app(state.clone()).oneshot(auth_get(
+                &format!("/api/mcp/servers/nonexistent-id/{suffix}"),
+                &token,
+            )),
+        )
+        .await
+        .expect("missing server should reject promptly")
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{suffix}");
+        tokio::time::timeout(Duration::from_secs(5), response.into_body().collect())
+            .await
+            .expect("missing server response should finish")
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn owner_can_read_logs_and_empty_log_file() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "log-read", "log-read@example.com", "password123").await;
+    let server = install_via_manifest(&state, &token, sample_manifest()).await;
+    let id = server["id"].as_str().unwrap();
+    let path = log_path(&state, id).await;
+
+    // Installed servers may not have emitted a log file yet.
+    assert!(!path.exists());
+    let response = build_app(state.clone())
+        .oneshot(auth_get(&format!("/api/mcp/servers/{id}/logs"), &token))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["logs"], "");
+
+    std::fs::write(path, "owner-log-line\n").unwrap();
+    let response = build_app(state)
+        .oneshot(auth_get(&format!("/api/mcp/servers/{id}/logs"), &token))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["logs"], "owner-log-line\n");
+}
+
+#[tokio::test]
+async fn owner_can_stream_existing_and_appended_log_lines() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, _) = register_user(
+        &state,
+        "log-stream",
+        "log-stream@example.com",
+        "password123",
+    )
+    .await;
+    let server = install_via_manifest(&state, &token, sample_manifest()).await;
+    let id = server["id"].as_str().unwrap();
+    let path = log_path(&state, id).await;
+    std::fs::write(&path, "existing-owner-line\n").unwrap();
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(5),
+        build_app(state).oneshot(auth_get(
+            &format!("/api/mcp/servers/{id}/logs/stream"),
+            &token,
+        )),
+    )
+    .await
+    .expect("owner stream should open promptly")
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "text/event-stream"
+    );
+    let mut body = response.into_body();
+    assert_eq!(
+        read_log_event(&mut body).await,
+        "data: existing-owner-line\n\n"
+    );
+
+    let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    writeln!(file, "appended-owner-line").unwrap();
+    assert_eq!(
+        read_log_event(&mut body).await,
+        "data: appended-owner-line\n\n"
+    );
 }

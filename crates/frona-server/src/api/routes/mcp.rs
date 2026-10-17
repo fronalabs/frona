@@ -242,31 +242,33 @@ fn default_limit() -> usize {
     20
 }
 
-async fn resolve_log_path(state: &AppState, server_id: &str) -> std::path::PathBuf {
-    if let Ok(server) = state.mcp_service.find_by_id(server_id).await {
-        return std::path::PathBuf::from(&server.workspace_dir)
-            .join("logs")
-            .join("server.log");
-    }
-    std::path::PathBuf::from("data").join("nonexistent-mcp-log")
+async fn resolve_log_path(
+    state: &AppState,
+    user_id: &str,
+    server_id: &str,
+) -> Result<std::path::PathBuf, AppError> {
+    let server = state.mcp_service.load_owned(user_id, server_id).await?;
+    Ok(std::path::PathBuf::from(&server.workspace_dir)
+        .join("logs")
+        .join("server.log"))
 }
 
 async fn get_logs(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let log_path = resolve_log_path(&state, &id).await;
+    let log_path = resolve_log_path(&state, &auth.user_id, &id).await?;
     let logs = crate::tool::mcp::manager::read_log_file(&log_path, 64 * 1024);
     Ok(Json(serde_json::json!({ "logs": logs })))
 }
 
 async fn stream_logs(
-    _auth: AuthUser,
+    auth: AuthUser,
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let log_path = resolve_log_path(&state, &id).await;
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let log_path = resolve_log_path(&state, &auth.user_id, &id).await?;
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Result<Event, Infallible>>();
 
@@ -321,7 +323,7 @@ async fn stream_logs(
     });
 
     let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 async fn fetch_registry_entry(

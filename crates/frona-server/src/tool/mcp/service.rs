@@ -609,7 +609,11 @@ impl McpServerService {
         Ok(())
     }
 
-    async fn load_owned(&self, user_id: &str, server_id: &str) -> Result<McpServer, AppError> {
+    pub(crate) async fn load_owned(
+        &self,
+        user_id: &str,
+        server_id: &str,
+    ) -> Result<McpServer, AppError> {
         let server = self
             .repo
             .find_by_id(server_id)

@@ -34,10 +34,10 @@ pub(crate) async fn auth_gate(
 
     let claims = match state
         .token_service
-        .validate(&state.keypair_service, refresh_token)
+        .validate_refresh(&state.keypair_service, refresh_token)
         .await
     {
-        Ok(c) if c.token_type == "refresh" => c,
+        Ok(c) => c,
         _ => {
             let login_url = build_login_redirect(&state, redirect_url);
             return Redirect::temporary(&login_url).into_response();
@@ -192,7 +192,7 @@ async fn authenticate_proxy_request(state: &AppState, headers: &HeaderMap) -> Op
         && let Some(token) = auth_header.strip_prefix("Bearer ")
         && let Ok(claims) = state
             .token_service
-            .validate(&state.keypair_service, token)
+            .validate_api(&state.keypair_service, token)
             .await
     {
         return Some(claims.sub);
@@ -202,7 +202,7 @@ async fn authenticate_proxy_request(state: &AppState, headers: &HeaderMap) -> Op
     let token = extract_app_session_from_cookie_header(cookie_header)?;
     state
         .token_service
-        .validate(&state.keypair_service, token)
+        .validate_access(&state.keypair_service, token)
         .await
         .ok()
         .map(|c| c.sub)

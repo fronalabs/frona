@@ -37,7 +37,7 @@ impl FromRequestParts<AppState> for AuthPrincipal {
         let token = extract_token(parts)?;
         let claims = state
             .token_service
-            .validate(&state.keypair_service, token)
+            .validate_api(&state.keypair_service, token)
             .await?;
 
         Ok(AuthPrincipal {
@@ -124,7 +124,7 @@ impl FromRequestParts<AppState> for AuthUser {
         let token = extract_token(parts)?;
         let claims = state
             .token_service
-            .validate(&state.keypair_service, token)
+            .validate_api(&state.keypair_service, token)
             .await?;
 
         if claims.principal.kind != PrincipalKind::User {

@@ -184,14 +184,9 @@ impl TokenService {
         keypair_svc: &KeyPairService,
         refresh_token_str: &str,
     ) -> Result<(String, String, Claims), AppError> {
-        let claims = self.validate(keypair_svc, refresh_token_str).await?;
-
-        if claims.token_type != TokenType::Refresh.as_str() {
-            return Err(AppError::Auth {
-                message: "Not a refresh token".into(),
-                code: AuthErrorCode::TokenInvalid,
-            });
-        }
+        let claims = self
+            .validate_refresh(keypair_svc, refresh_token_str)
+            .await?;
 
         let pair_id = self
             .repo
@@ -272,10 +267,47 @@ impl TokenService {
         })
     }
 
-    pub async fn validate(
+    /// Ordinary API and app bearer credentials. Principal and scope checks remain
+    /// the caller's responsibility after authentication.
+    pub async fn validate_api(
         &self,
         keypair_svc: &KeyPairService,
         token_str: &str,
+    ) -> Result<Claims, AppError> {
+        self.validate_types(
+            keypair_svc,
+            token_str,
+            &[TokenType::Access, TokenType::Pat, TokenType::Ephemeral],
+        )
+        .await
+    }
+
+    /// Refresh cookies may renew sessions or bootstrap an app session, but may
+    /// never authenticate an ordinary API request.
+    pub async fn validate_refresh(
+        &self,
+        keypair_svc: &KeyPairService,
+        token_str: &str,
+    ) -> Result<Claims, AppError> {
+        self.validate_types(keypair_svc, token_str, &[TokenType::Refresh])
+            .await
+    }
+
+    /// App session cookies and voice credentials are issued as access tokens.
+    pub async fn validate_access(
+        &self,
+        keypair_svc: &KeyPairService,
+        token_str: &str,
+    ) -> Result<Claims, AppError> {
+        self.validate_types(keypair_svc, token_str, &[TokenType::Access])
+            .await
+    }
+
+    async fn validate_types(
+        &self,
+        keypair_svc: &KeyPairService,
+        token_str: &str,
+        accepted_types: &[TokenType],
     ) -> Result<Claims, AppError> {
         let header = self.jwt.decode_unverified_header(token_str)?;
         let kid = header.kid.ok_or_else(|| AppError::Auth {
@@ -285,6 +317,18 @@ impl TokenService {
 
         let decoding_key = keypair_svc.get_verifying_key(&kid).await?;
         let claims = self.jwt.verify::<Claims>(token_str, &decoding_key)?;
+
+        // Check the signed type before the stateless shortcut or DB lookup.
+        // Unknown future token types must opt in at each consuming entry point.
+        if !accepted_types
+            .iter()
+            .any(|token_type| claims.token_type == token_type.as_str())
+        {
+            return Err(AppError::Auth {
+                message: "Token type is not accepted by this endpoint".into(),
+                code: AuthErrorCode::TokenInvalid,
+            });
+        }
 
         // Stateless tokens (Ephemeral) skip DB revocation checks — signature + exp are authoritative.
         if claims.token_type == TokenType::Ephemeral.as_str() {

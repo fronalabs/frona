@@ -20,6 +20,7 @@ mod security;
 mod spaces;
 mod system;
 mod tasks;
+mod token_types;
 mod vaults;
 
 use std::net::SocketAddr;

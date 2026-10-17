@@ -61,7 +61,7 @@ async fn session_access_token_validates_as_user_principal() {
 
     let (access, _refresh) = tokens.create_session_pair(&keypair, &user).await.unwrap();
 
-    let claims = tokens.validate(&keypair, &access).await.unwrap();
+    let claims = tokens.validate_api(&keypair, &access).await.unwrap();
     assert_eq!(claims.token_type, "access");
     assert_eq!(claims.principal.kind, PrincipalKind::User);
     assert_eq!(claims.principal.id, user.id);
@@ -85,7 +85,7 @@ async fn user_scoped_pat_defaults_to_user_principal() {
         .await
         .unwrap();
 
-    let claims = tokens.validate(&keypair, &pat.token).await.unwrap();
+    let claims = tokens.validate_api(&keypair, &pat.token).await.unwrap();
     assert_eq!(claims.token_type, "pat");
     assert_eq!(claims.principal.kind, PrincipalKind::User);
     assert_eq!(claims.principal.id, user.id);
@@ -109,7 +109,7 @@ async fn agent_bound_pat_carries_agent_principal() {
         .await
         .unwrap();
 
-    let claims = tokens.validate(&keypair, &pat.token).await.unwrap();
+    let claims = tokens.validate_api(&keypair, &pat.token).await.unwrap();
     assert_eq!(claims.principal.kind, PrincipalKind::Agent);
     assert_eq!(claims.principal.id, "agent-123");
 }
@@ -130,15 +130,18 @@ async fn ephemeral_token_validates_without_db_row_but_access_does_not() {
     .await
     .unwrap();
     let jwt = tokio::fs::read_to_string(guard.path()).await.unwrap();
-    let claims = tokens.validate(&keypair, jwt.trim()).await.unwrap();
+    let claims = tokens.validate_api(&keypair, jwt.trim()).await.unwrap();
     assert_eq!(claims.principal.kind, PrincipalKind::Agent);
 
     // Access: requires DB row. Issue an access token, delete the row, then
     // re-validate — should fail.
     let (access_jwt, _) = tokens.create_session_pair(&keypair, &user).await.unwrap();
-    let claims = tokens.validate(&keypair, &access_jwt).await.unwrap();
+    let claims = tokens.validate_api(&keypair, &access_jwt).await.unwrap();
     tokens.repo().delete(&claims.token_id).await.unwrap();
-    let err = tokens.validate(&keypair, &access_jwt).await.unwrap_err();
+    let err = tokens
+        .validate_api(&keypair, &access_jwt)
+        .await
+        .unwrap_err();
     assert!(
         format!("{err:?}").contains("revoked") || format!("{err:?}").contains("TokenInvalid"),
         "expected access token with missing DB row to fail validation, got {err:?}"

@@ -1086,7 +1086,7 @@ async fn competing_refresh_responses_preserve_the_winning_cookie() {
     assert!(!replay.headers().contains_key("set-cookie"));
     state
         .token_service
-        .validate(&state.keypair_service, &access)
+        .validate_api(&state.keypair_service, &access)
         .await
         .unwrap();
     let retry = build_app(state)
@@ -1146,12 +1146,12 @@ async fn refresh_and_logout_report_database_revocation_failures_without_clearing
     assert!(!response.headers().contains_key("set-cookie"));
     state
         .token_service
-        .validate(&state.keypair_service, &access)
+        .validate_api(&state.keypair_service, &access)
         .await
         .unwrap();
     state
         .token_service
-        .validate(&state.keypair_service, &refresh)
+        .validate_refresh(&state.keypair_service, &refresh)
         .await
         .unwrap();
 }

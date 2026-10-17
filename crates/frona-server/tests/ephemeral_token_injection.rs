@@ -76,7 +76,7 @@ async fn guard_writes_file_with_agent_principal_and_unlinks_on_drop() {
         // JWT inside decodes with the expected shape.
         let jwt = tokio::fs::read_to_string(guard.path()).await.unwrap();
         let claims = tokens
-            .validate(&keypair, jwt.trim())
+            .validate_api(&keypair, jwt.trim())
             .await
             .expect("ephemeral token should validate without any DB row");
         assert_eq!(claims.token_type, "ephemeral");

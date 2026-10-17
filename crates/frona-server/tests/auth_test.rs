@@ -140,12 +140,15 @@ async fn test_session_pair_creation() {
         .await
         .unwrap();
 
-    let access_claims = token_svc.validate(&keypair_svc, &access_jwt).await.unwrap();
+    let access_claims = token_svc
+        .validate_api(&keypair_svc, &access_jwt)
+        .await
+        .unwrap();
     assert_eq!(access_claims.sub, user.id);
     assert_eq!(access_claims.token_type, "access");
 
     let refresh_claims = token_svc
-        .validate(&keypair_svc, &refresh_jwt)
+        .validate_refresh(&keypair_svc, &refresh_jwt)
         .await
         .unwrap();
     assert_eq!(refresh_claims.sub, user.id);
@@ -171,13 +174,16 @@ async fn test_token_refresh_rotation() {
 
     assert_eq!(claims.sub, user.id);
 
-    let new_access_claims = token_svc.validate(&keypair_svc, &new_access).await.unwrap();
+    let new_access_claims = token_svc
+        .validate_api(&keypair_svc, &new_access)
+        .await
+        .unwrap();
     assert_eq!(new_access_claims.sub, user.id);
 
-    let old_result = token_svc.validate(&keypair_svc, &access_jwt).await;
+    let old_result = token_svc.validate_api(&keypair_svc, &access_jwt).await;
     assert!(old_result.is_err());
 
-    let old_refresh_result = token_svc.validate(&keypair_svc, &refresh_jwt).await;
+    let old_refresh_result = token_svc.validate_refresh(&keypair_svc, &refresh_jwt).await;
     assert!(old_refresh_result.is_err());
     assert!(token_svc.refresh(&keypair_svc, &refresh_jwt).await.is_err());
     assert_eq!(
@@ -191,7 +197,7 @@ async fn test_token_refresh_rotation() {
     );
 
     let new_refresh_claims = token_svc
-        .validate(&keypair_svc, &new_refresh)
+        .validate_refresh(&keypair_svc, &new_refresh)
         .await
         .unwrap();
     assert_eq!(new_refresh_claims.token_type, "refresh");
@@ -211,7 +217,10 @@ async fn test_token_revocation() {
         .await
         .unwrap();
 
-    let claims = token_svc.validate(&keypair_svc, &access_jwt).await.unwrap();
+    let claims = token_svc
+        .validate_api(&keypair_svc, &access_jwt)
+        .await
+        .unwrap();
 
     let token_record = token_svc
         .repo()
@@ -222,7 +231,7 @@ async fn test_token_revocation() {
     let pair_id = token_record.refresh_pair_id.unwrap();
     token_svc.revoke_session(&pair_id).await.unwrap();
 
-    let result = token_svc.validate(&keypair_svc, &access_jwt).await;
+    let result = token_svc.validate_api(&keypair_svc, &access_jwt).await;
     assert!(result.is_err());
 }
 
@@ -252,7 +261,10 @@ async fn test_pat_creation_and_validation() {
     assert_eq!(pat.name, "My API Key");
     assert!(!pat.token.is_empty());
 
-    let claims = token_svc.validate(&keypair_svc, &pat.token).await.unwrap();
+    let claims = token_svc
+        .validate_api(&keypair_svc, &pat.token)
+        .await
+        .unwrap();
     assert_eq!(claims.sub, user.id);
     assert_eq!(claims.token_type, "pat");
     assert_eq!(claims.scopes, Some(vec!["read".to_string()]));
@@ -265,7 +277,7 @@ async fn test_pat_creation_and_validation() {
     let pats = token_svc.list_pats(&user.id).await.unwrap();
     assert!(pats.is_empty());
 
-    let result = token_svc.validate(&keypair_svc, &pat.token).await;
+    let result = token_svc.validate_api(&keypair_svc, &pat.token).await;
     assert!(result.is_err());
 }
 
@@ -347,7 +359,7 @@ async fn test_register_and_login_flow() {
     );
 
     let claims = token_svc
-        .validate(&keypair_svc, &register_resp.token)
+        .validate_api(&keypair_svc, &register_resp.token)
         .await
         .unwrap();
     assert_eq!(claims.email, "new@example.com");
@@ -463,7 +475,7 @@ async fn test_refresh_survives_service_restart() {
         .unwrap();
 
     let refresh_claims = token_svc
-        .validate(&keypair_svc, &refresh_jwt)
+        .validate_refresh(&keypair_svc, &refresh_jwt)
         .await
         .unwrap();
 
@@ -492,14 +504,14 @@ async fn test_refresh_survives_service_restart() {
     assert_eq!(claims.sub, user.id);
 
     let access_claims = token_svc2
-        .validate(&keypair_svc2, &new_access)
+        .validate_api(&keypair_svc2, &new_access)
         .await
         .unwrap();
     assert_eq!(access_claims.sub, user.id);
     assert_eq!(access_claims.token_type, "access");
 
     let refresh_claims = token_svc2
-        .validate(&keypair_svc2, &new_refresh)
+        .validate_refresh(&keypair_svc2, &new_refresh)
         .await
         .unwrap();
     assert_eq!(refresh_claims.sub, user.id);
@@ -580,13 +592,13 @@ async fn test_refresh_cookie_round_trip() {
     assert_eq!(claims.token_type, "refresh");
 
     let access_claims = token_svc2
-        .validate(&keypair_svc2, &new_access)
+        .validate_api(&keypair_svc2, &new_access)
         .await
         .unwrap();
     assert_eq!(access_claims.token_type, "access");
 
     let refresh_claims = token_svc2
-        .validate(&keypair_svc2, &new_refresh)
+        .validate_refresh(&keypair_svc2, &new_refresh)
         .await
         .unwrap();
     assert_eq!(refresh_claims.token_type, "refresh");
@@ -693,10 +705,10 @@ async fn refresh_has_one_winner_across_independent_services_on_rocksdb() {
             "a={a:?}, b={b:?}"
         );
         let (access, refresh, _) = a.or(b).unwrap();
-        assert!(service.validate(&keys, &old_access).await.is_err());
+        assert!(service.validate_api(&keys, &old_access).await.is_err());
         assert!(service.refresh(&keys, &old_refresh).await.is_err());
-        service.validate(&keys, &access).await.unwrap();
-        service.validate(&keys, &refresh).await.unwrap();
+        service.validate_api(&keys, &access).await.unwrap();
+        service.validate_refresh(&keys, &refresh).await.unwrap();
         let rows = service.repo().find_by_user_id(&user.id).await.unwrap();
         assert_eq!(rows.len(), 2, "only the winning replacement pair may exist");
         service
@@ -866,7 +878,7 @@ async fn refresh_requires_a_live_pair_even_after_validation() {
     SurrealRepo::new(db.clone()).create(&user).await.unwrap();
     let (keys, service) = setup_services(&db);
     let (_, refresh) = service.create_session_pair(&keys, &user).await.unwrap();
-    let claims = service.validate(&keys, &refresh).await.unwrap();
+    let claims = service.validate_refresh(&keys, &refresh).await.unwrap();
     let mut token = service
         .repo()
         .find_active_by_id(&claims.token_id)
@@ -919,8 +931,8 @@ async fn consumption_rejects_missing_expired_and_non_refresh_rows() {
     SurrealRepo::new(db.clone()).create(&user).await.unwrap();
     let (keys, service) = setup_services(&db);
     let (access, refresh) = service.create_session_pair(&keys, &user).await.unwrap();
-    let access = service.validate(&keys, &access).await.unwrap();
-    let refresh = service.validate(&keys, &refresh).await.unwrap();
+    let access = service.validate_api(&keys, &access).await.unwrap();
+    let refresh = service.validate_refresh(&keys, &refresh).await.unwrap();
     let mut row = service
         .repo()
         .find_active_by_id(&refresh.token_id)
@@ -985,7 +997,7 @@ async fn failed_pair_deletion_rolls_back_and_never_mints_or_hides_revocation_err
     SurrealRepo::new(db.clone()).create(&user).await.unwrap();
     let (keys, service) = setup_services(&db);
     let (access, refresh) = service.create_session_pair(&keys, &user).await.unwrap();
-    let claims = service.validate(&keys, &refresh).await.unwrap();
+    let claims = service.validate_refresh(&keys, &refresh).await.unwrap();
     let pair = service
         .repo()
         .find_active_by_id(&claims.token_id)
@@ -1018,8 +1030,8 @@ async fn failed_pair_deletion_rolls_back_and_never_mints_or_hides_revocation_err
             .len(),
         2
     );
-    service.validate(&keys, &access).await.unwrap();
-    service.validate(&keys, &refresh).await.unwrap();
+    service.validate_api(&keys, &access).await.unwrap();
+    service.validate_refresh(&keys, &refresh).await.unwrap();
     db.query("REMOVE EVENT reject_delete ON api_token")
         .await
         .unwrap()

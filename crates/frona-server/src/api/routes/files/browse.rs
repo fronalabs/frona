@@ -3,7 +3,9 @@ use axum::extract::{Path as AxumPath, Query, State};
 use axum::response::Response;
 use tokio::fs;
 
-use crate::storage::{FileEntry, SearchTarget, VirtualPath, validate_relative_path};
+use crate::storage::{
+    FileEntry, SearchTarget, VirtualPath, open_workspace_file, validate_relative_path,
+};
 
 use super::super::super::error::ApiError;
 use super::super::super::middleware::auth::AuthUser;
@@ -76,12 +78,20 @@ pub(crate) async fn download_agent_file(
         )));
     }
 
-    let path = state
+    let workspace = state
         .storage_service
-        .agent_workspace_path(&user_handle, &agent.handle)
-        .join(&filepath);
+        .agent_workspace_path(&user_handle, &agent.handle);
+    let relative = filepath.clone();
+    let file = tokio::task::spawn_blocking(move || open_workspace_file(&workspace, &relative))
+        .await
+        .map_err(|error| AppError::Internal(format!("Failed to open download: {error}")))??;
 
-    super::serve_path(&path).await
+    // Stream the already-opened file, preserving the requested symlink's display name.
+    let filename = std::path::Path::new(&filepath)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("download");
+    super::serve_open_file(fs::File::from_std(file), filename)
 }
 
 pub(crate) async fn delete_user_file(

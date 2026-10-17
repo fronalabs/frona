@@ -5,6 +5,32 @@ use tower::ServiceExt;
 
 use super::super::*;
 
+async fn agent_download_requests(
+    state: &AppState,
+    token: &str,
+    user_id: &str,
+    agent_id: &str,
+    encoded_path: &str,
+    decoded_path: &str,
+) -> [Request<Body>; 2] {
+    let uri = format!("/api/files/agent/{agent_id}/{encoded_path}");
+    // Sign the exact decoded path so a path-claim mismatch cannot mask a missing
+    // download containment check. This also covers previously issued links.
+    let signed_url = state
+        .presign_service
+        .sign_by_user_id(&format!("agent:{agent_id}"), decoded_path, user_id)
+        .await
+        .unwrap();
+    let presign_token = signed_url.split("presign=").nth(1).unwrap();
+    [
+        auth_get(&uri, token),
+        Request::builder()
+            .uri(format!("{uri}?presign={presign_token}"))
+            .body(Body::empty())
+            .unwrap(),
+    ]
+}
+
 #[tokio::test]
 async fn download_user_file_returns_content() {
     let (state, tmp) = test_app_state().await;
@@ -107,36 +133,242 @@ async fn download_agent_file_other_user_returns_error() {
     let (state, tmp) = test_app_state().await;
     let (token_a, _) =
         register_user(&state, "ag-owner", "agowner@example.com", "password123").await;
-    let (token_b, _) =
+    let (token_b, user_b) =
         register_user(&state, "ag-other", "agother@example.com", "password123").await;
 
     let agent = create_agent(&state, &token_a, "PrivAgent").await;
     let agent_id = agent["id"].as_str().unwrap();
+    let agent_handle = agent["handle"].as_str().unwrap();
 
     let agent_dir = tmp
         .path()
         .join("users")
-        .join(agent_id)
+        .join("ag-owner")
         .join("agents")
-        .join(agent_id);
+        .join(agent_handle);
     fs::create_dir_all(&agent_dir).await.unwrap();
     fs::write(agent_dir.join("data.txt"), b"secret")
         .await
         .unwrap();
 
-    let app = build_app(state);
-    let resp = app
-        .oneshot(auth_get(
-            &format!("/api/files/agent/{agent_id}/data.txt"),
-            &token_b,
-        ))
+    let app = build_app(state.clone());
+    for request in
+        agent_download_requests(&state, &token_b, &user_b, agent_id, "data.txt", "data.txt").await
+    {
+        let resp = app.clone().oneshot(request).await.unwrap();
+        assert!(
+            resp.status() == StatusCode::FORBIDDEN || resp.status() == StatusCode::NOT_FOUND,
+            "Expected 403 or 404, got {}",
+            resp.status()
+        );
+    }
+}
+
+#[tokio::test]
+async fn download_agent_file_rejects_traversal_and_absolute_paths() {
+    let (state, tmp) = test_app_state().await;
+    let (token, user_id) =
+        register_user(&state, "dl-path", "dlpath@example.com", "password123").await;
+    let agent = create_agent(&state, &token, "PathAgent").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let workspace = tmp
+        .path()
+        .join("users/dl-path/agents")
+        .join(agent["handle"].as_str().unwrap());
+    fs::create_dir_all(workspace.join("nested")).await.unwrap();
+    let outside = workspace.parent().unwrap().join("secret.txt");
+    fs::write(&outside, b"outside secret").await.unwrap();
+
+    let absolute = outside.to_str().unwrap();
+    let encoded_absolute = absolute.replace('/', "%2F");
+    let paths = [
+        ("../secret.txt", "../secret.txt"),
+        ("%2e%2e/secret.txt", "../secret.txt"),
+        ("%2E%2E%2Fsecret.txt", "../secret.txt"),
+        ("nested/../../secret.txt", "nested/../../secret.txt"),
+        (absolute, absolute),
+        (encoded_absolute.as_str(), absolute),
+    ];
+    let app = build_app(state.clone());
+    for (encoded, decoded) in paths {
+        for request in
+            agent_download_requests(&state, &token, &user_id, agent_id, encoded, decoded).await
+        {
+            let resp = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "path: {encoded}");
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn download_agent_file_rejects_symlinks_outside_authorized_workspace() {
+    let (state, tmp) = test_app_state().await;
+    let (token, user_id) =
+        register_user(&state, "dl-link", "dllink@example.com", "password123").await;
+    let agent = create_agent(&state, &token, "LinkAgent").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let agent_handle = agent["handle"].as_str().unwrap();
+    let workspace = tmp.path().join("users/dl-link/agents").join(agent_handle);
+    fs::create_dir_all(&workspace).await.unwrap();
+
+    // Include paths still within users_root and one sharing the workspace's
+    // string prefix: neither is inside this agent's authorized workspace.
+    let outside_dirs = [
+        tmp.path().join("outside"),
+        tmp.path().join("users/other-user/files"),
+        tmp.path().join("users/dl-link/files"),
+        workspace.with_file_name(format!("{agent_handle}-other")),
+    ];
+    let app = build_app(state.clone());
+    for (index, outside) in outside_dirs.iter().enumerate() {
+        fs::create_dir_all(outside).await.unwrap();
+        fs::write(outside.join("secret.txt"), b"outside secret")
+            .await
+            .unwrap();
+        let file_link = format!("file-link-{index}.txt");
+        let dir_link = format!("dir-link-{index}");
+        fs::symlink(outside.join("secret.txt"), workspace.join(&file_link))
+            .await
+            .unwrap();
+        fs::symlink(outside, workspace.join(&dir_link))
+            .await
+            .unwrap();
+        for path in [file_link, format!("{dir_link}/secret.txt")] {
+            for request in
+                agent_download_requests(&state, &token, &user_id, agent_id, &path, &path).await
+            {
+                let resp = app.clone().oneshot(request).await.unwrap();
+                assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "path: {path}");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn download_agent_file_preserves_nested_files_and_missing_file_response() {
+    let (state, tmp) = test_app_state().await;
+    let (token, user_id) =
+        register_user(&state, "dl-nested", "dlnested@example.com", "password123").await;
+    let agent = create_agent(&state, &token, "NestedAgent").await;
+    let agent_handle = agent["handle"].as_str().unwrap();
+    let workspace = tmp.path().join("users/dl-nested/agents").join(agent_handle);
+    fs::create_dir_all(workspace.join("nested")).await.unwrap();
+    fs::write(workspace.join("nested/report.txt"), b"nested content")
         .await
         .unwrap();
-    assert!(
-        resp.status() == StatusCode::FORBIDDEN || resp.status() == StatusCode::NOT_FOUND,
-        "Expected 403 or 404, got {}",
-        resp.status()
-    );
+    fs::write(workspace.join("%2e%2e.txt"), b"nested content")
+        .await
+        .unwrap();
+
+    let app = build_app(state.clone());
+    for (encoded, decoded) in [
+        ("nested/report.txt", "nested/report.txt"),
+        ("nested%2Freport.txt", "nested/report.txt"),
+        ("%252e%252e.txt", "%2e%2e.txt"),
+        ("missing.txt", "missing.txt"),
+    ] {
+        for request in
+            agent_download_requests(&state, &token, &user_id, agent_handle, encoded, decoded).await
+        {
+            let resp = app.clone().oneshot(request).await.unwrap();
+            if decoded == "missing.txt" {
+                assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+            } else {
+                assert_eq!(resp.status(), StatusCode::OK, "path: {encoded}");
+                let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                    .await
+                    .unwrap();
+                assert_eq!(&bytes[..], b"nested content");
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn download_agent_file_preserves_in_workspace_symlinks_and_display_name() {
+    let (state, tmp) = test_app_state().await;
+    let (token, user_id) =
+        register_user(&state, "dl-in-link", "dlinlink@example.com", "password123").await;
+    let agent = create_agent(&state, &token, "InLinkAgent").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let workspace = tmp
+        .path()
+        .join("users/dl-in-link/agents")
+        .join(agent["handle"].as_str().unwrap());
+    fs::create_dir_all(workspace.join("nested")).await.unwrap();
+    fs::write(workspace.join("nested/data.bin"), b"linked content")
+        .await
+        .unwrap();
+    fs::symlink("nested/data.bin", workspace.join("report.txt"))
+        .await
+        .unwrap();
+    fs::symlink("nested", workspace.join("linked-dir"))
+        .await
+        .unwrap();
+    fs::symlink(
+        workspace.join("nested/data.bin"),
+        workspace.join("absolute.txt"),
+    )
+    .await
+    .unwrap();
+
+    let app = build_app(state.clone());
+    for path in ["report.txt", "linked-dir/data.bin", "absolute.txt"] {
+        for request in agent_download_requests(&state, &token, &user_id, agent_id, path, path).await
+        {
+            let resp = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            if path.ends_with(".txt") {
+                assert_eq!(resp.headers()["content-type"], "text/plain");
+                assert_eq!(
+                    resp.headers()["content-disposition"],
+                    format!("inline; filename=\"{path}\"")
+                );
+            }
+            let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            assert_eq!(&bytes[..], b"linked content");
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn download_agent_file_streams_opened_file_after_path_substitution() {
+    let (state, tmp) = test_app_state().await;
+    let (token, user_id) =
+        register_user(&state, "dl-stream", "dlstream@example.com", "password123").await;
+    let agent = create_agent(&state, &token, "StreamAgent").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let workspace = tmp
+        .path()
+        .join("users/dl-stream/agents")
+        .join(agent["handle"].as_str().unwrap());
+    fs::create_dir_all(&workspace).await.unwrap();
+    let outside = tmp.path().join("secret.txt");
+    fs::write(&outside, b"outside secret").await.unwrap();
+    let target = workspace.join("file.txt");
+    let app = build_app(state.clone());
+    for request in
+        agent_download_requests(&state, &token, &user_id, agent_id, "file.txt", "file.txt").await
+    {
+        fs::write(&target, b"authorized content").await.unwrap();
+        let resp = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // The response body has not been read yet. Replacing the pathname must
+        // not redirect its lazy stream to the new symlink target.
+        fs::remove_file(&target).await.unwrap();
+        fs::symlink(&outside, &target).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert_eq!(&bytes[..], b"authorized content");
+        fs::remove_file(&target).await.unwrap();
+    }
 }
 
 #[tokio::test]

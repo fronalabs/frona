@@ -3506,6 +3506,7 @@ dependencies = [
  "rig-core",
  "rmcp",
  "rtb-redact",
+ "rustix 1.1.5",
  "rustls 0.23.45",
  "schemars 1.2.2",
  "serde",

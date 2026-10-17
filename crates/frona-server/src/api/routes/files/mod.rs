@@ -110,11 +110,14 @@ pub(super) async fn serve_path(path: &std::path::Path) -> Result<Response, ApiEr
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("download");
-    let content_type = detect_content_type(filename);
-
     let file = fs::File::open(path)
         .await
         .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
+    serve_open_file(file, filename)
+}
+
+pub(super) fn serve_open_file(file: fs::File, filename: &str) -> Result<Response, ApiError> {
+    let content_type = detect_content_type(filename);
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
 

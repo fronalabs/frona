@@ -5,6 +5,7 @@ use axum::Json;
 use axum::extract::State;
 use tokio::fs;
 
+use crate::storage::path::resolve_filesystem_path;
 use crate::storage::{Namespace, VirtualPath, dedup_filename, validate_relative_path};
 
 use super::super::super::error::ApiError;
@@ -18,8 +19,8 @@ pub(crate) async fn rename_user_file(
     State(state): State<AppState>,
     Json(req): Json<RenameRequest>,
 ) -> Result<(), ApiError> {
-    reject_workspace_root(&req.path, "rename")?;
-    let resolved = resolve_file_virtual_path(&req.path, &auth.user_id, &state).await?;
+    let resolved =
+        resolve_file_virtual_path(&req.path, &auth.user_id, &state, Some("rename")).await?;
 
     if !resolved.exists() {
         return Err(ApiError(AppError::NotFound("File not found".into())));
@@ -47,24 +48,11 @@ pub(crate) async fn rename_user_file(
     Ok(())
 }
 
-fn reject_workspace_root(path: &str, operation: &str) -> Result<(), ApiError> {
-    let relative = if path.starts_with("user://") || path.starts_with("agent://") {
-        VirtualPath::parse(path)?.relative
-    } else {
-        path.trim_start_matches('/').to_string()
-    };
-    if relative.is_empty() {
-        return Err(ApiError(AppError::Validation(format!(
-            "Cannot {operation} a workspace root"
-        ))));
-    }
-    Ok(())
-}
-
 async fn resolve_file_virtual_path(
     path: &str,
     user_id: &str,
     state: &AppState,
+    source_operation: Option<&str>,
 ) -> Result<PathBuf, ApiError> {
     let user_handle = state.user_service.handle_of(user_id).await?;
     let vpath = if path.starts_with("user://") || path.starts_with("agent://") {
@@ -85,10 +73,27 @@ async fn resolve_file_virtual_path(
         Namespace::User(_) => {}
     }
 
-    state
+    let resolved = state
         .storage_service
-        .resolve_virtual_path_for_user(&user_handle, &vpath)
-        .map_err(ApiError)
+        .resolve_virtual_path_for_user(&user_handle, &vpath)?;
+    if let Some(operation) = source_operation {
+        let workspace = VirtualPath {
+            namespace: vpath.namespace,
+            relative: String::new(),
+        };
+        let root = state
+            .storage_service
+            .resolve_virtual_path_for_user(&user_handle, &workspace)?;
+        if resolve_filesystem_path(&resolved)? == resolve_filesystem_path(&root)? {
+            return Err(ApiError(AppError::Validation(format!(
+                "Cannot {operation} a workspace root"
+            ))));
+        }
+    }
+
+    // Resolve aliases for validation, but retain the requested directory entry
+    // for filesystem operations such as renaming or deleting a symlink.
+    Ok(resolved)
 }
 
 pub(crate) async fn copy_files(
@@ -101,11 +106,10 @@ pub(crate) async fn copy_files(
             "At least one source is required".into(),
         )));
     }
-    let dest_dir = resolve_file_virtual_path(&req.destination, &auth.user_id, &state).await?;
+    let dest_dir = resolve_file_virtual_path(&req.destination, &auth.user_id, &state, None).await?;
     let mut resolved_sources = Vec::with_capacity(req.sources.len());
     for source in &req.sources {
-        reject_workspace_root(source, "copy")?;
-        let src = resolve_file_virtual_path(source, &auth.user_id, &state).await?;
+        let src = resolve_file_virtual_path(source, &auth.user_id, &state, Some("copy")).await?;
         if !src.exists() {
             return Err(ApiError(AppError::NotFound(format!(
                 "Source file not found: {source}"
@@ -184,12 +188,11 @@ pub(crate) async fn move_files(
             "At least one source is required".into(),
         )));
     }
-    let dest_dir = resolve_file_virtual_path(&req.destination, &auth.user_id, &state).await?;
+    let dest_dir = resolve_file_virtual_path(&req.destination, &auth.user_id, &state, None).await?;
     let mut planned_moves = Vec::with_capacity(req.sources.len());
     let mut targets = HashSet::with_capacity(req.sources.len());
     for source in &req.sources {
-        reject_workspace_root(source, "move")?;
-        let src = resolve_file_virtual_path(source, &auth.user_id, &state).await?;
+        let src = resolve_file_virtual_path(source, &auth.user_id, &state, Some("move")).await?;
         if !src.exists() {
             return Err(ApiError(AppError::NotFound(format!(
                 "Source file not found: {source}"
@@ -239,8 +242,8 @@ pub(crate) async fn delete_files(
     }
     let mut resolved_paths = Vec::with_capacity(req.paths.len());
     for path in &req.paths {
-        reject_workspace_root(path, "delete")?;
-        let resolved = resolve_file_virtual_path(path, &auth.user_id, &state).await?;
+        let resolved =
+            resolve_file_virtual_path(path, &auth.user_id, &state, Some("delete")).await?;
         if !resolved.exists() {
             return Err(ApiError(AppError::NotFound(format!(
                 "File not found: {path}"
@@ -274,7 +277,7 @@ pub(crate) async fn create_user_folder(
         req.path.trim_start_matches('/').to_string()
     };
     validate_relative_path(&relative)?;
-    let resolved = resolve_file_virtual_path(&req.path, &auth.user_id, &state).await?;
+    let resolved = resolve_file_virtual_path(&req.path, &auth.user_id, &state, None).await?;
 
     fs::create_dir_all(&resolved)
         .await

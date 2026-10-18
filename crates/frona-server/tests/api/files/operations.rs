@@ -972,3 +972,335 @@ async fn mkdir_null_char_in_path_returns_400() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn root_equivalent_sources_are_rejected_before_any_changes() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(
+        &state,
+        "root-equivalents",
+        "root-equivalents@example.com",
+        "password123",
+    )
+    .await;
+    let agent = create_agent(&state, &token, "Root Equivalents").await;
+    let agent_handle = agent["handle"].as_str().unwrap();
+    let destination_agent = create_agent(&state, &token, "Root Destination").await;
+    let destination_handle = destination_agent["handle"].as_str().unwrap();
+    let user_root = tmp.path().join("users/root-equivalents/files");
+    let agents_root = tmp.path().join("users/root-equivalents/agents");
+    let agent_root = agents_root.join(agent_handle);
+    let destination = agents_root.join(destination_handle).join("not-created");
+    for root in [&user_root, &agent_root] {
+        fs::create_dir_all(root).await.unwrap();
+        fs::write(root.join("keep.txt"), b"keep").await.unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root, root.join("root-link")).unwrap();
+    }
+    let app = build_app(state);
+
+    for (prefix, root) in [
+        (String::new(), &user_root),
+        ("user://root-equivalents/".to_owned(), &user_root),
+        (format!("agent://{agent_handle}/"), &agent_root),
+    ] {
+        let suffixes = ["", "/", "///", ".", "./", "./.", "././", ".//.///", "/././"];
+        #[cfg(unix)]
+        let suffixes = [suffixes.as_slice(), &["root-link", "root-link/./"]].concat();
+        for suffix in suffixes {
+            let source = format!("{prefix}{suffix}");
+            for operation in ["rename", "delete", "copy", "move"] {
+                // A valid source comes first, so a later root rejection must
+                // leave earlier sources untouched and not create a destination.
+                let sources = serde_json::json!([format!("{prefix}keep.txt"), source]);
+                let body = match operation {
+                    "rename" => serde_json::json!({
+                        "path": source, "new_name": "renamed-root"
+                    }),
+                    "delete" => serde_json::json!({"paths": sources}),
+                    _ => serde_json::json!({
+                        "sources": sources,
+                        "destination": format!("agent://{destination_handle}/not-created")
+                    }),
+                };
+                let response = app
+                    .clone()
+                    .oneshot(auth_post_json(
+                        &format!("/api/files/{operation}"),
+                        &token,
+                        body,
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::BAD_REQUEST,
+                    "{operation} source {source:?}"
+                );
+                let error = body_json(response).await;
+                // A slash immediately after a virtual-path namespace is an
+                // absolute path, rejected by the existing containment check.
+                if prefix.is_empty() || !suffix.starts_with('/') {
+                    assert!(
+                        error
+                            .to_string()
+                            .contains(&format!("Cannot {operation} a workspace root")),
+                        "{operation} source {source:?}: {error}"
+                    );
+                }
+                assert_eq!(fs::read(root.join("keep.txt")).await.unwrap(), b"keep");
+                assert!(!root.parent().unwrap().join("renamed-root").exists());
+                assert!(!destination.exists());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn copy_and_move_accept_root_equivalent_destinations() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(
+        &state,
+        "root-destinations",
+        "root-destinations@example.com",
+        "password123",
+    )
+    .await;
+    let agent = create_agent(&state, &token, "Root Destinations").await;
+    let agent_handle = agent["handle"].as_str().unwrap();
+    let user_root = tmp.path().join("users/root-destinations/files");
+    let agent_root = tmp
+        .path()
+        .join("users/root-destinations/agents")
+        .join(agent_handle);
+    let app = build_app(state);
+
+    for (prefix, root) in [
+        (String::new(), &user_root),
+        ("user://root-destinations/".to_owned(), &user_root),
+        (format!("agent://{agent_handle}/"), &agent_root),
+    ] {
+        fs::create_dir_all(root.join("nested")).await.unwrap();
+        for (index, suffix) in ["", ".", "./", "././", ".//.///"].iter().enumerate() {
+            for operation in ["copy", "move"] {
+                let filename = format!("{operation}-{index}.txt");
+                let source = root.join("nested").join(&filename);
+                fs::write(&source, b"contents").await.unwrap();
+                let response = app
+                    .clone()
+                    .oneshot(auth_post_json(
+                        &format!("/api/files/{operation}"),
+                        &token,
+                        serde_json::json!({
+                            "sources": [format!("{prefix}nested/{filename}")],
+                            "destination": format!("{prefix}{suffix}")
+                        }),
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::OK,
+                    "{operation} to {prefix}{suffix}"
+                );
+                assert_eq!(fs::read(root.join(&filename)).await.unwrap(), b"contents");
+                assert_eq!(source.exists(), operation == "copy");
+                fs::remove_file(root.join(&filename)).await.unwrap();
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn dot_named_entries_remain_valid_operation_sources() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(
+        &state,
+        "dot-entries",
+        "dot-entries@example.com",
+        "password123",
+    )
+    .await;
+    let root = tmp.path().join("users/dot-entries/files");
+    fs::create_dir_all(&root).await.unwrap();
+    let app = build_app(state);
+    for name in [".hidden", "...", "report..txt"] {
+        fs::write(root.join(name), b"contents").await.unwrap();
+        for (operation, body) in [
+            (
+                "copy",
+                serde_json::json!({"sources": [format!("./{name}")], "destination": "copies"}),
+            ),
+            (
+                "move",
+                serde_json::json!({"sources": [format!("copies/./{name}")], "destination": "moved"}),
+            ),
+            (
+                "rename",
+                serde_json::json!({"path": format!("moved/./{name}"), "new_name": "renamed.txt"}),
+            ),
+            (
+                "delete",
+                serde_json::json!({"paths": ["moved/./renamed.txt"]}),
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(auth_post_json(
+                    &format!("/api/files/{operation}"),
+                    &token,
+                    body,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{operation} of {name}");
+        }
+        assert_eq!(fs::read(root.join(name)).await.unwrap(), b"contents");
+        assert!(!root.join("copies").join(name).exists());
+        assert!(!root.join("moved").join(name).exists());
+        assert!(!root.join("moved/renamed.txt").exists());
+    }
+}
+
+#[tokio::test]
+async fn missing_workspace_roots_remain_protected() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(
+        &state,
+        "missing-roots",
+        "missing-roots@example.com",
+        "password123",
+    )
+    .await;
+    let agent = create_agent(&state, &token, "Missing Root").await;
+    let agent_handle = agent["handle"].as_str().unwrap();
+    let user_root = tmp.path().join("users/missing-roots/files");
+    let agent_root = tmp
+        .path()
+        .join("users/missing-roots/agents")
+        .join(agent_handle);
+    for root in [&user_root, &agent_root] {
+        if root.exists() {
+            fs::remove_dir_all(root).await.unwrap();
+        }
+    }
+    let app = build_app(state);
+    for source in [
+        "./".to_owned(),
+        "user://missing-roots/./".to_owned(),
+        format!("agent://{agent_handle}/./"),
+    ] {
+        for operation in ["rename", "delete", "copy", "move"] {
+            let body = match operation {
+                "rename" => serde_json::json!({"path": source, "new_name": "renamed"}),
+                "delete" => serde_json::json!({"paths": [source]}),
+                _ => serde_json::json!({"sources": [source], "destination": "new-destination"}),
+            };
+            let response = app
+                .clone()
+                .oneshot(auth_post_json(
+                    &format!("/api/files/{operation}"),
+                    &token,
+                    body,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "{operation} {source}"
+            );
+            let error = body_json(response).await;
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("Cannot {operation} a workspace root"))
+            );
+            assert!(!user_root.exists());
+            assert!(!agent_root.exists());
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn non_root_symlink_operations_preserve_the_referent() {
+    let (state, tmp) = test_app_state().await;
+    let (token, _) = register_user(
+        &state,
+        "symlink-entries",
+        "symlink-entries@example.com",
+        "password123",
+    )
+    .await;
+    let agent = create_agent(&state, &token, "Symlink Entries").await;
+    let agent_handle = agent["handle"].as_str().unwrap();
+    let user_root = tmp.path().join("users/symlink-entries/files");
+    let agent_root = tmp
+        .path()
+        .join("users/symlink-entries/agents")
+        .join(agent_handle);
+    let app = build_app(state);
+    for (prefix, root) in [
+        ("user://symlink-entries/".to_owned(), user_root),
+        (format!("agent://{agent_handle}/"), agent_root),
+    ] {
+        fs::create_dir_all(root.join("folder")).await.unwrap();
+        fs::write(root.join("folder/keep.txt"), b"keep")
+            .await
+            .unwrap();
+        fs::write(root.join("file.txt"), b"contents").await.unwrap();
+        for target in ["folder", "file.txt"] {
+            std::os::unix::fs::symlink(root.join(target), root.join("link")).unwrap();
+            for (operation, body, link_path) in [
+                (
+                    "rename",
+                    serde_json::json!({"path": format!("{prefix}link"), "new_name": "renamed"}),
+                    "renamed",
+                ),
+                (
+                    "move",
+                    serde_json::json!({"sources": [format!("{prefix}renamed")], "destination": format!("{prefix}moved")}),
+                    "moved/renamed",
+                ),
+                (
+                    "delete",
+                    serde_json::json!({"paths": [format!("{prefix}moved/renamed")]}),
+                    "moved/renamed",
+                ),
+            ] {
+                let response = app
+                    .clone()
+                    .oneshot(auth_post_json(
+                        &format!("/api/files/{operation}"),
+                        &token,
+                        body,
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::OK,
+                    "{operation} link to {target}"
+                );
+                if operation == "delete" {
+                    assert!(fs::symlink_metadata(root.join(link_path)).await.is_err());
+                } else {
+                    assert!(
+                        fs::symlink_metadata(root.join(link_path))
+                            .await
+                            .unwrap()
+                            .is_symlink()
+                    );
+                }
+                assert_eq!(
+                    fs::read(root.join("folder/keep.txt")).await.unwrap(),
+                    b"keep"
+                );
+                assert_eq!(fs::read(root.join("file.txt")).await.unwrap(), b"contents");
+            }
+            assert!(fs::symlink_metadata(root.join("link")).await.is_err());
+            assert!(fs::symlink_metadata(root.join("renamed")).await.is_err());
+        }
+    }
+}

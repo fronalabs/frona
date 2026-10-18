@@ -29,9 +29,9 @@ pub struct InferenceUsage {
     pub model_id: String,
     pub model_ref: String,
 
-    // Usage. `cached_input_tokens` is rig's collapsed view - see plan
-    // "Cache fidelity" section for why we can't split Anthropic
-    // cache_creation vs cache_read on the streaming path.
+    // Usage. `cached_input_tokens` stores cache reads. Pricing also consumes
+    // Rig's separate cache-write count before projecting usage into this row;
+    // writes contribute to cost_usd but have no dedicated persisted column.
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
     pub output_tokens: u64,

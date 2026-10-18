@@ -181,7 +181,7 @@ mod tests {
             .cost_for(&crate::catalog::TokenUsage {
                 input_tokens: 1_000_000,
                 output_tokens: 500_000,
-                cached_input_tokens: 0,
+                ..Default::default()
             })
             .expect("cost");
         assert!((total - 17.5).abs() < 1e-9);

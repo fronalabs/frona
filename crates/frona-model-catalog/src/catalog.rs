@@ -78,7 +78,7 @@ pub struct Cost {
     pub output: f64,
     #[serde(default)]
     pub cache_read: Option<f64>,
-    /// Anthropic-only; other providers don't publish a cache-write rate.
+    /// Published cache-write rate; falls back to the ordinary input rate when omitted.
     #[serde(default)]
     pub cache_write: Option<f64>,
 }
@@ -99,12 +99,13 @@ pub struct Modalities {
 
 const PER_MILLION_TO_PER_TOKEN: f64 = 1.0 / 1_000_000.0;
 
-/// Input tokens are fresh tokens only; cached tokens are additive.
+/// Input tokens are fresh tokens only; cache reads and writes are disjoint, additive counts.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cached_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
 }
 
 impl ModelEntry {
@@ -112,9 +113,11 @@ impl ModelEntry {
     pub fn cost_for(&self, u: &TokenUsage) -> Option<f64> {
         let cost = self.cost.as_ref()?;
         let cache_read = cost.cache_read.unwrap_or(0.0);
+        let cache_write = cost.cache_write.unwrap_or(cost.input);
         let total = (u.input_tokens as f64) * cost.input
             + (u.output_tokens as f64) * cost.output
-            + (u.cached_input_tokens as f64) * cache_read;
+            + (u.cached_input_tokens as f64) * cache_read
+            + (u.cache_creation_input_tokens as f64) * cache_write;
         Some(total * PER_MILLION_TO_PER_TOKEN)
     }
 
@@ -306,6 +309,30 @@ impl ModelCatalogStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cost_for_prices_cache_writes_separately_and_falls_back_to_input_rate() {
+        let usage = TokenUsage {
+            input_tokens: 200_000,
+            cached_input_tokens: 600_000,
+            cache_creation_input_tokens: 200_000,
+            output_tokens: 100_000,
+        };
+        for (cache_write, expected) in [(Some(3.75), 2.53), (None, 2.38), (Some(0.0), 1.78)] {
+            let entry = ModelEntry {
+                cost: Some(Cost {
+                    input: 3.0,
+                    output: 10.0,
+                    cache_read: Some(0.3),
+                    cache_write,
+                }),
+                ..Default::default()
+            };
+            assert!((entry.cost_for(&usage).unwrap() - expected).abs() < 1e-9);
+            assert_eq!(entry.cost_for(&TokenUsage::default()), Some(0.0));
+        }
+        assert_eq!(ModelEntry::default().cost_for(&usage), None);
+    }
 
     #[test]
     fn lookup_prefix_matches_dated_suffix_against_bare_key() {

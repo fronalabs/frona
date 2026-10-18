@@ -91,6 +91,7 @@ pub fn active_chat(ctx: &InferenceContext) -> Result<&Chat, AppError> {
 }
 
 pub struct InferenceRequest {
+    pub input_token_estimate: Option<crate::inference::context::InputTokenEstimate>,
     pub model_group: ModelGroup,
     pub system_prompt: String,
     pub history: Vec<RigMessage>,

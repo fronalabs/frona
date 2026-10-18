@@ -45,6 +45,7 @@ pub struct RequestOverrides {
 }
 
 pub struct ModelRequest<'a> {
+    pub input_token_estimate: Option<crate::inference::context::InputTokenEstimate>,
     pub system_prompt: &'a str,
     pub history: Vec<Message>,
     pub tools: Vec<ToolDefinition>,
@@ -225,6 +226,7 @@ mod tests {
         overrides: RequestOverrides,
     ) -> ModelRequest<'a> {
         ModelRequest {
+            input_token_estimate: None,
             system_prompt: "fixture",
             history: vec![Message::user("hello")],
             tools: vec![],

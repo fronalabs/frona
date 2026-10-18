@@ -48,6 +48,7 @@ impl Command for CompactCommand {
             .await?;
         ctx.session.rig_history = outcome.model_history.history.clone();
         ctx.session.model_history = outcome.model_history;
+        ctx.session.input_token_estimate = outcome.input_token_estimate;
         let status = if outcome.compacted {
             "Compacted older messages into a summary."
         } else {

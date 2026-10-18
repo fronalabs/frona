@@ -37,6 +37,7 @@ where
     let value = (model_group)
         .structured_inference(
             crate::inference::ModelRequest {
+                input_token_estimate: None,
                 system_prompt,
                 history,
                 tools: vec![],
@@ -91,6 +92,7 @@ where
             content: contents, ..
         } = (model_group)
             .inference(crate::inference::ModelRequest {
+                input_token_estimate: None,
                 system_prompt,
                 history: chat_history.clone(),
                 tools: tool_defs.clone(),
@@ -169,6 +171,7 @@ pub async fn text_inference_with_tools(
             content: contents, ..
         } = (model_group)
             .inference(crate::inference::ModelRequest {
+                input_token_estimate: None,
                 system_prompt,
                 history: chat_history.clone(),
                 tools: tool_defs.clone(),
@@ -474,6 +477,7 @@ where
                 content: contents, ..
             } = (self.model_group)
                 .inference(crate::inference::ModelRequest {
+                    input_token_estimate: None,
                     system_prompt: &self.system,
                     history: self.history.clone(),
                     tools: tool_defs,

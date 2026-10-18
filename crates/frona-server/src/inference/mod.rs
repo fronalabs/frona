@@ -69,6 +69,7 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
         match (request.model_group)
             .stream_inference(
                 crate::inference::ModelRequest {
+                    input_token_estimate: request.input_token_estimate,
                     system_prompt: &request.system_prompt,
                     history: history.to_vec(),
                     tools: vec![],
@@ -109,6 +110,7 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
             &request.usage_service,
             &request.chat_service,
             &request.message_id,
+            request.input_token_estimate,
         )
         .await?;
 
@@ -149,6 +151,7 @@ pub async fn text_inference(
         content: contents, ..
     } = (model_group)
         .inference(crate::inference::ModelRequest {
+            input_token_estimate: None,
             system_prompt,
             history,
             tools: vec![],

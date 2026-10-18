@@ -25,6 +25,7 @@ pub struct ChatSessionContext {
     pub model_group: ModelGroup,
     pub rig_history: Vec<RigMessage>,
     pub(crate) model_history: ModelConversationHistory,
+    pub(crate) input_token_estimate: Option<crate::inference::context::InputTokenEstimate>,
     pub(crate) builder: Arc<dyn ConversationBuilder>,
     pub(crate) tool_filters: Vec<ToolFilter>,
 
@@ -313,9 +314,16 @@ impl ChatSessionContext {
                 },
             )
             .await?;
+        let input_token_estimate = compacted.input_token_estimate;
         model_history = compacted.model_history;
         rig_history = model_history.history.clone();
-        super::compactor::validate_initial_context(&rig_history, &system_prompt, &model_group)?;
+        super::compactor::validate_initial_context(
+            &rig_history,
+            &system_prompt,
+            &model_group,
+            &tools,
+            input_token_estimate,
+        )?;
 
         Ok(Self {
             chat,
@@ -324,6 +332,7 @@ impl ChatSessionContext {
             model_group,
             rig_history,
             model_history,
+            input_token_estimate,
             builder,
             tool_filters: tool_filters.to_vec(),
 

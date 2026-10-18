@@ -95,7 +95,19 @@ fn completion_history(
     group: &ModelGroup,
     max_output: usize,
     overflow: HistoryOverflow,
+    input_token_estimate: Option<crate::inference::context::InputTokenEstimate>,
 ) -> Result<Vec<RigMessage>, String> {
+    if let Some(tokens) = input_token_estimate
+        .and_then(|estimate| estimate.for_request(&group.main, system_prompt, history, tools))
+    {
+        let available = group.context_window.saturating_sub(max_output);
+        if tokens > available {
+            return Err(format!(
+                "Complete input exceeds context limit ({tokens} calibrated tokens, {available} available)"
+            ));
+        }
+        return Ok(history.to_vec());
+    }
     if matches!(overflow, HistoryOverflow::TruncateOldest) {
         return Ok(truncate_history(
             history.to_vec(),
@@ -131,6 +143,7 @@ pub(crate) async fn inference_with_retry_and_fallback(
 ) -> Result<(Vec<AssistantContent>, crate::inference::Usage), InferenceError> {
     let ModelRequest {
         overrides,
+        input_token_estimate,
         system_prompt,
         history,
         tools,
@@ -154,6 +167,7 @@ pub(crate) async fn inference_with_retry_and_fallback(
         model_group,
         max_output,
         overflow,
+        input_token_estimate,
     );
 
     let ref_str = model_group.main.as_str();
@@ -221,6 +235,7 @@ pub(crate) async fn inference_with_retry_and_fallback(
             model_group,
             max_output,
             overflow,
+            None,
         );
         let start = Instant::now();
         match retry_with_backoff(&model_group.retry, fallback, || async {
@@ -439,6 +454,7 @@ pub(crate) async fn stream_with_retry_and_fallback(
 ) -> Result<StreamResult, crate::core::error::AppError> {
     let ModelRequest {
         overrides,
+        input_token_estimate,
         system_prompt,
         history,
         tools,
@@ -466,6 +482,11 @@ pub(crate) async fn stream_with_retry_and_fallback(
             model_group,
             max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize,
             HistoryOverflow::TruncateOldest,
+            if index == 0 {
+                input_token_estimate
+            } else {
+                None
+            },
         ) {
             Ok(history) => history,
             Err(error) => {

@@ -669,6 +669,7 @@ impl Harness {
             model_group,
             mut rig_history,
             model_history,
+            input_token_estimate,
 
             tool_registry,
             tool_ctx,
@@ -728,8 +729,14 @@ impl Harness {
             &rig_history,
             &system_prompt,
             &model_group,
+            &crate::inference::tool_loop::to_rig_tool_definitions(
+                tool_registry.definitions(),
+                tool_registry.mcp_bridge_mode(),
+            ),
+            input_token_estimate,
         )?;
         let inference = crate::inference::inference(InferenceRequest {
+            input_token_estimate,
             model_group,
             system_prompt,
             history: rig_history,

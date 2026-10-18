@@ -644,6 +644,7 @@ async fn fallback_requests_use_their_own_settings() {
         .unwrap();
     let result = group
         .inference(crate::inference::ModelRequest {
+            input_token_estimate: None,
             system_prompt: "sys",
             history: vec![Message::user("hi")],
             tools: vec![],

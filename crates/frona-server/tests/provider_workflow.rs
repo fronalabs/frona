@@ -135,6 +135,7 @@ async fn infer(service: &ModelProviderService, expected: &str) {
     let context = helpers::test_usage_ctx();
     let frona::inference::ModelResponse { content, usage } = group
         .inference(frona::inference::ModelRequest {
+            input_token_estimate: None,
             system_prompt: "fixture",
             history: vec![],
             tools: vec![],

@@ -133,6 +133,22 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
             .collect())
     }
 
+    async fn last_chat_usage(&self, chat_id: &str) -> Result<Option<InferenceUsage>, AppError> {
+        let mut result = self
+            .db()
+            .query(
+                "SELECT *, meta::id(id) AS id FROM inference_usage \
+             WHERE chat_id = $chat_id AND kind_tag IN ['Text', 'ToolTurn'] \
+             ORDER BY created_at DESC, id DESC LIMIT 1",
+            )
+            .bind(("chat_id", chat_id.to_string()))
+            .await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))
+    }
+
     async fn last_chat_input_tokens(&self, chat_id: &str) -> Result<Option<u64>, AppError> {
         // SurrealDB requires `ORDER BY` columns to be in the SELECT
         // projection — hence `created_at` is selected alongside the value we

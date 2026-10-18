@@ -93,6 +93,7 @@ async fn title_override_and_fallback_defaults_reach_the_provider_transport() {
     let usage_ctx = helpers::test_usage_ctx();
     group
         .inference(frona::inference::ModelRequest {
+            input_token_estimate: None,
             system_prompt: "fixture",
             history: vec![rig_core::completion::Message::user("hi")],
             tools: vec![],

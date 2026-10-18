@@ -24,9 +24,11 @@ use crate::core::error::AppError;
 use crate::core::repository::{Repository, new_id};
 use crate::db::repo::chat_summaries::SurrealChatSummaryRepo;
 use crate::db::repo::messages::SurrealMessageRepo;
+use crate::db::repo::tool_calls::ToolCallRepository;
 use crate::inference::ModelGroup;
-use crate::inference::context::{estimate_message_tokens, estimate_tokens};
+use crate::inference::context::{InputTokenEstimate, estimate_message_tokens, estimate_tokens};
 use crate::inference::conversation::{ModelConversationHistory, summary_message};
+use crate::inference::usage::repository::InferenceUsageRepository;
 use crate::inference::usage::{CompactionTarget, InferenceKind, UsageContext, UsageService};
 
 /// Trigger when the conversation exceeds this fraction of the available window.
@@ -45,9 +47,11 @@ pub struct LoadedConversation {
 pub struct CompactionOutcome {
     pub compacted: bool,
     pub model_history: ModelConversationHistory,
+    pub input_token_estimate: Option<InputTokenEstimate>,
 }
 
 pub struct SummaryRequest<'a> {
+    pub input_token_estimate: Option<InputTokenEstimate>,
     pub model_group: &'a ModelGroup,
     pub user_id: &'a str,
     pub agent_id: &'a str,
@@ -101,6 +105,7 @@ impl ChatSummarizer for TextInferenceSummarizer {
         );
         let response = model_group
             .inference_preserving_history(crate::inference::ModelRequest {
+                input_token_estimate: request.input_token_estimate,
                 system_prompt: request.system_prompt,
                 history: request.history,
                 tools: request.tools,
@@ -139,6 +144,12 @@ impl ChatSummarizer for TextInferenceSummarizer {
     }
 }
 
+struct HistoryTokenMeasurement {
+    /// Inclusive index of the last stored row covered by the provider usage.
+    last_covered_row: usize,
+    history_tokens: usize,
+}
+
 #[derive(Clone)]
 pub struct ChatCompactor {
     chat_summary_repo: SurrealChatSummaryRepo,
@@ -160,6 +171,95 @@ impl ChatCompactor {
             summarizer,
             prompts,
         }
+    }
+
+    /// Usage is optional telemetry. Missing, stale or unreadable statistics must
+    /// leave both the trigger and split on their existing estimate-based path.
+    async fn load_history_token_measurement(
+        &self,
+        user_id: &str,
+        agent_id: &str,
+        live: &[Message],
+        context: CompactionContext<'_>,
+        summary: Option<&ChatSummary>,
+        system_tokens: usize,
+    ) -> Option<HistoryTokenMeasurement> {
+        let repo = crate::db::repo::generic::SurrealRepo::new(self.message_repo.db().clone());
+        let usage = match repo.last_chat_usage(&live.first()?.chat_id).await {
+            Ok(usage) => usage?,
+            Err(error) => {
+                tracing::warn!(%error, "Cannot read chat usage; estimating compaction size");
+                return None;
+            }
+        };
+        if usage.user_id != user_id
+            || usage.agent_id.as_deref() != Some(agent_id)
+            || usage.model_group != context.model_group.name
+            || usage.model_ref != context.model_group.main.as_str()
+            || usage.provider != context.model_group.main.provider_name()
+            || summary.is_some_and(|s| usage.created_at <= s.updated_at)
+        {
+            return None;
+        }
+        let anchor = live
+            .iter()
+            .position(|message| Some(&message.id) == usage.message_id.as_ref())?;
+        let message = &live[anchor];
+        if message.role != MessageRole::Agent
+            || message.agent_id.as_deref() != Some(agent_id)
+            || message.status != Some(crate::chat::message::models::MessageStatus::Completed)
+        {
+            return None;
+        }
+        let tools =
+            crate::db::repo::tool_calls::SurrealToolCallRepo::new(self.message_repo.db().clone())
+                .find_by_message_id(&message.id)
+                .await
+                .ok()?;
+        let turns = tools
+            .iter()
+            .map(|tool| tool.turn)
+            .collect::<std::collections::BTreeSet<_>>();
+        let complete_tool_history = turns.iter().copied().eq(0..turns.len() as u32);
+        match usage.kind_tag.as_str() {
+            "Text" if tools.is_empty() && usage.turn_index.is_none() => {}
+            "ToolTurn"
+                if complete_tool_history && usage.turn_index == u32::try_from(turns.len()).ok() => {
+            }
+            _ => return None,
+        }
+        if usage.output_tokens == 0 && (!message.content.is_empty() || message.reasoning.is_some())
+        {
+            return None;
+        }
+        // Rig Anthropic input excludes cache reads/writes; total includes both.
+        // OpenAI input already includes cached reads. Never add caches to total.
+        // Reject incomplete/inconsistent usage instead of guessing provider rules.
+        let input = usage.total_tokens.checked_sub(usage.output_tokens)?;
+        let minimum_input = if crate::inference::protocol::parameters::WireDialect::for_model(
+            &context.model_group.main.provider,
+        ) == crate::inference::protocol::parameters::WireDialect::Anthropic
+        {
+            usage.input_tokens.checked_add(usage.cached_input_tokens)?
+        } else {
+            usage.input_tokens.max(usage.cached_input_tokens)
+        };
+        if input == 0 || input < minimum_input {
+            return None;
+        }
+        let total = usize::try_from(usage.total_tokens).ok()?;
+        // A call larger than this model's entire context is not a compatible
+        // measurement (including after a configured window reduction).
+        if total > context.model_group.context_window {
+            return None;
+        }
+        let history = total
+            .checked_sub(system_tokens)
+            .filter(|tokens| *tokens > 0)?;
+        Some(HistoryTokenMeasurement {
+            last_covered_row: anchor,
+            history_tokens: history,
+        })
     }
 
     /// Compaction-aware load: the rolling summary + the messages after the
@@ -221,12 +321,13 @@ impl ChatCompactor {
             }
             None => self.message_repo.find_by_chat_id(chat_id).await?,
         };
-        let unchanged = || CompactionOutcome {
+        let unchanged = |input_token_estimate| CompactionOutcome {
             compacted: false,
             model_history: model_history.clone(),
+            input_token_estimate,
         };
         if live.is_empty() {
-            return Ok(unchanged());
+            return Ok(unchanged(None));
         }
 
         // These offsets came from the normal conversation builder. Validate the
@@ -261,16 +362,68 @@ impl ChatCompactor {
                     )
                 })
                 .sum::<usize>();
-        let summary_tokens = model_history.history[..model_history.summary_end]
+        let mut summary_tokens = model_history.history[..model_history.summary_end]
             .iter()
             .map(estimate_message_tokens)
             .sum::<usize>();
+        // Calibrate only the prefix actually covered by the last completed call.
+        // Its input already includes prior tool turns; adding the whole owning
+        // assistant row again would double-count them. New rows stay estimated.
+        let calibrated = if let Some(HistoryTokenMeasurement {
+            last_covered_row,
+            history_tokens,
+        }) = self
+            .load_history_token_measurement(
+                user_id,
+                chat_agent_id,
+                &live,
+                context,
+                existing.as_ref(),
+                system_tokens,
+            )
+            .await
+        {
+            let estimated_history =
+                summary_tokens + costs[..=last_covered_row].iter().sum::<usize>();
+            let fits_counter = history_tokens
+                .checked_add(system_tokens)
+                .and_then(|total| {
+                    total.checked_add(costs[last_covered_row + 1..].iter().sum::<usize>())
+                })
+                .and_then(|total| total.checked_add(injected_tokens))
+                .and_then(|total| total.checked_add(costs.len() + 1))
+                .is_some();
+            if estimated_history > 0 && fits_counter {
+                let scale = |tokens: usize| -> usize {
+                    ((tokens as u128 * history_tokens as u128).div_ceil(estimated_history as u128))
+                        .min(usize::MAX as u128) as usize
+                };
+                summary_tokens = scale(summary_tokens);
+                for cost in &mut costs[..=last_covered_row] {
+                    *cost = scale(*cost);
+                }
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
         if let Some(last) = costs.last_mut() {
             *last += injected_tokens;
         }
         let total_tokens = system_tokens + summary_tokens + costs.iter().sum::<usize>();
+        let input_token_estimate = calibrated.then(|| {
+            InputTokenEstimate::new(
+                total_tokens,
+                &model_group.main,
+                system_prompt,
+                &model_history.history,
+                tools,
+            )
+        });
         if total_tokens <= available * COMPACT_TRIGGER_PCT / 100 {
-            return Ok(unchanged());
+            return Ok(unchanged(input_token_estimate));
         }
 
         // An empty assistant placeholder (or a slash-command acknowledgement)
@@ -299,7 +452,7 @@ impl ChatCompactor {
         keep_from_idx = timestamp_group_start(&live, keep_from_idx);
         if keep_from_idx == 0 {
             ensure_fits(total_tokens, available)?;
-            return Ok(unchanged());
+            return Ok(unchanged(input_token_estimate));
         }
         let messages_to_compact = &live[..keep_from_idx];
 
@@ -309,9 +462,22 @@ impl ChatCompactor {
             AppError::Internal("CHAT_COMPACTION.md prompt missing from resources".into())
         })?;
         history.push(RigMessage::user(instruction));
+        let summary_input_tokens = system_tokens
+            + summary_tokens
+            + costs[..keep_from_idx].iter().sum::<usize>()
+            + estimate_message_tokens(history.last().expect("summary instruction"));
         let content = self
             .summarizer
             .summarize(SummaryRequest {
+                input_token_estimate: calibrated.then(|| {
+                    InputTokenEstimate::new(
+                        summary_input_tokens,
+                        &model_group.main,
+                        system_prompt,
+                        &history,
+                        tools,
+                    )
+                }),
                 model_group,
                 user_id,
                 agent_id: chat_agent_id,
@@ -361,7 +527,19 @@ impl ChatCompactor {
         }
         let mut compacted_history = model_history.clone();
         compacted_history.replace_prefix(keep_from_idx, &content);
+        let input_token_estimate = calibrated.then(|| {
+            InputTokenEstimate::new(
+                system_tokens
+                    + summary_tokens_for(&content)
+                    + costs[keep_from_idx..].iter().sum::<usize>(),
+                &model_group.main,
+                system_prompt,
+                &compacted_history.history,
+                tools,
+            )
+        });
         Ok(CompactionOutcome {
+            input_token_estimate,
             compacted: true,
             model_history: compacted_history,
         })
@@ -377,7 +555,19 @@ pub(crate) fn validate_initial_context(
     history: &[RigMessage],
     system_prompt: &str,
     model_group: &crate::inference::ModelGroup,
+    tools: &[RigToolDefinition],
+    input_token_estimate: Option<InputTokenEstimate>,
 ) -> Result<(), AppError> {
+    if let Some(tokens) = input_token_estimate
+        .and_then(|estimate| estimate.for_request(&model_group.main, system_prompt, history, tools))
+    {
+        let output = model_group
+            .main
+            .request_settings
+            .max_tokens
+            .unwrap_or(model_group.inference.default_max_tokens) as usize;
+        return ensure_fits(tokens, model_group.context_window.saturating_sub(output));
+    }
     let tokens = history.iter().map(estimate_message_tokens).sum::<usize>();
     let model = &model_group.main;
     let max_output = model

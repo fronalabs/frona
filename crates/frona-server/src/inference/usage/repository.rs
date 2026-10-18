@@ -45,6 +45,9 @@ pub trait InferenceUsageRepository: Repository<InferenceUsage> {
         until: Option<DateTime<Utc>>,
     ) -> Result<HashMap<String, UsageRollup>, AppError>;
 
+    /// Latest conversational provider call, including the response/turn anchor.
+    async fn last_chat_usage(&self, chat_id: &str) -> Result<Option<InferenceUsage>, AppError>;
+
     /// `input_tokens` of the latest `Chat` / `ToolTurn` row in the chat —
     /// used to rehydrate "context used so far" after a page reload before
     /// the next live SSE `usage_recorded` event fires.

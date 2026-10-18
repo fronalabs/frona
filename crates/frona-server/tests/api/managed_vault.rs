@@ -190,6 +190,7 @@ async fn inference_and_granted_commands_share_a_provider_without_implicit_secret
     assert!(
         group
             .inference(frona::inference::ModelRequest {
+                input_token_estimate: None,
                 system_prompt: "fixture",
                 history: vec![],
                 tools: vec![],
@@ -225,6 +226,7 @@ async fn inference_and_granted_commands_share_a_provider_without_implicit_secret
         ));
         let frona::inference::ModelResponse { usage, .. } = group
             .inference(frona::inference::ModelRequest {
+                input_token_estimate: None,
                 system_prompt: "fixture",
                 history: vec![],
                 tools: vec![],

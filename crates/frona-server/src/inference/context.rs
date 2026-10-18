@@ -1,5 +1,59 @@
 use rig_core::completion::Message as RigMessage;
 
+/// Provider-calibrated input size for one exact, in-memory request. This is an
+/// estimate, not a token limit: old usage cannot identify individual row costs,
+/// and system prompts/tool definitions may have changed since that call.
+#[derive(Clone, Copy, Debug)]
+pub struct InputTokenEstimate {
+    tokens: usize,
+    fingerprint: u64,
+}
+
+impl InputTokenEstimate {
+    pub(crate) fn new(
+        tokens: usize,
+        model: &crate::inference::ModelConfig,
+        system_prompt: &str,
+        history: &[RigMessage],
+        tools: &[rig_core::completion::request::ToolDefinition],
+    ) -> Self {
+        Self {
+            tokens,
+            fingerprint: Self::fingerprint(model, system_prompt, history, tools),
+        }
+    }
+
+    pub(crate) fn for_request(
+        self,
+        model: &crate::inference::ModelConfig,
+        system_prompt: &str,
+        history: &[RigMessage],
+        tools: &[rig_core::completion::request::ToolDefinition],
+    ) -> Option<usize> {
+        (self.fingerprint == Self::fingerprint(model, system_prompt, history, tools))
+            .then_some(self.tokens)
+    }
+
+    fn fingerprint(
+        model: &crate::inference::ModelConfig,
+        system_prompt: &str,
+        history: &[RigMessage],
+        tools: &[rig_core::completion::request::ToolDefinition],
+    ) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        model.as_str().hash(&mut hash);
+        serde_json::to_vec(&(&model.provider, &model.request_settings.extra_params))
+            .expect("provider configuration is serializable")
+            .hash(&mut hash);
+        system_prompt.hash(&mut hash);
+        serde_json::to_vec(&(history, tools))
+            .expect("model request is serializable")
+            .hash(&mut hash);
+        hash.finish()
+    }
+}
+
 /// Last-resort context window when the model isn't in the catalog AND no
 /// config override is set. 128K is the floor most modern chat models meet.
 /// Used when compiling named model groups without catalog limits
@@ -125,6 +179,67 @@ pub fn truncate_history(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn calibrated_input_is_bound_to_model_provider_system_history_and_tools() {
+        let mut model = crate::inference::ModelConfig {
+            catalog_provider: String::new(),
+            provider_handle: crate::handle!("fixture"),
+            model_id: "model".into(),
+            provider: crate::core::config::ProviderModel::Generic,
+            request_settings: Default::default(),
+        };
+        let history = vec![RigMessage::user("exact history")];
+        let tools = vec![rig_core::completion::request::ToolDefinition {
+            name: "read".into(),
+            description: "exact tool".into(),
+            parameters: serde_json::json!({"type":"object"}),
+        }];
+        let estimate = InputTokenEstimate::new(123, &model, "exact system", &history, &tools);
+        assert_eq!(
+            estimate.for_request(&model, "exact system", &history, &tools),
+            Some(123)
+        );
+        assert_eq!(
+            estimate.for_request(&model, "changed system", &history, &tools),
+            None
+        );
+        assert_eq!(
+            estimate.for_request(
+                &model,
+                "exact system",
+                &[RigMessage::user("changed")],
+                &tools
+            ),
+            None
+        );
+        assert_eq!(
+            estimate.for_request(&model, "exact system", &history, &[]),
+            None
+        );
+        model
+            .request_settings
+            .extra_params
+            .insert("changed".into(), serde_json::json!(true));
+        assert_eq!(
+            estimate.for_request(&model, "exact system", &history, &tools),
+            None
+        );
+        model.request_settings.extra_params.clear();
+        model.model_id = "other-model".into();
+        assert_eq!(
+            estimate.for_request(&model, "exact system", &history, &tools),
+            None
+        );
+        model.model_id = "model".into();
+        model.provider = crate::core::config::ProviderModel::Anthropic {
+            params: Default::default(),
+        };
+        assert_eq!(
+            estimate.for_request(&model, "exact system", &history, &tools),
+            None
+        );
+    }
 
     #[test]
     fn test_estimate_tokens() {

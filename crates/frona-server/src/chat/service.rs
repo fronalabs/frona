@@ -518,8 +518,15 @@ impl ChatService {
             )
             .await?;
         let rig_history = compacted.model_history.history;
+        let input_token_estimate = compacted.input_token_estimate;
 
-        super::compactor::validate_initial_context(&rig_history, &system_prompt, &model_group)?;
+        super::compactor::validate_initial_context(
+            &rig_history,
+            &system_prompt,
+            &model_group,
+            &[],
+            input_token_estimate,
+        )?;
         // Pre-allocate the message id so the usage row's message_id matches
         // the assistant Message that's about to be persisted.
         let assistant_message_id = crate::core::repository::new_id();
@@ -534,6 +541,7 @@ impl ChatService {
         );
         let response = model_group
             .inference(crate::inference::ModelRequest {
+                input_token_estimate,
                 system_prompt: &system_prompt,
                 history: rig_history,
                 tools: vec![],
@@ -1482,6 +1490,7 @@ impl ChatService {
             content: contents, ..
         } = model_group
             .inference(crate::inference::ModelRequest {
+                input_token_estimate: None,
                 system_prompt: &parsed.template,
                 history: vec![RigMessage::user(user_content)],
                 tools: vec![],

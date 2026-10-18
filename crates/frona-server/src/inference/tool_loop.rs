@@ -498,6 +498,7 @@ pub async fn run_tool_loop(
     usage_service: &crate::inference::usage::UsageService,
     chat_service: &crate::chat::service::ChatService,
     message_id: &str,
+    mut input_token_estimate: Option<crate::inference::context::InputTokenEstimate>,
 ) -> Result<ToolLoopOutcome, AppError> {
     let tool_defs = tool_registry.definitions();
     let rig_tools = to_rig_tool_definitions(tool_defs, tool_registry.mcp_bridge_mode());
@@ -548,6 +549,7 @@ pub async fn run_tool_loop(
         let contents = match (model_group)
             .stream_inference(
                 crate::inference::ModelRequest {
+                    input_token_estimate: input_token_estimate.take(),
                     system_prompt: &current_system_prompt,
                     history: chat_history.to_vec(),
                     tools: rig_tools.to_vec(),

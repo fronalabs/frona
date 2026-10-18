@@ -1930,6 +1930,7 @@ async fn compaction_candidates_never_truncate_and_fallback_preserves_usage_scope
             .unwrap();
         let result = TextInferenceSummarizer::new(helpers::test_usage_service(&db))
             .summarize(SummaryRequest {
+                input_token_estimate: None,
                 model_group: &group,
                 user_id: "user",
                 agent_id: "agent",
@@ -2089,4 +2090,610 @@ async fn oversized_conversation_prefix_cannot_use_a_larger_legacy_compaction_mod
         app.messages().find_by_chat_id("chat").await.unwrap(),
         before
     );
+}
+
+impl App {
+    async fn recorded_stats(&self, usage: frona::inference::Usage) {
+        let group = self
+            .chat_service
+            .model_providers()
+            .resolve(&frona::inference::ModelRef("conversation".into()))
+            .unwrap();
+        self.fixture
+            .state
+            .usage_service
+            .record(
+                &frona::inference::UsageContext::new(
+                    frona::inference::InferenceKind::ToolTurn {
+                        agent_id: self.chat.agent_id.clone(),
+                        chat_id: "chat".into(),
+                        message_id: "tool-message".into(),
+                        turn_index: 1,
+                    },
+                    &self.user.id,
+                    "conversation",
+                ),
+                &group.main,
+                &usage,
+                0,
+                Default::default(),
+            )
+            .await;
+    }
+
+    async fn resize_old_rows(&self, characters: usize) {
+        for id in ["old-2", "old-3"] {
+            let mut old = self.messages().find_by_id(id).await.unwrap().unwrap();
+            old.content = format!("{id} {}", "x".repeat(characters));
+            self.messages().update(&old).await.unwrap();
+        }
+    }
+
+    async fn next_request(&self) {
+        self.messages()
+            .create(&row(
+                "new-request",
+                20,
+                MessageRole::User,
+                "NEW EXACT REQUEST",
+            ))
+            .await
+            .unwrap();
+        let mut response = row("new-response", 21, MessageRole::Agent, "");
+        response.agent_id = Some(self.chat.agent_id.clone());
+        response.status = Some(MessageStatus::Executing);
+        self.messages().create(&response).await.unwrap();
+    }
+
+    async fn run_next(&self) -> Result<frona::agent::harness::AgentLoopOutcome, AppError> {
+        self.harness
+            .run_loop(
+                &self.user.id,
+                "chat",
+                "new-response",
+                CancellationToken::new(),
+                self.builder(),
+                &[],
+                None,
+            )
+            .await
+    }
+}
+
+fn provider_usage(total: u64) -> frona::inference::Usage {
+    frona::inference::Usage {
+        input_tokens: total.saturating_sub(5),
+        output_tokens: 5,
+        total_tokens: total,
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn provider_counts_correct_both_over_and_underestimated_history_through_inference() {
+    for (characters, measured, compacted) in [
+        (40_000, 6000, false),
+        (8000, 13000, true),
+        (40_000, 13000, true),
+    ] {
+        let app = App::new().await;
+        app.history(MessageRole::User, false).await;
+        app.resize_old_rows(characters).await;
+        app.recorded_stats(provider_usage(measured)).await;
+        app.next_request().await;
+        app.run_next().await.unwrap();
+        assert_eq!(app.summary_calls(), usize::from(compacted));
+        let outgoing = serde_json::to_string(&app.model.last_history()).unwrap();
+        assert!(outgoing.contains("NEW EXACT REQUEST"));
+        assert!(
+            outgoing.contains("old-3"),
+            "calibrated split should keep the newer old row"
+        );
+        assert_eq!(outgoing.contains("old-2"), !compacted);
+        let loaded = app
+            .chat_service
+            .compactor()
+            .load_conversation("chat")
+            .await
+            .unwrap();
+        assert_eq!(
+            loaded.messages.iter().any(|row| row.id == "old-2"),
+            !compacted
+        );
+        assert!(loaded.messages.iter().any(|row| row.id == "old-3"));
+        assert!(loaded.messages.iter().any(|row| row.id == "new-request"));
+        if compacted {
+            let summary = app.summary_history();
+            let text = serde_json::to_string(&summary).unwrap();
+            assert!(text.contains("old-2"));
+            assert!(!text.contains("old-3"));
+            assert!(!text.contains("NEW EXACT REQUEST"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn nonstream_send_uses_provider_estimate_without_trimming_the_original_history() {
+    let app = App::new().await;
+    app.history(MessageRole::User, false).await;
+    app.resize_old_rows(40_000).await;
+    app.recorded_stats(provider_usage(6000)).await;
+    app.chat_service
+        .send_message(
+            &app.user.id,
+            "chat",
+            frona::chat::message::models::SendMessageRequest {
+                content: "NEW NONSTREAM REQUEST".into(),
+                attachments: vec![],
+                metadata: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(app.summary_calls(), 0);
+    let outgoing = serde_json::to_string(&app.model.last_history()).unwrap();
+    assert!(outgoing.contains("old-2"));
+    assert!(outgoing.contains("old-3"));
+    assert!(outgoing.contains("NEW NONSTREAM REQUEST"));
+}
+
+async fn fallback_statistics_fixture(usage: Option<frona::inference::Usage>) -> App {
+    let app = App::new().await;
+    app.history(MessageRole::User, false).await;
+    if let Some(usage) = usage {
+        app.recorded_stats(usage).await;
+    }
+    app
+}
+
+async fn assert_estimated_trigger_and_split(app: &App) {
+    app.next_request().await;
+    let request = app
+        .messages()
+        .find_by_id("new-request")
+        .await
+        .unwrap()
+        .unwrap();
+    app.run_next().await.unwrap();
+    assert_eq!(app.summary_calls(), 1);
+    let loaded = app
+        .chat_service
+        .compactor()
+        .load_conversation("chat")
+        .await
+        .unwrap();
+    assert!(!loaded.messages.iter().any(|row| row.id == "old-3"));
+    assert_eq!(
+        loaded.messages.iter().find(|row| row.id == "new-request"),
+        Some(&request)
+    );
+    let outgoing = serde_json::to_string(&app.model.last_history()).unwrap();
+    assert!(outgoing.contains("NEW EXACT REQUEST"));
+    assert!(!outgoing.contains("old-3"));
+}
+
+#[tokio::test]
+async fn absent_statistics_use_estimated_trigger_and_split() {
+    let app = fallback_statistics_fixture(None).await;
+    assert_estimated_trigger_and_split(&app).await;
+}
+
+#[tokio::test]
+async fn invalid_token_counts_use_estimated_trigger_and_split() {
+    // Zero usage, missing total, inconsistent total, incomplete output, and overflow.
+    for usage in [
+        Default::default(),
+        frona::inference::Usage {
+            total_tokens: 0,
+            ..provider_usage(6000)
+        },
+        frona::inference::Usage {
+            total_tokens: 100,
+            ..provider_usage(6000)
+        },
+        frona::inference::Usage {
+            output_tokens: 0,
+            ..provider_usage(6000)
+        },
+        provider_usage(i64::MAX as u64),
+    ] {
+        let app = fallback_statistics_fixture(Some(usage)).await;
+        assert_estimated_trigger_and_split(&app).await;
+    }
+}
+
+#[tokio::test]
+async fn different_model_statistics_use_estimated_trigger_and_split() {
+    let app = fallback_statistics_fixture(Some(provider_usage(6000))).await;
+    app.db
+        .query("UPDATE inference_usage SET model_ref = 'mock/other'")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert_estimated_trigger_and_split(&app).await;
+}
+
+#[tokio::test]
+async fn different_provider_statistics_use_estimated_trigger_and_split() {
+    let app = fallback_statistics_fixture(Some(provider_usage(6000))).await;
+    app.db
+        .query("UPDATE inference_usage SET provider = 'other'")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert_estimated_trigger_and_split(&app).await;
+}
+
+#[tokio::test]
+async fn different_model_group_statistics_use_estimated_trigger_and_split() {
+    let app = fallback_statistics_fixture(Some(provider_usage(6000))).await;
+    app.db
+        .query("UPDATE inference_usage SET model_group = 'other'")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert_estimated_trigger_and_split(&app).await;
+}
+
+#[tokio::test]
+async fn different_agent_statistics_use_estimated_trigger_and_split() {
+    let app = fallback_statistics_fixture(Some(provider_usage(6000))).await;
+    app.db
+        .query("UPDATE inference_usage SET agent_id = 'other'")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert_estimated_trigger_and_split(&app).await;
+}
+
+#[tokio::test]
+async fn missing_usage_message_use_estimated_trigger_and_split() {
+    let app = fallback_statistics_fixture(Some(provider_usage(6000))).await;
+    app.db
+        .query("UPDATE inference_usage SET message_id = 'missing'")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert_estimated_trigger_and_split(&app).await;
+}
+
+#[tokio::test]
+async fn nonfinal_tool_turn_statistics_use_estimated_trigger_and_split() {
+    let app = fallback_statistics_fixture(Some(provider_usage(6000))).await;
+    app.db
+        .query("UPDATE inference_usage SET turn_index = 9")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert_estimated_trigger_and_split(&app).await;
+}
+
+#[tokio::test]
+async fn gapped_tool_history_use_estimated_trigger_and_split() {
+    let app = fallback_statistics_fixture(Some(provider_usage(6000))).await;
+    app.db
+        .query("UPDATE tool_call SET turn = 2; UPDATE inference_usage SET turn_index = 3")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert_estimated_trigger_and_split(&app).await;
+}
+
+#[tokio::test]
+async fn unreadable_statistics_use_estimated_trigger_and_split() {
+    let app = fallback_statistics_fixture(Some(provider_usage(6000))).await;
+    app.db
+        .query("UPDATE inference_usage SET total_tokens = 'broken'")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    assert_estimated_trigger_and_split(&app).await;
+}
+
+#[tokio::test]
+async fn unfinished_usage_message_uses_estimated_trigger_and_split() {
+    let app = fallback_statistics_fixture(Some(provider_usage(6000))).await;
+    let mut message = app
+        .messages()
+        .find_by_id("tool-message")
+        .await
+        .unwrap()
+        .unwrap();
+    message.status = Some(MessageStatus::Executing);
+    app.messages().update(&message).await.unwrap();
+    assert_estimated_trigger_and_split(&app).await;
+}
+
+#[tokio::test]
+async fn statistics_older_than_summary_use_estimated_trigger_and_split() {
+    let app = fallback_statistics_fixture(Some(provider_usage(6000))).await;
+    let old = app.messages().find_by_id("old-0").await.unwrap().unwrap();
+    let now = chrono::Utc::now();
+    app.summaries()
+        .create(&frona::chat::models::ChatSummary {
+            id: "prior-summary".into(),
+            user_id: app.user.id.clone(),
+            chat_id: "chat".into(),
+            content: "Existing summary".into(),
+            compacted_until: old.created_at,
+            item_count: 1,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .unwrap();
+    assert_estimated_trigger_and_split(&app).await;
+}
+
+#[tokio::test]
+async fn cached_provider_totals_are_normalized_without_adding_cache_tokens_twice() {
+    use frona::core::config::ProviderModel;
+    for (provider, input, cached, writes, total, expected_compaction) in [
+        (ProviderModel::Generic, 5995, 5995, 0, 6000, false),
+        (
+            ProviderModel::Anthropic {
+                params: Default::default(),
+            },
+            0,
+            5995,
+            0,
+            6000,
+            false,
+        ),
+        (
+            ProviderModel::Anthropic {
+                params: Default::default(),
+            },
+            1000,
+            6000,
+            995,
+            8000,
+            false,
+        ),
+        // max(input,cached) would accept this inconsistent disjoint total.
+        (
+            ProviderModel::Anthropic {
+                params: Default::default(),
+            },
+            4000,
+            4000,
+            0,
+            6000,
+            true,
+        ),
+    ] {
+        let app = App::with_provider(18_000, true, provider).await;
+        app.history(MessageRole::User, false).await;
+        app.recorded_stats(frona::inference::Usage {
+            input_tokens: input,
+            cached_input_tokens: cached,
+            cache_creation_input_tokens: writes,
+            output_tokens: 5,
+            total_tokens: total,
+            ..Default::default()
+        })
+        .await;
+        app.next_request().await;
+        app.run_next().await.unwrap();
+        assert_eq!(app.summary_calls(), usize::from(expected_compaction));
+    }
+}
+
+#[tokio::test]
+async fn command_history_mutation_invalidates_calibration_before_provider_call() {
+    let app = App::new().await;
+    app.history(MessageRole::User, false).await;
+    app.resize_old_rows(40_000).await;
+    app.recorded_stats(provider_usage(6000)).await;
+    app.command_rows("compact").await;
+    let mut registry = frona::chat::command::CommandRegistry::new();
+    registry.register(Arc::new(ContextPromptCommand));
+    let result = app
+        .harness
+        .run_loop(
+            &app.user.id,
+            "chat",
+            "command-response",
+            CancellationToken::new(),
+            app.builder(),
+            &[],
+            Some(Arc::new(registry)),
+        )
+        .await;
+    assert!(matches!(result, Err(AppError::Validation(_))));
+    assert_eq!(app.model.calls(), 0);
+}
+
+#[tokio::test]
+async fn calibrated_summary_does_not_lend_its_estimate_to_a_fallback_model() {
+    let app = App::with_window(128_000).await;
+    app.history(MessageRole::User, false).await;
+    app.resize_old_rows(40_000).await;
+    app.recorded_stats(provider_usage(13000)).await;
+    app.next_request().await;
+    let mut session = app.session().await.unwrap();
+    session.model_group.context_window = 18_000;
+    let mut fallback = session.model_group.main.clone();
+    fallback.model_id = "fallback-model".into();
+    fallback.request_settings.max_tokens = Some(12_000);
+    session.model_group.fallbacks.push(fallback);
+    session.model_group.retry.max_retries = 0;
+    app.model.enqueue(MockResponse::Error(
+        frona::inference::error::InferenceError::InferenceFailed("main provider failed".into()),
+    ));
+    let result = app.manual(&mut session).await;
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("Complete compaction input exceeds context limit")
+    );
+    assert_eq!(app.model.calls(), 1);
+    assert_eq!(app.model.model_names(), vec!["conversation-model"]);
+    assert!(
+        app.summaries()
+            .find_by_chat_id("chat")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn completed_nonstream_response_statistics_anchor_the_next_compaction() {
+    let app = App::new().await;
+    app.history(MessageRole::User, false).await;
+    app.resize_old_rows(8000).await;
+    app.model.set_usage(provider_usage(13000));
+    let first = app
+        .chat_service
+        .send_message(
+            &app.user.id,
+            "chat",
+            frona::chat::message::models::SendMessageRequest {
+                content: "FIRST NONSTREAM REQUEST".into(),
+                attachments: vec![],
+                metadata: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(app.summary_calls(), 0);
+    let response = first.last().unwrap();
+    let usage: Vec<serde_json::Value> = app
+        .db
+        .query("SELECT * FROM inference_usage WHERE kind_tag = 'Text'")
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert_eq!(usage.len(), 1);
+    assert_eq!(usage[0]["message_id"], response.id);
+    app.chat_service
+        .send_message(
+            &app.user.id,
+            "chat",
+            frona::chat::message::models::SendMessageRequest {
+                content: "SECOND NONSTREAM REQUEST".into(),
+                attachments: vec![],
+                metadata: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(app.summary_calls(), 1);
+    let outgoing = serde_json::to_string(&app.model.last_history()).unwrap();
+    assert!(outgoing.contains("SECOND NONSTREAM REQUEST"));
+    assert!(outgoing.contains("old-3"));
+    assert!(!outgoing.contains("old-2"));
+}
+
+#[tokio::test]
+async fn only_latest_final_tool_turn_counts_and_initial_tool_request_keeps_full_history() {
+    let app = App::new().await;
+    app.fixture.state.policy_service.create_policy(&app.user.id,
+        r#"@id("calibrated-read") permit(principal, action == Policy::Action::"invoke_tool", resource) when { resource == Policy::Tool::"read" };"#,
+    ).await.unwrap();
+    app.history(MessageRole::User, false).await;
+    app.resize_old_rows(40_000).await;
+    app.recorded_stats(provider_usage(100_000)).await;
+    app.db
+        .query("UPDATE inference_usage SET turn_index = 0")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    app.recorded_stats(provider_usage(6000)).await;
+    app.next_request().await;
+    app.run_next().await.unwrap();
+    assert_eq!(app.summary_calls(), 0);
+    assert_eq!(app.model.calls(), 1);
+    assert_eq!(app.model.tool_histories()[0].len(), 1);
+    let outgoing = serde_json::to_string(&app.model.histories()[0]).unwrap();
+    assert!(outgoing.contains("old-2"));
+    assert!(outgoing.contains("old-3"));
+    assert!(outgoing.contains("NEW EXACT REQUEST"));
+    let usage: Vec<serde_json::Value> = app
+        .db
+        .query("SELECT * FROM inference_usage WHERE message_id = 'new-response'")
+        .await
+        .unwrap()
+        .take(0)
+        .unwrap();
+    assert_eq!(usage.len(), 1);
+    assert_eq!(usage[0]["kind_tag"], "ToolTurn");
+    assert_eq!(usage[0]["turn_index"], 0);
+}
+
+#[tokio::test]
+async fn fresh_request_and_injected_continuation_are_never_scaled_by_old_usage() {
+    for continuation in [false, true] {
+        let app = App::new().await;
+        app.history(MessageRole::User, false).await;
+        app.resize_old_rows(40_000).await;
+        let builder: Box<dyn ConversationBuilder> = if continuation {
+            app.messages().delete("placeholder").await.unwrap();
+            let mut instruction = row(
+                "initial-task",
+                -1,
+                MessageRole::Agent,
+                "Original task instruction",
+            );
+            instruction.agent_id = Some(app.chat.agent_id.clone());
+            app.messages().create(&instruction).await.unwrap();
+            Box::new(frona::inference::conversation::TaskConversationBuilder {
+                user_service: app.fixture.state.user_service.clone(),
+                storage_service: app.fixture.state.storage_service.clone(),
+                agent_service: app.fixture.state.agent_service.clone(),
+                continuation_prompt: Some("fresh continuation ".repeat(4000)),
+            })
+        } else {
+            app.next_request().await;
+            let mut request = app
+                .messages()
+                .find_by_id("new-request")
+                .await
+                .unwrap()
+                .unwrap();
+            request.content = "fresh protected request ".repeat(4000);
+            app.messages().update(&request).await.unwrap();
+            app.builder()
+        };
+        app.recorded_stats(provider_usage(6000)).await;
+        let before = app.messages().find_by_chat_id("chat").await.unwrap();
+        let result = ChatSessionContext::build(
+            &app.harness,
+            &app.user.id,
+            app.chat.clone(),
+            CancellationToken::new(),
+            Arc::from(builder),
+            &[],
+        )
+        .await;
+        assert!(
+            matches!(result, Err(AppError::Validation(_))),
+            "continuation={continuation}"
+        );
+        assert_eq!(app.model.calls(), 0);
+        assert!(
+            app.summaries()
+                .find_by_chat_id("chat")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            app.messages().find_by_chat_id("chat").await.unwrap(),
+            before
+        );
+    }
 }

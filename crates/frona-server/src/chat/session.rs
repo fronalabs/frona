@@ -259,7 +259,8 @@ impl ChatSessionContext {
                 &conv_ctx,
                 conversation_summary.as_deref(),
             )
-            .await;
+            .await
+            .history;
 
         let mut file_paths = Vec::new();
         for msg in &stored_messages {

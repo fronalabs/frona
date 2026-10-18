@@ -131,7 +131,10 @@ async fn agent_with_tool_calls_single_turn() {
     let te2 = tool_call("chat-1", &agent_msg_id, 0, "browse_page");
     let tool_calls = vec![te1, te2];
 
-    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
+    let result = builder
+        .build(&messages, &tool_calls, &ctx, None)
+        .await
+        .history;
 
     assert_eq!(result.len(), 4);
     assert!(matches!(&result[0], RigMessage::User { .. }));
@@ -184,7 +187,10 @@ async fn agent_with_tool_calls_multi_turn() {
     let te_turn1 = tool_call("chat-1", &agent_msg_id, 1, "browse");
     let tool_calls = vec![te_turn0, te_turn1];
 
-    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
+    let result = builder
+        .build(&messages, &tool_calls, &ctx, None)
+        .await
+        .history;
 
     assert_eq!(result.len(), 6);
 }
@@ -203,7 +209,10 @@ async fn agent_executing_status_no_final_text() {
     let te = tool_call("chat-1", &agent_msg_id, 0, "web_search");
     let tool_calls = vec![te];
 
-    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
+    let result = builder
+        .build(&messages, &tool_calls, &ctx, None)
+        .await
+        .history;
 
     assert_eq!(result.len(), 3);
     assert!(matches!(&result[0], RigMessage::User { .. }));
@@ -223,7 +232,10 @@ async fn agent_without_tool_calls_unchanged() {
     ];
     let tool_calls = vec![];
 
-    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
+    let result = builder
+        .build(&messages, &tool_calls, &ctx, None)
+        .await
+        .history;
 
     assert_eq!(result.len(), 2);
     assert!(matches!(&result[0], RigMessage::User { .. }));
@@ -251,7 +263,10 @@ async fn turn_text_appears_in_reconstructed_history() {
     te.turn_text = Some("Here's what I found:".into());
     let tool_calls = vec![te];
 
-    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
+    let result = builder
+        .build(&messages, &tool_calls, &ctx, None)
+        .await
+        .history;
 
     assert_eq!(result.len(), 4);
 
@@ -280,7 +295,10 @@ async fn turn_text_empty_string_omitted() {
     te.turn_text = Some(String::new());
     let tool_calls = vec![te];
 
-    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
+    let result = builder
+        .build(&messages, &tool_calls, &ctx, None)
+        .await
+        .history;
 
     if let RigMessage::Assistant { content, .. } = &result[1] {
         let items: Vec<_> = content.iter().collect();
@@ -315,7 +333,7 @@ async fn agent_with_tool_calls_includes_per_turn_reasoning() {
         raw: None,
     });
 
-    let result = builder.build(&messages, &[te], &ctx, None).await;
+    let result = builder.build(&messages, &[te], &ctx, None).await.history;
 
     assert_eq!(result.len(), 3);
 
@@ -350,7 +368,10 @@ async fn agent_with_tool_calls_omits_reasoning_when_absent() {
     te.turn_text = Some("looking".into());
     let tool_calls = vec![te];
 
-    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
+    let result = builder
+        .build(&messages, &tool_calls, &ctx, None)
+        .await
+        .history;
 
     if let RigMessage::Assistant { content, .. } = &result[1] {
         let items: Vec<_> = content.iter().collect();
@@ -391,7 +412,10 @@ async fn agent_with_tool_calls_attaches_reasoning_per_turn() {
         raw: None,
     });
 
-    let result = builder.build(&messages, &[te0, te1], &ctx, None).await;
+    let result = builder
+        .build(&messages, &[te0, te1], &ctx, None)
+        .await
+        .history;
 
     assert_eq!(result.len(), 5);
 
@@ -414,10 +438,11 @@ async fn prepends_conversation_summary() {
     let ctx = test_ctx();
     let messages = vec![user_message("chat-1", "hello")];
 
-    let without = builder.build(&messages, &[], &ctx, None).await;
+    let without = builder.build(&messages, &[], &ctx, None).await.history;
     let with = builder
         .build(&messages, &[], &ctx, Some("earlier conversation"))
-        .await;
+        .await
+        .history;
 
     assert_eq!(
         with.len(),

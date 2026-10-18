@@ -516,7 +516,8 @@ impl ChatService {
                 &conv_ctx,
                 conversation_summary.as_deref(),
             )
-            .await;
+            .await
+            .history;
 
         rig_history.push(RigMessage::user(&req.content));
         // Pre-allocate the message id so the usage row's message_id matches

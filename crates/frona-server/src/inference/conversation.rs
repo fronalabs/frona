@@ -22,6 +22,40 @@ pub struct ConversationContext {
     pub user_id: String,
 }
 
+/// Native model history and the persisted-row boundaries that produced it.
+/// Zero-output rows still have an end offset; one assistant row owns all of its
+/// tool calls/results. The mapping is transient and never stored in the database.
+#[derive(Clone, Debug)]
+pub struct ModelConversationHistory {
+    pub history: Vec<RigMessage>,
+    pub row_ids: Vec<String>,
+    pub row_ends: Vec<usize>,
+    pub summary: Option<String>,
+    pub summary_end: usize,
+}
+
+impl ModelConversationHistory {
+    fn new(messages: &[Message], summary: Option<&str>) -> Self {
+        let mut history = Vec::new();
+        if let Some(summary) = summary.filter(|s| !s.trim().is_empty()) {
+            history.push(summary_message(summary));
+        }
+        Self {
+            summary_end: history.len(),
+            history,
+            row_ids: messages.iter().map(|m| m.id.clone()).collect(),
+            row_ends: Vec::with_capacity(messages.len()),
+            summary: summary.map(str::to_owned),
+        }
+    }
+}
+
+pub fn summary_message(summary: &str) -> RigMessage {
+    RigMessage::user(format!(
+        "<conversation_summary>\n{summary}\n</conversation_summary>"
+    ))
+}
+
 #[async_trait]
 pub trait ConversationBuilder: Send + Sync {
     /// `summary`: rolling summary of compacted-away earlier messages, prepended
@@ -32,7 +66,7 @@ pub trait ConversationBuilder: Send + Sync {
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
         summary: Option<&str>,
-    ) -> Vec<RigMessage>;
+    ) -> ModelConversationHistory;
 
     /// Turn-scoped system prompt appended to the agent's main system prompt.
     fn system_prompt(&self) -> Option<String> {
@@ -55,18 +89,10 @@ impl ConversationBuilder for DefaultConversationBuilder {
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
         summary: Option<&str>,
-    ) -> Vec<RigMessage> {
+    ) -> ModelConversationHistory {
         let te_map = group_tool_calls_by_message(tool_calls);
-        let mut result = Vec::with_capacity(messages.len() + 1);
-        // Compacted earlier conversation, re-injected as a leading message so
-        // the model sees the gist of what was summarized away.
-        if let Some(s) = summary
-            && !s.trim().is_empty()
-        {
-            result.push(RigMessage::user(format!(
-                "<conversation_summary>\n{s}\n</conversation_summary>"
-            )));
-        }
+        let mut model_history = ModelConversationHistory::new(messages, summary);
+        let result = &mut model_history.history;
         for msg in messages {
             match msg.role {
                 MessageRole::User | MessageRole::Contact => {
@@ -78,6 +104,7 @@ impl ConversationBuilder for DefaultConversationBuilder {
                             role = ?msg.role,
                             "skipping empty user-side message in chat history (upstream produced a payload with no content and no attachments)",
                         );
+                        model_history.row_ends.push(result.len());
                         continue;
                     }
                     result.push(
@@ -98,6 +125,7 @@ impl ConversationBuilder for DefaultConversationBuilder {
                             chat_id = %msg.chat_id,
                             "skipping empty task-completion message in chat history (event-only row with no body)",
                         );
+                        model_history.row_ends.push(result.len());
                         continue;
                     }
                     let content = task_completion_content(msg);
@@ -132,7 +160,7 @@ impl ConversationBuilder for DefaultConversationBuilder {
                             tes,
                             &ctx.agent_id,
                             other_handle.as_deref(),
-                            &mut result,
+                            result,
                         );
                     } else if let Some(m) =
                         convert_agent_message(msg, &ctx.agent_id, other_handle.as_deref())
@@ -146,8 +174,9 @@ impl ConversationBuilder for DefaultConversationBuilder {
                     }
                 }
             };
+            model_history.row_ends.push(result.len());
         }
-        result
+        model_history
     }
 }
 
@@ -166,9 +195,10 @@ impl ConversationBuilder for TaskConversationBuilder {
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
         _summary: Option<&str>,
-    ) -> Vec<RigMessage> {
+    ) -> ModelConversationHistory {
         let te_map = group_tool_calls_by_message(tool_calls);
-        let mut result = Vec::with_capacity(messages.len());
+        let mut model_history = ModelConversationHistory::new(messages, None);
+        let result = &mut model_history.history;
         let mut instruction_wrapped = false;
         for msg in messages {
             match msg.role {
@@ -181,6 +211,7 @@ impl ConversationBuilder for TaskConversationBuilder {
                             role = ?msg.role,
                             "skipping empty user-side message in chat history (upstream produced a payload with no content and no attachments)",
                         );
+                        model_history.row_ends.push(result.len());
                         continue;
                     }
                     result.push(
@@ -201,6 +232,7 @@ impl ConversationBuilder for TaskConversationBuilder {
                             chat_id = %msg.chat_id,
                             "skipping empty task-completion message in chat history (event-only row with no body)",
                         );
+                        model_history.row_ends.push(result.len());
                         continue;
                     }
                     let content = task_completion_content(msg);
@@ -241,7 +273,7 @@ impl ConversationBuilder for TaskConversationBuilder {
                                 tes,
                                 &ctx.agent_id,
                                 other_handle.as_deref(),
-                                &mut result,
+                                result,
                             );
                         } else if let Some(m) =
                             convert_agent_message(msg, &ctx.agent_id, other_handle.as_deref())
@@ -256,13 +288,14 @@ impl ConversationBuilder for TaskConversationBuilder {
                     }
                 }
             };
+            model_history.row_ends.push(result.len());
         }
         if let Some(prompt) = &self.continuation_prompt
             && !prompt.is_empty()
         {
             result.push(RigMessage::user(prompt));
         }
-        result
+        model_history
     }
 }
 
@@ -284,13 +317,13 @@ impl ConversationBuilder for HeartbeatConversationBuilder {
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
         summary: Option<&str>,
-    ) -> Vec<RigMessage> {
+    ) -> ModelConversationHistory {
         let default = DefaultConversationBuilder {
             user_service: self.user_service.clone(),
             storage_service: self.storage_service.clone(),
             agent_service: self.agent_service.clone(),
         };
-        let mut result = default.build(messages, tool_calls, ctx, summary).await;
+        let mut model_history = default.build(messages, tool_calls, ctx, summary).await;
 
         let mut injected = String::new();
         if let Some(prompt) = &self.continuation_prompt
@@ -303,8 +336,8 @@ impl ConversationBuilder for HeartbeatConversationBuilder {
         injected.push_str("<heartbeat_checklist file=\"HEARTBEAT.md\">\n");
         injected.push_str(&self.heartbeat_content);
         injected.push_str("\n</heartbeat_checklist>");
-        result.push(RigMessage::user(&injected));
-        result
+        model_history.history.push(RigMessage::user(&injected));
+        model_history
     }
 }
 
@@ -325,9 +358,10 @@ impl ConversationBuilder for ChannelConversationBuilder {
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
         _summary: Option<&str>,
-    ) -> Vec<RigMessage> {
+    ) -> ModelConversationHistory {
         let te_map = group_tool_calls_by_message(tool_calls);
-        let mut result = Vec::with_capacity(messages.len());
+        let mut model_history = ModelConversationHistory::new(messages, None);
+        let result = &mut model_history.history;
         for msg in messages {
             match msg.role {
                 MessageRole::User | MessageRole::Contact => {
@@ -339,6 +373,7 @@ impl ConversationBuilder for ChannelConversationBuilder {
                             role = ?msg.role,
                             "skipping empty user-side message in chat history (upstream produced a payload with no content and no attachments)",
                         );
+                        model_history.row_ends.push(result.len());
                         continue;
                     }
                     result.push(
@@ -359,6 +394,7 @@ impl ConversationBuilder for ChannelConversationBuilder {
                             chat_id = %msg.chat_id,
                             "skipping empty task-completion message in chat history (event-only row with no body)",
                         );
+                        model_history.row_ends.push(result.len());
                         continue;
                     }
                     let content = task_completion_content(msg);
@@ -393,7 +429,7 @@ impl ConversationBuilder for ChannelConversationBuilder {
                             tes,
                             &ctx.agent_id,
                             other_handle.as_deref(),
-                            &mut result,
+                            result,
                         );
                     } else if let Some(m) =
                         convert_agent_message(msg, &ctx.agent_id, other_handle.as_deref())
@@ -407,8 +443,9 @@ impl ConversationBuilder for ChannelConversationBuilder {
                     }
                 }
             };
+            model_history.row_ends.push(result.len());
         }
-        result
+        model_history
     }
 
     fn system_prompt(&self) -> Option<String> {

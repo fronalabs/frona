@@ -516,6 +516,20 @@ impl ModelProvider for MockModelProvider {
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
     ) -> Result<serde_json::Value, InferenceError> {
+        self.system_prompts
+            .lock()
+            .unwrap()
+            .push(_system_prompt.into());
+        self.model_names
+            .lock()
+            .unwrap()
+            .push(_model.model_id.clone());
+        self.request_settings
+            .lock()
+            .unwrap()
+            .push((_max_tokens, _temperature));
+        *self.last_history.lock().unwrap() = _chat_history.clone();
+        self.histories.lock().unwrap().push(_chat_history);
         let response = match self.next_response() {
             MockResponse::Barrier(barrier, response) => {
                 barrier.wait().await;

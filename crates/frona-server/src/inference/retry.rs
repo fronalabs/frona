@@ -11,7 +11,9 @@ use tokio::sync::mpsc;
 
 use crate::chat::broadcast::EventSender;
 
-use crate::inference::context::{estimate_message_tokens, estimate_tokens, truncate_history};
+use crate::inference::context::{
+    estimate_message_tokens, estimate_tokens, truncate_history, truncate_streaming_history,
+};
 use crate::inference::error::InferenceError;
 use crate::inference::provider::ModelProvider;
 use crate::inference::provider::{InferenceOutput, ModelConfig, StreamToken};
@@ -85,6 +87,8 @@ where
 #[derive(Clone, Copy)]
 pub(crate) enum HistoryOverflow {
     TruncateOldest,
+    // Active streamed turns have a separate retention policy (CHAT02).
+    TruncateStreaming,
     Reject,
 }
 
@@ -109,7 +113,16 @@ fn completion_history(
         return Ok(history.to_vec());
     }
     if matches!(overflow, HistoryOverflow::TruncateOldest) {
-        return Ok(truncate_history(
+        return truncate_history(
+            history.to_vec(),
+            system_prompt,
+            group.context_window,
+            max_output,
+            group.inference.history_truncation_pct,
+        );
+    }
+    if matches!(overflow, HistoryOverflow::TruncateStreaming) {
+        return Ok(truncate_streaming_history(
             history.to_vec(),
             system_prompt,
             group.context_window,
@@ -324,12 +337,15 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
     let ref_str = model_group.main.as_str();
     let start = Instant::now();
     match retry_with_backoff(&model_group.retry, &model_group.main, || async {
+        let request_history = truncated
+            .as_ref()
+            .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
         let provider = provider_for(&model_group.providers, &model_group.main)?;
         provider
             .structured_inference(
                 &model_group.main,
                 system_prompt,
-                truncated.clone(),
+                request_history.clone(),
                 schema.clone(),
                 max_tokens,
                 temperature,
@@ -389,12 +405,15 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
         );
         let start = Instant::now();
         match retry_with_backoff(&model_group.retry, fallback, || async {
+            let request_history = truncated_fb
+                .as_ref()
+                .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
             let provider = provider_for(&model_group.providers, fallback)?;
             provider
                 .structured_inference(
                     fallback,
                     system_prompt,
-                    truncated_fb.clone(),
+                    request_history.clone(),
                     schema.clone(),
                     max_tokens,
                     temperature,
@@ -481,7 +500,7 @@ pub(crate) async fn stream_with_retry_and_fallback(
             &tools,
             model_group,
             max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize,
-            HistoryOverflow::TruncateOldest,
+            HistoryOverflow::TruncateStreaming,
             if index == 0 {
                 input_token_estimate
             } else {

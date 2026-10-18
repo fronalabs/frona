@@ -153,7 +153,15 @@ async fn login(
             v
         }
         Err(e) => {
-            state.login_tracker.record_failure(&identifier).await;
+            if matches!(
+                e,
+                AppError::Auth {
+                    code: AuthErrorCode::InvalidCredentials,
+                    ..
+                }
+            ) {
+                state.login_tracker.record_failure(&identifier).await;
+            }
             return Err(ApiError(e));
         }
     };

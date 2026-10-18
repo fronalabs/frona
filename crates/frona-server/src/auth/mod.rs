@@ -355,11 +355,17 @@ impl AuthService {
         };
         let parsed = PasswordHash::new(hash)
             .map_err(|e| AppError::Internal(format!("Invalid password hash: {e}")))?;
+        if parsed.salt.is_none() || parsed.hash.is_none() {
+            return Err(AppError::Internal("Incomplete password hash".into()));
+        }
         Argon2::default()
             .verify_password(password.as_bytes(), &parsed)
-            .map_err(|_| AppError::Auth {
-                message: "Invalid email or password".into(),
-                code: AuthErrorCode::InvalidCredentials,
+            .map_err(|error| match error {
+                argon2::password_hash::Error::Password => AppError::Auth {
+                    message: "Invalid email or password".into(),
+                    code: AuthErrorCode::InvalidCredentials,
+                },
+                _ => AppError::Internal(format!("Password verification failed: {error}")),
             })
     }
 }

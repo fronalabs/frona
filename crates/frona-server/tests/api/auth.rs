@@ -1155,3 +1155,203 @@ async fn refresh_and_logout_report_database_revocation_failures_without_clearing
         .await
         .unwrap();
 }
+
+/// Fresh route-level IP buckets isolate the account lockout from IP rate limiting.
+/// The shared AppState retains the same login tracker for every request.
+async fn lockout_login(
+    state: &AppState,
+    identifier: &str,
+    password: &str,
+) -> axum::response::Response {
+    let app = routes::auth::router().with_state(state.clone());
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/login")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "identifier": identifier, "password": password }).to_string(),
+        ))
+        .unwrap();
+    with_connect_info(&mut req);
+    app.oneshot(req).await.unwrap()
+}
+
+#[tokio::test]
+async fn login_lockout_combines_equivalent_identifiers_and_preserves_locked_response() {
+    let (mut state, _tmp) = test_app_state().await;
+    state.login_tracker = frona::auth::lockout::LoginAttemptTracker::new(2, 15);
+    register_user(&state, "alice", "alice@example.com", "password123").await;
+
+    for variants in [
+        [" Alice ", "ALICE", "alice"],
+        [
+            " Alice@Example.COM ",
+            "ALICE@example.com",
+            "alice@example.com",
+        ],
+    ] {
+        for identifier in &variants[..2] {
+            let response = lockout_login(&state, identifier, "wrong").await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            assert!(
+                !body_json(response).await["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Too many")
+            );
+        }
+        let response = lockout_login(&state, variants[2], "password123").await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(response.headers().get("set-cookie").is_none());
+        // Account lockout keeps the existing 401 contract; Retry-After is not supported.
+        assert!(response.headers().get("retry-after").is_none());
+        assert_eq!(
+            body_json(response).await["error"],
+            "Too many failed attempts. Please try again later."
+        );
+    }
+}
+
+#[tokio::test]
+async fn login_lockout_success_clears_the_normalized_failure_budget() {
+    let (mut state, _tmp) = test_app_state().await;
+    state.login_tracker = frona::auth::lockout::LoginAttemptTracker::new(2, 15);
+    register_user(&state, "alice", "alice@example.com", "password123").await;
+    for identifier in [" ALICE ", " Alice@Example.COM "] {
+        for _ in 0..2 {
+            assert_eq!(
+                lockout_login(&state, identifier, "wrong").await.status(),
+                StatusCode::UNAUTHORIZED
+            );
+            let response = lockout_login(
+                &state,
+                identifier.trim().to_lowercase().as_str(),
+                "password123",
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(response.headers().get("set-cookie").is_some());
+        }
+    }
+}
+
+#[tokio::test]
+async fn login_lockout_counts_unknown_users_but_allows_disabled_tracking() {
+    let (mut state, _tmp) = test_app_state().await;
+    state.login_tracker = frona::auth::lockout::LoginAttemptTracker::new(2, 15);
+    for identifier in ["nobody", " NOBODY "] {
+        assert_eq!(
+            lockout_login(&state, identifier, "wrong").await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    let response = lockout_login(&state, "nobody", "wrong").await;
+    assert_eq!(
+        body_json(response).await["error"],
+        "Too many failed attempts. Please try again later."
+    );
+
+    register_user(&state, "alice", "alice@example.com", "password123").await;
+    for tracker in [
+        frona::auth::lockout::LoginAttemptTracker::new(0, 15),
+        frona::auth::lockout::LoginAttemptTracker::new(2, 0),
+    ] {
+        state.login_tracker = tracker;
+        for _ in 0..3 {
+            assert_eq!(
+                lockout_login(&state, "alice", "wrong").await.status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        assert_eq!(
+            lockout_login(&state, "alice", "password123").await.status(),
+            StatusCode::OK
+        );
+    }
+}
+
+#[tokio::test]
+async fn login_lockout_excludes_deactivated_accounts_without_clearing_prior_failures() {
+    let (mut state, _tmp) = test_app_state().await;
+    state.login_tracker = frona::auth::lockout::LoginAttemptTracker::new(2, 15);
+    state.user_group_service.seed_built_in().await.unwrap();
+    register_user(&state, "admin", "admin@example.com", "password123").await;
+    let (_, id) = register_user(&state, "alice", "alice@example.com", "password123").await;
+    assert_eq!(
+        lockout_login(&state, "alice", "wrong").await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    state.user_service.deactivate(&id).await.unwrap();
+    for _ in 0..3 {
+        let response = lockout_login(&state, " ALICE ", "wrong").await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(body_json(response).await["error"], "Account deactivated");
+        assert!(!state.login_tracker.is_locked("alice").await);
+    }
+    state.user_service.reactivate(&id).await.unwrap();
+    assert_eq!(
+        lockout_login(&state, "alice", "wrong").await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(state.login_tracker.is_locked("alice").await);
+}
+
+#[tokio::test]
+async fn login_lockout_excludes_password_verifier_errors() {
+    let (mut state, _tmp) = test_app_state().await;
+    state.login_tracker = frona::auth::lockout::LoginAttemptTracker::new(2, 15);
+    let (_, id) = register_user(&state, "alice", "alice@example.com", "password123").await;
+    let mut user = state.user_service.find_by_id(&id).await.unwrap().unwrap();
+    let valid_hash = user.password_hash.clone();
+    assert_eq!(
+        lockout_login(&state, "alice", "wrong").await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    for invalid_hash in [
+        "malformed".to_string(),
+        "$argon2id$v=19$m=19456,t=2,p=1".to_string(),
+        valid_hash.replacen("argon2id", "unsupported", 1),
+    ] {
+        user.password_hash = invalid_hash;
+        state.user_service.update(&user).await.unwrap();
+        let response = lockout_login(&state, " ALICE ", "password123").await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body_json(response).await["error"], "Internal server error");
+        assert!(!state.login_tracker.is_locked("alice").await);
+    }
+    user.password_hash = valid_hash;
+    state.user_service.update(&user).await.unwrap();
+    assert_eq!(
+        lockout_login(&state, "alice", "wrong").await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(state.login_tracker.is_locked("alice").await);
+}
+
+#[tokio::test]
+async fn login_lockout_excludes_repository_errors() {
+    let (mut state, _tmp) = test_app_state().await;
+    state.login_tracker = frona::auth::lockout::LoginAttemptTracker::new(2, 15);
+    register_user(&state, "alice", "alice@example.com", "password123").await;
+    let working_users = state.user_service.clone();
+    assert_eq!(
+        lockout_login(&state, "alice", "wrong").await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    state.user_service = frona::auth::user_service::UserService::new(
+        SurrealRepo::new(Surreal::init()),
+        &state.config.cache,
+    );
+    for _ in 0..3 {
+        let response = lockout_login(&state, " ALICE ", "password123").await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body_json(response).await["error"], "Internal server error");
+        assert!(!state.login_tracker.is_locked("alice").await);
+    }
+    state.user_service = working_users;
+    assert_eq!(
+        lockout_login(&state, "alice", "wrong").await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(state.login_tracker.is_locked("alice").await);
+}

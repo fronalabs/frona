@@ -32,12 +32,11 @@ pub(crate) async fn download_user_file(
                 )));
             }
         }
-        FileAuth::Presigned {
-            sub: _,
-            owner,
-            path,
-        } => {
-            if !owner.starts_with("user:") || path != filename {
+        FileAuth::Presigned { sub, owner, path } => {
+            let user_handle = state.user_service.handle_of(&sub).await?;
+            // Owners contain user IDs; URLs contain handles. Bind both to the
+            // verified subject rather than trusting a matching filename alone.
+            if owner != format!("user:{sub}") || handle != user_handle || path != filename {
                 return Err(ApiError(AppError::Forbidden(
                     "Presigned URL does not match requested file".into(),
                 )));

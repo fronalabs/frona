@@ -107,7 +107,16 @@ impl PresignService {
         })?;
 
         let decoding_key = self.keypair_svc.get_verifying_key(&kid).await?;
-        self.jwt_svc.verify::<PresignClaims>(token, &decoding_key)
+        let claims = self.jwt_svc.verify::<PresignClaims>(token, &decoding_key)?;
+        // Each user's presigns must be signed by that user's key, even when all
+        // resource claims agree with one another.
+        if kid != format!("user:{}", claims.sub) {
+            return Err(AppError::Auth {
+                message: "Presign signing key does not match subject".into(),
+                code: AuthErrorCode::TokenInvalid,
+            });
+        }
+        Ok(claims)
     }
 }
 

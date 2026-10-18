@@ -1,3 +1,18 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use frona::auth::UserService;
+use frona::auth::jwt::JwtService;
+use frona::auth::oauth::service::OAuthService;
+use frona::auth::token::service::TokenService;
+use frona::core::config::{CacheConfig, Config};
+use frona::core::error::{AppError, AuthErrorCode};
+use frona::credential::keypair::service::KeyPairService;
+use serde_json::json;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
 use chrono::Utc;
 use frona::auth::User;
 use frona::auth::oauth::models::OAuthIdentity;
@@ -165,4 +180,188 @@ async fn test_email_matching_flow() {
         .unwrap()
         .unwrap();
     assert_eq!(linked.user_id, user.id);
+}
+
+struct Fixture {
+    oauth: OAuthService,
+    users: UserService,
+    keys: KeyPairService,
+    tokens: TokenService,
+}
+
+impl Fixture {
+    fn new(db: Surreal<Db>, authority: &str) -> Self {
+        let mut config = Config::default();
+        config.sso.authority = Some(authority.into());
+        config.sso.client_id = Some("test-client".into());
+        config.sso.client_secret = Some("test-secret".into());
+        config.server.backend_url = Some("http://localhost:3001".into());
+        let users = UserService::new(SurrealRepo::new(db.clone()), &CacheConfig::default());
+        Self {
+            oauth: OAuthService::new(&config, Arc::new(SurrealRepo::new(db.clone()))).unwrap(),
+            keys: KeyPairService::new("test-key", Arc::new(SurrealRepo::new(db.clone()))),
+            tokens: TokenService::new(
+                Arc::new(SurrealRepo::new(db)),
+                JwtService::new(),
+                users.clone(),
+                900,
+                604800,
+            ),
+            users,
+        }
+    }
+
+    async fn callback(&self, state: &str) -> Result<(User, bool), AppError> {
+        self.oauth
+            .handle_callback("test-code", state, &self.users, &self.keys, &self.tokens)
+            .await
+    }
+}
+
+fn assert_csrf<T: std::fmt::Debug>(result: Result<T, AppError>) {
+    assert!(
+        matches!(
+            result,
+            Err(AppError::Auth {
+                code: AuthErrorCode::CsrfFailed,
+                ..
+            })
+        ),
+        "expected rejected SSO state, got {result:?}"
+    );
+}
+
+async fn mock_provider(fixture: &Fixture, server: &MockServer) -> jsonwebtoken::EncodingKey {
+    let (signing_key, kid) = fixture.keys.get_signing_key("provider").await.unwrap();
+    let public_key = fixture.keys.get_or_create("provider").await.unwrap();
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": server.uri(),
+            "authorization_endpoint": format!("{}/authorize", server.uri()),
+            "token_endpoint": format!("{}/token", server.uri()),
+            "jwks_uri": format!("{}/jwks", server.uri()),
+            "response_types_supported": ["code"],
+            "subject_types_supported": ["public"],
+            "id_token_signing_alg_values_supported": ["EdDSA"]
+        })))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/jwks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "keys": [{
+                "kty": "OKP", "crv": "Ed25519", "use": "sig",
+                "alg": "EdDSA", "kid": kid,
+                "x": URL_SAFE_NO_PAD.encode(public_key.public_key_bytes)
+            }]
+        })))
+        .mount(server)
+        .await;
+    signing_key
+}
+
+async fn provider_fixture() -> (Fixture, MockServer, jsonwebtoken::EncodingKey) {
+    let server = MockServer::start().await;
+    let db = Surreal::new::<Mem>(()).await.unwrap();
+    db::setup_schema(&db).await.unwrap();
+    let fixture = Fixture::new(db, &server.uri());
+    let key = mock_provider(&fixture, &server).await;
+    (fixture, server, key)
+}
+
+async fn token_response(server: &MockServer, key: &jsonwebtoken::EncodingKey, nonce: &str) {
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA);
+    header.kid = Some("provider".into());
+    let now = Utc::now().timestamp();
+    let id_token = jsonwebtoken::encode(
+        &header,
+        &json!({
+            "iss": server.uri(), "sub": "external-user", "aud": "test-client",
+            "exp": now + 3600, "iat": now, "nonce": nonce,
+            "email": "sso@example.com", "email_verified": true, "name": "SSO User"
+        }),
+        key,
+    )
+    .unwrap();
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "provider-access", "token_type": "Bearer",
+            "id_token": id_token
+        })))
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn expired_and_unknown_callbacks_do_not_contact_provider() {
+    let (fixture, server, _) = provider_fixture().await;
+    for elapsed in [
+        Duration::from_secs(10 * 60),
+        Duration::from_secs(10 * 60) + Duration::from_secs(1),
+    ] {
+        let (_, state, _) = fixture.oauth.get_authorization_url().await.unwrap();
+        let request_count = server.received_requests().await.unwrap().len();
+        tokio::time::pause();
+        tokio::time::advance(elapsed).await;
+        assert_csrf(fixture.callback(&state).await);
+        assert_csrf(fixture.callback(&state).await);
+        assert_csrf(fixture.callback("unknown").await);
+        tokio::time::resume();
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            request_count
+        );
+    }
+}
+
+#[tokio::test]
+async fn concurrent_callbacks_exchange_once_and_preserve_valid_nonce_login() {
+    let (fixture, server, key) = provider_fixture().await;
+    let (url, state, nonce) = fixture.oauth.get_authorization_url().await.unwrap();
+    let url = url::Url::parse(&url).unwrap();
+    assert!(url.query_pairs().any(|(k, v)| k == "nonce" && v == nonce));
+    token_response(&server, &key, &nonce).await;
+    let (first, second) = tokio::join!(fixture.callback(&state), fixture.callback(&state));
+    let (winner, loser) = if first.is_ok() {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    let (user, created) = winner.unwrap();
+    assert_eq!(user.email, "sso@example.com");
+    assert!(created);
+    assert_csrf(loser);
+    assert_csrf(fixture.callback(&state).await);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn wrong_nonce_rejects_login_and_still_consumes_state() {
+    let (fixture, server, key) = provider_fixture().await;
+    let (_, state, _) = fixture.oauth.get_authorization_url().await.unwrap();
+    token_response(&server, &key, "wrong-nonce").await;
+    let result = fixture.callback(&state).await;
+    assert!(
+        matches!(
+            result,
+            Err(AppError::Auth {
+                code: AuthErrorCode::TokenInvalid,
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+    assert!(
+        fixture
+            .users
+            .find_by_email("sso@example.com")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_csrf(fixture.callback(&state).await);
+    server.verify().await;
 }

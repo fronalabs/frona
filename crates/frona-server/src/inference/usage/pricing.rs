@@ -25,7 +25,7 @@ pub(super) fn compute(
     };
     (
         snapshot
-            .lookup_for_provider(&model.catalog_provider, &model.model_id)
+            .lookup_prefix(&model.catalog_provider, &model.model_id)
             .and_then(|entry| entry.cost_for(&normalized)),
         snapshot.version.clone(),
     )
@@ -137,6 +137,81 @@ mod tests {
         assert_eq!(compute(&snapshot, &model, &usage).0, None);
         snapshot.entries.remove("catalog-account/fixture");
         assert_eq!(compute(&snapshot, &model, &usage).0, None);
+    }
+
+    #[test]
+    fn pricing_uses_family_fallback_only_after_exact_catalog_matches() {
+        let (mut snapshot, mut model) = fixture("openrouter");
+        snapshot.entries.clear();
+        snapshot.version = "a1b2c3d4e5f6".into();
+        for (key, input) in [
+            ("openrouter/anthropic/claude-sonnet-4-20250514", 9.0),
+            ("anthropic/claude-sonnet-4", 3.0),
+            ("anthropic/claude", 99.0),
+            ("bare-model", 5.0),
+        ] {
+            snapshot.entries.insert(
+                key.into(),
+                ModelEntry {
+                    cost: Some(Cost {
+                        input,
+                        output: 10.0,
+                        cache_read: Some(0.3),
+                        cache_write: Some(3.75),
+                    }),
+                    ..Default::default()
+                },
+            );
+        }
+        for key in [
+            "openrouter/anthropic/claude-sonnet-4-unpriced",
+            "anthropic/claude-sonnet-4-unpriced",
+        ] {
+            snapshot.entries.insert(key.into(), ModelEntry::default());
+        }
+        // Keep cache reads/writes in the calculation to protect their rates when
+        // selecting either an exact entry or a family estimate.
+        let usage = Usage {
+            input_tokens: 1_000_000,
+            output_tokens: 100_000,
+            cached_input_tokens: 600_000,
+            cache_creation_input_tokens: 200_000,
+            ..Default::default()
+        };
+        for (provider, model_id, expected) in [
+            (
+                "openrouter",
+                "anthropic/claude-sonnet-4-20250514",
+                Some(3.73),
+            ),
+            ("openrouter", "anthropic/claude-sonnet-4", Some(2.53)),
+            (
+                "openrouter",
+                "anthropic/claude-sonnet-4-20250515",
+                Some(2.53),
+            ),
+            ("anthropic", "claude-sonnet-4-latest", Some(2.53)),
+            ("openrouter", "bare-model", Some(2.93)),
+            ("openrouter", "anthropic/claude-sonnet-4-unpriced", None),
+            ("anthropic", "claude-sonnet-4-unpriced", None),
+            ("openrouter", "anthropic/unrelated-model", None),
+            ("unrelated-provider", "claude-sonnet-4-latest", None),
+        ] {
+            model.catalog_provider = provider.into();
+            model.model_id = model_id.into();
+            for handle in ["work-account", "anthropic", "openrouter"] {
+                model.provider_handle = crate::core::Handle::try_new(handle).unwrap();
+                let (cost, version) = compute(&snapshot, &model, &usage);
+                match expected {
+                    Some(expected) => assert!(
+                        (cost.unwrap() - expected).abs() < 1e-9,
+                        "{provider}/{model_id} via {handle}: {cost:?}"
+                    ),
+                    None => assert_eq!(cost, None, "{provider}/{model_id} via {handle}"),
+                }
+                assert_eq!(version, "a1b2c3d4e5f6");
+            }
+        }
     }
 
     #[test]

@@ -32,6 +32,11 @@ use crate::tool::mcp::McpServerService;
 use crate::tool::registry::ToolFilter;
 use rig_core::completion::Message as RigMessage;
 
+struct CommandPromptOverride {
+    request_id: String,
+    rendered_prompt: String,
+}
+
 pub struct AgentLoopOutcome {
     /// What inference produced (Completed text, Cancelled, ExternalToolPending,
     /// or Handled when a command short-circuited the turn).
@@ -565,13 +570,17 @@ impl Harness {
 
         let mut response = self.chat_service.get_message(user_id, message_id).await?;
 
-        let builder_system_prompt = builder.system_prompt();
+        let mut session = ChatSessionContext::build(
+            self,
+            user_id,
+            chat.clone(),
+            cancel_token.clone(),
+            builder.into(),
+            tool_filters,
+        )
+        .await?;
 
-        let mut session =
-            ChatSessionContext::build(self, user_id, chat.clone(), cancel_token.clone(), builder)
-                .await?;
-
-        let mut prompt_override: Option<String> = None;
+        let mut prompt_override: Option<CommandPromptOverride> = None;
         if let Some(mut request) = request
             && matches!(request.role, MessageRole::User)
             && let Some(MessageCommand::Command { name, args }) = request.command.clone()
@@ -615,7 +624,10 @@ impl Harness {
 
             match outcome {
                 Ok(CommandOutcome::Prompt(rendered)) => {
-                    prompt_override = Some(rendered);
+                    prompt_override = Some(CommandPromptOverride {
+                        request_id: request.id.clone(),
+                        rendered_prompt: rendered,
+                    });
                 }
                 Ok(CommandOutcome::Message(text)) => {
                     response.content = text;
@@ -653,37 +665,70 @@ impl Harness {
         }
 
         let ChatSessionContext {
-            mut system_prompt,
+            system_prompt,
             model_group,
             mut rig_history,
+            model_history,
 
-            mut tool_registry,
+            tool_registry,
             tool_ctx,
             ..
         } = session;
 
-        if let Some(extra) = builder_system_prompt {
-            let trimmed = extra.trim();
-            if !trimmed.is_empty() {
-                system_prompt.push_str("\n\n");
-                system_prompt.push_str(trimmed);
-            }
-        }
-
-        for filter in tool_filters {
-            tool_registry.apply_filter(filter);
-        }
-
-        // Swap only the model's view; the persisted `Message.content` is untouched.
-        if let Some(rendered) = prompt_override
-            && let Some(last_user) = rig_history
-                .iter_mut()
-                .rev()
-                .find(|m| matches!(m, rig_core::completion::Message::User { .. }))
+        // Replace the invoking row, not an injected task/heartbeat continuation.
+        // Commands may insert context, so match the mapped request if offsets moved.
+        if let Some(CommandPromptOverride {
+            request_id,
+            rendered_prompt,
+        }) = prompt_override
         {
-            *last_user = rig_core::completion::Message::user(rendered);
+            let row = model_history
+                .row_ids
+                .iter()
+                .position(|id| id == &request_id)
+                .ok_or_else(|| {
+                    AppError::Conflict("Command request is missing from model history".into())
+                })?;
+            let original_index = model_history
+                .row_range(row)
+                .rev()
+                .find(|&i| {
+                    matches!(
+                        model_history.history[i],
+                        rig_core::completion::Message::User { .. }
+                    )
+                })
+                .ok_or_else(|| {
+                    AppError::Conflict("Command request has no model-facing user message".into())
+                })?;
+            let index = if rig_history == model_history.history {
+                original_index
+            } else {
+                let original = &model_history.history[original_index];
+                let mut matches = rig_history
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, message)| *message == original);
+                let index = matches.next().map(|(i, _)| i);
+                if matches.next().is_some() {
+                    return Err(AppError::Conflict(
+                        "Command request is ambiguous after history changes".into(),
+                    ));
+                }
+                index.ok_or_else(|| {
+                    AppError::Conflict("Command request was removed from model history".into())
+                })?
+            };
+            rig_history[index] = rig_core::completion::Message::user(rendered_prompt);
         }
 
+        // Validate after channel prompts and command overrides have made their
+        // final changes, before inference can trim the active request.
+        crate::chat::compactor::validate_initial_context(
+            &rig_history,
+            &system_prompt,
+            &model_group,
+        )?;
         let inference = crate::inference::inference(InferenceRequest {
             model_group,
             system_prompt,

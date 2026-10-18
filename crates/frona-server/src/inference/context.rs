@@ -110,9 +110,8 @@ pub fn truncate_history(
     result.reverse();
     // We only get here when the history is over budget and messages are being
     // dropped oldest-first - a silent context loss the caller can't see. Surface
-    // it: for the compaction summarizer (`text_inference`) this means the backlog
-    // exceeded the summarizer's own window and the oldest messages won't reach the
-    // summary either. No-op truncations returned above, so this never fires spuriously.
+    // it for ordinary inference. Chat compaction rejects oversized input instead
+    // of entering this truncation path. No-op truncations returned above.
     tracing::warn!(
         estimated_tokens = total,
         budget,

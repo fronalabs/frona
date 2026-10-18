@@ -138,11 +138,7 @@ struct Summarizer;
 impl ChatSummarizer for Summarizer {
     async fn summarize(
         &self,
-        _: &str,
-        _: &str,
-        _: &str,
-        _: &str,
-        _: &str,
+        _: frona::chat::compactor::SummaryRequest<'_>,
     ) -> Result<String, AppError> {
         Ok("summary".into())
     }
@@ -163,7 +159,7 @@ async fn compaction_uses_catalog_budget_and_respects_configured_override() {
             messages.create(&message).await.unwrap();
         }
         let compactor = ChatCompactor::new(
-            SurrealRepo::new(db),
+            SurrealRepo::new(db.clone()),
             messages,
             Arc::new(Summarizer),
             PromptLoader::new(
@@ -174,14 +170,39 @@ async fn compaction_uses_catalog_budget_and_respects_configured_override() {
             .await
             .resolve(&ModelRef::PRIMARY)
             .unwrap();
+        use frona::inference::conversation::{
+            ConversationBuilder, ConversationContext, DefaultConversationBuilder,
+        };
+        let fixture = helpers::app_state::build(&db).await;
+        let state = &fixture.state;
+        let loaded = compactor.load_conversation("chat").await.unwrap();
+        let model_history = DefaultConversationBuilder {
+            user_service: state.user_service.clone(),
+            storage_service: state.storage_service.clone(),
+            agent_service: state.agent_service.clone(),
+        }
+        .build(
+            &loaded.messages,
+            &[],
+            &ConversationContext {
+                agent_id: "agent".into(),
+                user_id: "user".into(),
+                model_config: group.main.clone(),
+            },
+            None,
+        )
+        .await;
         let outcome = compactor
             .compact_chat(
                 "user",
                 "chat",
                 "agent",
-                "system",
-                group.context_window,
-                group.max_tokens.unwrap() as usize,
+                frona::chat::compactor::CompactionContext {
+                    system_prompt: "system",
+                    model_group: &group,
+                    model_history: &model_history,
+                    tools: &[],
+                },
             )
             .await
             .unwrap();

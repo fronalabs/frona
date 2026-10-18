@@ -199,7 +199,6 @@ pub struct ModelRef(pub std::borrow::Cow<'static, str>);
 impl ModelRef {
     pub const PRIMARY: Self = Self(std::borrow::Cow::Borrowed("primary"));
     pub const TITLE: Self = Self(std::borrow::Cow::Borrowed("title"));
-    pub const COMPACTION: Self = Self(std::borrow::Cow::Borrowed("compaction"));
     pub const MEMORY: Self = Self(std::borrow::Cow::Borrowed("memory"));
 
     pub fn as_str(&self) -> &str {
@@ -1253,7 +1252,6 @@ mod tests {
         for (reference, name) in [
             (ModelRef::PRIMARY, "primary"),
             (ModelRef::TITLE, "title"),
-            (ModelRef::COMPACTION, "compaction"),
             (ModelRef::MEMORY, "memory"),
         ] {
             assert!(matches!(reference.0, std::borrow::Cow::Borrowed(_)));

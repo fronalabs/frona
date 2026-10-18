@@ -15,7 +15,7 @@ const SELECT_CLAUSE: &str = "SELECT *, meta::id(id) as id";
 impl MessageRepository for SurrealRepo<Message> {
     async fn find_by_chat_id(&self, chat_id: &str) -> Result<Vec<Message>, AppError> {
         let query = format!(
-            "{SELECT_CLAUSE} FROM message WHERE chat_id = $chat_id ORDER BY created_at ASC"
+            "{SELECT_CLAUSE} FROM message WHERE chat_id = $chat_id ORDER BY created_at ASC, id ASC"
         );
         let mut result = self
             .db()
@@ -37,7 +37,7 @@ impl MessageRepository for SurrealRepo<Message> {
         after: DateTime<Utc>,
     ) -> Result<Vec<Message>, AppError> {
         let query = format!(
-            "{SELECT_CLAUSE} FROM message WHERE chat_id = $chat_id AND created_at > $after ORDER BY created_at ASC"
+            "{SELECT_CLAUSE} FROM message WHERE chat_id = $chat_id AND created_at > $after ORDER BY created_at ASC, id ASC"
         );
         let mut result = self
             .db()

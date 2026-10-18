@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use crate::chat::message::models::MessageCommand;
 use crate::chat::session::ChatSessionContext;
 use crate::core::error::AppError;
-use crate::inference::conversation::DefaultConversationBuilder;
 
 use super::super::{Command, CommandContext, CommandOutcome};
 
@@ -53,17 +52,13 @@ impl Command for SwitchAgentCommand {
 
         let mut chat_for_turn = ctx.chat.clone();
         chat_for_turn.agent_id = target_agent.id.clone();
-        let builder = Box::new(DefaultConversationBuilder {
-            user_service: ctx.harness.user_service.clone(),
-            storage_service: ctx.harness.storage_service.clone(),
-            agent_service: ctx.harness.agent_service.clone(),
-        });
         let new_session = ChatSessionContext::build(
             ctx.harness,
             &ctx.user.id,
             chat_for_turn,
             ctx.session.cancel_token.clone(),
-            builder,
+            ctx.session.builder.clone(),
+            &ctx.session.tool_filters,
         )
         .await?;
         *ctx.session = new_session;

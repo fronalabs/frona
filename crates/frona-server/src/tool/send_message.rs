@@ -225,10 +225,7 @@ impl SendMessageTool {
             )
             .ok_or_else(|| AppError::Internal("send_message_resolve.md prompt not found".into()))?;
         let registry = self.chat_service.model_providers();
-        let model_group = registry.resolve_with_fallback(
-            &crate::inference::ModelRef::COMPACTION,
-            &crate::inference::ModelRef::PRIMARY,
-        )?;
+        let model_group = registry.resolve(&crate::inference::ModelRef::PRIMARY)?;
 
         let usage_ctx = crate::inference::usage::UsageContext::new(
             crate::inference::usage::InferenceKind::Router {

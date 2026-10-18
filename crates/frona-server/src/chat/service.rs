@@ -12,7 +12,6 @@ use crate::inference::conversation::{
     ConversationBuilder, ConversationContext, DefaultConversationBuilder,
 };
 use crate::inference::provider::service::ModelProviderService;
-use crate::inference::text_inference;
 use crate::storage::StorageService;
 use rig_core::completion::Message as RigMessage;
 
@@ -87,7 +86,6 @@ impl ChatService {
             crate::db::repo::chat_summaries::SurrealChatSummaryRepo::new(message_repo.db().clone()),
             message_repo.clone(),
             std::sync::Arc::new(super::compactor::TextInferenceSummarizer::new(
-                model_providers.clone(),
                 usage_service.clone(),
             )),
             prompts.clone(),
@@ -460,7 +458,8 @@ impl ChatService {
         };
 
         let mut user_message_builder =
-            Message::builder(chat_id, MessageRole::User, req.content.clone());
+            Message::builder(chat_id, MessageRole::User, req.content.clone())
+                .attachments(req.attachments.clone());
         if let Some(ref md) = req.metadata {
             user_message_builder = user_message_builder.metadata(md.clone());
         }
@@ -481,21 +480,7 @@ impl ChatService {
         let model_group = self
             .model_providers
             .resolve(&crate::inference::ModelRef(model_group_name.clone().into()))?;
-        let max_output = model_group
-            .max_tokens
-            .unwrap_or(model_group.inference.default_max_tokens) as usize;
-        let loaded = self
-            .compactor
-            .compact_chat(
-                user_id,
-                chat_id,
-                &chat.agent_id,
-                &system_prompt,
-                model_group.context_window,
-                max_output,
-            )
-            .await?
-            .conversation;
+        let loaded = self.compactor.load_conversation(chat_id).await?;
         let conversation_summary = loaded.summary;
         let stored_messages = loaded.messages;
         let conv_builder = DefaultConversationBuilder {
@@ -509,17 +494,32 @@ impl ChatService {
             user_id: user_id.to_string(),
         };
         let tool_calls = self.get_tool_calls(chat_id).await?;
-        let mut rig_history = conv_builder
+        let model_history = conv_builder
             .build(
                 &stored_messages,
                 &tool_calls,
                 &conv_ctx,
                 conversation_summary.as_deref(),
             )
-            .await
-            .history;
+            .await;
 
-        rig_history.push(RigMessage::user(&req.content));
+        let compacted = self
+            .compactor
+            .compact_chat(
+                user_id,
+                chat_id,
+                &chat.agent_id,
+                super::compactor::CompactionContext {
+                    system_prompt: &system_prompt,
+                    model_group: &model_group,
+                    model_history: &model_history,
+                    tools: &[],
+                },
+            )
+            .await?;
+        let rig_history = compacted.model_history.history;
+
+        super::compactor::validate_initial_context(&rig_history, &system_prompt, &model_group)?;
         // Pre-allocate the message id so the usage row's message_id matches
         // the assistant Message that's about to be persisted.
         let assistant_message_id = crate::core::repository::new_id();
@@ -532,14 +532,18 @@ impl ChatService {
             user_id,
             model_group.name.clone(),
         );
-        let response_text = text_inference(
-            &model_group,
-            &system_prompt,
-            rig_history,
-            &self.usage_service,
-            &usage_ctx,
-        )
-        .await?;
+        let response = model_group
+            .inference(crate::inference::ModelRequest {
+                system_prompt: &system_prompt,
+                history: rig_history,
+                tools: vec![],
+                usage_service: &self.usage_service,
+                usage_context: &usage_ctx,
+                overrides: Default::default(),
+            })
+            .await?;
+        let response_text =
+            crate::inference::provider::extract_text_from_choice(&response.content)?;
 
         let mut assistant_message = Message::builder(chat_id, MessageRole::Agent, response_text)
             .agent_id(chat.agent_id.clone())

@@ -2,8 +2,8 @@
 //! summarize the oldest messages into a rolling `chat_summary` row and load
 //! only the messages after the cutoff (`created_at > compacted_until`) plus the
 //! summary. Compacted messages are **retained**, not deleted. When a request
-//! still can't fit after compaction we do NOT truncate - the provider rejects
-//! it (fail loud).
+//! still cannot fit after compaction we return a limit error and preserve its
+//! persisted rows. Initial model context is also checked before inference trimming.
 //!
 //! Summarization goes through the [`ChatSummarizer`] seam so tests can inject a
 //! stub with no live model.
@@ -12,10 +12,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use rig_core::completion::Message as RigMessage;
+use rig_core::completion::request::ToolDefinition as RigToolDefinition;
+use rig_core::completion::{AssistantContent, Message as RigMessage};
 
 use crate::agent::prompt::PromptLoader;
-use crate::chat::message::models::{Message, MessageRole};
+use crate::chat::message::models::{Message, MessageCommand, MessageRole};
 use crate::chat::message::repository::MessageRepository;
 use crate::chat::models::ChatSummary;
 use crate::chat::repository::ChatSummaryRepository;
@@ -23,10 +24,9 @@ use crate::core::error::AppError;
 use crate::core::repository::{Repository, new_id};
 use crate::db::repo::chat_summaries::SurrealChatSummaryRepo;
 use crate::db::repo::messages::SurrealMessageRepo;
+use crate::inference::ModelGroup;
 use crate::inference::context::{estimate_message_tokens, estimate_tokens};
-use crate::inference::conversation::{convert_agent_message, format_files_block_simple};
-use crate::inference::provider::service::ModelProviderService;
-use crate::inference::text_inference;
+use crate::inference::conversation::{ModelConversationHistory, summary_message};
 use crate::inference::usage::{CompactionTarget, InferenceKind, UsageContext, UsageService};
 
 /// Trigger when the conversation exceeds this fraction of the available window.
@@ -41,82 +41,101 @@ pub struct LoadedConversation {
     pub messages: Vec<Message>,
 }
 
-/// Result of `compact_chat`: whether a new summary was written this call, plus the
-/// live conversation (summary + post-cutoff messages) - built from data already in
-/// hand, so callers needn't re-`load_conversation` and re-read the history.
+/// Compaction status and the resulting model-facing history.
 pub struct CompactionOutcome {
     pub compacted: bool,
-    pub conversation: LoadedConversation,
+    pub model_history: ModelConversationHistory,
 }
 
-/// The summarization seam. Production wraps `text_inference` (which already
-/// retries + falls back); tests inject a stub.
+pub struct SummaryRequest<'a> {
+    pub model_group: &'a ModelGroup,
+    pub user_id: &'a str,
+    pub agent_id: &'a str,
+    pub chat_id: &'a str,
+    pub system_prompt: &'a str,
+    pub history: Vec<RigMessage>,
+    pub tools: Vec<RigToolDefinition>,
+}
+
+/// The exact model-facing request prefix; tests can inject deterministic generation.
 #[async_trait]
 pub trait ChatSummarizer: Send + Sync {
-    async fn summarize(
-        &self,
-        user_id: &str,
-        agent_id: &str,
-        chat_id: &str,
-        system_prompt: &str,
-        input: &str,
-    ) -> Result<String, AppError>;
+    async fn summarize(&self, request: SummaryRequest<'_>) -> Result<String, AppError>;
 }
 
-/// Production summarizer: resolves the `compaction` (→`primary`) model group and
-/// calls `text_inference`, which carries its own retry/fallback. On exhausted
-/// retries it returns `Err`, which `compact_chat` propagates (fail loud).
+#[derive(Clone, Copy)]
+pub struct CompactionContext<'a> {
+    pub system_prompt: &'a str,
+    pub model_group: &'a ModelGroup,
+    pub model_history: &'a ModelConversationHistory,
+    pub tools: &'a [RigToolDefinition],
+}
+
+/// Generates a summary with the conversation's resolved model group, preserving
+/// its request settings, retry/fallback configuration and usage accounting.
+/// The selected input prefix is never truncated.
 #[derive(Clone)]
 pub struct TextInferenceSummarizer {
-    model_providers: ModelProviderService,
     usage_service: UsageService,
 }
 
 impl TextInferenceSummarizer {
-    pub fn new(model_providers: ModelProviderService, usage_service: UsageService) -> Self {
-        Self {
-            model_providers,
-            usage_service,
-        }
+    pub fn new(usage_service: UsageService) -> Self {
+        Self { usage_service }
     }
 }
 
 #[async_trait]
 impl ChatSummarizer for TextInferenceSummarizer {
-    async fn summarize(
-        &self,
-        user_id: &str,
-        agent_id: &str,
-        chat_id: &str,
-        system_prompt: &str,
-        input: &str,
-    ) -> Result<String, AppError> {
-        let model_group = self
-            .model_providers
-            .resolve_with_fallback(
-                &crate::inference::ModelRef::COMPACTION,
-                &crate::inference::ModelRef::PRIMARY,
-            )
-            .map_err(|e| AppError::Internal(format!("No compaction model group: {e}")))?;
+    async fn summarize(&self, request: SummaryRequest<'_>) -> Result<String, AppError> {
+        let model_group = request.model_group;
         let usage_ctx = UsageContext::new(
             InferenceKind::Compaction {
                 target: CompactionTarget::Chat {
-                    agent_id: agent_id.to_string(),
-                    chat_id: chat_id.to_string(),
+                    agent_id: request.agent_id.to_string(),
+                    chat_id: request.chat_id.to_string(),
                 },
             },
-            user_id,
+            request.user_id,
             model_group.name.clone(),
         );
-        text_inference(
-            &model_group,
-            system_prompt,
-            vec![RigMessage::user(input)],
-            &self.usage_service,
-            &usage_ctx,
-        )
-        .await
-        .map_err(|e| AppError::Internal(format!("Chat compaction failed: {e}")))
+        let response = model_group
+            .inference_preserving_history(crate::inference::ModelRequest {
+                system_prompt: request.system_prompt,
+                history: request.history,
+                tools: request.tools,
+                usage_service: &self.usage_service,
+                usage_context: &usage_ctx,
+                overrides: Default::default(),
+            })
+            .await
+            .map_err(|e| AppError::Internal(format!("Chat compaction failed: {e}")))?;
+        // This is generation only: definitions preserve the cached prefix, never
+        // authorize tool execution. A tool request is not a completed summary.
+        if response
+            .content
+            .iter()
+            .any(|item| matches!(item, AssistantContent::ToolCall(_)))
+        {
+            return Err(AppError::Internal(
+                "Chat compaction returned tool calls instead of a summary".into(),
+            ));
+        }
+        let text = response
+            .content
+            .iter()
+            .filter_map(|item| match item {
+                AssistantContent::Text(text) => Some(text.text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if text.trim().is_empty() {
+            return Err(AppError::Internal(
+                "Chat compaction returned an empty summary".into(),
+            ));
+        }
+        Ok(text)
     }
 }
 
@@ -175,15 +194,26 @@ impl ChatCompactor {
         user_id: &str,
         chat_id: &str,
         chat_agent_id: &str,
-        system_prompt: &str,
-        context_window: usize,
-        max_output_tokens: usize,
+        context: CompactionContext<'_>,
     ) -> Result<CompactionOutcome, AppError> {
+        let CompactionContext {
+            system_prompt,
+            model_group,
+            model_history,
+            tools,
+        } = context;
+        let context_window = model_group.context_window;
+        let max_output_tokens = model_group
+            .main
+            .request_settings
+            .max_tokens
+            .unwrap_or(model_group.inference.default_max_tokens)
+            as usize;
         let existing = self.chat_summary_repo.find_by_chat_id(chat_id).await?;
         // Only the messages NOT already covered by the summary are live. Fetch just
         // those in SQL - the compacted rest is retained on disk but represented by
         // the summary, so we never re-read (or re-compact) it each turn.
-        let mut live: Vec<Message> = match &existing {
+        let live: Vec<Message> = match &existing {
             Some(s) => {
                 self.message_repo
                     .find_by_chat_id_after(chat_id, s.compacted_until)
@@ -191,77 +221,120 @@ impl ChatCompactor {
             }
             None => self.message_repo.find_by_chat_id(chat_id).await?,
         };
-        let existing_summary = existing.as_ref().map(|s| s.content.clone());
-        let unchanged = |summary, messages| CompactionOutcome {
+        let unchanged = || CompactionOutcome {
             compacted: false,
-            conversation: LoadedConversation { summary, messages },
+            model_history: model_history.clone(),
         };
         if live.is_empty() {
-            return Ok(unchanged(existing_summary, live));
+            return Ok(unchanged());
         }
 
-        let rig_messages = self.to_rig(&live, chat_agent_id);
+        // These offsets came from the normal conversation builder. Validate the
+        // source before using them as a database cutoff; a stale/reordered request
+        // must never summarize a different set of persisted rows.
+        model_history.validate_source(
+            &live,
+            existing.as_ref().map(|summary| summary.content.as_str()),
+        )?;
+        let mut costs: Vec<usize> = (0..live.len())
+            .map(|row| {
+                model_history.history[model_history.row_range(row)]
+                    .iter()
+                    .map(estimate_message_tokens)
+                    .sum()
+            })
+            .collect();
+        // Builder-injected continuation/heartbeat messages have no database row.
+        // They remain protected with the tail and never enter the summarized prefix.
+        let stored_end = model_history.row_range(live.len() - 1).end;
+        let injected_tokens = model_history.history[stored_end..]
+            .iter()
+            .map(estimate_message_tokens)
+            .sum::<usize>();
         let available = context_window.saturating_sub(max_output_tokens);
-
-        let mut total_tokens = estimate_tokens(system_prompt);
-        if let Some(ref s) = existing {
-            total_tokens += estimate_tokens(&s.content);
+        let system_tokens = estimate_tokens(system_prompt)
+            + tools
+                .iter()
+                .map(|tool| {
+                    estimate_tokens(
+                        &serde_json::to_string(tool).expect("tool definition is serializable"),
+                    )
+                })
+                .sum::<usize>();
+        let summary_tokens = model_history.history[..model_history.summary_end]
+            .iter()
+            .map(estimate_message_tokens)
+            .sum::<usize>();
+        if let Some(last) = costs.last_mut() {
+            *last += injected_tokens;
         }
-        for msg in &rig_messages {
-            total_tokens += estimate_message_tokens(msg);
-        }
+        let total_tokens = system_tokens + summary_tokens + costs.iter().sum::<usize>();
         if total_tokens <= available * COMPACT_TRIGGER_PCT / 100 {
-            return Ok(unchanged(existing_summary, live));
+            return Ok(unchanged());
         }
 
-        // Walk newest→oldest keeping a tail under the target; everything older
-        // becomes the to-compact prefix.
+        // An empty assistant placeholder (or a slash-command acknowledgement)
+        // must never move the protection boundary past the actual request.
+        let protected = live
+            .iter()
+            .rposition(is_substantive_request)
+            .unwrap_or(live.len() - 1);
+        let protected = timestamp_group_start(&live, protected);
+        let protected_tokens = costs[protected..].iter().sum::<usize>();
+        ensure_fits(system_tokens + protected_tokens, available)?;
+
         let target = available * COMPACT_TARGET_PCT / 100;
-        let mut summary_budget = estimate_tokens(system_prompt);
-        if let Some(ref s) = existing {
-            summary_budget += estimate_tokens(&s.content);
-        }
-        let mut keep_from_idx = live.len();
-        let mut running = 0usize;
-        for (i, msg) in rig_messages.iter().enumerate().rev() {
-            let cost = estimate_message_tokens(msg);
-            if running + cost + summary_budget > target {
+        let mut keep_from_idx = protected;
+        let mut running = protected_tokens;
+        for i in (0..protected).rev() {
+            if running + costs[i] + system_tokens + summary_tokens > target {
                 break;
             }
-            running += cost;
+            running += costs[i];
             keep_from_idx = i;
         }
+        // The existing persisted cutoff is timestamp-only and exclusive when
+        // loading. Keep the entire boundary timestamp group so reload cannot
+        // silently discard a retained row with the same timestamp as the prefix.
+        keep_from_idx = timestamp_group_start(&live, keep_from_idx);
         if keep_from_idx == 0 {
-            return Ok(unchanged(existing_summary, live));
+            ensure_fits(total_tokens, available)?;
+            return Ok(unchanged());
         }
         let messages_to_compact = &live[..keep_from_idx];
 
-        let mut input = String::new();
-        if let Some(ref s) = existing {
-            input.push_str("Previous summary:\n");
-            input.push_str(&s.content);
-            input.push_str("\n\nNew messages to incorporate:\n");
-        }
-        for msg in messages_to_compact {
-            let role = match msg.role {
-                MessageRole::User => "User",
-                MessageRole::Agent => "Agent",
-                MessageRole::TaskCompletion => "System",
-                MessageRole::Contact => "Contact",
-                MessageRole::LiveCall => "Caller",
-                MessageRole::System => continue,
-            };
-            input.push_str(&format!("{role}: {}\n", msg.content));
-        }
-
-        let prompt = self.prompts.read("CHAT_COMPACTION.md").ok_or_else(|| {
+        let prefix_end = model_history.row_range(keep_from_idx - 1).end;
+        let mut history = model_history.history[..prefix_end].to_vec();
+        let instruction = self.prompts.read("CHAT_COMPACTION.md").ok_or_else(|| {
             AppError::Internal("CHAT_COMPACTION.md prompt missing from resources".into())
         })?;
+        history.push(RigMessage::user(instruction));
         let content = self
             .summarizer
-            .summarize(user_id, chat_agent_id, chat_id, &prompt, &input)
+            .summarize(SummaryRequest {
+                model_group,
+                user_id,
+                agent_id: chat_agent_id,
+                chat_id,
+                system_prompt,
+                history,
+                tools: tools.to_vec(),
+            })
             .await?;
+        if content.trim().is_empty() {
+            return Err(AppError::Internal(
+                "Chat compaction returned an empty summary".into(),
+            ));
+        }
 
+        // Do not publish a summary that still cannot fit alongside the retained
+        // request. The original rows and prior summary remain recoverable on error.
+        ensure_fits(
+            system_tokens
+                + summary_tokens_for(&content)
+                + costs[keep_from_idx..].iter().sum::<usize>(),
+            available,
+        )?;
         let now = Utc::now();
         let compacted_until = messages_to_compact
             .last()
@@ -286,217 +359,72 @@ impl ChatCompactor {
         } else {
             self.chat_summary_repo.create(&row).await?;
         }
-        let messages = live.split_off(keep_from_idx);
+        let mut compacted_history = model_history.clone();
+        compacted_history.replace_prefix(keep_from_idx, &content);
         Ok(CompactionOutcome {
             compacted: true,
-            conversation: LoadedConversation {
-                summary: Some(content),
-                messages,
-            },
+            model_history: compacted_history,
         })
-    }
-
-    /// Approximate rig messages for token *estimation* only - coarser than the
-    /// conversation builder (roles grouped, tool calls omitted). `System` rows drop.
-    fn to_rig(&self, messages: &[Message], chat_agent_id: &str) -> Vec<RigMessage> {
-        messages
-            .iter()
-            .filter_map(|msg| match msg.role {
-                MessageRole::User | MessageRole::TaskCompletion | MessageRole::Contact => {
-                    let content = format_files_block_simple(&msg.content, &msg.attachments);
-                    Some(RigMessage::user(&content))
-                }
-                MessageRole::LiveCall => {
-                    let content = format_files_block_simple(&msg.content, &msg.attachments);
-                    Some(RigMessage::user(format!("[LIVE_CALL] {content}")))
-                }
-                MessageRole::Agent => convert_agent_message(msg, chat_agent_id, None),
-                MessageRole::System => None,
-            })
-            .collect()
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    use chrono::Duration;
-    use surrealdb::Surreal;
-    use surrealdb::engine::local::Mem;
-
-    use crate::chat::repository::ChatSummaryRepository;
-    use crate::db::repo::chat_summaries::SurrealChatSummaryRepo;
-    use crate::db::repo::generic::SurrealRepo;
-    use crate::db::repo::messages::SurrealMessageRepo;
-
-    /// Returns `[SUMMARY]`, or errors when `fail` - no live model.
-    struct StubSummarizer {
-        fail: bool,
+/// Validate the actual, fully built initial context against the budget used by
+/// inference's truncation layer. Compaction estimates are deliberately coarse;
+/// this final check prevents initial requests/attachments being silently trimmed.
+/// This covers the initial main-model request. Fallback budgets and tool-loop
+/// growth after this boundary are handled separately by inference.
+pub(crate) fn validate_initial_context(
+    history: &[RigMessage],
+    system_prompt: &str,
+    model_group: &crate::inference::ModelGroup,
+) -> Result<(), AppError> {
+    let tokens = history.iter().map(estimate_message_tokens).sum::<usize>();
+    let model = &model_group.main;
+    let max_output = model
+        .request_settings
+        .max_tokens
+        .unwrap_or(model_group.inference.default_max_tokens) as usize;
+    let budget = model_group
+        .context_window
+        .saturating_sub(max_output)
+        .saturating_sub(estimate_tokens(system_prompt))
+        * model_group.inference.history_truncation_pct
+        / 100;
+    if tokens > budget {
+        return Err(AppError::Validation(format!(
+            "Chat context exceeds the configured history limit ({tokens} estimated tokens, {budget} available); the current request has been preserved"
+        )));
     }
+    Ok(())
+}
 
-    #[async_trait]
-    impl ChatSummarizer for StubSummarizer {
-        async fn summarize(
-            &self,
-            _user_id: &str,
-            _agent_id: &str,
-            _chat_id: &str,
-            _system_prompt: &str,
-            _input: &str,
-        ) -> Result<String, AppError> {
-            if self.fail {
-                Err(AppError::Internal("stub summarizer failure".into()))
-            } else {
-                Ok("[SUMMARY]".into())
-            }
-        }
+fn summary_tokens_for(content: &str) -> usize {
+    estimate_message_tokens(&summary_message(content))
+}
+
+fn ensure_fits(tokens: usize, available: usize) -> Result<(), AppError> {
+    if tokens > available {
+        return Err(AppError::Validation(format!(
+            "Chat context exceeds the available context limit ({tokens} estimated tokens, {available} available); the current request has been preserved"
+        )));
     }
+    Ok(())
+}
 
-    fn prompts() -> PromptLoader {
-        PromptLoader::new(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("..")
-                .join("resources")
-                .join("prompts"),
-        )
+fn is_substantive_request(msg: &Message) -> bool {
+    matches!(
+        msg.role,
+        MessageRole::User
+            | MessageRole::Contact
+            | MessageRole::LiveCall
+            | MessageRole::TaskCompletion
+    ) && !matches!(msg.command, Some(MessageCommand::Command { .. }))
+        && (!msg.content.trim().is_empty() || !msg.attachments.is_empty())
+}
+
+fn timestamp_group_start(messages: &[Message], mut index: usize) -> usize {
+    while index > 0 && messages[index - 1].created_at == messages[index].created_at {
+        index -= 1;
     }
-
-    async fn setup(fail: bool) -> (ChatCompactor, SurrealMessageRepo, SurrealChatSummaryRepo) {
-        let db = Surreal::new::<Mem>(()).await.unwrap();
-        crate::db::init::setup_schema(&db).await.unwrap();
-        let message_repo: SurrealMessageRepo = SurrealRepo::new(db.clone());
-        let summary_repo: SurrealChatSummaryRepo = SurrealRepo::new(db.clone());
-        let compactor = ChatCompactor::new(
-            SurrealRepo::new(db.clone()),
-            SurrealRepo::new(db.clone()),
-            Arc::new(StubSummarizer { fail }),
-            prompts(),
-        );
-        (compactor, message_repo, summary_repo)
-    }
-
-    async fn seed(repo: &SurrealMessageRepo, chat_id: &str, n: usize, len: usize) {
-        let base = Utc::now() - Duration::hours(1);
-        for i in 0..n {
-            let mut m = Message::builder(chat_id, MessageRole::User, "x".repeat(len)).build();
-            m.id = new_id();
-            m.created_at = base + Duration::seconds(i as i64);
-            repo.create(&m).await.unwrap();
-        }
-    }
-
-    #[tokio::test]
-    async fn compacts_persists_retains_and_loads_cutoff() {
-        let (compactor, messages, summaries) = setup(false).await;
-        let chat = "chat-1";
-        seed(&messages, chat, 6, 200).await;
-
-        let out = compactor
-            .compact_chat("u", chat, "agent", "sys", 200, 0)
-            .await
-            .unwrap();
-        assert!(out.compacted, "expected compaction to run");
-
-        let summary = summaries.find_by_chat_id(chat).await.unwrap().unwrap();
-        assert_eq!(summary.content, "[SUMMARY]");
-        assert!(summary.item_count > 0 && summary.item_count < 6);
-
-        let all = messages.find_by_chat_id(chat).await.unwrap();
-        assert_eq!(all.len(), 6, "compacted messages must be retained");
-
-        let loaded = compactor.load_conversation(chat).await.unwrap();
-        assert_eq!(loaded.summary.as_deref(), Some("[SUMMARY]"));
-        assert_eq!(loaded.messages.len(), 6 - summary.item_count as usize);
-        assert!(
-            loaded
-                .messages
-                .iter()
-                .all(|m| m.created_at > summary.compacted_until)
-        );
-
-        assert_eq!(out.conversation.summary, loaded.summary);
-        assert_eq!(
-            out.conversation
-                .messages
-                .iter()
-                .map(|m| m.id.clone())
-                .collect::<Vec<_>>(),
-            loaded
-                .messages
-                .iter()
-                .map(|m| m.id.clone())
-                .collect::<Vec<_>>(),
-        );
-    }
-
-    #[tokio::test]
-    async fn no_op_under_threshold() {
-        let (compactor, messages, summaries) = setup(false).await;
-        let chat = "chat-2";
-        seed(&messages, chat, 1, 20).await;
-
-        let out = compactor
-            .compact_chat("u", chat, "agent", "sys", 100_000, 0)
-            .await
-            .unwrap();
-        assert!(!out.compacted);
-        assert!(summaries.find_by_chat_id(chat).await.unwrap().is_none());
-        assert!(out.conversation.summary.is_none());
-        assert_eq!(out.conversation.messages.len(), 1);
-
-        let loaded = compactor.load_conversation(chat).await.unwrap();
-        assert!(loaded.summary.is_none());
-        assert_eq!(loaded.messages.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn prior_summary_returns_summary_and_post_cutoff() {
-        let (compactor, messages, summaries) = setup(false).await;
-        let chat = "chat-4";
-        seed(&messages, chat, 6, 200).await;
-
-        let first = compactor
-            .compact_chat("u", chat, "agent", "sys", 200, 0)
-            .await
-            .unwrap();
-        assert!(first.compacted);
-        let summary = summaries.find_by_chat_id(chat).await.unwrap().unwrap();
-
-        let second = compactor
-            .compact_chat("u", chat, "agent", "sys", 100_000, 0)
-            .await
-            .unwrap();
-        assert!(!second.compacted, "must not re-compact under threshold");
-        assert_eq!(second.conversation.summary.as_deref(), Some("[SUMMARY]"));
-        assert_eq!(
-            second.conversation.messages.len(),
-            6 - summary.item_count as usize
-        );
-        assert!(
-            second
-                .conversation
-                .messages
-                .iter()
-                .all(|m| m.created_at > summary.compacted_until)
-        );
-    }
-
-    #[tokio::test]
-    async fn fail_loud_on_summarizer_error() {
-        let (compactor, messages, summaries) = setup(true).await;
-        let chat = "chat-3";
-        seed(&messages, chat, 6, 200).await;
-
-        let err = compactor
-            .compact_chat("u", chat, "agent", "sys", 200, 0)
-            .await;
-        assert!(err.is_err(), "summarizer failure must propagate");
-        assert!(
-            summaries.find_by_chat_id(chat).await.unwrap().is_none(),
-            "no partial summary on failure"
-        );
-    }
+    index
 }

@@ -66,14 +66,23 @@ impl ModelGroup {
     ) -> Result<ModelResponse, InferenceError> {
         let (content, usage) = retry::inference_with_retry_and_fallback(
             self,
-            request.overrides,
-            request.system_prompt,
-            request.history,
-            request.tools,
-            request.usage_service,
-            request.usage_context,
+            request,
+            retry::HistoryOverflow::TruncateOldest,
         )
         .await?;
+        Ok(ModelResponse { content, usage })
+    }
+
+    /// Generate a completion without trimming any of its input. Each configured
+    /// candidate must fit the whole request; retry, fallback and usage accounting
+    /// otherwise follow the normal completion path.
+    pub(crate) async fn inference_preserving_history(
+        &self,
+        request: ModelRequest<'_>,
+    ) -> Result<ModelResponse, InferenceError> {
+        let (content, usage) =
+            retry::inference_with_retry_and_fallback(self, request, retry::HistoryOverflow::Reject)
+                .await?;
         Ok(ModelResponse { content, usage })
     }
 
@@ -82,16 +91,7 @@ impl ModelGroup {
         request: ModelRequest<'_>,
         schema: serde_json::Value,
     ) -> Result<serde_json::Value, InferenceError> {
-        retry::structured_inference_with_retry_and_fallback(
-            self,
-            request.overrides,
-            request.system_prompt,
-            request.history,
-            schema,
-            request.usage_service,
-            request.usage_context,
-        )
-        .await
+        retry::structured_inference_with_retry_and_fallback(self, request, schema).await
     }
 
     pub async fn stream_inference(
@@ -101,19 +101,8 @@ impl ModelGroup {
         cancellation: &tokio_util::sync::CancellationToken,
         accumulated_text: &mut String,
     ) -> Result<StreamResult, AppError> {
-        retry::stream_with_retry_and_fallback(
-            self,
-            request.overrides,
-            request.system_prompt,
-            &request.history,
-            &request.tools,
-            events,
-            cancellation,
-            accumulated_text,
-            request.usage_service,
-            request.usage_context,
-        )
-        .await
+        retry::stream_with_retry_and_fallback(self, request, events, cancellation, accumulated_text)
+            .await
     }
 }
 

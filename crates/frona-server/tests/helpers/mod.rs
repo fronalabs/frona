@@ -210,6 +210,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 pub enum MockResponse {
+    Content(Vec<AssistantContent>),
     Text(String),
     TextWithReasoning(String, String),
     ToolCalls(Vec<(String, String, Value)>),
@@ -240,6 +241,9 @@ pub struct MockModelProvider {
     last_history: Mutex<Vec<RigMessage>>,
     histories: Mutex<Vec<Vec<RigMessage>>>,
     tool_histories: Mutex<Vec<Vec<RigToolDefinition>>>,
+    system_prompts: Mutex<Vec<String>>,
+    model_names: Mutex<Vec<String>>,
+    request_settings: Mutex<Vec<(Option<u64>, Option<f64>)>>,
 }
 
 impl MockModelProvider {
@@ -250,6 +254,9 @@ impl MockModelProvider {
             last_history: Mutex::new(Vec::new()),
             histories: Mutex::new(Vec::new()),
             tool_histories: Mutex::new(Vec::new()),
+            system_prompts: Mutex::new(Vec::new()),
+            model_names: Mutex::new(Vec::new()),
+            request_settings: Mutex::new(Vec::new()),
         }
     }
 
@@ -264,6 +271,17 @@ impl MockModelProvider {
 
     pub fn tool_histories(&self) -> Vec<Vec<RigToolDefinition>> {
         self.tool_histories.lock().unwrap().clone()
+    }
+
+    pub fn system_prompts(&self) -> Vec<String> {
+        self.system_prompts.lock().unwrap().clone()
+    }
+    pub fn model_names(&self) -> Vec<String> {
+        self.model_names.lock().unwrap().clone()
+    }
+
+    pub fn request_settings(&self) -> Vec<(Option<u64>, Option<f64>)> {
+        self.request_settings.lock().unwrap().clone()
     }
 
     /// Append a response to the queue after construction for tests that only
@@ -334,6 +352,18 @@ impl ModelProvider for MockModelProvider {
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
     ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
+        self.system_prompts
+            .lock()
+            .unwrap()
+            .push(_system_prompt.to_string());
+        self.model_names
+            .lock()
+            .unwrap()
+            .push(_model.model_id.clone());
+        self.request_settings
+            .lock()
+            .unwrap()
+            .push((_max_tokens, _temperature));
         *self.last_history.lock().unwrap() = chat_history.clone();
         self.histories.lock().unwrap().push(chat_history.clone());
         self.tool_histories.lock().unwrap().push(tools);
@@ -341,10 +371,7 @@ impl ModelProvider for MockModelProvider {
             input_tokens: 10,
             output_tokens: 5,
             total_tokens: 15,
-            cached_input_tokens: 0,
-            cache_creation_input_tokens: 0,
-            reasoning_tokens: 0,
-            tool_use_prompt_tokens: 0,
+            ..Default::default()
         };
         let response = match self.next_response_for_history(&chat_history) {
             MockResponse::Barrier(barrier, response) => {
@@ -354,6 +381,7 @@ impl ModelProvider for MockModelProvider {
             response => response,
         };
         let content = match response {
+            MockResponse::Content(content) => content,
             MockResponse::Text(t) => vec![AssistantContent::text(&t)],
             MockResponse::TextWithReasoning(text, reasoning) => vec![
                 AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(
@@ -393,14 +421,26 @@ impl ModelProvider for MockModelProvider {
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
     ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
+        self.system_prompts
+            .lock()
+            .unwrap()
+            .push(_system_prompt.to_string());
+        self.model_names
+            .lock()
+            .unwrap()
+            .push(_model.model_id.clone());
+        self.request_settings
+            .lock()
+            .unwrap()
+            .push((_max_tokens, _temperature));
+        *self.last_history.lock().unwrap() = _chat_history.clone();
+        self.histories.lock().unwrap().push(_chat_history);
+        self.tool_histories.lock().unwrap().push(_tools);
         let usage = Usage {
             input_tokens: 10,
             output_tokens: 5,
             total_tokens: 15,
-            cached_input_tokens: 0,
-            cache_creation_input_tokens: 0,
-            reasoning_tokens: 0,
-            tool_use_prompt_tokens: 0,
+            ..Default::default()
         };
         let response = match self.next_response() {
             MockResponse::Barrier(barrier, response) => {
@@ -410,6 +450,18 @@ impl ModelProvider for MockModelProvider {
             response => response,
         };
         let content = match response {
+            MockResponse::Content(content) => {
+                for item in &content {
+                    if let AssistantContent::Text(text) = item {
+                        let _ = token_tx
+                            .send(frona::inference::provider::StreamToken::Text(
+                                text.text.clone(),
+                            ))
+                            .await;
+                    }
+                }
+                content
+            }
             MockResponse::Text(t) => {
                 let _ = token_tx
                     .send(frona::inference::provider::StreamToken::Text(t.clone()))

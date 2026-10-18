@@ -35,6 +35,54 @@ pub struct ModelConversationHistory {
 }
 
 impl ModelConversationHistory {
+    pub(crate) fn row_range(&self, row: usize) -> std::ops::Range<usize> {
+        let start = row
+            .checked_sub(1)
+            .map_or(self.summary_end, |i| self.row_ends[i]);
+        start..self.row_ends[row]
+    }
+
+    pub(crate) fn validate_source(
+        &self,
+        messages: &[Message],
+        summary: Option<&str>,
+    ) -> Result<(), crate::core::error::AppError> {
+        if !self
+            .row_ids
+            .iter()
+            .eq(messages.iter().map(|message| &message.id))
+            || self.summary.as_deref() != summary
+            || self.row_ends.len() != messages.len()
+            || self.summary_end > self.history.len()
+            || self
+                .row_ends
+                .iter()
+                .try_fold(self.summary_end, |previous, &end| {
+                    (end >= previous && end <= self.history.len()).then_some(end)
+                })
+                .is_none()
+        {
+            return Err(crate::core::error::AppError::Conflict(
+                "Model conversation history no longer matches the stored compaction source".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Replace whole stored rows, retaining their native tail and injected messages.
+    pub(crate) fn replace_prefix(&mut self, rows: usize, summary: &str) {
+        let prefix_end = self.row_range(rows - 1).end;
+        self.history
+            .splice(..prefix_end, [summary_message(summary)]);
+        self.row_ids.drain(..rows);
+        self.row_ends.drain(..rows);
+        for end in &mut self.row_ends {
+            *end = *end - prefix_end + 1;
+        }
+        self.summary = Some(summary.to_owned());
+        self.summary_end = 1;
+    }
+
     fn new(messages: &[Message], summary: Option<&str>) -> Self {
         let mut history = Vec::new();
         if let Some(summary) = summary.filter(|s| !s.trim().is_empty()) {
@@ -194,12 +242,15 @@ impl ConversationBuilder for TaskConversationBuilder {
         messages: &[Message],
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
-        _summary: Option<&str>,
+        summary: Option<&str>,
     ) -> ModelConversationHistory {
         let te_map = group_tool_calls_by_message(tool_calls);
-        let mut model_history = ModelConversationHistory::new(messages, None);
+        let mut model_history = ModelConversationHistory::new(messages, summary);
         let result = &mut model_history.history;
-        let mut instruction_wrapped = false;
+        // Task execution creates the initial instruction as the first stored
+        // Agent row. A summary already covers that row; retained Agent rows
+        // must keep their normal assistant/tool representation on reload.
+        let mut instruction_wrapped = summary.is_some();
         for msg in messages {
             match msg.role {
                 MessageRole::User | MessageRole::Contact => {
@@ -357,10 +408,10 @@ impl ConversationBuilder for ChannelConversationBuilder {
         messages: &[Message],
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
-        _summary: Option<&str>,
+        summary: Option<&str>,
     ) -> ModelConversationHistory {
         let te_map = group_tool_calls_by_message(tool_calls);
-        let mut model_history = ModelConversationHistory::new(messages, None);
+        let mut model_history = ModelConversationHistory::new(messages, summary);
         let result = &mut model_history.history;
         for msg in messages {
             match msg.role {

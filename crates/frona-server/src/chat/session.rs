@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use rig_core::completion::Message as RigMessage;
 pub use tokio_util::sync::CancellationToken;
 
@@ -11,10 +13,10 @@ use crate::chat::service::AgentConfig;
 use crate::core::error::AppError;
 use crate::inference::ModelGroup;
 use crate::inference::conversation::{
-    ConversationBuilder, ConversationContext, resolve_attachment_path,
+    ConversationBuilder, ConversationContext, ModelConversationHistory, resolve_attachment_path,
 };
 use crate::tool::InferenceContext;
-use crate::tool::registry::AgentToolRegistry;
+use crate::tool::registry::{AgentToolRegistry, ToolFilter};
 
 pub struct ChatSessionContext {
     pub chat: Chat,
@@ -22,6 +24,9 @@ pub struct ChatSessionContext {
     pub system_prompt: String,
     pub model_group: ModelGroup,
     pub rig_history: Vec<RigMessage>,
+    pub(crate) model_history: ModelConversationHistory,
+    pub(crate) builder: Arc<dyn ConversationBuilder>,
+    pub(crate) tool_filters: Vec<ToolFilter>,
 
     pub tool_registry: AgentToolRegistry,
     pub tool_ctx: InferenceContext,
@@ -34,7 +39,8 @@ impl ChatSessionContext {
         user_id: &str,
         chat: Chat,
         cancel_token: CancellationToken,
-        builder: Box<dyn ConversationBuilder>,
+        builder: Arc<dyn ConversationBuilder>,
+        tool_filters: &[ToolFilter],
     ) -> Result<Self, AppError> {
         let event_sender: EventSender =
             harness
@@ -162,39 +168,16 @@ impl ChatSessionContext {
                     agent_config.model_group.clone().into(),
                 ))?;
 
-        let max_output = model_group
-            .max_tokens
-            .unwrap_or(model_group.inference.default_max_tokens) as usize;
         let loaded = harness
             .chat_service
             .compactor()
-            .compact_chat(
-                user_id,
-                &chat.id,
-                &chat.agent_id,
-                &system_prompt,
-                model_group.context_window,
-                max_output,
-            )
-            .await?
-            .conversation;
+            .load_conversation(&chat.id)
+            .await?;
         let conversation_summary = loaded.summary;
         let stored_messages = loaded.messages;
-        let tool_calls = harness
-            .chat_service
-            .get_tool_calls(&chat.id)
-            .await
-            .unwrap_or_default();
+        let tool_calls = harness.chat_service.get_tool_calls(&chat.id).await?;
 
-        // Apply two slash-command transformations to the message list the
-        // builder will see:
-        //   1. For user messages with `command: Some(Skill { name, prompt })`,
-        //      render the SKILL.md body and replace `content` with the
-        //      `<skill ...>...</skill>` form. Persistent DB row is untouched.
-        //   2. Drop assistant messages whose immediately-preceding message is
-        //      a user message with `command: Some(Command { … })`. Those are
-        //      synthetic acknowledgements for `/clear`, `/compact`, etc. -
-        //      user-facing chrome, not conversation the model needs.
+        // Render skill invocations for the model; persisted message content stays unchanged.
         let stored_messages = transform_for_commands(stored_messages, &skills);
 
         // Cron is already filtered from `task_in_progress`: TASK.md would prompt
@@ -252,15 +235,14 @@ impl ChatSessionContext {
             );
         }
 
-        let mut rig_history = builder
+        let mut model_history = builder
             .build(
                 &stored_messages,
                 &tool_calls,
                 &conv_ctx,
                 conversation_summary.as_deref(),
             )
-            .await
-            .history;
+            .await;
 
         let mut file_paths = Vec::new();
         for msg in &stored_messages {
@@ -285,6 +267,7 @@ impl ChatSessionContext {
         tool_ctx.file_paths = file_paths;
         tool_ctx.task = task;
 
+        let mut rig_history = model_history.history.clone();
         {
             let mut mcx = crate::memory::service::MemoryContext::new(
                 &mut system_prompt,
@@ -296,12 +279,53 @@ impl ChatSessionContext {
             }
         }
 
+        if rig_history != model_history.history {
+            return Err(AppError::Conflict(
+                "Memory retrieval changed the mapped conversation history".into(),
+            ));
+        }
+        if let Some(extra) = builder.system_prompt() {
+            let trimmed = extra.trim();
+            if !trimmed.is_empty() {
+                system_prompt.push_str("\n\n");
+                system_prompt.push_str(trimmed);
+            }
+        }
+        for filter in tool_filters {
+            tool_registry.apply_filter(filter);
+        }
+        let tools = crate::inference::tool_loop::to_rig_tool_definitions(
+            tool_registry.definitions(),
+            tool_registry.mcp_bridge_mode(),
+        );
+        let compacted = harness
+            .chat_service
+            .compactor()
+            .compact_chat(
+                user_id,
+                &chat.id,
+                &chat.agent_id,
+                super::compactor::CompactionContext {
+                    system_prompt: &system_prompt,
+                    model_group: &model_group,
+                    model_history: &model_history,
+                    tools: &tools,
+                },
+            )
+            .await?;
+        model_history = compacted.model_history;
+        rig_history = model_history.history.clone();
+        super::compactor::validate_initial_context(&rig_history, &system_prompt, &model_group)?;
+
         Ok(Self {
             chat,
             agent_config,
             system_prompt,
             model_group,
             rig_history,
+            model_history,
+            builder,
+            tool_filters: tool_filters.to_vec(),
 
             tool_registry,
             tool_ctx,

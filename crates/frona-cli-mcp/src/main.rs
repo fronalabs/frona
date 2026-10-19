@@ -1,9 +1,6 @@
-mod cli;
-mod client;
-
 use std::process::ExitCode;
 
-use client::BridgeClient;
+use frona_cli_mcp::{BridgeClient, run};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -34,5 +31,12 @@ async fn main() -> ExitCode {
     let client = BridgeClient::new(api_url, token);
     let args: Vec<String> = std::env::args().collect();
 
-    cli::run(client, args).await
+    let output = run(client, args).await;
+    print!("{}", output.stdout);
+    eprint!("{}", output.stderr);
+    if output.success {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }

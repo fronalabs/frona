@@ -1,24 +1,82 @@
-use std::process::ExitCode;
+use std::fmt::Write;
 
 use clap::{Arg, Command};
 use frona_api_types::mcp::BridgeToolInfo;
 
-use crate::client::BridgeClient;
+use crate::BridgeBackend;
 
-pub async fn run(client: BridgeClient, args: Vec<String>) -> ExitCode {
-    match run_inner(client, args).await {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::FAILURE
-        }
+const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+const MAX_HELP_COLUMN_WIDTH: usize = 80;
+
+/// The same stdout, stderr and exit status are used by the executable and tool.
+#[derive(Default)]
+pub struct CommandOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub success: bool,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+}
+
+impl CommandOutput {
+    fn stdout(&mut self, text: std::fmt::Arguments<'_>) {
+        append_output(&mut self.stdout, &mut self.stdout_truncated, text);
+    }
+
+    fn stderr(&mut self, text: std::fmt::Arguments<'_>) {
+        append_output(&mut self.stderr, &mut self.stderr_truncated, text);
     }
 }
 
+fn append_output(output: &mut String, truncated: &mut bool, text: std::fmt::Arguments<'_>) {
+    writeln!(OutputWriter { output, truncated }, "{text}")
+        .expect("bounded output writes cannot fail");
+}
+
+struct OutputWriter<'a> {
+    output: &'a mut String,
+    truncated: &'a mut bool,
+}
+
+impl std::fmt::Write for OutputWriter<'_> {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        const TRUNCATED: &str = "\n[Output truncated at 64 KiB.]\n";
+        if *self.truncated {
+            return Ok(());
+        }
+        let remaining = MAX_OUTPUT_BYTES - TRUNCATED.len() - self.output.len();
+        if text.len() <= remaining {
+            self.output.push_str(text);
+        } else {
+            let mut end = remaining;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            self.output.push_str(&text[..end]);
+            self.output.push_str(TRUNCATED);
+            *self.truncated = true;
+        }
+        Ok(())
+    }
+}
+
+pub async fn run(client: impl BridgeBackend, args: Vec<String>) -> CommandOutput {
+    let mut output = CommandOutput::default();
+    output.success = match run_inner(client, args, &mut output).await {
+        Ok(success) => success,
+        Err(error) => {
+            output.stderr(format_args!("error: {error}"));
+            false
+        }
+    };
+    output
+}
+
 async fn run_inner(
-    client: BridgeClient,
+    client: impl BridgeBackend,
     args: Vec<String>,
-) -> Result<ExitCode, crate::client::Error> {
+    output: &mut CommandOutput,
+) -> Result<bool, crate::client::Error> {
     let positionals: Vec<&str> = args
         .iter()
         .skip(1)
@@ -26,59 +84,73 @@ async fn run_inner(
         .map(|s| s.as_str())
         .collect();
 
+    if positionals
+        .iter()
+        .skip(usize::from(positionals.first() == Some(&"help")))
+        .take(2)
+        .any(|name| matches!(*name, "." | ".."))
+    {
+        return Err(crate::Error::Invalid("Invalid bridge path segment"));
+    }
+
     let has_help = args
         .iter()
         .any(|a| a == "--help" || a == "-h" || a == "help");
 
     match (positionals.first().copied(), positionals.get(1).copied()) {
         (None, _) | (Some("help"), None) => {
-            print_top_level_help();
-            Ok(ExitCode::SUCCESS)
+            print_top_level_help(output);
+            Ok(true)
         }
         (Some("list"), _) => {
-            let servers = client.list_servers().await?;
+            let servers = bounded_response(client.list_servers().await?)?;
             if servers.is_empty() {
-                println!("No MCP servers available.");
+                output.stdout(format_args!("No MCP servers available."));
             } else {
                 for s in &servers {
+                    if output.stdout_truncated {
+                        break;
+                    }
                     let desc = s.description.as_deref().unwrap_or("");
-                    println!(
+                    output.stdout(format_args!(
                         "{:<20} {:<30} ({} tools)  {}",
                         s.handle, s.display_name, s.tool_count, desc
-                    );
+                    ));
                 }
             }
-            Ok(ExitCode::SUCCESS)
+            Ok(true)
         }
         (Some("help"), Some(server)) => {
             if let Some(tool) = positionals.get(2) {
-                print_tool_help_by_name(&client, server, tool).await
+                print_tool_help_by_name(&client, server, tool, output).await
             } else {
-                print_server_help(&client, server).await?;
-                Ok(ExitCode::SUCCESS)
+                print_server_help(&client, server, output).await?;
+                Ok(true)
             }
         }
         (Some(server), Some("help")) => {
-            print_server_help(&client, server).await?;
-            Ok(ExitCode::SUCCESS)
+            print_server_help(&client, server, output).await?;
+            Ok(true)
         }
         (Some(server), None) if has_help => {
-            print_server_help(&client, server).await?;
-            Ok(ExitCode::SUCCESS)
+            print_server_help(&client, server, output).await?;
+            Ok(true)
         }
         (Some(server), Some(tool)) if has_help => {
-            print_tool_help_by_name(&client, server, tool).await
+            print_tool_help_by_name(&client, server, tool, output).await
         }
-        (Some(server), Some(tool)) => call_tool(&client, server, tool, &args).await,
+        (Some(server), Some(tool)) => call_tool(&client, server, tool, &args, output).await,
         (Some(server), None) => {
-            eprintln!("Missing tool name. Run: mcpctl {server} --help");
-            Ok(ExitCode::FAILURE)
+            output.stderr(format_args!(
+                "Missing tool name. Run: mcpctl {server} --help"
+            ));
+            Ok(false)
         }
     }
 }
 
-fn print_top_level_help() {
-    println!(
+fn print_top_level_help(output: &mut CommandOutput) {
+    output.stdout(format_args!(
         "\
 mcpctl — CLI bridge for MCP server tools
 
@@ -98,60 +170,72 @@ EXAMPLES:
 ENVIRONMENT:
     FRONA_TOKEN_FILE    Path to JWT auth token file (required)
     FRONA_API_URL       Base URL of the frona server (required)"
-    );
+    ));
 }
 
 async fn print_server_help(
-    client: &BridgeClient,
+    client: &impl BridgeBackend,
     server: &str,
+    output: &mut CommandOutput,
 ) -> Result<(), crate::client::Error> {
-    let detail = client.server_tools(server).await?;
+    let detail = bounded_response(client.server_tools(server).await?)?;
     let desc = detail.description.as_deref().unwrap_or("");
 
-    println!("{} — {}", detail.handle, desc);
-    println!();
-    println!("TOOLS:");
+    output.stdout(format_args!("{} — {}", detail.handle, desc));
+    output.stdout(format_args!(""));
+    output.stdout(format_args!("TOOLS:"));
 
     let max_name = detail
         .tools
         .iter()
         .map(|t| t.name.len())
         .max()
-        .unwrap_or(10);
+        .unwrap_or(10)
+        .min(MAX_HELP_COLUMN_WIDTH);
     for t in &detail.tools {
-        println!(
+        if output.stdout_truncated {
+            break;
+        }
+        output.stdout(format_args!(
             "    {:<width$}  {}",
             t.name,
             t.description,
             width = max_name
-        );
+        ));
     }
 
-    println!();
-    println!("USAGE:");
-    println!("    mcpctl {} <TOOL> [OPTIONS]", detail.handle);
-    println!("    mcpctl {} <TOOL> --help", detail.handle);
+    output.stdout(format_args!(""));
+    output.stdout(format_args!("USAGE:"));
+    output.stdout(format_args!(
+        "    mcpctl {} <TOOL> [OPTIONS]",
+        detail.handle
+    ));
+    output.stdout(format_args!("    mcpctl {} <TOOL> --help", detail.handle));
     Ok(())
 }
 
 async fn print_tool_help_by_name(
-    client: &BridgeClient,
+    client: &impl BridgeBackend,
     server: &str,
     tool: &str,
-) -> Result<ExitCode, crate::client::Error> {
-    let detail = client.server_tools(server).await?;
+    output: &mut CommandOutput,
+) -> Result<bool, crate::client::Error> {
+    let detail = bounded_response(client.server_tools(server).await?)?;
     if let Some(t) = detail.tools.iter().find(|t| t.name == tool) {
-        print_tool_help(server, t);
-        Ok(ExitCode::SUCCESS)
+        print_tool_help(server, t, output);
+        Ok(true)
     } else {
-        eprintln!("Unknown tool '{tool}' on server '{server}'.");
-        Ok(ExitCode::FAILURE)
+        output.stderr(format_args!("Unknown tool '{tool}' on server '{server}'."));
+        Ok(false)
     }
 }
 
-fn print_tool_help(server: &str, tool: &BridgeToolInfo) {
-    println!("{server} {} — {}", tool.name, tool.description);
-    println!();
+fn print_tool_help(server: &str, tool: &BridgeToolInfo, output: &mut CommandOutput) {
+    output.stdout(format_args!(
+        "{server} {} — {}",
+        tool.name, tool.description
+    ));
+    output.stdout(format_args!(""));
 
     let props = tool
         .input_schema
@@ -165,9 +249,17 @@ fn print_tool_help(server: &str, tool: &BridgeToolInfo) {
         .unwrap_or_default();
 
     if let Some(props) = props {
-        println!("OPTIONS:");
-        let max_name = props.keys().map(|k| k.len()).max().unwrap_or(10);
+        output.stdout(format_args!("OPTIONS:"));
+        let max_name = props
+            .keys()
+            .map(|k| k.len())
+            .max()
+            .unwrap_or(10)
+            .min(MAX_HELP_COLUMN_WIDTH);
         for (name, schema) in props {
+            if output.stdout_truncated {
+                break;
+            }
             let type_str = schema_type_label(schema);
             let desc = schema
                 .get("description")
@@ -178,21 +270,24 @@ fn print_tool_help(server: &str, tool: &BridgeToolInfo) {
             } else {
                 ""
             };
-            println!(
+            output.stdout(format_args!(
                 "    --{:<width$}  <{}>  {}{}",
                 name,
                 type_str,
                 desc,
                 req_marker,
                 width = max_name,
-            );
+            ));
         }
-        println!();
+        output.stdout(format_args!(""));
     }
 
-    println!("USAGE:");
+    output.stdout(format_args!("USAGE:"));
     let example_args: String = required.iter().map(|r| format!(" --{r} <value>")).collect();
-    println!("    mcpctl {server} {}{}", tool.name, example_args);
+    output.stdout(format_args!(
+        "    mcpctl {server} {}{}",
+        tool.name, example_args
+    ));
 }
 
 fn schema_type_label(schema: &serde_json::Value) -> &str {
@@ -208,29 +303,30 @@ fn schema_type_label(schema: &serde_json::Value) -> &str {
 }
 
 async fn call_tool(
-    client: &BridgeClient,
+    client: &impl BridgeBackend,
     server: &str,
     tool: &str,
     args: &[String],
-) -> Result<ExitCode, crate::client::Error> {
-    let detail = client.server_tools(server).await?;
+    output: &mut CommandOutput,
+) -> Result<bool, crate::client::Error> {
+    let detail = bounded_response(client.server_tools(server).await?)?;
     let tool_info = detail.tools.iter().find(|t| t.name == tool);
 
     let Some(tool_info) = tool_info else {
-        eprintln!("Unknown tool '{tool}' on server '{server}'.");
-        eprintln!("Run: mcpctl {server} --help");
-        return Ok(ExitCode::FAILURE);
+        output.stderr(format_args!("Unknown tool '{tool}' on server '{server}'."));
+        output.stderr(format_args!("Run: mcpctl {server} --help"));
+        return Ok(false);
     };
 
     let arguments = parse_tool_args(tool_info, args)?;
 
-    let result = client.call_tool(server, tool, arguments).await?;
+    let result = bounded_response(client.call_tool(server, tool, arguments).await?)?;
     if result.is_error {
-        eprintln!("{}", result.content);
-        Ok(ExitCode::FAILURE)
+        output.stderr(format_args!("{}", result.content));
+        Ok(false)
     } else {
-        println!("{}", result.content);
-        Ok(ExitCode::SUCCESS)
+        output.stdout(format_args!("{}", result.content));
+        Ok(true)
     }
 }
 
@@ -266,26 +362,22 @@ fn parse_tool_args(
             .get("type")
             .and_then(|v| v.as_str())
             .unwrap_or("string");
-        let desc: &'static str = Box::leak(
-            schema
-                .get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-                .into_boxed_str(),
-        );
+        let desc = schema
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let is_required = required_fields.iter().any(|r| r == name);
-        let name_static: &'static str = Box::leak(name.clone().into_boxed_str());
 
         let arg = match type_str {
-            "boolean" => Arg::new(name_static)
-                .long(name_static)
+            "boolean" => Arg::new(name.clone())
+                .long(name.clone())
                 .help(desc)
                 .num_args(0..=1)
                 .default_missing_value("true")
                 .required(is_required),
-            _ => Arg::new(name_static)
-                .long(name_static)
+            _ => Arg::new(name.clone())
+                .long(name.clone())
                 .help(desc)
                 .required(is_required),
         };
@@ -362,4 +454,25 @@ fn parse_tool_args(
     }
 
     Ok(serde_json::Value::Object(arguments))
+}
+
+// The direct backend needs the same response budget as the HTTP client.
+// Count serialized bytes without allocating another copy of the response.
+fn bounded_response<T: serde::Serialize>(response: T) -> Result<T, crate::Error> {
+    struct Budget(usize);
+    impl std::io::Write for Budget {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_sub(bytes.len())
+                .ok_or_else(|| std::io::Error::other("response limit"))?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    serde_json::to_writer(Budget(4 * 1024 * 1024), &response)
+        .map_err(|_| crate::Error::Invalid("Bridge response exceeds the 4 MiB limit"))?;
+    Ok(response)
 }

@@ -1,3 +1,5 @@
+use std::io;
+use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -13,6 +15,13 @@ use super::super::{InferenceContext, ToolOutput};
 
 const MAX_LINES: usize = 2000;
 const MAX_BYTES: usize = 50 * 1024;
+
+// Scan only a small directory before sorting. If it exceeds either bound,
+// omit the listing rather than display an unstable filesystem-order subset.
+const MAX_DIRECTORY_ENTRIES: usize = 128;
+const MAX_DIRECTORY_NAME_BYTES: usize = 16 * 1024;
+const MAX_DIRECTORY_DISPLAY_ENTRIES: usize = 50;
+const MAX_DIRECTORY_OUTPUT_BYTES: usize = 8 * 1024;
 
 pub struct ReadTool {
     pub storage: StorageService,
@@ -65,13 +74,18 @@ impl ReadTool {
                 resolved.display(),
             )));
         }
-        if !tokio::fs::try_exists(&resolved).await.unwrap_or(false) {
-            return Ok(ToolOutput::error(format!("file not found: {}", path_arg)));
+        let metadata = match tokio::fs::metadata(&resolved).await {
+            Ok(metadata) => metadata,
+            Err(error) => return read_error(path_arg, error),
+        };
+        if metadata.is_dir() {
+            return read_directory(&resolved).await;
         }
 
-        let bytes = tokio::fs::read(&resolved)
-            .await
-            .map_err(|e| AppError::Internal(format!("read {}: {e}", resolved.display())))?;
+        let bytes = match tokio::fs::read(&resolved).await {
+            Ok(bytes) => bytes,
+            Err(error) => return read_error(path_arg, error),
+        };
         let size = bytes.len();
 
         let mime = infer::get(&bytes).map(|t| t.mime_type().to_string());
@@ -91,6 +105,77 @@ impl ReadTool {
             ))),
         }
     }
+}
+
+fn read_error(path: &str, error: io::Error) -> Result<ToolOutput, AppError> {
+    match error.kind() {
+        io::ErrorKind::NotFound => Ok(ToolOutput::error(format!("file not found: {path}"))),
+        io::ErrorKind::PermissionDenied
+        | io::ErrorKind::InvalidInput
+        | io::ErrorKind::InvalidData
+        | io::ErrorKind::NotADirectory
+        | io::ErrorKind::IsADirectory => {
+            Ok(ToolOutput::error(format!("Could not read {path}: {error}")))
+        }
+        _ => Err(AppError::Internal(format!("read {path}: {error}"))),
+    }
+}
+
+async fn read_directory(path: &Path) -> Result<ToolOutput, AppError> {
+    const GUIDANCE: &str =
+        "Read got a directory. Choose a file to read; directory names end with '/'.";
+    const OMITTED: &str = "[Listing omitted: directory exceeds the scan limit (128 entries or 16 KiB of names). Use Glob with a narrower pattern to find a file.]";
+    const TRUNCATED: &str =
+        "\n[Listing truncated. Use Glob with a narrower pattern to find a file.]";
+
+    let mut directory = match tokio::fs::read_dir(path).await {
+        Ok(directory) => directory,
+        Err(error) => return read_error("directory (could not list entries)", error),
+    };
+    let mut names = Vec::new();
+    let mut name_bytes = 0;
+    loop {
+        let entry = match directory.next_entry().await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => break,
+            Err(error) => return read_error("directory (could not list entries)", error),
+        };
+        if names.len() == MAX_DIRECTORY_ENTRIES {
+            return Ok(ToolOutput::error(format!("{GUIDANCE}\n{OMITTED}")));
+        }
+        let mut name = entry.file_name().to_string_lossy().into_owned();
+        let file_type = match entry.file_type().await {
+            Ok(file_type) => file_type,
+            Err(error) => return read_error("directory (could not list entries)", error),
+        };
+        if file_type.is_dir() {
+            name.push('/');
+        }
+        name_bytes += name.len();
+        if name_bytes > MAX_DIRECTORY_NAME_BYTES {
+            return Ok(ToolOutput::error(format!("{GUIDANCE}\n{OMITTED}")));
+        }
+        names.push(name);
+    }
+    if names.is_empty() {
+        return Ok(ToolOutput::error(format!(
+            "{GUIDANCE}\n[Directory is empty.]"
+        )));
+    }
+    names.sort();
+    let mut output = GUIDANCE.to_string();
+    for (index, name) in names.iter().enumerate() {
+        // Quote/escape names so embedded newlines cannot masquerade as entries.
+        let line = format!("\n{name:?}");
+        if index == MAX_DIRECTORY_DISPLAY_ENTRIES
+            || output.len() + line.len() + TRUNCATED.len() > MAX_DIRECTORY_OUTPUT_BYTES
+        {
+            output.push_str(TRUNCATED);
+            break;
+        }
+        output.push_str(&line);
+    }
+    Ok(ToolOutput::error(output))
 }
 
 fn read_image(bytes: &[u8], mime: &str, path_arg: &str) -> Result<ToolOutput, AppError> {
@@ -152,6 +237,14 @@ fn read_text(text: &str, offset: Option<usize>, limit: Option<usize>) -> ToolOut
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unexpected_io_failures_remain_internal() {
+        assert!(matches!(
+            read_error("file", io::Error::other("unexpected I/O failure")),
+            Err(AppError::Internal(_))
+        ));
+    }
 
     #[test]
     fn read_text_no_truncation() {

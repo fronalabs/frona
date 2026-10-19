@@ -400,3 +400,233 @@ async fn native_image_reads_share_validation_and_resize_behavior() {
         }
     }
 }
+
+#[tokio::test]
+async fn read_directories_offer_sorted_entries_and_file_guidance() {
+    let (fixture, ctx) = fixture().await;
+    let state = &fixture.state;
+    let workspace = state
+        .storage_service
+        .agent_workspace_path(&ctx.user.handle, &ctx.agent.handle);
+    let reader = ReadTool::new(
+        state.storage_service.clone(),
+        state.sandbox_manager.clone(),
+        state.prompts.clone(),
+    );
+    tokio::fs::create_dir_all(workspace.join("empty"))
+        .await
+        .unwrap();
+    let empty = reader
+        .execute("read", json!({"path": "empty"}), &ctx)
+        .await
+        .unwrap();
+    assert!(!empty.is_success());
+    assert!(empty.text_content().contains("Directory is empty"));
+    assert!(empty.text_content().contains("Choose a file"));
+
+    tokio::fs::create_dir_all(workspace.join("reports/nested"))
+        .await
+        .unwrap();
+    for name in [
+        "z.txt",
+        "a.txt",
+        "é.txt",
+        "line\nbreak.txt",
+        "nested/inside.txt",
+    ] {
+        tokio::fs::write(workspace.join("reports").join(name), "first\nsecond\nthird")
+            .await
+            .unwrap();
+    }
+    let first = reader
+        .execute("read", json!({"path": "reports"}), &ctx)
+        .await
+        .unwrap();
+    assert!(!first.is_success());
+    assert_eq!(
+        first.text_content().lines().skip(1).collect::<Vec<_>>(),
+        [
+            "\"a.txt\"",
+            "\"line\\nbreak.txt\"",
+            "\"nested/\"",
+            "\"z.txt\"",
+            "\"é.txt\""
+        ]
+    );
+    assert!(!first.text_content().contains("inside.txt"));
+    // Filesystem enumeration order and Read's file-only pagination arguments
+    // must not change the deterministic directory guidance.
+    for _ in 0..3 {
+        let again = reader
+            .execute(
+                "read",
+                json!({"path": "reports", "offset": 99, "limit": 1}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(again.text_content(), first.text_content());
+    }
+    let nested = reader
+        .execute(
+            "read",
+            json!({"path": "reports/nested/inside.txt", "offset": 2, "limit": 1}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(nested.is_success());
+    assert_eq!(
+        nested.text_content(),
+        "second\n\n[Showing lines 2-2 of 3. Use offset=3 to continue.]"
+    );
+    let missing = reader
+        .execute("read", json!({"path": "reports/missing.txt"}), &ctx)
+        .await
+        .unwrap();
+    assert!(!missing.is_success());
+    assert!(missing.text_content().contains("file not found"));
+    for path in [
+        "",
+        "agent://system/file.txt",
+        "reports/a.txt/child",
+        "reports/invalid\0name",
+    ] {
+        assert!(matches!(
+            reader.execute("read", json!({"path": path}), &ctx).await,
+            Err(frona::core::error::AppError::Validation(_))
+        ));
+    }
+}
+
+#[tokio::test]
+async fn read_directory_listing_bounds_are_deterministic() {
+    let (fixture, ctx) = fixture().await;
+    let state = &fixture.state;
+    let workspace = state
+        .storage_service
+        .agent_workspace_path(&ctx.user.handle, &ctx.agent.handle);
+    let reader = ReadTool::new(
+        state.storage_service.clone(),
+        state.sandbox_manager.clone(),
+        state.prompts.clone(),
+    );
+    for (directory, count, padding) in [
+        ("display", 51, 0),
+        ("scan", 129, 0),
+        ("names", 80, 220),
+        ("bytes", 40, 220),
+    ] {
+        tokio::fs::create_dir_all(workspace.join(directory))
+            .await
+            .unwrap();
+        for index in (0..count).rev() {
+            let name = format!("{index:03}{}", "x".repeat(padding));
+            tokio::fs::write(workspace.join(directory).join(name), "")
+                .await
+                .unwrap();
+        }
+        let first = reader
+            .execute("read", json!({"path": directory}), &ctx)
+            .await
+            .unwrap();
+        assert!(!first.is_success());
+        assert!(first.text_content().len() <= 8 * 1024);
+        assert!(
+            first
+                .text_content()
+                .contains("Use Glob with a narrower pattern")
+        );
+        if directory == "scan" || directory == "names" {
+            assert!(first.text_content().contains("Listing omitted"));
+            assert_eq!(first.text_content().lines().count(), 2);
+        } else {
+            assert!(first.text_content().contains("Listing truncated"));
+            assert!(
+                first
+                    .text_content()
+                    .lines()
+                    .nth(1)
+                    .unwrap()
+                    .starts_with("\"000")
+            );
+            assert!(first.text_content().lines().count() <= 52);
+            if directory == "display" {
+                assert!(first.text_content().contains("\"049\""));
+                assert!(!first.text_content().contains("\"050\""));
+            }
+        }
+        let again = reader
+            .execute("read", json!({"path": directory}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(first.text_content(), again.text_content());
+    }
+}
+
+#[tokio::test]
+async fn read_unreadable_and_forbidden_directories_do_not_leak_entries() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (fixture, ctx) = fixture().await;
+    let state = &fixture.state;
+    let workspace = state
+        .storage_service
+        .agent_workspace_path(&ctx.user.handle, &ctx.agent.handle);
+    let reader = ReadTool::new(
+        state.storage_service.clone(),
+        state.sandbox_manager.clone(),
+        state.prompts.clone(),
+    );
+    for name in ["unreadable", "forbidden"] {
+        tokio::fs::create_dir_all(workspace.join(name))
+            .await
+            .unwrap();
+        tokio::fs::write(workspace.join(name).join("hidden-name.txt"), "secret")
+            .await
+            .unwrap();
+    }
+    tokio::fs::write(workspace.join("unreadable.txt"), "secret")
+        .await
+        .unwrap();
+    for path in ["unreadable", "unreadable.txt"] {
+        tokio::fs::set_permissions(workspace.join(path), std::fs::Permissions::from_mode(0))
+            .await
+            .unwrap();
+        let result = reader.execute("read", json!({"path": path}), &ctx).await;
+        // Restore permissions before assertions so failed tests remain cleanable.
+        tokio::fs::set_permissions(workspace.join(path), std::fs::Permissions::from_mode(0o700))
+            .await
+            .unwrap();
+        let output = result.unwrap();
+        assert!(
+            !output.is_success(),
+            "permission fixture requires an unprivileged test user"
+        );
+        assert!(output.text_content().contains("Permission denied"));
+        assert!(!output.text_content().contains("empty"));
+        assert!(!output.text_content().contains("hidden-name.txt"));
+        if path == "unreadable" {
+            assert!(output.text_content().contains("could not list entries"));
+        }
+    }
+    state
+        .policy_service
+        .create_policy(
+            &ctx.user.id,
+            &format!(
+                "@id(\"deny-directory\") forbid(principal, action, resource == Policy::Path::{});",
+                serde_json::to_string(&workspace.join("forbidden").to_string_lossy()).unwrap()
+            ),
+        )
+        .await
+        .unwrap();
+    let denied = reader
+        .execute("read", json!({"path": "forbidden"}), &ctx)
+        .await
+        .unwrap();
+    assert!(!denied.is_success());
+    assert!(denied.text_content().contains("denied by sandbox policy"));
+    assert!(!denied.text_content().contains("hidden-name.txt"));
+    assert!(!denied.text_content().contains("Choose a file"));
+}

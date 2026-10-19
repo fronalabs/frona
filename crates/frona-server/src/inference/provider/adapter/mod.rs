@@ -6,5 +6,6 @@ pub(crate) mod copilot;
 pub(crate) mod discovery;
 pub(crate) mod huggingface;
 pub(crate) mod hyperbolic;
+pub(crate) mod openrouter;
 pub(crate) mod perplexity;
 pub(crate) mod together;

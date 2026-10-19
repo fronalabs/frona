@@ -72,6 +72,8 @@ pub enum ProviderValidationError {
     TimedOut(u64),
     #[error("credential validation was rejected: {0}")]
     Rejected(String),
+    #[error("credential validation failed: {0}")]
+    Failed(String),
     #[error("invalid provider candidate: {0}")]
     InvalidCandidate(String),
     #[error("validation proof '{0}' was not found or has expired")]
@@ -182,9 +184,8 @@ impl ProviderValidationService {
         let binding = binding(&resolved, &prepared.source, &prepared.config);
         let provider = build_provider(&resolved, &prepared.config, &self.counter)
             .map_err(|error| ProviderValidationError::InvalidCandidate(error.to_string()))?;
-        // Public lists cannot establish authentication merely because the
-        // request contained a key. Require an authentication rejection for an
-        // unrelated control key before accepting listing as credential proof.
+        // A successful response alone cannot establish authentication. Require
+        // rejection of an unrelated control key before accepting credential proof.
         if prepared.method == CredentialMethod::ApiKey {
             let mut control_config = prepared.config.clone();
             control_config.api_key = Some(format!("frona-validation-control-{}", Uuid::new_v4()));
@@ -194,8 +195,9 @@ impl ProviderValidationService {
                 Ok(Err(CredentialValidationError::AuthenticationRejected)) => {}
                 Ok(Err(CredentialValidationError::Unsupported)) => return Err(ProviderValidationError::Unsupported),
                 Err(_) => return Err(ProviderValidationError::TimedOut(self.timeout.as_millis() as u64)),
-                _ => return Err(ProviderValidationError::Rejected(
-                    "model listing did not establish authentication; this endpoint needs a dedicated credential check".into()
+                Ok(Err(CredentialValidationError::Failed(message))) => return Err(ProviderValidationError::Failed(message)),
+                Ok(Ok(_)) => return Err(ProviderValidationError::Rejected(
+                    "provider accepted unrelated control credentials; authentication could not be established".into()
                 )),
             }
         }
@@ -286,7 +288,7 @@ impl ProviderValidationService {
                 }
                 CredentialValidationError::Unsupported => ProviderValidationError::Unsupported,
                 CredentialValidationError::Failed(message) => {
-                    ProviderValidationError::Rejected(message)
+                    ProviderValidationError::Failed(message)
                 }
             })?;
 
@@ -677,7 +679,7 @@ mod tests {
         let (service, store) = service().await;
         let attempts = AtomicUsize::new(0);
         for (check, expected) in [
-            (Check::Failure, "rejected"),
+            (Check::Failure, "failed"),
             (Check::Unsupported, "unsupported"),
             (Check::Hang, "timed out"),
         ] {

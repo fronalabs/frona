@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rig_core::client::ModelListingClient;
 use rig_core::client::Nothing;
 use rig_core::providers::{
-    anthropic, deepseek, gemini, groq, mira, mistral, moonshot, ollama, openai, openrouter,
+    anthropic, deepseek, gemini, groq, mira, mistral, moonshot, ollama, openai,
 };
 
 use crate::core::Handle;
@@ -730,7 +730,7 @@ pub(crate) fn build_provider(
         }
         FactoryKind::Groq => build_listable_key_client!(name, config, endpoint, groq, counter),
         FactoryKind::OpenRouter => {
-            build_listable_key_client!(name, config, endpoint, openrouter, counter)
+            crate::inference::provider::adapter::openrouter::build(resolved, config, counter)
         }
         FactoryKind::DeepSeek => {
             build_listable_key_client!(name, config, endpoint, deepseek, counter)

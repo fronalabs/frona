@@ -680,6 +680,32 @@ mod tests {
     use rig_core::completion::AssistantContent;
 
     #[test]
+    fn bridge_model_definitions_offer_the_wrapper_without_native_mcp_expansion() {
+        let definitions = ["mcpctl", "mcp__demo__echo", "read"].map(|name| ToolDefinition {
+            id: name.into(),
+            provider_id: String::new(),
+            description: String::new(),
+            parameters: serde_json::json!({"type":"object"}),
+        });
+        let bridge = to_rig_tool_definitions(&definitions, true);
+        assert_eq!(
+            bridge
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            ["mcpctl", "read"]
+        );
+        let native = to_rig_tool_definitions(&definitions[1..], false);
+        assert_eq!(
+            native
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            ["mcp__demo__echo", "read"]
+        );
+    }
+
+    #[test]
     fn extract_reasoning_from_contents() {
         let contents = vec![
             AssistantContent::Reasoning(

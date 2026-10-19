@@ -246,6 +246,7 @@ async fn build_test_harness(
         token_service,
         keypair_service,
         user_service,
+        tool_fixture.state.agent_service.clone(),
         policy_service,
         storage.clone(),
         "http://localhost".to_string(),

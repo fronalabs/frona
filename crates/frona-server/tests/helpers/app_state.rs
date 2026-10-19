@@ -20,6 +20,10 @@ pub fn catalogs(config: &Config) -> frona_model_catalog::sources::CatalogSources
 }
 
 pub async fn build(db: &Surreal<Db>) -> Fixture {
+    build_configured(db, |_| {}).await
+}
+
+pub async fn build_configured(db: &Surreal<Db>, configure: impl FnOnce(&mut Config)) -> Fixture {
     let directory = tempfile::tempdir().unwrap();
     let base = directory.path().to_string_lossy();
     let resources = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../resources");
@@ -29,6 +33,7 @@ pub async fn build(db: &Surreal<Db>) -> Fixture {
     config.storage.cache_dir = format!("{base}/cache");
     config.storage.skills_dir = format!("{base}/skills");
     config.storage.shared_config_dir = resources.to_string_lossy().into_owned();
+    configure(&mut config);
     let mut loaded = ConfigService::load(directory.path().join("config.yaml")).unwrap();
     loaded.config = config.clone();
     let config_service = ConfigService::new(loaded).unwrap();

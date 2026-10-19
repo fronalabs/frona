@@ -531,6 +531,7 @@ impl AppState {
             token_service.clone(),
             keypair_service.clone(),
             user_service.clone(),
+            agent_service.clone(),
             policy_service.clone(),
             storage.clone(),
             config.server.public_base_url(),

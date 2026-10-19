@@ -193,6 +193,7 @@ async fn test_app_state_with_sandbox(disabled: bool) -> (AppState, tempfile::Tem
             state.token_service.clone(),
             state.keypair_service.clone(),
             state.user_service.clone(),
+            state.agent_service.clone(),
             state.policy_service.clone(),
             state.storage_service.clone(),
             state.config.server.public_base_url(),

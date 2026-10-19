@@ -11,7 +11,7 @@ use crate::api::error::ApiError;
 use crate::api::middleware::auth::{AuthPrincipal, AuthUser};
 use crate::core::error::AppError;
 use crate::core::state::AppState;
-use crate::tool::mcp::models::{McpServerInstall, McpServerStatus, McpServerUpdate};
+use crate::tool::mcp::models::{McpServerInstall, McpServerUpdate};
 
 async fn validate_request_sandbox_paths(
     state: &AppState,
@@ -347,63 +347,16 @@ async fn search_registry(
     Ok(Json(results))
 }
 
-fn allowed_mcp_tools(
-    defs: &[crate::tool::ToolDefinition],
-) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
-    let mut map: std::collections::HashMap<String, std::collections::HashSet<String>> =
-        std::collections::HashMap::new();
-    for def in defs {
-        if let Some(rest) = def.id.strip_prefix("mcp__")
-            && let Some((slug, tool)) = rest.split_once("__")
-        {
-            map.entry(slug.to_string())
-                .or_default()
-                .insert(tool.to_string());
-        }
-    }
-    map
-}
-
 async fn bridge_list_servers(
     auth: AuthPrincipal,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<frona_api_types::mcp::BridgeServerInfo>>, ApiError> {
-    let servers = state.mcp_service.list_for_user(&auth.user_id).await?;
-    let running: Vec<_> = servers
-        .into_iter()
-        .filter(|s| s.status == McpServerStatus::Running)
-        .collect();
-
-    let slug_filter = if let Some(agent_id) = auth.agent_id() {
-        let agent = state.agent_service.get(&auth.user_id, agent_id).await?;
-        let registry = state
-            .tool_manager
-            .build_agent_registry(&auth.user_id, &agent, &state.policy_service, None)
-            .await;
-        Some(allowed_mcp_tools(registry.definitions()))
-    } else {
-        None
-    };
-
-    let result = running
-        .into_iter()
-        .filter(|s| {
-            slug_filter
-                .as_ref()
-                .is_none_or(|f| f.contains_key(s.handle.as_str()))
-        })
-        .map(|s| {
-            let tool_count = s.tool_cache.len();
-            frona_api_types::mcp::BridgeServerInfo {
-                handle: s.handle.to_string(),
-                display_name: s.display_name,
-                description: s.description,
-                tool_count,
-            }
-        })
-        .collect();
-
-    Ok(Json(result))
+    Ok(Json(
+        state
+            .mcp_service
+            .bridge_list_servers(&auth.user_id, auth.agent_id())
+            .await?,
+    ))
 }
 
 async fn bridge_server_tools(
@@ -411,49 +364,12 @@ async fn bridge_server_tools(
     State(state): State<AppState>,
     Path(handle): Path<String>,
 ) -> Result<Json<frona_api_types::mcp::BridgeServerDetail>, ApiError> {
-    let servers = state.mcp_service.list_for_user(&auth.user_id).await?;
-    let server = servers
-        .into_iter()
-        .find(|s| s.handle.as_str() == handle && s.status == McpServerStatus::Running)
-        .ok_or_else(|| {
-            ApiError::from(crate::core::error::AppError::NotFound(format!(
-                "MCP server '{handle}'"
-            )))
-        })?;
-
-    let allowed_tools = if let Some(agent_id) = auth.agent_id() {
-        let agent = state.agent_service.get(&auth.user_id, agent_id).await?;
-        let registry = state
-            .tool_manager
-            .build_agent_registry(&auth.user_id, &agent, &state.policy_service, None)
-            .await;
-        let map = allowed_mcp_tools(registry.definitions());
-        map.get(&handle).cloned()
-    } else {
-        None
-    };
-
-    let tools = server
-        .tool_cache
-        .into_iter()
-        .filter(|t| {
-            allowed_tools
-                .as_ref()
-                .is_none_or(|allowed| allowed.contains(&t.name))
-        })
-        .map(|t| frona_api_types::mcp::BridgeToolInfo {
-            name: t.name,
-            description: t.description,
-            input_schema: t.input_schema,
-        })
-        .collect();
-
-    Ok(Json(frona_api_types::mcp::BridgeServerDetail {
-        handle: server.handle.to_string(),
-        display_name: server.display_name,
-        description: server.description,
-        tools,
-    }))
+    Ok(Json(
+        state
+            .mcp_service
+            .bridge_server_tools(&auth.user_id, auth.agent_id(), &handle)
+            .await?,
+    ))
 }
 
 async fn bridge_call_tool(
@@ -462,48 +378,16 @@ async fn bridge_call_tool(
     Path((handle, tool_name)): Path<(String, String)>,
     Json(req): Json<frona_api_types::mcp::BridgeCallRequest>,
 ) -> Result<Json<frona_api_types::mcp::BridgeCallResponse>, ApiError> {
-    if let Some(agent_id) = auth.agent_id() {
-        let agent = state.agent_service.get(&auth.user_id, agent_id).await?;
-        let registry = state
-            .tool_manager
-            .build_agent_registry(&auth.user_id, &agent, &state.policy_service, None)
-            .await;
-        let expected = format!("mcp__{handle}__{tool_name}");
-        if !registry.definitions().iter().any(|d| d.id == expected) {
-            return Err(ApiError::from(crate::core::error::AppError::Forbidden(
-                format!("Agent does not have access to tool '{tool_name}' on server '{handle}'"),
-            )));
-        }
-    }
-
-    let server_id = state
-        .mcp_manager
-        .find_by_handle(&auth.user_id, &handle)
-        .await
-        .ok_or_else(|| {
-            ApiError::from(crate::core::error::AppError::NotFound(format!(
-                "Running MCP server '{handle}'"
-            )))
-        })?;
-
-    let result = state
-        .mcp_manager
-        .call(&server_id, &tool_name, req.arguments)
-        .await?;
-
-    let is_error = result.is_error.unwrap_or(false);
-    let content = result
-        .content
-        .iter()
-        .filter_map(|c| match c {
-            rmcp::model::ContentBlock::Text(t) => Some(t.text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    Ok(Json(frona_api_types::mcp::BridgeCallResponse {
-        content,
-        is_error,
-    }))
+    Ok(Json(
+        state
+            .mcp_service
+            .bridge_call_tool(
+                &auth.user_id,
+                auth.agent_id(),
+                &handle,
+                &tool_name,
+                req.arguments,
+            )
+            .await?,
+    ))
 }

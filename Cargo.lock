@@ -3462,6 +3462,7 @@ dependencies = [
  "flate2",
  "frona-api-types",
  "frona-browser",
+ "frona-cli-mcp",
  "frona-derive",
  "frona-model-catalog",
  "frona-ontologies",

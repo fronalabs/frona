@@ -146,6 +146,10 @@ impl ChatSessionContext {
             Vec::new()
         };
 
+        harness
+            .mcp_service
+            .register_agent_tool(&mut tool_registry, &harness.prompts);
+
         let resolved_tz = user.resolved_timezone(&harness.config.server.timezone);
 
         let mut system_prompt = crate::agent::prompt::build_augmented_system_prompt(

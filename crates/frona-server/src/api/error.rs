@@ -13,14 +13,19 @@ pub fn anonymous_not_found() -> Response {
 
 pub struct ApiError(pub AppError);
 
+pub(crate) struct PublicError {
+    pub status: StatusCode,
+    pub message: String,
+}
+
 impl From<AppError> for ApiError {
     fn from(err: AppError) -> Self {
         ApiError(err)
     }
 }
 
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
+impl ApiError {
+    pub(crate) fn public_error(&self) -> PublicError {
         let (status, message) = match &self.0 {
             AppError::Auth { message, code } => {
                 let status = match code {
@@ -74,7 +79,13 @@ impl IntoResponse for ApiError {
                 message.clone(),
             ),
         };
+        PublicError { status, message }
+    }
+}
 
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let PublicError { status, message } = self.public_error();
         let mut message_error = crate::chat::message::error::MessageError::from(&self.0);
         message_error.message = message.clone();
         (

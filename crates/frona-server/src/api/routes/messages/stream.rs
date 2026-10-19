@@ -81,9 +81,19 @@ pub(crate) async fn stream_message(
         if did_flip {
             let harness = state.harness.clone();
             let user_id = auth.user_id.clone();
-            tokio::spawn(async move {
-                let _ = harness.resume(&user_id, &chat_id, &agent_msg_id).await;
-            });
+            if let Some(task_id) = chat.task_id {
+                let executor = state.task_executor.clone();
+                tokio::spawn(async move {
+                    let _ = executor.resume_task_by_id(&task_id).await;
+                });
+            } else {
+                let cancel_token = state.active_sessions.register(&chat_id).await;
+                tokio::spawn(async move {
+                    let _ = harness
+                        .resume_with_cancel(&user_id, &chat_id, &agent_msg_id, cancel_token)
+                        .await;
+                });
+            }
         }
 
         Ok(Json(user_response))

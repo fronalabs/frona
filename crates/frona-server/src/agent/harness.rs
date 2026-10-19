@@ -569,6 +569,12 @@ impl Harness {
             .find(|m| matches!(m.role, MessageRole::User));
 
         let mut response = self.chat_service.get_message(user_id, message_id).await?;
+        if cancel_token.is_cancelled() {
+            return Ok(AgentLoopOutcome {
+                inference: InferenceResponse::Cancelled(response.content.clone()),
+                response,
+            });
+        }
 
         let mut session = ChatSessionContext::build(
             self,
@@ -579,6 +585,13 @@ impl Harness {
             tool_filters,
         )
         .await?;
+
+        if cancel_token.is_cancelled() {
+            return Ok(AgentLoopOutcome {
+                inference: InferenceResponse::Cancelled(response.content.clone()),
+                response,
+            });
+        }
 
         let mut prompt_override: Option<CommandPromptOverride> = None;
         if let Some(mut request) = request
@@ -735,7 +748,7 @@ impl Harness {
             ),
             input_token_estimate,
         )?;
-        let inference = crate::inference::inference(InferenceRequest {
+        let mut inference = crate::inference::inference(InferenceRequest {
             input_token_estimate,
             model_group,
             system_prompt,
@@ -749,6 +762,11 @@ impl Harness {
         })
         .await?;
 
+        if let InferenceResponse::Cancelled(text) = &mut inference
+            && text.is_empty()
+        {
+            *text = response.content.clone();
+        }
         Ok(AgentLoopOutcome {
             inference,
             response,
@@ -762,6 +780,17 @@ impl Harness {
         message_id: &str,
     ) -> Result<(), AppError> {
         let cancel_token = self.active_sessions.register(chat_id).await;
+        self.resume_with_cancel(user_id, chat_id, message_id, cancel_token)
+            .await
+    }
+
+    pub async fn resume_with_cancel(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        message_id: &str,
+        cancel_token: CancellationToken,
+    ) -> Result<(), AppError> {
         let builder = Box::new(DefaultConversationBuilder {
             user_service: self.user_service.clone(),
             storage_service: self.storage_service.clone(),

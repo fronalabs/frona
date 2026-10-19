@@ -1,8 +1,8 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use chrono::Utc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::task::models::{SignalMode, Task, TaskKind, TaskStatus};
@@ -208,6 +208,7 @@ pub struct TaskExecutor {
     harness: Arc<crate::agent::harness::Harness>,
     active_tasks: Arc<Mutex<HashMap<String, CancellationToken>>>,
     max_concurrent_tasks: usize,
+    execution_locks: Mutex<HashMap<String, Weak<Mutex<()>>>>,
 }
 
 /// Removes the `active_tasks` entry on drop so a panic in `execute_task`
@@ -216,14 +217,18 @@ pub struct TaskExecutor {
 struct ActiveGuard {
     map: Arc<Mutex<HashMap<String, CancellationToken>>>,
     key: String,
+    execution_lock: Option<OwnedMutexGuard<()>>,
 }
 
 impl Drop for ActiveGuard {
     fn drop(&mut self) {
         let map = self.map.clone();
         let key = std::mem::take(&mut self.key);
+        let execution_lock = self.execution_lock.take();
         tokio::spawn(async move {
             map.lock().await.remove(&key);
+            // Release the execution lock only after the old slot is gone.
+            drop(execution_lock);
         });
     }
 }
@@ -242,6 +247,7 @@ impl TaskExecutor {
             harness,
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
             max_concurrent_tasks,
+            execution_locks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -322,7 +328,47 @@ impl TaskExecutor {
         self.run_task(task).await
     }
 
+    async fn execution_lock(&self, task_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.execution_locks.lock().await;
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(task_id).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(task_id.to_owned(), Arc::downgrade(&lock));
+        lock
+    }
+
+    /// An approval can arrive while the paused invocation is still releasing
+    /// its slot. Wait for that invocation instead of dropping the resume.
+    pub async fn resume_task_by_id(&self, task_id: &str) -> Result<(), AppError> {
+        let execution_lock = self.execution_lock(task_id).await.lock_owned().await;
+        let task = self
+            .harness
+            .task_service
+            .find_by_id(task_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("task {task_id}")))?;
+        self.run_task_locked(task, execution_lock).await
+    }
+
+    pub async fn active_count(&self) -> usize {
+        self.active_tasks.lock().await.len()
+    }
+
     pub async fn run_task(&self, task: Task) -> Result<(), AppError> {
+        let Ok(execution_lock) = self.execution_lock(&task.id).await.try_lock_owned() else {
+            tracing::info!(task_id = %task.id, "Task already running; skipping duplicate run");
+            return Ok(());
+        };
+        self.run_task_locked(task, execution_lock).await
+    }
+
+    async fn run_task_locked(
+        &self,
+        task: Task,
+        execution_lock: OwnedMutexGuard<()>,
+    ) -> Result<(), AppError> {
         if self.harness.shutdown_token.is_cancelled() {
             tracing::info!(task_id = %task.id, "Rejecting task during shutdown");
             return Ok(());
@@ -383,6 +429,7 @@ impl TaskExecutor {
         let _guard = ActiveGuard {
             map: self.active_tasks.clone(),
             key,
+            execution_lock: Some(execution_lock),
         };
         let (kind, source) = match &task.kind {
             TaskKind::CronRun { source_cron_id, .. } => (
@@ -421,14 +468,26 @@ impl TaskExecutor {
     }
 
     pub async fn cancel_task(&self, task_id: &str) -> bool {
-        // Always persist Cancelled so paused tasks (which have no entry in
-        // `active_tasks`) still get cancelled. For live tasks `handle_cancelled`
-        // will write the same status again — idempotent.
-        if let Err(e) = self.harness.task_service.mark_cancelled(task_id).await {
-            tracing::warn!(error = %e, task_id = %task_id, "Failed to persist task cancellation");
+        let Ok(Some(task)) = self.harness.task_service.find_by_id(task_id).await else {
+            return false;
+        };
+        if matches!(task.status, TaskStatus::Completed | TaskStatus::Failed) {
+            return false;
         }
+        let newly_cancelled = match self
+            .harness
+            .task_service
+            .cancel(&task.user_id, task_id)
+            .await
+        {
+            Ok(_) => task.status != TaskStatus::Cancelled,
+            Err(e) => {
+                tracing::warn!(error = %e, task_id = %task_id, "Failed to persist task cancellation");
+                false
+            }
+        };
 
-        let direct = {
+        let mut signalled = {
             let active = self.active_tasks.lock().await;
             let mut hit = false;
             for (key, token) in active.iter() {
@@ -443,27 +502,23 @@ impl TaskExecutor {
 
         // Cron templates aren't in active_tasks themselves; only their CronRun
         // children are. Each cancelled run's tokio::spawn cleans itself up.
-        if let Ok(Some(task)) = self.harness.task_service.find_by_id(task_id).await
-            && matches!(task.kind, TaskKind::Cron { .. })
-            && let Ok(active_runs) = self
-                .harness
-                .task_service
-                .find_active_runs_by_cron(task_id)
-                .await
+        if matches!(task.kind, TaskKind::Cron { .. })
+            && let Ok(cron_runs) = self.harness.task_service.find_runs_by_cron(task_id).await
         {
             let active = self.active_tasks.lock().await;
-            for run in active_runs {
+            for run in cron_runs {
                 let suffix = format!(":{}", run.id);
                 for (key, token) in active.iter() {
                     if key.ends_with(&suffix) {
                         token.cancel();
+                        signalled = true;
                         break;
                     }
                 }
             }
         }
 
-        direct
+        signalled || newly_cancelled
     }
 
     pub async fn register_cancellation(
@@ -495,8 +550,15 @@ impl TaskExecutor {
             .await?
             .map(|t| t.status);
 
-        if matches!(current_status, Some(TaskStatus::Cancelled)) {
-            tracing::info!(task_id = %task_id, "Task already cancelled, skipping");
+        if matches!(
+            current_status,
+            Some(TaskStatus::Completed | TaskStatus::Failed)
+        ) {
+            tracing::info!(task_id = %task_id, "Task already terminal, skipping");
+            return Ok(());
+        }
+        if matches!(current_status, Some(TaskStatus::Cancelled)) || cancel_token.is_cancelled() {
+            self.handle_cancelled(&task).await?;
             return Ok(());
         }
 
@@ -510,6 +572,10 @@ impl TaskExecutor {
         self.save_initial_message_if_needed(&task, &chat_id).await?;
 
         for turn in 0..MAX_TASK_RETRIES {
+            if cancel_token.is_cancelled() {
+                self.handle_cancelled(&task).await?;
+                return Ok(());
+            }
             // Check for unprocessed lifecycle events (crash recovery)
             if let Some(action) = self.find_lifecycle_event(&chat_id).await {
                 self.handle_lifecycle_action(&task, &chat_id, action)
@@ -540,7 +606,6 @@ impl TaskExecutor {
                 }
             };
 
-            let session_token = self.harness.active_sessions.register(&chat_id).await;
             let builder = Box::new(TaskConversationBuilder {
                 user_service: self.harness.user_service.clone(),
                 storage_service: self.harness.storage_service.clone(),
@@ -560,8 +625,6 @@ impl TaskExecutor {
                     None,
                 )
                 .await;
-            drop(session_token);
-            self.harness.active_sessions.remove(&chat_id).await;
 
             match result {
                 Ok(crate::agent::harness::AgentLoopOutcome {
@@ -584,6 +647,10 @@ impl TaskExecutor {
                             .complete_agent_message(response)
                             .await;
 
+                        if cancel_token.is_cancelled() {
+                            self.handle_cancelled(&task).await?;
+                            return Ok(());
+                        }
                         if let Some(event) = lifecycle_event {
                             let action = self.lifecycle_action_from_event(event);
                             self.handle_lifecycle_action(&task, &chat_id, action)
@@ -1002,7 +1069,24 @@ impl TaskExecutor {
     }
 
     pub async fn handle_cancelled(&self, task: &Task) -> Result<(), AppError> {
-        self.harness.task_service.mark_cancelled(&task.id).await?;
+        self.harness
+            .task_service
+            .cancel(&task.user_id, &task.id)
+            .await?;
+        // Approval can make the paused response Executing before its task starts.
+        // A Stop in that gap must settle the response without discarding its text.
+        if let Some(chat_id) = &task.chat_id
+            && let Some(message) = self
+                .harness
+                .chat_service
+                .find_executing_message_for_chat(chat_id)
+                .await?
+        {
+            self.harness
+                .chat_service
+                .cancel_agent_message(message)
+                .await?;
+        }
         Ok(())
     }
 

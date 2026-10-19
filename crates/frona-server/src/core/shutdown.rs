@@ -11,13 +11,14 @@ pub async fn graceful_drain(state: &AppState) {
     let timeout = Duration::from_secs(state.config.server.shutdown_timeout_secs);
     let drain = async {
         loop {
-            let count = state.active_sessions.count().await;
+            let count =
+                state.active_sessions.count().await + state.task_executor.active_count().await;
             if count == 0 {
                 info!("All in-flight work drained");
                 break;
             }
             info!(
-                active_sessions = count,
+                active_executions = count,
                 "Waiting for in-flight work to complete..."
             );
             tokio::time::sleep(Duration::from_secs(1)).await;

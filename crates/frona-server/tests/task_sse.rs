@@ -599,3 +599,627 @@ async fn delegation_delivers_task_result_to_parent_chat() {
             .collect::<Vec<_>>()
     );
 }
+
+struct StopFixture {
+    state: AppState,
+    _directory: tempfile::TempDir,
+    task: Task,
+    mock: Arc<MockModelProvider>,
+}
+
+async fn stop_fixture(responses: Vec<MockResponse>, status: TaskStatus) -> StopFixture {
+    let mock = Arc::new(MockModelProvider::new(responses));
+    let (state, directory) = test_app_state_with_mock(mock.clone()).await;
+    seed_agent(&state.db).await;
+    seed_user(&state.db).await;
+    let mut task = make_task();
+    task.status = status;
+    state
+        .task_executor
+        .ensure_task_chat(&mut task)
+        .await
+        .unwrap();
+    let repo: SurrealRepo<Task> = SurrealRepo::new(state.db.clone());
+    repo.create(&task).await.unwrap();
+    StopFixture {
+        state,
+        _directory: directory,
+        task,
+        mock,
+    }
+}
+
+async fn stop_chat(state: &AppState, chat_id: &str) -> bool {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+    let user = state
+        .user_service
+        .find_by_id("user-1")
+        .await
+        .unwrap()
+        .unwrap();
+    let token = state
+        .token_service
+        .create_access_token(&state.keypair_service, &user, "stop-test")
+        .await
+        .unwrap();
+    let response = frona::api::routes::messages::router()
+        .with_state(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/chats/{chat_id}/cancel"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["cancelled"]
+        .as_bool()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn chat_stop_cancels_the_task_provider_without_releasing_its_barrier() {
+    let fixture = stop_fixture(
+        vec![MockResponse::Barrier(
+            Arc::new(tokio::sync::Barrier::new(2)),
+            Box::new(MockResponse::Text("must not finish".into())),
+        )],
+        TaskStatus::Pending,
+    )
+    .await;
+    let chat_id = fixture.task.chat_id.clone().unwrap();
+    let task_id = fixture.task.id.clone();
+    let executor = fixture.state.task_executor.clone();
+    let run = tokio::spawn(async move {
+        executor.run_task(fixture.task).await.unwrap();
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while fixture.mock.calls() == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(stop_chat(&fixture.state, &chat_id).await);
+    tokio::time::timeout(std::time::Duration::from_secs(5), run)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fixture.mock.calls(), 1);
+    assert_eq!(
+        fixture
+            .state
+            .task_service
+            .find_by_id(&task_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn chat_stop_between_task_turns_prevents_the_next_provider_call() {
+    use frona::{chat::broadcast::BroadcastEventKind, inference::tool_loop::InferenceEventKind};
+    let gate = Arc::new(tokio::sync::Barrier::new(2));
+    let fixture = stop_fixture(
+        vec![MockResponse::Barrier(
+            gate.clone(),
+            Box::new(MockResponse::Text("first turn".into())),
+        )],
+        TaskStatus::Pending,
+    )
+    .await;
+    let chat_id = fixture.task.chat_id.clone().unwrap();
+    let task_id = fixture.task.id.clone();
+    let mut events = fixture.state.broadcast_service.subscribe_raw();
+    let mut run = Box::pin(fixture.state.task_executor.run_task(fixture.task));
+    let release = tokio::spawn(async move {
+        gate.wait().await;
+    });
+    // Drive the production executor only until Done. Its following lifecycle
+    // DB query yields, so the biased select leaves it unpolled during Stop.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            tokio::select! {
+                biased;
+                event = events.recv() => {
+                    if matches!(event.unwrap().kind, BroadcastEventKind::Inference(InferenceEventKind::Done { .. })) { break; }
+                }
+                result = &mut run => panic!("task ended before Stop: {result:?}"),
+            }
+        }
+    }).await.unwrap();
+    release.await.unwrap();
+    assert!(stop_chat(&fixture.state, &chat_id).await);
+    tokio::time::timeout(std::time::Duration::from_secs(5), run)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fixture.mock.calls(), 1);
+    assert_eq!(
+        fixture
+            .state
+            .task_service
+            .find_by_id(&task_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn chat_stop_preserves_terminal_tasks_and_cancels_task_chat_replies() {
+    for status in [
+        TaskStatus::Completed,
+        TaskStatus::Failed,
+        TaskStatus::Cancelled,
+    ] {
+        let fixture = stop_fixture(vec![], status).await;
+        let chat_id = fixture.task.chat_id.clone().unwrap();
+        let before = fixture
+            .state
+            .task_service
+            .find_by_id(&fixture.task.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!stop_chat(&fixture.state, &chat_id).await);
+        // A normal chat response may run on a terminal task's chat.
+        let token = fixture.state.active_sessions.register(&chat_id).await;
+        assert!(stop_chat(&fixture.state, &chat_id).await);
+        assert!(token.is_cancelled());
+        let after = fixture
+            .state
+            .task_service
+            .find_by_id(&fixture.task.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(before).unwrap(),
+            serde_json::to_value(after).unwrap()
+        );
+    }
+}
+
+fn install_question_tool(fixture: &StopFixture) {
+    let tools = fixture._directory.path().join("config/prompts/tools");
+    std::fs::create_dir_all(&tools).unwrap();
+    std::fs::copy(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../resources/prompts/tools/ask_user_question.md"
+        ),
+        tools.join("ask_user_question.md"),
+    )
+    .unwrap();
+}
+
+async fn paused_question(
+    fixture: &StopFixture,
+    chat_id: &str,
+) -> frona::inference::tool_call::ToolCall {
+    use frona::chat::message::models::{Message, MessageStatus};
+    use frona::inference::hitl::{Hitl, HitlRequest};
+    use frona::inference::tool_call::{ToolCall, ToolStatus};
+
+    install_question_tool(fixture);
+    let response = fixture
+        .state
+        .chat_service
+        .create_executing_agent_message(chat_id, "test-agent")
+        .await
+        .unwrap();
+    let messages: SurrealRepo<Message> = SurrealRepo::new(fixture.state.db.clone());
+    let mut message = messages.find_by_id(&response.id).await.unwrap().unwrap();
+    message.status = Some(MessageStatus::Paused);
+    message.content = "Before approval".into();
+    messages.update(&message).await.unwrap();
+    let call = ToolCall {
+        id: frona::core::repository::new_id(),
+        chat_id: chat_id.into(),
+        message_id: message.id.clone(),
+        turn: 0,
+        provider_call_id: "question".into(),
+        name: "ask_user_question".into(),
+        arguments: serde_json::json!({"question": "Continue?"}),
+        result: String::new(),
+        success: false,
+        duration_ms: 0,
+        hitl: Some(Hitl {
+            prompt: "Continue?".into(),
+            url: format!("/chats/{chat_id}"),
+            request: HitlRequest::Question {
+                options: vec!["yes".into()],
+            },
+            status: ToolStatus::Pending,
+            response: None,
+            delivery: None,
+        }),
+        task_event: None,
+        system_prompt: None,
+        description: None,
+        turn_text: None,
+        turn_reasoning: None,
+        created_at: Utc::now(),
+    };
+    let calls: SurrealRepo<ToolCall> = SurrealRepo::new(fixture.state.db.clone());
+    calls.create(&call).await.unwrap();
+    call
+}
+
+#[tokio::test]
+async fn chat_stop_before_approved_task_starts_preserves_its_response() {
+    use frona::{
+        chat::message::models::MessageStatus,
+        inference::hitl::{HitlResponse, ResolveOutcome},
+    };
+    let fixture = stop_fixture(vec![], TaskStatus::InProgress).await;
+    let chat_id = fixture.task.chat_id.as_deref().unwrap();
+    let question = paused_question(&fixture, chat_id).await;
+    let message_id = question.message_id;
+    let call_id = question.id;
+    let outcome = fixture
+        .state
+        .harness
+        .resolve_and_resume(&call_id, HitlResponse::Choice("yes".into()))
+        .await
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        ResolveOutcome::Resolved {
+            should_resume: true,
+            ..
+        }
+    ));
+    // This is the real approval/startup gap: the response is Executing, but
+    // the spawned task has not registered its lifetime token yet.
+    assert!(stop_chat(&fixture.state, chat_id).await);
+    fixture
+        .state
+        .task_executor
+        .run_task_by_id(&fixture.task.id)
+        .await
+        .unwrap();
+    assert_eq!(fixture.mock.calls(), 0);
+    let message = fixture
+        .state
+        .chat_service
+        .find_message(&message_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(message.status, Some(MessageStatus::Cancelled));
+    assert_eq!(message.content, "Before approval");
+    assert_eq!(
+        fixture
+            .state
+            .task_service
+            .find_by_id(&fixture.task.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn chat_stop_before_registered_chat_resume_preserves_its_response() {
+    use frona::chat::message::models::MessageStatus;
+    let fixture = stop_fixture(vec![], TaskStatus::Completed).await;
+    let chat_id = fixture.task.chat_id.as_deref().unwrap();
+    let question = paused_question(&fixture, chat_id).await;
+    let message_id = question.message_id;
+    let call_id = question.id;
+    fixture
+        .state
+        .harness
+        .resolve_and_resume(
+            &call_id,
+            frona::inference::hitl::HitlResponse::Choice("yes".into()),
+        )
+        .await
+        .unwrap();
+    let token = fixture.state.active_sessions.register(chat_id).await;
+    assert!(stop_chat(&fixture.state, chat_id).await);
+    fixture
+        .state
+        .harness
+        .resume_with_cancel("user-1", chat_id, &message_id, token)
+        .await
+        .unwrap();
+    assert_eq!(fixture.mock.calls(), 0);
+    let message = fixture
+        .state
+        .chat_service
+        .find_message(&message_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(message.status, Some(MessageStatus::Cancelled));
+    assert_eq!(message.content, "Before approval");
+}
+
+#[tokio::test]
+async fn approved_task_continues_after_the_previous_invocation_finishes() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use frona::{chat::broadcast::BroadcastEventKind, inference::tool_loop::InferenceEventKind};
+    use tower::ServiceExt;
+
+    let fixture = stop_fixture(
+        vec![
+            MockResponse::ToolCalls(vec![(
+                "question".into(),
+                "ask_user_question".into(),
+                serde_json::json!({"question": "Continue?", "options": ["yes"]}),
+            )]),
+            MockResponse::Barrier(
+                Arc::new(tokio::sync::Barrier::new(2)),
+                Box::new(MockResponse::Text("must not finish".into())),
+            ),
+        ],
+        TaskStatus::Pending,
+    )
+    .await;
+    install_question_tool(&fixture);
+    fixture
+        .state
+        .policy_service
+        .sync_base_policies()
+        .await
+        .unwrap();
+    let chat_id = fixture.task.chat_id.as_deref().unwrap();
+    let mut events = fixture.state.broadcast_service.subscribe_raw();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        fixture.state.task_executor.run_task(fixture.task.clone()),
+    )
+    .await
+    .expect("question must pause the task before a second provider call")
+    .unwrap();
+    let call_id = loop {
+        let event = events
+            .try_recv()
+            .expect("task must publish its approval pause");
+        if let BroadcastEventKind::Inference(InferenceEventKind::Paused { message, .. }) =
+            event.kind
+        {
+            break message.tool_calls[0].id.clone();
+        }
+    };
+    let user = fixture
+        .state
+        .user_service
+        .find_by_id("user-1")
+        .await
+        .unwrap()
+        .unwrap();
+    let token = fixture
+        .state
+        .token_service
+        .create_access_token(&fixture.state.keypair_service, &user, "approval-test")
+        .await
+        .unwrap();
+    let response = frona::api::routes::messages::router().with_state(fixture.state.clone()).oneshot(
+        Request::builder().method("POST").uri(format!("/api/chats/{chat_id}/tool-calls/resolve"))
+            .header("authorization", format!("Bearer {token}")).header("content-type", "application/json")
+            .body(Body::from(serde_json::json!({"resolutions": [{"tool_call_id": call_id, "hitl_response": {"type": "Choice", "data": "yes"}}]}).to_string())).unwrap()
+    ).await.unwrap();
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    wait_for_provider_calls(&fixture.mock, 2).await;
+    assert_eq!(fixture.state.task_executor.active_count().await, 1);
+    assert!(stop_chat(&fixture.state, chat_id).await);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while fixture.state.task_executor.active_count().await != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(fixture.mock.calls(), 2);
+}
+
+#[tokio::test]
+async fn queued_task_resume_waits_for_execution_and_honours_stop() {
+    let fixture = stop_fixture(
+        vec![MockResponse::Barrier(
+            Arc::new(tokio::sync::Barrier::new(2)),
+            Box::new(MockResponse::Text("must not finish".into())),
+        )],
+        TaskStatus::Pending,
+    )
+    .await;
+    let executor = fixture.state.task_executor.clone();
+    let task = fixture.task.clone();
+    let run = tokio::spawn(async move { executor.run_task(task).await.unwrap() });
+    wait_for_provider_calls(&fixture.mock, 1).await;
+
+    let mut resume = Box::pin(
+        fixture
+            .state
+            .task_executor
+            .resume_task_by_id(&fixture.task.id),
+    );
+    // Start the continuation while the real executor is held at inference.
+    // Stop must remain independent of the queued continuation's execution lock.
+    std::future::poll_fn(|cx| {
+        assert!(resume.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    assert!(stop_chat(&fixture.state, fixture.task.chat_id.as_deref().unwrap()).await);
+    tokio::time::timeout(std::time::Duration::from_secs(5), run)
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), resume)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fixture.mock.calls(), 1);
+    assert_eq!(
+        fixture
+            .state
+            .task_service
+            .find_by_id(&fixture.task.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Cancelled,
+    );
+}
+
+async fn wait_for_provider_calls(mock: &MockModelProvider, expected: usize) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while mock.calls() < expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn execution_lock_skips_duplicates_allows_other_tasks_and_releases_on_abort() {
+    let fixture = stop_fixture(
+        (0..3)
+            .map(|_| {
+                MockResponse::Barrier(
+                    Arc::new(tokio::sync::Barrier::new(2)),
+                    Box::new(MockResponse::Text("must not finish".into())),
+                )
+            })
+            .collect(),
+        TaskStatus::Pending,
+    )
+    .await;
+    let executor = fixture.state.task_executor.clone();
+    let task = fixture.task.clone();
+    let first = tokio::spawn(async move { executor.run_task(task).await.unwrap() });
+    wait_for_provider_calls(&fixture.mock, 1).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        fixture.state.task_executor.run_task(fixture.task.clone()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        fixture.mock.calls(),
+        1,
+        "duplicate must not start inference"
+    );
+
+    let mut other = make_task();
+    fixture
+        .state
+        .task_executor
+        .ensure_task_chat(&mut other)
+        .await
+        .unwrap();
+    let repo: SurrealRepo<Task> = SurrealRepo::new(fixture.state.db.clone());
+    repo.create(&other).await.unwrap();
+    let other_id = other.id.clone();
+    let executor = fixture.state.task_executor.clone();
+    let second = tokio::spawn(async move { executor.run_task(other).await.unwrap() });
+    wait_for_provider_calls(&fixture.mock, 2).await;
+    assert_eq!(fixture.state.task_executor.active_count().await, 2);
+
+    first.abort();
+    assert!(first.await.unwrap_err().is_cancelled());
+    let executor = fixture.state.task_executor.clone();
+    let task_id = fixture.task.id.clone();
+    let resumed = tokio::spawn(async move { executor.resume_task_by_id(&task_id).await.unwrap() });
+    wait_for_provider_calls(&fixture.mock, 3).await;
+    assert_eq!(fixture.state.task_executor.active_count().await, 2);
+    assert!(stop_chat(&fixture.state, fixture.task.chat_id.as_deref().unwrap()).await);
+    assert!(fixture.state.task_executor.cancel_task(&other_id).await);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        resumed.await.unwrap();
+        second.await.unwrap();
+        while fixture.state.task_executor.active_count().await != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn chat_stop_during_resumed_provider_preserves_existing_response_text() {
+    use frona::chat::message::models::MessageStatus;
+    let fixture = stop_fixture(
+        vec![MockResponse::Barrier(
+            Arc::new(tokio::sync::Barrier::new(2)),
+            Box::new(MockResponse::Text("must not finish".into())),
+        )],
+        TaskStatus::Completed,
+    )
+    .await;
+    let chat_id = fixture.task.chat_id.clone().unwrap();
+    let question = paused_question(&fixture, &chat_id).await;
+    fixture
+        .state
+        .harness
+        .resolve_and_resume(
+            &question.id,
+            frona::inference::hitl::HitlResponse::Choice("yes".into()),
+        )
+        .await
+        .unwrap();
+    let token = fixture.state.active_sessions.register(&chat_id).await;
+    let harness = fixture.state.harness.clone();
+    let message_id = question.message_id;
+    let resume_chat = chat_id.clone();
+    let resume_message = message_id.clone();
+    let resume = tokio::spawn(async move {
+        harness
+            .resume_with_cancel("user-1", &resume_chat, &resume_message, token)
+            .await
+            .unwrap();
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while fixture.mock.calls() == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(stop_chat(&fixture.state, &chat_id).await);
+    tokio::time::timeout(std::time::Duration::from_secs(5), resume)
+        .await
+        .unwrap()
+        .unwrap();
+    let message = fixture
+        .state
+        .chat_service
+        .find_message(&message_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(message.status, Some(MessageStatus::Cancelled));
+    assert_eq!(message.content, "Before approval");
+}

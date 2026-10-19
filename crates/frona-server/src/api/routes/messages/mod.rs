@@ -93,13 +93,16 @@ async fn cancel_generation(
     State(state): State<AppState>,
     Path(chat_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    state
+    let chat = state
         .chat_service
         .get_chat(&auth.user_id, &chat_id)
         .await
         .map_err(ApiError::from)?;
 
-    let cancelled = state.active_sessions.cancel(&chat_id).await;
+    let mut cancelled = state.active_sessions.cancel(&chat_id).await;
+    if let Some(task_id) = &chat.task_id {
+        cancelled |= state.task_executor.cancel_task(task_id).await;
+    }
     Ok(Json(serde_json::json!({ "cancelled": cancelled })))
 }
 
@@ -153,10 +156,19 @@ async fn resolve_tool_calls(
             {
                 let h = state.harness.clone();
                 let exec = state.task_executor.clone();
+                let cancel_token = if task_id.is_none() {
+                    Some(state.active_sessions.register(&chat_id).await)
+                } else {
+                    None
+                };
                 tokio::spawn(async move {
                     if let Some(tid) = task_id {
-                        let _ = exec.run_task_by_id(&tid).await;
-                    } else if let Err(e) = h.resume(&user_id, &chat_id, &message_id).await {
+                        let _ = exec.resume_task_by_id(&tid).await;
+                    } else if let Some(token) = cancel_token
+                        && let Err(e) = h
+                            .resume_with_cancel(&user_id, &chat_id, &message_id, token)
+                            .await
+                    {
                         tracing::error!(error = %e, chat_id = %chat_id, "Failed to resume chat after HITL resolve");
                     }
                 });

@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use rig_core::client::ModelListingClient;
 use rig_core::client::Nothing;
-use rig_core::providers::{
-    anthropic, deepseek, gemini, groq, mira, mistral, moonshot, ollama, openai,
-};
+use rig_core::providers::{anthropic, deepseek, groq, mira, mistral, moonshot, ollama, openai};
 
 use crate::core::Handle;
 use crate::core::config::{AdapterId, ApiSurface, ModelProviderConfig};
@@ -735,7 +733,9 @@ pub(crate) fn build_provider(
         FactoryKind::DeepSeek => {
             build_listable_key_client!(name, config, endpoint, deepseek, counter)
         }
-        FactoryKind::Gemini => build_listable_key_client!(name, config, endpoint, gemini, counter),
+        FactoryKind::Gemini => {
+            crate::inference::provider::adapter::gemini::build(resolved, config, counter)
+        }
         FactoryKind::Cohere => {
             crate::inference::provider::adapter::cohere::build(resolved, config, counter)
         }

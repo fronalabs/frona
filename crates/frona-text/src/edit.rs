@@ -1,4 +1,6 @@
-//! Text replacement with normalized matching.
+//! Text replacement with exact-first matching and bounded whitespace fallback.
+
+use std::ops::Range;
 
 use crate::{LineEnding, NormalizedString};
 
@@ -10,6 +12,7 @@ fn normalize(ns: &mut NormalizedString) {
         .collapse_whitespace_runs();
 }
 
+/// Result of matching and applying a text replacement.
 #[derive(Debug, PartialEq, Eq)]
 pub enum EditOutcome {
     Applied { rewritten: String, count: usize },
@@ -18,32 +21,173 @@ pub enum EditOutcome {
     EmptyNeedle,
 }
 
+// Keep CRLF together when measuring a boundary in either direction.
+fn whitespace_units(text: &str) -> impl DoubleEndedIterator<Item = &str> {
+    text.char_indices().filter_map(move |(start, ch)| {
+        if ch == '\n' && text[..start].ends_with('\r') {
+            return None;
+        }
+        let len = if ch == '\r' && text[start + 1..].starts_with('\n') {
+            2
+        } else {
+            ch.len_utf8()
+        };
+        Some(&text[start..start + len])
+    })
+}
+
+fn boundary_whitespace_bytes<'a>(
+    actual: impl Iterator<Item = &'a str>,
+    expected: impl Iterator<Item = &'a str>,
+) -> usize {
+    let mut actual = actual.peekable();
+    let mut bytes = 0;
+    for unit in expected {
+        let mut before_break = 0;
+        if unit.contains(['\r', '\n']) {
+            // A requested line break includes whitespace before that break,
+            // but never the following line's indentation or another break.
+            while actual
+                .peek()
+                .is_some_and(|unit| !unit.contains(['\r', '\n']))
+            {
+                before_break += actual.next().unwrap().len();
+            }
+        } else if actual
+            .peek()
+            .is_some_and(|unit| unit.contains(['\r', '\n']))
+        {
+            break;
+        }
+        let Some(unit) = actual.next() else { break };
+        bytes += before_break + unit.len();
+    }
+    bytes
+}
+
+fn clamp_whitespace(
+    original: &str,
+    needle: &str,
+    mut range: Range<usize>,
+    whitespace_only: bool,
+) -> Range<usize> {
+    let matched = &original[range.clone()];
+    if whitespace_only {
+        range.end = range.start
+            + boundary_whitespace_bytes(whitespace_units(matched), whitespace_units(needle));
+        return range;
+    }
+    let leading = &matched[..matched.len() - matched.trim_start().len()];
+    let wanted_leading = &needle[..needle.len() - needle.trim_start().len()];
+    range.start += leading.len()
+        - boundary_whitespace_bytes(
+            whitespace_units(leading).rev(),
+            whitespace_units(wanted_leading).rev(),
+        );
+    let trailing = &matched[matched.trim_end().len()..];
+    let wanted_trailing = &needle[needle.trim_end().len()..];
+    range.end -= trailing.len()
+        - boundary_whitespace_bytes(
+            whitespace_units(trailing),
+            whitespace_units(wanted_trailing),
+        );
+    range
+}
+
+/// Apply an exact-first text edit, with normalized matching as a fallback.
+/// With `replace_all`, replace both exact and normalized occurrences.
+/// Bytes outside selected spans are preserved; replacement line endings follow the input.
 pub fn apply_edit(
     original: &str,
     old_string: &str,
     new_string: &str,
     replace_all: bool,
 ) -> EditOutcome {
-    let line_ending = LineEnding::detect(original);
-
-    let mut file_ns = NormalizedString::from(original);
-    normalize(&mut file_ns);
-
-    let mut needle_ns = NormalizedString::from(old_string);
-    normalize(&mut needle_ns);
-    let needle = needle_ns.get();
-
-    if needle.is_empty() {
+    if old_string.is_empty() {
         return EditOutcome::EmptyNeedle;
     }
 
-    let haystack = file_ns.get();
-    let mut matches: Vec<usize> = Vec::new();
-    let mut search_from = 0usize;
-    while let Some(idx) = haystack[search_from..].find(needle) {
-        let abs = search_from + idx;
-        matches.push(abs);
-        search_from = abs + needle.len();
+    let mut matches: Vec<Range<usize>> = original
+        .match_indices(old_string)
+        .map(|(start, text)| start..start + text.len())
+        // An LF-only needle can match the second byte of CRLF. Leave such
+        // matches to the fallback so replacing them cannot strand a CR.
+        .filter(|range| {
+            ![range.start, range.end].iter().any(|&boundary| {
+                original[..boundary].ends_with('\r') && original[boundary..].starts_with('\n')
+            })
+        })
+        .collect();
+
+    if matches.is_empty() || replace_all {
+        let exact = matches.clone();
+        let whitespace_only = old_string.chars().all(char::is_whitespace);
+        let whitespace_needs_break = whitespace_only && old_string.contains(['\r', '\n']);
+        let mut file_ns = NormalizedString::from(original);
+        normalize(&mut file_ns);
+        let mut needle_ns = NormalizedString::from(old_string);
+        normalize(&mut needle_ns);
+        let needle = needle_ns.get();
+        if needle.is_empty() {
+            return EditOutcome::EmptyNeedle;
+        }
+        let haystack = file_ns.get();
+        let mut search_from = 0;
+        while let Some(idx) = haystack[search_from..].find(needle) {
+            let start = search_from + idx;
+            // Adjacent lines can share a collapsed boundary space. Search
+            // overlapping normalized matches, then select original spans.
+            search_from = start + haystack[start..].chars().next().unwrap().len_utf8();
+            let Some(mut remaining) = file_ns.splice_range_original(start..start + needle.len())
+            else {
+                return EditOutcome::NotFound;
+            };
+            // Do not rescan a long horizontal tail once no requested line
+            // break remains. Locate this limit once per collapsed run.
+            let search_end = if whitespace_needs_break {
+                let Some(last_break) = original[remaining.clone()].rfind(['\r', '\n']) else {
+                    continue;
+                };
+                remaining.start + last_break + 1
+            } else {
+                remaining.end
+            };
+            while remaining.start < search_end {
+                let range =
+                    clamp_whitespace(original, old_string, remaining.clone(), whitespace_only);
+                let next_exact = exact.partition_point(|exact| exact.end <= range.start);
+                if !range.is_empty()
+                    && !exact
+                        .get(next_exact)
+                        .is_some_and(|exact| exact.start < range.end)
+                {
+                    matches.push(range.clone());
+                }
+                if !whitespace_only {
+                    break;
+                }
+                // A whitespace-only needle can occur repeatedly within one
+                // collapsed run, including multiple CRLF line breaks.
+                remaining.start = if range.is_empty() {
+                    remaining.start
+                        + whitespace_units(&original[remaining.clone()])
+                            .next()
+                            .unwrap()
+                            .len()
+                } else {
+                    range.end
+                };
+            }
+        }
+        matches.sort_by_key(|range| (range.start, range.end));
+        let mut end = 0;
+        matches.retain(|range| {
+            if range.start < end {
+                return false;
+            }
+            end = range.end;
+            true
+        });
     }
 
     if matches.is_empty() {
@@ -55,29 +199,15 @@ pub fn apply_edit(
         };
     }
 
-    let selected: Vec<usize> = if replace_all {
-        matches.clone()
-    } else {
-        vec![matches[0]]
-    };
-    let needle_len = needle.len();
-
     // Normalise the replacement's line endings to match the file. The
     // bytes outside the match are spliced verbatim — they already use the
     // file's style — so applying restore() to the full rewritten buffer
     // (the previous design) corrupted existing `\r\n` into `\r\r\n`.
-    let new_string_matched = line_ending.apply(new_string);
+    let new_string_matched = LineEnding::detect(original).apply(new_string);
 
     let mut rewritten = String::with_capacity(original.len());
     let mut cursor = 0usize;
-    for &nstart in &selected {
-        let nend = nstart + needle_len;
-        let Some(orig_range) = file_ns.splice_range_original(nstart..nend) else {
-            return EditOutcome::NotFound;
-        };
-        if orig_range.start < cursor {
-            continue;
-        }
+    for orig_range in &matches {
         rewritten.push_str(&original[cursor..orig_range.start]);
         rewritten.push_str(&new_string_matched);
         cursor = orig_range.end;
@@ -86,7 +216,7 @@ pub fn apply_edit(
 
     EditOutcome::Applied {
         rewritten,
-        count: selected.len(),
+        count: matches.len(),
     }
 }
 
@@ -255,6 +385,219 @@ mod tests {
                 assert_eq!(rewritten, "X and X");
             }
             other => panic!("expected Applied, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unique_exact_match_wins_over_normalized_near_match() {
+        assert_eq!(
+            apply("\"foo\" and “foo”", "\"foo\"", "X"),
+            EditOutcome::Applied {
+                rewritten: "X and “foo”".into(),
+                count: 1,
+            }
+        );
+        assert_eq!(
+            apply("\"foo\" and “foo” and \"foo\"", "\"foo\"", "X"),
+            EditOutcome::Ambiguous { count: 2 }
+        );
+    }
+
+    #[test]
+    fn normalized_matches_remain_ambiguous_without_an_exact_match() {
+        assert_eq!(
+            apply("“foo” and „foo‟", "\"foo\"", "X"),
+            EditOutcome::Ambiguous { count: 2 }
+        );
+    }
+
+    #[test]
+    fn boundary_whitespace_preserves_neighboring_lines_and_indentation() {
+        for ending in [LineEnding::Lf, LineEnding::Crlf] {
+            for (file, old, new, expected) in [
+                (
+                    "before\n    target\n    after\n",
+                    "    target\n",
+                    "    replacement\n",
+                    "before\n    replacement\n    after\n",
+                ),
+                (
+                    "before\n\n    “target”\n\n    after\n",
+                    "    \"target\"\n",
+                    "    replacement\n",
+                    "before\n\n    replacement\n\n    after\n",
+                ),
+                (
+                    "before\n\n    “target”   \n\n\t  after\n",
+                    "\n    \"target\" \n",
+                    "\n    replacement\n",
+                    "before\n\n    replacement\n\n\t  after\n",
+                ),
+                (
+                    "before\n    “target”\n    after\n",
+                    " \"target\" ",
+                    " X ",
+                    "before\n    X \n    after\n",
+                ),
+                (
+                    "before\n\u{2003}“target”\u{00a0}\n    after\n",
+                    "\t\"target\"\t",
+                    " X ",
+                    "before\n X \n    after\n",
+                ),
+            ] {
+                assert_eq!(
+                    apply(&ending.apply(file), old, new),
+                    EditOutcome::Applied {
+                        rewritten: ending.apply(expected),
+                        count: 1
+                    },
+                    "{ending:?}, {old:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn missing_requested_line_break_does_not_consume_neighboring_whitespace() {
+        for ending in [LineEnding::Lf, LineEnding::Crlf] {
+            for (file, old, new, expected) in [
+                (
+                    "before\n    old\n    after\n",
+                    "    old\n\n",
+                    "    new\n",
+                    "before\n    new\n    after\n",
+                ),
+                (
+                    "before   \n    old\n    after\n",
+                    "\n\n    old",
+                    "\n    new",
+                    "before   \n    new\n    after\n",
+                ),
+            ] {
+                assert_eq!(
+                    apply(&ending.apply(file), old, new),
+                    EditOutcome::Applied {
+                        rewritten: ending.apply(expected),
+                        count: 1
+                    },
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn replace_all_finds_adjacent_normalized_lines_with_shared_whitespace() {
+        for ending in [LineEnding::Lf, LineEnding::Crlf] {
+            assert_eq!(
+                apply_edit(
+                    &ending.apply("before\n    “x”\n    \"x\"\n    “x”\n    after\n"),
+                    "    \"x\"\n",
+                    "    y\n",
+                    true,
+                ),
+                EditOutcome::Applied {
+                    rewritten: ending.apply("before\n    y\n    y\n    y\n    after\n"),
+                    count: 3,
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn unicode_expansion_counts_only_distinct_original_replacements() {
+        assert_eq!(
+            apply("ﬃ", "f", "X"),
+            EditOutcome::Applied {
+                rewritten: "X".into(),
+                count: 1
+            },
+        );
+        assert_eq!(
+            apply_edit("ﬃ f ﬃ", "f", "X", true),
+            EditOutcome::Applied {
+                rewritten: "X X X".into(),
+                count: 3
+            },
+        );
+        assert_eq!(
+            apply("中 e\u{0301} ﬁn 中", "é fin", "done"),
+            EditOutcome::Applied {
+                rewritten: "中 done 中".into(),
+                count: 1
+            },
+        );
+    }
+
+    #[test]
+    fn whitespace_only_needles_do_not_absorb_whole_collapsed_runs() {
+        assert_eq!(
+            apply("a   \nb", "  ", "X"),
+            EditOutcome::Applied {
+                rewritten: "aX \nb".into(),
+                count: 1
+            },
+        );
+        assert_eq!(
+            apply("a  \nb", "\t", "X"),
+            EditOutcome::Ambiguous { count: 2 },
+        );
+        assert_eq!(
+            apply_edit("a  \nb", "\t", "X", true),
+            EditOutcome::Applied {
+                rewritten: "aXX\nb".into(),
+                count: 2
+            },
+        );
+        assert_eq!(apply("a\nb", "\t", "X"), EditOutcome::NotFound);
+    }
+
+    #[test]
+    fn lf_needles_never_split_crlf_pairs() {
+        assert_eq!(
+            apply("a\r\nb\r\nc", "\nb", "\nB"),
+            EditOutcome::Applied {
+                rewritten: "a\r\nB\r\nc".into(),
+                count: 1
+            },
+        );
+        assert_eq!(
+            apply_edit("a\r\n\r\n  b", "\n", "", true),
+            EditOutcome::Applied {
+                rewritten: "a  b".into(),
+                count: 2
+            },
+        );
+        assert_eq!(
+            apply("a\r\n\r\nb", "\n", ""),
+            EditOutcome::Ambiguous { count: 2 },
+        );
+        assert_eq!(
+            apply_edit("a\r\nb\nc", "\n", "X", true),
+            EditOutcome::Applied {
+                rewritten: "aXbXc".into(),
+                count: 2
+            },
+        );
+    }
+
+    #[test]
+    fn whitespace_only_newline_search_preserves_long_horizontal_tails() {
+        let tail = " ".repeat(128 * 1024);
+        for old in ["\n", " \n"] {
+            assert_eq!(apply_edit(&tail, old, "X", true), EditOutcome::NotFound);
+            let prefix = if old.starts_with(' ') {
+                " \r\n"
+            } else {
+                "\r\n"
+            };
+            assert_eq!(
+                apply_edit(&format!("{prefix}{tail}"), old, "X", true),
+                EditOutcome::Applied {
+                    rewritten: format!("X{tail}"),
+                    count: 1
+                },
+            );
         }
     }
 

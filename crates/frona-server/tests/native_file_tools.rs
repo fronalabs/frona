@@ -276,3 +276,83 @@ async fn native_file_tools_preserve_inward_links_and_explicit_grants() {
         "symlink/.. was collapsed lexically"
     );
 }
+
+#[tokio::test]
+async fn edit_tool_replaces_mixed_matches_atomically_with_correct_counts() {
+    let (fixture, ctx) = fixture().await;
+    let state = &fixture.state;
+    let workspace = state
+        .storage_service
+        .agent_workspace_path(&ctx.user.handle, &ctx.agent.handle);
+    tokio::fs::create_dir_all(&workspace).await.unwrap();
+    let editor = EditTool::new(
+        state.storage_service.clone(),
+        state.sandbox_manager.clone(),
+        state.prompts.clone(),
+    );
+    for (name, ending) in [("lf", "\n"), ("crlf", "\r\n")] {
+        let path = workspace.join(name);
+        let original = "before\n    “x”\n    \"x\"\n    “x”\n    after\n".replace('\n', ending);
+        tokio::fs::write(&path, &original).await.unwrap();
+        let original_link = workspace.join(format!("{name}-original"));
+        tokio::fs::hard_link(&path, &original_link).await.unwrap();
+        let output = editor.execute("edit", json!({
+            "path": name, "old_string": "    \"x\"\n", "new_string": "    y\n", "replace_all": true,
+        }), &ctx).await.unwrap();
+        assert!(output.is_success(), "{}", output.text_content());
+        assert!(output.text_content().contains("(3 replacements)"));
+        assert_eq!(
+            tokio::fs::read(&path).await.unwrap(),
+            "before\n    y\n    y\n    y\n    after\n"
+                .replace('\n', ending)
+                .as_bytes()
+        );
+        // Atomic replacement leaves the original inode untouched.
+        assert_eq!(
+            tokio::fs::read(&original_link).await.unwrap(),
+            original.as_bytes()
+        );
+    }
+}
+
+#[tokio::test]
+async fn edit_tool_failures_leave_original_bytes_unchanged() {
+    let (fixture, ctx) = fixture().await;
+    let state = &fixture.state;
+    let workspace = state
+        .storage_service
+        .agent_workspace_path(&ctx.user.handle, &ctx.agent.handle);
+    tokio::fs::create_dir_all(&workspace).await.unwrap();
+    let path = workspace.join("unchanged.txt");
+    let original = "中\r\n  \"x\"\r\n  “x”\r\n  \"x\"\r\n";
+    tokio::fs::write(&path, original).await.unwrap();
+    let editor = EditTool::new(
+        state.storage_service.clone(),
+        state.sandbox_manager.clone(),
+        state.prompts.clone(),
+    );
+    for (old, expected_error) in [
+        ("", "old_string must not be empty"),
+        ("missing", "old_string not found"),
+        ("\"x\"", "matches 2 locations"),
+        ("＂x＂", "matches 3 locations"),
+    ] {
+        let output = editor
+            .execute(
+                "edit",
+                json!({
+                    "path": "unchanged.txt", "old_string": old, "new_string": "changed",
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!output.is_success());
+        assert!(
+            output.text_content().contains(expected_error),
+            "{}",
+            output.text_content()
+        );
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), original.as_bytes());
+    }
+}

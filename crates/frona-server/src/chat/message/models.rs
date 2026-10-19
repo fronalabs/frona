@@ -96,12 +96,14 @@ pub enum DeliveryState {
     Failed,
 }
 
+/// Persisted inside Message; apply its compatibility guidance to nested fields too.
 #[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
 pub struct MessageDelivery {
     pub state: DeliveryState,
     #[serde(default)]
+    #[surreal(default)]
     pub attempts: u32,
     pub next_attempt_at: Option<DateTime<Utc>>,
     pub last_attempt_at: Option<DateTime<Utc>>,
@@ -113,6 +115,7 @@ pub struct MessageDelivery {
     /// Cursor: `0..tool_count` walks each tool call's `turn_text`;
     /// `tool_count` is the trailing `Message.content`.
     #[serde(default)]
+    #[surreal(default)]
     pub tool_index: u32,
 }
 
@@ -132,6 +135,16 @@ impl MessageDelivery {
     }
 }
 
+/// Database compatibility: existing rows do not acquire newly added fields.
+/// Use `#[surreal(default)]` for a meaningful missing-field default, alongside
+/// `#[serde(default)]` for JSON; Serde defaults do not govern SurrealValue reads.
+/// Empty collections and zero counters are safe only when they preserve the
+/// historical meaning. Absence/NONE, stored NULL, and malformed values are
+/// distinct: do not catch decoding errors and silently replace invalid data.
+/// Required fields without a safe default, or changed field/type/enum meanings,
+/// need a compatibility reader or migration. This also applies to nested data.
+/// Test older-shaped rows through real repositories and their consumers, and
+/// verify nondefault values survive and malformed values still fail.
 #[serde_with::skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue, Entity)]
 #[surreal(crate = "surrealdb::types")]
@@ -146,6 +159,7 @@ pub struct Message {
     #[serialize_always]
     pub event: Option<MessageEvent>,
     #[serde(default)]
+    #[surreal(default)]
     pub attachments: Vec<Attachment>,
     pub contact_id: Option<String>,
     pub status: Option<MessageStatus>,
@@ -161,6 +175,7 @@ pub struct Message {
     /// for all assistant/system/etc. roles.
     pub command: Option<MessageCommand>,
     #[serde(default)]
+    #[surreal(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
     pub created_at: DateTime<Utc>,
 }

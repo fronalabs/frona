@@ -338,3 +338,55 @@ async fn agent_service_delete_invalidates_cache() {
 }
 
 mod helpers;
+
+#[tokio::test]
+async fn legacy_agent_identity_defaults_without_changing_other_fields() {
+    let db = test_db().await;
+    let repo = SurrealAgentRepo::new(db.clone());
+    let mut agent = test_agent("user");
+    agent.identity.insert("voice".into(), "Concise".into());
+    agent.prompt = Some("Be helpful".into());
+    repo.create(&agent).await.unwrap();
+    assert_eq!(
+        repo.find_by_id(&agent.id).await.unwrap().unwrap().identity,
+        agent.identity
+    );
+    db.query("UPDATE type::record('agent', $id) UNSET identity")
+        .bind(("id", agent.id.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let loaded = repo.find_by_id(&agent.id).await.unwrap().unwrap();
+    let mut expected = agent;
+    expected.identity.clear();
+    assert_eq!(
+        serde_json::to_value(&loaded).unwrap(),
+        serde_json::to_value(&expected).unwrap()
+    );
+    let agents = repo.find_by_user_id("user").await.unwrap();
+    assert_eq!(agents.len(), 1);
+    assert!(agents[0].identity.is_empty());
+}
+
+#[tokio::test]
+async fn null_and_malformed_agent_identity_still_fail_database_reads() {
+    let db = test_db().await;
+    let repo = SurrealAgentRepo::new(db.clone());
+    for value in ["NULL", "[]", "{ voice: 7 }"] {
+        let agent = test_agent("user");
+        repo.create(&agent).await.unwrap();
+        db.query(format!(
+            "UPDATE type::record('agent', $id) SET identity = {value}"
+        ))
+        .bind(("id", agent.id.clone()))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+        let error = repo.find_by_id(&agent.id).await.unwrap_err().to_string();
+        assert!(error.contains("identity"), "{value}: {error}");
+        assert!(repo.find_by_user_id("user").await.is_err());
+        repo.delete(&agent.id).await.unwrap();
+    }
+}

@@ -5,6 +5,7 @@ pub mod cli;
 pub mod create_agent;
 pub mod files;
 pub mod heartbeat;
+mod image;
 pub mod manage_app;
 pub mod manage_policy;
 pub mod manager;

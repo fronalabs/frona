@@ -7,12 +7,12 @@ use crate::core::error::AppError;
 use crate::storage::service::StorageService;
 use frona_derive::agent_tool;
 
+use super::super::image::{is_supported_image, prepare_image};
 use super::super::sandbox::SandboxManager;
-use super::super::{ImageData, InferenceContext, ToolOutput};
+use super::super::{InferenceContext, ToolOutput};
 
 const MAX_LINES: usize = 2000;
 const MAX_BYTES: usize = 50 * 1024;
-const IMAGE_MAX_DIM: u32 = 2000;
 
 pub struct ReadTool {
     pub storage: StorageService,
@@ -93,54 +93,11 @@ impl ReadTool {
     }
 }
 
-fn is_supported_image(mime: &str) -> bool {
-    matches!(
-        mime,
-        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-    )
-}
-
 fn read_image(bytes: &[u8], mime: &str, path_arg: &str) -> Result<ToolOutput, AppError> {
-    let img = match image::load_from_memory(bytes) {
-        Ok(i) => i,
-        Err(_) => {
-            return Ok(ToolOutput::error(format!(
-                "could not decode image at {} ({})",
-                path_arg, mime
-            )));
-        }
-    };
-    let (w, h) = (img.width(), img.height());
-    let (out_bytes, out_mime) = if w <= IMAGE_MAX_DIM && h <= IMAGE_MAX_DIM {
-        (bytes.to_vec(), mime.to_string())
-    } else {
-        let resized = img.resize(
-            IMAGE_MAX_DIM,
-            IMAGE_MAX_DIM,
-            image::imageops::FilterType::Triangle,
-        );
-        let mut buf = std::io::Cursor::new(Vec::new());
-        let fmt = match mime {
-            "image/jpeg" => image::ImageFormat::Jpeg,
-            "image/gif" => image::ImageFormat::Gif,
-            "image/webp" => image::ImageFormat::WebP,
-            _ => image::ImageFormat::Png,
-        };
-        if resized.write_to(&mut buf, fmt).is_err() {
-            return Ok(ToolOutput::error(format!(
-                "could not re-encode image at {}",
-                path_arg
-            )));
-        }
-        (buf.into_inner(), mime.to_string())
-    };
-    Ok(ToolOutput::mixed(
-        format!("Read image file [{}]", out_mime),
-        vec![ImageData {
-            bytes: out_bytes,
-            media_type: out_mime,
-        }],
-    ))
+    Ok(match prepare_image(bytes, mime) {
+        Ok(image) => ToolOutput::mixed(format!("Read image file [{mime}]"), vec![image]),
+        Err(reason) => ToolOutput::error(format!("{reason} at {path_arg} ({mime})")),
+    })
 }
 
 fn read_text(text: &str, offset: Option<usize>, limit: Option<usize>) -> ToolOutput {

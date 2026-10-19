@@ -356,3 +356,47 @@ async fn edit_tool_failures_leave_original_bytes_unchanged() {
         assert_eq!(tokio::fs::read(&path).await.unwrap(), original.as_bytes());
     }
 }
+
+#[tokio::test]
+async fn native_image_reads_share_validation_and_resize_behavior() {
+    let (fixture, ctx) = fixture().await;
+    let state = &fixture.state;
+    let workspace = state
+        .storage_service
+        .agent_workspace_path(&ctx.user.handle, &ctx.agent.handle);
+    tokio::fs::create_dir_all(&workspace).await.unwrap();
+    let reader = ReadTool::new(
+        state.storage_service.clone(),
+        state.sandbox_manager.clone(),
+        state.prompts.clone(),
+    );
+    for width in [1, 2001, 8193] {
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(width, 1)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let path = format!("image-{width}.png");
+        tokio::fs::write(workspace.join(&path), encoded.into_inner())
+            .await
+            .unwrap();
+        let output = reader
+            .execute("read", json!({"path": path}), &ctx)
+            .await
+            .unwrap();
+        if width > 8192 {
+            assert!(!output.is_success());
+            assert!(output.images().is_empty());
+            assert!(output.text_content().contains("decoding limits"));
+        } else {
+            assert!(output.is_success());
+            assert_eq!(output.images().len(), 1);
+            assert_eq!(output.images()[0].media_type, "image/png");
+            assert_eq!(
+                image::load_from_memory(&output.images()[0].bytes)
+                    .unwrap()
+                    .width(),
+                width.min(2000)
+            );
+        }
+    }
+}

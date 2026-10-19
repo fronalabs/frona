@@ -222,16 +222,12 @@ impl ToolOutput {
     }
 
     pub fn mixed(text: impl Into<String>, images: Vec<ImageData>) -> Self {
-        Self {
-            text: text.into(),
-            images,
-            attachments: Vec::new(),
-            hitl: None,
-            task_event: None,
-            system_prompt: None,
-            pending_external: false,
-            success: true,
-        }
+        Self::text(text).with_images(images)
+    }
+
+    pub(crate) fn with_images(mut self, images: Vec<ImageData>) -> Self {
+        self.images = images;
+        self
     }
 
     pub fn with_attachment(mut self, a: crate::storage::Attachment) -> Self {

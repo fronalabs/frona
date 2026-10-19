@@ -49,6 +49,7 @@ fn recall_projection(message_id: &str, result: &str) -> RecallProjection {
         system_prompt: None,
         description: None,
         turn_text: None,
+        signature: None,
         turn_reasoning: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
@@ -239,6 +240,7 @@ fn critical_values_may_be_covered_across_selected_execution_evidence() {
             system_prompt: None,
             description: None,
             turn_text: None,
+            signature: None,
             turn_reasoning: None,
             created_at: Utc.timestamp_opt(turn as i64, 0).unwrap(),
         }
@@ -339,6 +341,7 @@ fn supplied_tool_evidence_requires_a_matching_agent_assertion_source() {
         system_prompt: None,
         description: None,
         turn_text: None,
+        signature: None,
         turn_reasoning: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
@@ -425,6 +428,7 @@ fn critical_value_rejection_reports_all_missing_values_at_once() {
         system_prompt: None,
         description: None,
         turn_text: None,
+        signature: None,
         turn_reasoning: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
@@ -512,6 +516,7 @@ fn critical_value_rejection_identifies_only_the_unsupported_clause() {
         system_prompt: None,
         description: None,
         turn_text: None,
+        signature: None,
         turn_reasoning: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
@@ -630,6 +635,7 @@ fn corrected_agent_evidence_checks_the_complete_selected_execution() {
         system_prompt: None,
         description: None,
         turn_text: None,
+        signature: None,
         turn_reasoning: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
@@ -686,6 +692,7 @@ fn revised_evidence_validation_does_not_use_array_position_as_identity() {
         system_prompt: None,
         description: None,
         turn_text: None,
+        signature: None,
         turn_reasoning: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
@@ -753,6 +760,7 @@ fn tool_operation_name_is_available_for_critical_value_validation() {
         system_prompt: None,
         description: None,
         turn_text: None,
+        signature: None,
         turn_reasoning: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
@@ -821,6 +829,7 @@ fn local_negative_constraint_does_not_negate_a_positive_procedure() {
         system_prompt: None,
         description: None,
         turn_text: None,
+        signature: None,
         turn_reasoning: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
@@ -900,6 +909,7 @@ fn tool_evidence_resolves_against_its_own_agent_citation() {
         system_prompt: None,
         description: None,
         turn_text: None,
+        signature: None,
         turn_reasoning: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
@@ -976,6 +986,7 @@ fn tool_quote_is_resolved_against_the_sanitized_execution_shown_during_ingest() 
         system_prompt: None,
         description: None,
         turn_text: None,
+        signature: None,
         turn_reasoning: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };
@@ -1071,6 +1082,7 @@ fn requested_url_is_stored_in_web_page_memory_evidence() {
         system_prompt: None,
         description: None,
         turn_text: None,
+        signature: None,
         turn_reasoning: None,
         created_at: Utc.timestamp_opt(1, 0).unwrap(),
     };

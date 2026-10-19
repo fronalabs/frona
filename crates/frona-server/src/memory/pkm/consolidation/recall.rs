@@ -243,6 +243,7 @@ mod tests {
             system_prompt: None,
             description: None,
             turn_text: None,
+            signature: None,
             turn_reasoning: None,
             created_at: Utc.timestamp_opt(i64::from(turn), 0).unwrap(),
         }

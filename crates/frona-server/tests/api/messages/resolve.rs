@@ -44,6 +44,7 @@ async fn pending_credential_call(state: &AppState, chat_id: &str, agent_id: &str
         system_prompt: None,
         description: None,
         turn_text: None,
+        signature: None,
         turn_reasoning: None,
         created_at: chrono::Utc::now(),
     };

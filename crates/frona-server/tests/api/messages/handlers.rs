@@ -310,6 +310,7 @@ async fn batched_resolve_resumes_agent_loop() {
             system_prompt: None,
             description: None,
             turn_text: None,
+            signature: None,
             turn_reasoning: None,
             created_at: chrono::Utc::now(),
         };

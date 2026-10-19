@@ -69,6 +69,7 @@ fn make_tool_call(id: &str, msg_id: &str, hitl_status: Option<ToolStatus>) -> To
         system_prompt: None,
         description: None,
         turn_text: None,
+        signature: None,
         turn_reasoning: None,
         created_at: Utc::now(),
     }

@@ -37,6 +37,7 @@ fn base_tool_call(name: &str) -> ToolCall {
         system_prompt: None,
         description: None,
         turn_text: None,
+        signature: None,
         turn_reasoning: None,
         created_at: Utc::now(),
     }

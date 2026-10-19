@@ -1743,6 +1743,7 @@ async fn insert_tool_call(
             msg_id,
             turn,
             &format!("provider-{id}"),
+            None,
             "stub_tool",
             &serde_json::json!({}),
             None,
@@ -2290,6 +2291,7 @@ async fn channel_button_resolution_resumes_inference() {
         system_prompt: None,
         description: None,
         turn_text: None,
+        signature: None,
         turn_reasoning: None,
         created_at: chrono::Utc::now(),
     };

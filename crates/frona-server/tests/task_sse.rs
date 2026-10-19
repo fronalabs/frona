@@ -854,6 +854,7 @@ async fn paused_question(
         system_prompt: None,
         description: None,
         turn_text: None,
+        signature: None,
         turn_reasoning: None,
         created_at: Utc::now(),
     };

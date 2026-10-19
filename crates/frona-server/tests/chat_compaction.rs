@@ -587,6 +587,7 @@ fn tool(message: &Message, result: &str, turn: u32) -> frona::inference::tool_ca
         system_prompt: None,
         description: None,
         turn_text: Some("Reading report".into()),
+        signature: None,
         turn_reasoning: None,
         created_at: message.created_at,
     }

@@ -562,10 +562,15 @@ fn convert_agent_with_tool_calls(
             assistant_items.push(AssistantContent::text(text));
         }
         for te in tes {
-            assistant_items.push(AssistantContent::tool_call(
-                &te.provider_call_id,
-                &te.name,
-                te.arguments.clone(),
+            assistant_items.push(AssistantContent::ToolCall(
+                rig_core::completion::message::ToolCall::from_wire(
+                    &te.provider_call_id,
+                    rig_core::completion::message::ToolFunction {
+                        name: te.name.clone(),
+                        arguments: te.arguments.clone(),
+                    },
+                )
+                .with_signature(te.signature.clone()),
             ));
         }
         if !assistant_items.is_empty() {

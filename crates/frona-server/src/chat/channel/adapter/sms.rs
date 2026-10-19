@@ -1115,6 +1115,7 @@ mod tests {
             system_prompt: None,
             description: None,
             turn_text: text.map(String::from),
+            signature: None,
             turn_reasoning: None,
             created_at: chrono::Utc::now(),
         }

@@ -107,6 +107,7 @@ fn tool_call(chat_id: &str, message_id: &str, turn: u32, name: &str) -> ToolCall
         system_prompt: None,
         description: None,
         turn_text: None,
+        signature: None,
         turn_reasoning: None,
         created_at: Utc::now(),
     }

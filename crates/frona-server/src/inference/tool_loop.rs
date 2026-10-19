@@ -347,6 +347,7 @@ async fn execute_tool_calls(
                 message_id,
                 turn,
                 &tool_call.id,
+                tool_call.signature.clone(),
                 tool_name,
                 &arguments,
                 description.clone(),

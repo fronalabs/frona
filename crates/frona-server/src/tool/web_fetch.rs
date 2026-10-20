@@ -43,7 +43,7 @@ impl WebFetchTool {
 
         let markdown = run_with_reconnect(
             &self.session_manager,
-            &ctx.user.handle,
+            ctx,
             self.provider(),
             |conn| async move {
                 conn.navigate(url, false).await?;

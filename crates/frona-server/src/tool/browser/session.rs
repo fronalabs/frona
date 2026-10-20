@@ -1,12 +1,12 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use axum::body::Body;
 use http_body_util::BodyExt;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::core::config::BrowserConfig;
 use crate::core::error::AppError;
@@ -18,6 +18,8 @@ const BROWSERLESS_SESSION_TIMEOUT: Duration = Duration::from_secs(24 * 3600);
 /// Self-evict before Browserless's hard limit so the next request rebuilds
 /// cleanly instead of hitting a forced close mid-op.
 const SELF_EVICT_MARGIN: Duration = Duration::from_secs(60);
+const CONNECT_RETRY_DELAYS: [Duration; 2] =
+    [Duration::from_millis(100), Duration::from_millis(200)];
 
 #[derive(serde::Deserialize)]
 struct BrowserlessSession {
@@ -33,6 +35,7 @@ struct BrowserlessSession {
 pub struct BrowserSessionManager {
     config: Option<BrowserConfig>,
     sessions: Arc<RwLock<HashMap<String, BrowserConnection>>>,
+    profile_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
 }
 
 impl BrowserSessionManager {
@@ -40,6 +43,7 @@ impl BrowserSessionManager {
         Self {
             config,
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            profile_locks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -49,6 +53,18 @@ impl BrowserSessionManager {
 
     fn profile_key(user_handle: &crate::core::Handle, provider: &str) -> String {
         format!("{user_handle}/{provider}")
+    }
+
+    async fn profile_lock(&self, key: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.profile_locks.lock().await;
+        // Keep only locks still owned by an active connection/close request.
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = locks.get(key).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(key.to_string(), Arc::downgrade(&lock));
+        lock
     }
 
     /// Inserts `/` before the query string — browserless v2 returns HTTP 400 without it.
@@ -84,9 +100,23 @@ impl BrowserSessionManager {
 
         let timeout = Duration::from_millis(config.connection_timeout_ms);
         let lifetime = BROWSERLESS_SESSION_TIMEOUT.saturating_sub(SELF_EVICT_MARGIN);
-        BrowserConnection::connect(&ws_url, timeout, lifetime)
-            .await
-            .map_err(|e| AppError::Browser(format!("Failed to connect to browser: {e}")))
+        let mut retries = CONNECT_RETRY_DELAYS.into_iter();
+        loop {
+            match BrowserConnection::connect(&ws_url, timeout, lifetime).await {
+                Ok(connection) => return Ok(connection),
+                Err(error) => {
+                    if error.is_retryable_connect_error()
+                        && let Some(delay) = retries.next()
+                    {
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return Err(AppError::Browser(format!(
+                        "Failed to connect to browser: {error}"
+                    )));
+                }
+            }
+        }
     }
 
     pub async fn connection(
@@ -95,6 +125,14 @@ impl BrowserSessionManager {
         provider: &str,
     ) -> Result<BrowserConnection, AppError> {
         let key = Self::profile_key(user_handle, provider);
+        if let Some(connection) = self.sessions.read().await.get(&key).cloned()
+            && connection.is_alive()
+        {
+            return Ok(connection);
+        }
+        let lock = self.profile_lock(&key).await;
+        let _guard = lock.lock().await;
+        // Another request may have connected while this one waited.
         if let Some(conn) = self.sessions.read().await.get(&key).cloned() {
             if conn.is_alive() {
                 return Ok(conn);
@@ -109,16 +147,6 @@ impl BrowserSessionManager {
         let conn = self.create_connection(user_handle, provider).await?;
         self.sessions.write().await.insert(key, conn.clone());
         Ok(conn)
-    }
-
-    pub async fn reconnect(
-        &self,
-        user_handle: &crate::core::Handle,
-        provider: &str,
-    ) -> Result<BrowserConnection, AppError> {
-        let key = Self::profile_key(user_handle, provider);
-        self.sessions.write().await.remove(&key);
-        self.connection(user_handle, provider).await
     }
 
     fn admin_http_client() -> Client<hyper_util::client::legacy::connect::HttpConnector, Body> {
@@ -239,8 +267,10 @@ impl BrowserSessionManager {
         provider: &str,
     ) -> Result<(), AppError> {
         let key = Self::profile_key(user_handle, provider);
-        let mut sessions = self.sessions.write().await;
-        if let Some(conn) = sessions.remove(&key) {
+        let lock = self.profile_lock(&key).await;
+        let _guard = lock.lock().await;
+        let connection = self.sessions.write().await.remove(&key);
+        if let Some(conn) = connection {
             conn.disconnect()
                 .await
                 .map_err(|e| AppError::Browser(format!("Failed to close session: {e}")))?;
@@ -253,7 +283,7 @@ impl BrowserSessionManager {
 /// chromiumoxide's `request_timeout` bounds individual CDP calls.
 pub(crate) async fn run_with_reconnect<T, F, Fut>(
     mgr: &BrowserSessionManager,
-    user_handle: &crate::core::Handle,
+    ctx: &crate::tool::InferenceContext,
     provider: &str,
     op: F,
 ) -> Result<T, AppError>
@@ -261,15 +291,26 @@ where
     F: Fn(BrowserConnection) -> Fut,
     Fut: std::future::Future<Output = Result<T, frona_browser::Error>>,
 {
-    let conn = mgr.connection(user_handle, provider).await?;
-    match op(conn).await {
-        Ok(v) => Ok(v),
-        Err(e) if e.is_disconnect() => {
-            tracing::warn!("Browser session disconnected, reconnecting");
-            let conn = mgr.reconnect(user_handle, provider).await?;
-            op(conn).await.map_err(|e| AppError::Browser(e.to_string()))
+    let operation = async {
+        let conn = mgr.connection(&ctx.user.handle, provider).await?;
+        match op(conn.clone()).await {
+            Ok(value) => Ok(value),
+            Err(error) if error.is_disconnect() => {
+                tracing::warn!("Browser session disconnected, reconnecting");
+                // Invalidate the failed instance, not a replacement another caller created.
+                conn.mark_dead();
+                let conn = mgr.connection(&ctx.user.handle, provider).await?;
+                op(conn)
+                    .await
+                    .map_err(|error| AppError::Browser(error.to_string()))
+            }
+            Err(error) => Err(AppError::Browser(error.to_string())),
         }
-        Err(e) => Err(AppError::Browser(e.to_string())),
+    };
+    tokio::select! {
+        biased;
+        _ = ctx.cancel_token.cancelled() => Err(AppError::Tool("Browser operation cancelled".into())),
+        result = operation => result,
     }
 }
 
@@ -310,5 +351,107 @@ mod tests {
             url,
             "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai&timeout=86400000"
         );
+    }
+
+    #[tokio::test]
+    async fn historical_profile_locks_are_pruned() {
+        let manager = BrowserSessionManager::new(None);
+        let active = manager.profile_lock("active").await;
+        for i in 0..100 {
+            drop(manager.profile_lock(&format!("profile{i}")).await);
+            assert!(manager.profile_locks.lock().await.len() <= 2);
+        }
+        assert!(Arc::ptr_eq(&active, &manager.profile_lock("active").await));
+        drop(active);
+        drop(manager.profile_lock("last").await);
+        assert_eq!(manager.profile_locks.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires FRONA_TEST_BROWSER_WS_URL"]
+    async fn real_browser_profiles_share_connections_and_reconnect_independently() {
+        let config = cfg(&std::env::var("FRONA_TEST_BROWSER_WS_URL").unwrap());
+        let manager = BrowserSessionManager::new(Some(config));
+        let user =
+            crate::core::Handle::try_new(format!("session-test-{}", std::process::id())).unwrap();
+        let requests = (0..8).map(|_| manager.connection(&user, "shared"));
+        let connections =
+            tokio::time::timeout(Duration::from_secs(30), futures::future::join_all(requests))
+                .await
+                .unwrap();
+        let first = connections
+            .into_iter()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        assert!(
+            first.iter().all(|connection| connection.is_alive()
+                && connection.expires_at() == first[0].expires_at())
+        );
+        let profile = manager.config().unwrap().profile_path(&user, "shared");
+        let sessions = manager.list_browserless_sessions().await;
+        assert_eq!(
+            sessions
+                .iter()
+                .filter(|session| session.session_type.as_deref() == Some("browser")
+                    && session.user_data_dir.as_deref() == profile.to_str())
+                .count(),
+            1
+        );
+
+        // Hold one profile's creation guard while a different profile connects to Chrome.
+        let lock = manager
+            .profile_lock(&BrowserSessionManager::profile_key(&user, "blocked"))
+            .await;
+        let guard = lock.lock().await;
+        let blocked = manager.connection(&user, "blocked");
+        tokio::pin!(blocked);
+        assert!(matches!(
+            futures::poll!(&mut blocked),
+            std::task::Poll::Pending
+        ));
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(30),
+                manager.connection(&user, "independent")
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .is_alive()
+        );
+        drop(guard);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(30), blocked)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_alive()
+        );
+        drop(lock);
+
+        first[0].mark_dead();
+        let replacement =
+            tokio::time::timeout(Duration::from_secs(30), manager.connection(&user, "shared"))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_ne!(replacement.expires_at(), first[0].expires_at());
+        manager.close_session(&user, "shared").await.unwrap();
+        assert!(!replacement.is_alive());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(30), manager.connection(&user, "shared"))
+                .await
+                .unwrap()
+                .unwrap()
+                .is_alive()
+        );
+        for profile in ["shared", "blocked", "independent"] {
+            manager.close_session(&user, profile).await.unwrap();
+            manager
+                .kill_browserless_sessions_for_profile(&user, profile)
+                .await;
+        }
+        assert!(manager.sessions.read().await.is_empty());
+        assert!(manager.profile_locks.lock().await.len() <= 1);
     }
 }

@@ -62,7 +62,7 @@ telegram-markdown-v2 = "0.2"
 markdown = "1"
 xml-rs = "1"
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.7", features = ["cors", "fs", "trace", "set-header"] }
+tower-http = { version = "0.7", features = ["cors", "fs", "trace", "set-header", "timeout"] }
 tower_governor = "0.8"
 # 3.3.0 overflows the default test-thread stack during indexed inserts.
 # Keep the SDK and its internal crates locked together at 3.2.4.

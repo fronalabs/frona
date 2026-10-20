@@ -4,13 +4,17 @@ use axum::extract::{Path, State};
 use axum::http::Request;
 use axum::response::Response;
 use axum::routing::get;
-use http_body_util::BodyExt;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
+use std::time::Duration;
+use tower_http::timeout::TimeoutBody;
 
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
 use crate::core::state::AppState;
+
+// Only time spent waiting for a requested upstream frame counts, not downstream backpressure.
+const DEBUGGER_BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/api/browser/debugger/{credential_id}", get(debugger_proxy))
@@ -69,11 +73,16 @@ async fn debugger_proxy(
             )))
         })?;
 
-    let resp = client.request(req).await.map_err(|e| {
-        ApiError::from(crate::core::error::AppError::Browser(format!(
-            "Failed to proxy to browserless: {e}"
-        )))
-    })?;
+    let resp = tokio::time::timeout(
+        Duration::from_millis(browser_config.connection_timeout_ms),
+        client.request(req),
+    )
+    .await
+    .map_err(|_| crate::core::error::AppError::Http {
+        status: 504,
+        message: "Browserless debugger response timed out".into(),
+    })?
+    .map_err(|_| crate::core::error::AppError::Browser("Failed to proxy to Browserless".into()))?;
 
     if !resp.status().is_success() {
         // Upstream error bodies and redirect headers can echo the authenticated URL.
@@ -85,11 +94,8 @@ async fn debugger_proxy(
     }
 
     let (parts, body) = resp.into_parts();
-    let bytes = body.collect().await.map_err(|e| {
-        ApiError::from(crate::core::error::AppError::Browser(format!(
-            "Failed to read proxy response: {e}"
-        )))
-    })?;
-
-    Ok(Response::from_parts(parts, Body::from(bytes.to_bytes())))
+    Ok(Response::from_parts(
+        parts,
+        Body::new(TimeoutBody::new(DEBUGGER_BODY_IDLE_TIMEOUT, body)),
+    ))
 }

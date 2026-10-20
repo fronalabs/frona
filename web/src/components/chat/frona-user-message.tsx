@@ -50,38 +50,60 @@ function CommandTypeBadge({ command }: { command: MessageCommand }) {
   );
 }
 
-function usePresignedUrl(attachmentId: string) {
-  const [url, setUrl] = useState<string | null>(null);
+function useAttachmentUrl(attachment: CompleteAttachment, isImage: boolean) {
+  const backend = getBackendAttachment(attachment.id);
+  const owner = backend?.owner;
+  const path = backend?.path;
+  const signedUrl = attachment.content.find((part) => part.type === "image")?.image.trim()
+    || backend?.url?.trim() || null;
+  const file = !signedUrl && isImage && attachment.file?.type.startsWith("image/") ? attachment.file : undefined;
+  const source = `${owner ?? ""}\0${attachment.id}\0${signedUrl ?? ""}`;
+  const [resolved, setResolved] = useState<{ source: string; file?: File; url: string } | null>(null);
+  const [refreshSource, setRefreshSource] = useState<string | null>(null);
+  const refresh = refreshSource === source;
 
   useEffect(() => {
-    const backend = getBackendAttachment(attachmentId);
-    if (!backend) return;
     let cancelled = false;
-    presignFile(backend.owner, backend.path).then((u) => {
-      if (!cancelled) setUrl(u);
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [attachmentId]);
+    const blobUrl = file ? URL.createObjectURL(file) : undefined;
+    if (blobUrl) {
+      setResolved({ source, file, url: blobUrl });
+    }
+    if (owner && path && (!isImage || !signedUrl || refresh)) {
+      presignFile(owner, path).then((url) => {
+        if (!cancelled && url.trim()) {
+          setResolved({ source, file, url: url.trim() });
+        }
+      }).catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+  }, [source, signedUrl, file, refresh, owner, path, isImage]);
 
-  return url;
+  return {
+    url: resolved?.source === source && resolved.file === file ? resolved.url : signedUrl,
+    refresh: () => { if (signedUrl) setRefreshSource(source); },
+  };
 }
 
 function UserAttachment({ attachment }: { attachment: CompleteAttachment }) {
-  const isImage = attachment.type === "image" || attachment.contentType?.startsWith("image/");
-  const presignedUrl = usePresignedUrl(attachment.id);
+  const isImage = attachment.type === "image" || !!attachment.contentType?.startsWith("image/");
+  const { url, refresh } = useAttachmentUrl(attachment, isImage);
 
   const handleClick = useCallback(() => {
-    if (presignedUrl) window.open(presignedUrl, "_blank");
-  }, [presignedUrl]);
+    if (url) window.open(url, "_blank");
+  }, [url]);
 
-  if (isImage && presignedUrl) {
+  if (isImage && url) {
     return (
       <AttachmentPrimitive.Root
         className="overflow-hidden rounded-lg border border-border cursor-pointer hover:opacity-90 transition-opacity"
         onClick={handleClick}
       >
         <img
-          src={presignedUrl}
+          src={url}
+          onError={refresh}
           alt={attachment.name}
           className="max-h-72 max-w-full object-contain"
         />

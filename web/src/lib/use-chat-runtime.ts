@@ -39,20 +39,24 @@ export function getBackendAttachments(attachments: readonly (PendingAttachment |
   });
 }
 
-function convertBackendAttachment(att: Attachment): CompleteAttachment {
-  const url = att.url ?? "";
-  const isImage = att.content_type.startsWith("image/");
-  registerBackendAttachment(att.path, att);
+function completeAttachment(
+  attachment: Pick<CompleteAttachment, "id" | "name" | "contentType" | "file">,
+  url?: string,
+): CompleteAttachment {
+  const imageUrl = attachment.contentType?.startsWith("image/") ? url?.trim() : undefined;
   return {
-    id: att.path,
-    type: isImage ? "image" : "file",
-    name: att.filename,
-    contentType: att.content_type,
+    ...attachment,
+    type: imageUrl ? "image" : "file",
     status: { type: "complete" },
-    content: isImage
-      ? [{ type: "image", image: url }]
-      : [{ type: "text", text: `[file: ${att.filename}]` }],
+    content: imageUrl
+      ? [{ type: "image", image: imageUrl }]
+      : [{ type: "text", text: `[file: ${attachment.name}]` }],
   };
+}
+
+function convertBackendAttachment(att: Attachment, file?: File): CompleteAttachment {
+  registerBackendAttachment(att.path, att);
+  return completeAttachment({ id: att.path, name: att.filename, contentType: att.content_type, ...(file ? { file } : {}) }, att.url);
 }
 
 export const fronaAttachmentAdapter: AttachmentAdapter = {
@@ -91,14 +95,7 @@ export const fronaAttachmentAdapter: AttachmentAdapter = {
   },
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const isImage = attachment.contentType?.startsWith("image/");
-    return {
-      ...attachment,
-      status: { type: "complete" },
-      content: isImage && attachment.file
-        ? [{ type: "image", image: URL.createObjectURL(attachment.file) }]
-        : [{ type: "text", text: `[file: ${attachment.name}]` }],
-    };
+    return completeAttachment(attachment, getBackendAttachment(attachment.id)?.url);
   },
 
   async remove(attachment) {
@@ -156,9 +153,9 @@ function stripTurnText(parts: AssistantContentPart[]): AssistantContentPart[] {
   });
 }
 
-export function convertMessage(msg: MessageResponse) {
+export function convertMessage(msg: MessageResponse, localImageFiles?: ReadonlyMap<string, File>) {
   if (msg.role === "user" || msg.role === "contact" || msg.role === "livecall") {
-    const attachments = msg.attachments?.map(convertBackendAttachment);
+    const attachments = msg.attachments?.map((att) => convertBackendAttachment(att, localImageFiles?.get(att.path)));
     return {
       id: msg.id,
       role: "user" as const,
@@ -355,6 +352,8 @@ export interface ChatRuntimeOptions {
 }
 
 export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOptions) {
+  // Only URL-less image previews need the local File; keep them within this runtime's lifetime.
+  const localImageFiles = useRef(new Map<string, File>()).current;
   const currentChatIdRef = useRef<string | null>(chatId ?? null);
   currentChatIdRef.current = chatId ?? currentChatIdRef.current;
   const onChatCreatedRef = useRef(onChatCreated);
@@ -434,6 +433,12 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
 
     let sendChatId = currentChatIdRef.current;
     if (!sendChatId && !onChatCreatedRef.current) return;
+    message.attachments?.forEach((attachment, index) => {
+      const backend = attachments[index];
+      if (!backend.url?.trim() && backend.content_type.startsWith("image/") && attachment.file?.type.startsWith("image/")) {
+        localImageFiles.set(backend.path, attachment.file);
+      }
+    });
     store.addUserMessage(text, attachments.length ? attachments : undefined);
 
     try {
@@ -466,7 +471,7 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     } catch (error) {
       store.failMessage(messageProcessingError(error));
     }
-  }, [agentId, store]);
+  }, [agentId, store, localImageFiles]);
 
   const onCancel = useCallback(async () => {
     const id = currentChatIdRef.current;
@@ -496,7 +501,7 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
   const adapter: ExternalStoreAdapter<MessageResponse> = useMemo(() => ({
     messages: filteredMessages,
     isRunning: storeSnapshot.isRunning,
-    convertMessage: (msg: MessageResponse) => convertMessage(msg) ?? {
+    convertMessage: (msg: MessageResponse) => convertMessage(msg, localImageFiles) ?? {
       id: msg.id,
       role: "assistant" as const,
       content: [],
@@ -511,7 +516,7 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     adapters: {
       attachments: fronaAttachmentAdapter,
     },
-  }), [filteredMessages, storeSnapshot.isRunning, onNew, onCancel, store]);
+  }), [filteredMessages, storeSnapshot.isRunning, onNew, onCancel, store, localImageFiles]);
 
   const runtime = useExternalStoreRuntime(adapter);
 
@@ -524,7 +529,7 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     runtime.thread.append({
       role: "user",
       content: [{ type: "text", text: content }],
-      attachments: attachments?.map(convertBackendAttachment),
+      attachments: attachments?.map((attachment) => convertBackendAttachment(attachment)),
     });
   }, [runtime]);
 

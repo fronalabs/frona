@@ -27,7 +27,7 @@ async fn debugger_auth_preserves_the_ui_and_never_forwards_upstream_diagnostics(
         )
         .await
         .unwrap();
-    let route = format!("/api/browser/debugger/{}", credential.id);
+    let route = format!("/api/browser/debugger/{}/", credential.id);
     let upstream = MockServer::start().await;
     const SECRET: &str = "browser-private +/&?#=é";
     const HTML: &str = "<!doctype html><title>Existing debugger UI</title>";
@@ -120,6 +120,78 @@ async fn debugger_auth_preserves_the_ui_and_never_forwards_upstream_diagnostics(
         assert_eq!(denied.status(), StatusCode::FORBIDDEN);
         assert!(upstream.received_requests().await.unwrap().is_empty());
     }
+    let mut request = auth_get(&route, &user_token);
+    request
+        .headers_mut()
+        .insert("cookie", "browser_session=expired".parse().unwrap());
+    request.headers_mut().remove("authorization");
+    let response = build_app(state.clone()).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(
+        response.headers()["location"],
+        format!("/api/auth/browser/{}", credential.id)
+    );
+    let canonical = build_app(state.clone())
+        .oneshot(auth_get(route.trim_end_matches('/'), &user_token))
+        .await
+        .unwrap();
+    assert_eq!(canonical.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(canonical.headers()["location"], route);
+
+    state.browser_session_manager = Arc::new(BrowserSessionManager::new(Some(BrowserConfig {
+        ws_url: upstream.uri().replacen("http://", "ws://", 1),
+        connection_timeout_ms: 50,
+        ..Default::default()
+    })));
+    for origin in ["http://evil.example", "https://frona.example"] {
+        let mut request = auth_get(&route, &user_token);
+        request
+            .headers_mut()
+            .insert("upgrade", "websocket".parse().unwrap());
+        request
+            .headers_mut()
+            .insert("host", "frona.example".parse().unwrap());
+        request
+            .headers_mut()
+            .insert("origin", origin.parse().unwrap());
+        assert_eq!(
+            build_app(state.clone())
+                .oneshot(request)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert!(upstream.received_requests().await.unwrap().is_empty());
+    let requested = Arc::new(tokio::sync::Notify::new());
+    let signal = requested.clone();
+    Mock::given(method("GET"))
+        .and(path("/sessions"))
+        .respond_with(move |_: &wiremock::Request| {
+            signal.notify_one();
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_secs(10))
+                .set_body_json(serde_json::json!([]))
+        })
+        .expect(1)
+        .mount(&upstream)
+        .await;
+    let mut request = auth_get(&route, &user_token);
+    request
+        .headers_mut()
+        .insert("upgrade", "websocket".parse().unwrap());
+    let pending = tokio::spawn(async move { build_app(state).oneshot(request).await.unwrap() });
+    // Authenticate first: key verification is outside the upstream handshake deadline.
+    tokio::time::timeout(std::time::Duration::from_secs(5), requested.notified())
+        .await
+        .unwrap();
+    let response = tokio::time::timeout(std::time::Duration::from_secs(1), pending)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    upstream.verify().await;
 }
 
 // A real HTTP peer lets the tests observe cancellation at the upstream socket.
@@ -156,7 +228,7 @@ async fn debugger_streams_incrementally_and_releases_timed_out_or_disconnected_u
         )
         .await
         .unwrap();
-    let route = format!("/api/browser/debugger/{}", credential.id);
+    let route = format!("/api/browser/debugger/{}/", credential.id);
     let listener = Arc::new(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
     state.browser_session_manager = Arc::new(BrowserSessionManager::new(Some(BrowserConfig {
         ws_url: format!("ws://{}", listener.local_addr().unwrap()),
@@ -310,4 +382,301 @@ async fn debugger_streams_incrementally_and_releases_timed_out_or_disconnected_u
         .unwrap()
         .unwrap();
     server.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires FRONA_TEST_BROWSER_WS_URL"]
+async fn live_browserless_debugger_ui_and_cdp_are_scoped_to_owner() {
+    let config = BrowserConfig {
+        ws_url: std::env::var("FRONA_TEST_BROWSER_WS_URL").expect("Browserless URL"),
+        api_token: std::env::var("FRONA_TEST_BROWSER_API_TOKEN").ok(),
+        profiles_path: "/profiles".into(),
+        ..Default::default()
+    };
+    let (mut state, directory) = test_app_state_with_sandbox(true).await;
+    let (token, user_id) = register_user(
+        &state,
+        "livedebugger",
+        "livedebugger@example.com",
+        "password123",
+    )
+    .await;
+    let credential = state
+        .vault_service
+        .create_credential(
+            &user_id,
+            CreateLocalItemRequest::BrowserProfile {
+                name: "Live debugger".into(),
+            },
+        )
+        .await
+        .unwrap();
+    state.browser_session_manager = Arc::new(BrowserSessionManager::new(Some(config.clone())));
+    let manager = state.browser_session_manager.clone();
+    let user = frona::core::Handle::try_new("livedebugger").unwrap();
+    let connection = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        manager.connection(&user, &credential.provider),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let page = connection
+        .navigate(
+            "data:text/html,<title>CDP compatibility</title><h1>Browserless</h1>",
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.title, "CDP compatibility");
+    let screenshot_path = directory.path().join("browserless.png");
+    let screenshot = connection
+        .screenshot(&screenshot_path, false)
+        .await
+        .unwrap();
+    let png = std::fs::read(&screenshot_path).unwrap();
+    assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+    assert_eq!(png.len(), screenshot.size_bytes);
+    assert!(png.len() > 100);
+    let (foreign_token, foreign_user_id) = register_user(
+        &state,
+        "foreignbrowser",
+        "foreignbrowser@example.com",
+        "password123",
+    )
+    .await;
+    let foreign_credential = state
+        .vault_service
+        .create_credential(
+            &foreign_user_id,
+            CreateLocalItemRequest::BrowserProfile {
+                name: "Foreign browser".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let foreign_user = frona::core::Handle::try_new("foreignbrowser").unwrap();
+    let foreign_connection = manager
+        .connection(&foreign_user, &foreign_credential.provider)
+        .await
+        .unwrap();
+    foreign_connection
+        .navigate("data:text/html,<title>Foreign private page</title>", true)
+        .await
+        .unwrap();
+    let app = build_app(state);
+    let response = app
+        .clone()
+        .oneshot(auth_get(
+            &format!("/api/browser/debugger/{}/", credential.id),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html")
+    );
+    let body = axum::body::to_bytes(response.into_body(), 4 << 20)
+        .await
+        .unwrap();
+    let html = std::str::from_utf8(&body).unwrap();
+    assert!(html.contains("<title>Browserless debugger</title>"));
+    if let Some(secret) = &config.api_token {
+        assert!(!html.contains(secret));
+    }
+
+    let scope = format!("/api/browser/debugger/{}/", credential.id);
+    let foreign_scope = format!("/api/browser/debugger/{}/", foreign_credential.id);
+    let foreign_pages = body_json(
+        app.clone()
+            .oneshot(auth_get(
+                &format!("{foreign_scope}sessions"),
+                &foreign_token,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let foreign_id = foreign_pages[0]["id"].as_str().unwrap();
+    assert_eq!(
+        app.clone()
+            .oneshot(auth_get(&format!("{foreign_scope}router.js"), &token))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(auth_get(&format!("{scope}kill/all"), &token))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let frontend = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
+    let host = std::env::var("FRONA_TEST_SERVER_HOST").unwrap_or_else(|_| "host.frona.test".into());
+    let base = format!("http://{host}:{}", frontend.local_addr().unwrap().port());
+    let server = tokio::spawn(async move {
+        axum::serve(
+            frontend,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
+    });
+    let observer = manager.connection(&user, "ui-observer").await.unwrap();
+    observer
+        .navigate(&format!("{base}/healthz"), true)
+        .await
+        .unwrap();
+    let login = observer
+        .evaluate(
+            r#"async function () {
+        const response = await fetch('/api/auth/login', {
+            method: 'POST', credentials: 'include', headers: {'content-type': 'application/json'},
+            body: JSON.stringify({identifier:'livedebugger',password:'password123'})
+        }); return response.status;
+    }"#,
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(login, 200);
+    // Exercise the existing plain link: refresh-cookie gate, scoped cookie, streamed document and real assets.
+    observer
+        .navigate(
+            &format!("{base}/api/browser/debugger/{}", credential.id),
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        observer.evaluate("location.pathname", true).await.unwrap(),
+        scope
+    );
+    observer
+        .evaluate(
+            "document.querySelector('#sessions-button-radio').click()",
+            true,
+        )
+        .await
+        .unwrap();
+    let links = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let links = observer.evaluate("Array.from(document.querySelectorAll('#sessions-viewer a'), a => ({text:a.textContent,href:a.href}))", true).await.unwrap();
+            if links.as_array().is_some_and(|links| !links.is_empty()) { break links; }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }).await.unwrap();
+    assert_eq!(links.as_array().unwrap().len(), 1);
+    assert_eq!(links[0]["text"], "CDP compatibility");
+    let inspector = links[0]["href"].as_str().unwrap();
+    assert!(inspector.starts_with(&format!("{base}{scope}devtools/inspector.html?")));
+    let targets = observer
+        .evaluate(
+            "async function () { return (await fetch('sessions')).json(); }",
+            true,
+        )
+        .await
+        .unwrap();
+    // Chrome can retain an initial about:blank page; every returned page must still be in this profile.
+    assert!(targets.as_array().unwrap().iter().all(|target| {
+        target.as_object().unwrap().len() == 3
+            && (target["url"] == "about:blank" || target["title"] == "CDP compatibility")
+    }));
+    let page_id = targets
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|target| target["title"] == "CDP compatibility")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    // Real browser WebSockets carry only the scoped cookie. Prove attachment and foreign-target rejection.
+    let ws_probe = |path: &str, method: &str, params: serde_json::Value| {
+        format!(
+            r#"async function () {{
+        const url = new URL({}, location.href); url.protocol = 'ws:';
+        return await new Promise(resolve => {{
+            const ws = new WebSocket(url); const timer = setTimeout(() => {{ws.close(); resolve('timeout')}}, 10000);
+            ws.onopen = () => ws.send(JSON.stringify({{id:1,method:{},params:{}}}));
+            ws.onmessage = event => {{ const value = JSON.parse(event.data); if(value.id === 1) {{clearTimeout(timer); ws.close(); resolve(value)}} }};
+            ws.onerror = () => {{ clearTimeout(timer); resolve('denied') }};
+        }});
+    }}"#,
+            serde_json::to_string(path).unwrap(),
+            serde_json::to_string(method).unwrap(),
+            params
+        )
+    };
+    let result = observer
+        .evaluate(
+            &ws_probe(
+                &format!("{scope}devtools/page/{page_id}"),
+                "Runtime.evaluate",
+                serde_json::json!({"expression":"document.title"}),
+            ),
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result["result"]["result"]["value"], "CDP compatibility");
+    assert_eq!(
+        observer
+            .evaluate(
+                &ws_probe(
+                    &format!("{scope}devtools/page/{foreign_id}"),
+                    "Runtime.evaluate",
+                    serde_json::json!({"expression":"document.title"})
+                ),
+                true
+            )
+            .await
+            .unwrap(),
+        "denied"
+    );
+    let version = observer
+        .evaluate(
+            &ws_probe(&scope, "Browser.getVersion", serde_json::json!({})),
+            true,
+        )
+        .await
+        .unwrap();
+    assert!(
+        version["result"]["product"]
+            .as_str()
+            .unwrap()
+            .contains("Chrome")
+    );
+    observer.navigate(inspector, true).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let attached_title = observer.evaluate(r#"async function () {
+                const target = globalThis.SDK?.targetManager?.mainTarget();
+                if (!target) return null;
+                const result = await target.runtimeAgent().invoke_evaluate({expression:'document.title', returnByValue:true});
+                return result.result?.value;
+            }"#, true).await.unwrap();
+            if attached_title == "CDP compatibility" { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+    manager.close_session(&user, "ui-observer").await.unwrap();
+    manager
+        .close_session(&foreign_user, &foreign_credential.provider)
+        .await
+        .unwrap();
+    server.abort();
+    manager
+        .close_session(&user, &credential.provider)
+        .await
+        .unwrap();
 }

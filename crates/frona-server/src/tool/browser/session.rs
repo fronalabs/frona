@@ -22,11 +22,19 @@ const CONNECT_RETRY_DELAYS: [Duration; 2] =
     [Duration::from_millis(100), Duration::from_millis(200)];
 
 #[derive(serde::Deserialize)]
-struct BrowserlessSession {
+pub(crate) struct BrowserlessSession {
     #[serde(rename = "browserId")]
     browser_id: String,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(rename = "browserWSEndpoint", default)]
+    pub browser_ws_endpoint: Option<String>,
     #[serde(rename = "type")]
-    session_type: Option<String>,
+    pub session_type: Option<String>,
     #[serde(rename = "userDataDir", default)]
     user_data_dir: Option<String>,
 }
@@ -185,7 +193,10 @@ impl BrowserSessionManager {
             }
         };
 
-        let body = match resp.into_body().collect().await {
+        let body = match http_body_util::Limited::new(resp.into_body(), 4 << 20)
+            .collect()
+            .await
+        {
             Ok(b) => b.to_bytes(),
             Err(e) => {
                 tracing::warn!("Failed to read sessions response: {e}");
@@ -200,6 +211,34 @@ impl BrowserSessionManager {
                 vec![]
             }
         }
+    }
+
+    /// Only the exact configured profile may be discovered or attached by its owner.
+    pub(crate) async fn debugger_sessions(
+        &self,
+        user_handle: &crate::core::Handle,
+        provider: &str,
+    ) -> Result<Vec<BrowserlessSession>, AppError> {
+        let config = self
+            .config
+            .as_ref()
+            .ok_or_else(|| AppError::Browser("Browser is not configured".into()))?;
+        let expected = config.profile_path(user_handle, provider);
+        let sessions = tokio::time::timeout(
+            Duration::from_millis(config.connection_timeout_ms),
+            self.list_browserless_sessions(),
+        )
+        .await
+        .map_err(|_| AppError::Browser("Browserless session discovery timed out".into()))?;
+        Ok(sessions
+            .into_iter()
+            .filter(|session| {
+                session
+                    .user_data_dir
+                    .as_deref()
+                    .is_some_and(|path| std::path::Path::new(path) == expected)
+            })
+            .collect())
     }
 
     async fn kill_browserless_session_ids(&self, browser_ids: &[String]) {

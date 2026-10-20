@@ -110,6 +110,8 @@ with-env { CONTAINER_RUNTIME: "docker" } { mise run test:browser }
 It starts the pinned Browserless image from `docker-compose.yml` on an
 available localhost port, waits for readiness, and runs the browser crate and
 server session tests serially, including the otherwise ignored integration tests.
+A live API test also opens the debugger UI through Frona, checks profile isolation
+and CDP navigation/screenshot, and loads the target inspector.
 Browser profiles live in temporary container storage.
 It removes the container on completion or interruption and prints browser logs
 on failure. The development stack does not need to be running.

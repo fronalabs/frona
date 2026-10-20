@@ -42,12 +42,14 @@ trap 'exit 143' TERM
 
 # Isolate destructive session tests from the development browser and its profiles.
 "$runtime" run --detach --name "$container_name" \
-  --publish 127.0.0.1::3333 --shm-size=1g \
+  --publish 127.0.0.1::3333 --shm-size=1g --add-host host.frona.test:host-gateway \
   --env PORT=3333 --env TIMEOUT=1800000 \
   --env MAX_CONCURRENT_SESSIONS=10 --env ENABLE_DEBUGGER=true \
   --tmpfs /profiles:rw,mode=1777 "$image" >/dev/null
 address=$("$runtime" port "$container_name" 3333/tcp)
+unset FRONA_TEST_BROWSER_API_TOKEN
 export FRONA_TEST_BROWSER_WS_URL="ws://$address"
+export FRONA_TEST_SERVER_HOST=host.frona.test
 
 ready=false
 for ((attempt = 0; attempt < 60; attempt++)); do
@@ -67,3 +69,4 @@ echo "Running browser tests against $FRONA_TEST_BROWSER_WS_URL"
 cargo test -p frona-browser -- --include-ignored --test-threads=1
 cargo test -p frona-server --lib tool::browser::session::tests -- --include-ignored --test-threads=1
 cargo test -p frona-server --test browser_sessions -- --test-threads=1
+cargo test -p frona-server --test api_routes api::browser::live_browserless_debugger_ui_and_cdp_are_scoped_to_owner -- --ignored --exact

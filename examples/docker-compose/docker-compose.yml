@@ -18,7 +18,7 @@ services:
     restart: unless-stopped
 
   browserless:
-    image: ghcr.io/browserless/chromium:v2.42.0
+    image: ghcr.io/browserless/chromium:v2.57.1
     environment:
       - MAX_CONCURRENT_SESSIONS=10
       - PREBOOT_CHROME=true

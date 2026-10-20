@@ -43,7 +43,7 @@ spec:
             periodSeconds: 30
 
         - name: browserless
-          image: ghcr.io/browserless/chromium:v2.42.0
+          image: ghcr.io/browserless/chromium:v2.57.1
           env:
             - name: MAX_CONCURRENT_SESSIONS
               value: "10"

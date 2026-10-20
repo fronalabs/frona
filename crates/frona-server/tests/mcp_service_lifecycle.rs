@@ -572,3 +572,78 @@ async fn update_rejects_when_another_user_owns_the_server() {
 }
 
 mod helpers;
+
+#[tokio::test]
+async fn environment_validation_precedes_binding_changes() {
+    let (db, vault, service, _tmp) = build_test_harness(vec![secret_env_var("TOKEN")]).await;
+    let server = service
+        .install(
+            "user1",
+            &frona::handle!("user1"),
+            McpServerInstall {
+                registry_id: Some("io.example/workspace-mcp".into()),
+                extra_env: [("TOKEN".into(), "old value".into())].into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let principal = Principal::mcp_server(&server.id);
+    let credential = seed_credential_and_grant(
+        &vault,
+        "user1",
+        principal.clone(),
+        "vault-token",
+        "bound value",
+    )
+    .await;
+    let repo: Arc<dyn McpServerRepository> = Arc::new(SurrealRepo::<McpServer>::new(db));
+    let updated = service
+        .update(
+            "user1",
+            &server.id,
+            McpServerUpdate {
+                credentials: Some(vec![binding("TOKEN", &credential)]),
+                extra_env: Some(Default::default()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(updated.server.env.is_empty());
+    let original = vault
+        .list_bindings_for_principal("user1", &principal)
+        .await
+        .unwrap();
+    assert_eq!(original.len(), 1);
+    let error = service
+        .update(
+            "user1",
+            &server.id,
+            McpServerUpdate {
+                credentials: Some(vec![binding("BAD=secret-name", &credential)]),
+                description: Some("not saved".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .err()
+        .expect("invalid environment must fail");
+    assert!(!error.to_string().contains("secret-name"));
+    assert_eq!(
+        vault
+            .list_bindings_for_principal("user1", &principal)
+            .await
+            .unwrap()[0]
+            .id,
+        original[0].id
+    );
+    assert_eq!(
+        repo.find_by_id(&server.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .description,
+        server.description
+    );
+}

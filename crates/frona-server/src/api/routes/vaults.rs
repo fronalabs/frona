@@ -183,6 +183,7 @@ async fn create_grant(
     State(state): State<AppState>,
     Json(req): Json<CreateGrantRequest>,
 ) -> Result<Json<VaultGrantResponse>, ApiError> {
+    req.target.validate_env_names()?;
     let grant = state
         .vault_service
         .create_grant(

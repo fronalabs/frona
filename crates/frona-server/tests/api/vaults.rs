@@ -265,6 +265,80 @@ async fn create_grant_returns_json() {
 }
 
 #[tokio::test]
+async fn invalid_binding_targets_do_not_create_grants_and_empty_prefix_is_accepted() {
+    let (state, _tmp) = test_app_state().await;
+    let (token, user_id) =
+        register_user(&state, "vault-env", "vaultenv@example.com", "password123").await;
+    let item = create_local_item(&state, &token, "test-item").await;
+    let principal = frona::core::Principal::agent("test-agent");
+    for target in [
+        serde_json::json!({"Single": {"env_var": "", "field": "Password"}}),
+        serde_json::json!({"Single": {"env_var": "BAD=private-name", "field": "Password"}}),
+        serde_json::json!({"Prefix": {"env_var_prefix": "BAD=private-name"}}),
+    ] {
+        let response = build_app(state.clone())
+            .oneshot(auth_post_json(
+                "/api/vaults/grants",
+                &token,
+                serde_json::json!({
+                    "principal": principal,
+                    "connection_id": "local",
+                    "vault_item_id": item["id"],
+                    "query": "TEST",
+                    "target": target
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let error = body_json(response).await.to_string();
+        assert!(error.contains("Environment variable names"));
+        assert!(!error.contains("private-name"));
+        assert!(!error.contains("sk-test-key-123"));
+        let response = build_app(state.clone())
+            .oneshot(auth_get("/api/vaults/grants", &token))
+            .await
+            .unwrap();
+        assert_eq!(body_json(response).await, serde_json::json!([]));
+        assert!(
+            state
+                .vault_service
+                .list_bindings_for_principal(&user_id, &principal)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+    let response = build_app(state.clone())
+        .oneshot(auth_post_json(
+            "/api/vaults/grants",
+            &token,
+            serde_json::json!({
+                "principal": principal,
+                "connection_id": "local",
+                "vault_item_id": item["id"],
+                "query": "TEST",
+                "target": {"Prefix": {"env_var_prefix": ""}}
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bindings = state
+        .vault_service
+        .list_bindings_for_principal(&user_id, &principal)
+        .await
+        .unwrap();
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(
+        bindings[0].target,
+        frona::credential::vault::models::CredentialTarget::Prefix {
+            env_var_prefix: "".into()
+        }
+    );
+}
+
+#[tokio::test]
 async fn vault_endpoints_reject_no_auth() {
     let (state, _tmp) = test_app_state().await;
 

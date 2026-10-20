@@ -517,6 +517,7 @@ impl VaultService {
         expires_at: Option<chrono::DateTime<Utc>>,
     ) -> Result<PrincipalCredentialBinding, AppError> {
         ensure_non_user_principal(&principal)?;
+        target.validate_env_names()?;
         let binding = PrincipalCredentialBinding {
             id: crate::core::repository::new_id(),
             user_id: user_id.to_string(),

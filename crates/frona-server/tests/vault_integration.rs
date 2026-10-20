@@ -92,6 +92,93 @@ fn build_service_with_managed(
     )
 }
 
+#[tokio::test]
+async fn binding_environment_names_are_validated_and_empty_prefix_keeps_bare_fields() {
+    let db = setup_db().await;
+    let svc = build_service(&db);
+    svc.sync_config_connections().await.unwrap();
+    let principal = Principal::agent("agent1");
+    let credential = svc
+        .create_credential(
+            "user1",
+            CreateLocalItemRequest::UsernamePassword {
+                name: "Test login".into(),
+                username: "test-user".into(),
+                password: "test-secret-value".into(),
+            },
+        )
+        .await
+        .unwrap();
+    for target in [
+        CredentialTarget::Single {
+            env_var: "".into(),
+            field: VaultField::Password,
+        },
+        CredentialTarget::Single {
+            env_var: "BAD=private-name".into(),
+            field: VaultField::Password,
+        },
+        CredentialTarget::Prefix {
+            env_var_prefix: "BAD=private-name".into(),
+        },
+    ] {
+        let error = svc
+            .create_binding(
+                "user1",
+                principal.clone(),
+                "login",
+                "local",
+                &credential.id,
+                target,
+                BindingScope::Durable,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, frona::core::error::AppError::Validation(_)));
+        assert!(!error.to_string().contains("private-name"));
+        assert!(!error.to_string().contains("test-secret-value"));
+        assert!(
+            svc.list_bindings_for_principal("user1", &principal)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+    svc.create_binding(
+        "user1",
+        principal.clone(),
+        "login",
+        "local",
+        &credential.id,
+        CredentialTarget::Prefix {
+            env_var_prefix: "".into(),
+        },
+        BindingScope::Durable,
+        None,
+    )
+    .await
+    .unwrap();
+    svc.create_grant(
+        "user1",
+        principal.clone(),
+        "local",
+        &credential.id,
+        "login",
+        &GrantDuration::Permanent,
+    )
+    .await
+    .unwrap();
+    let env = svc.resolve_env("user1", &principal, None).await.unwrap();
+    assert_eq!(
+        env,
+        vec![
+            ("USERNAME".into(), "test-user".into()),
+            ("PASSWORD".into(), "test-secret-value".into())
+        ]
+    );
+}
+
 mod managed {
     use super::*;
     use frona::core::error::AppError;

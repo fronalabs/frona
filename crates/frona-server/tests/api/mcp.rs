@@ -208,6 +208,106 @@ async fn update_server_extra_env() {
 }
 
 #[tokio::test]
+async fn invalid_environment_names_are_rejected_without_partial_updates_or_secret_errors() {
+    use frona::credential::vault::models::{
+        BindingScope, CreateLocalItemRequest, CredentialTarget, GrantDuration, VaultField,
+    };
+    let (state, _tmp) = test_app_state().await;
+    let (token, user_id) =
+        register_user(&state, "mcp-env", "mcpenv@example.com", "password123").await;
+    let server = install_via_manifest(&state, &token, sample_manifest()).await;
+    let id = server["id"].as_str().unwrap();
+    let route = format!("/api/mcp/servers/{id}");
+    let principal = frona::core::Principal::mcp_server(id);
+    let credential = state
+        .vault_service
+        .create_credential(
+            &user_id,
+            CreateLocalItemRequest::UsernamePassword {
+                name: "Bound secret".into(),
+                username: "user".into(),
+                password: "vault-secret-value".into(),
+            },
+        )
+        .await
+        .unwrap();
+    state
+        .vault_service
+        .create_grant(
+            &user_id,
+            principal.clone(),
+            "local",
+            &credential.id,
+            "bound",
+            &GrantDuration::Permanent,
+        )
+        .await
+        .unwrap();
+    state
+        .vault_service
+        .create_binding(
+            &user_id,
+            principal.clone(),
+            "bound",
+            "local",
+            &credential.id,
+            CredentialTarget::Single {
+                env_var: "BOUND_TOKEN".into(),
+                field: VaultField::Password,
+            },
+            BindingScope::Durable,
+            None,
+        )
+        .await
+        .unwrap();
+    for name in ["", "1BAD", "BAD-NAME", "BAD=NAME", "BAD\0NAME", "SÉCRET"] {
+        let response = build_app(state.clone()).oneshot(auth_patch_json(&route, &token, serde_json::json!({
+            "description":"must not be saved", "credentials":[], "extra_env":{(name):"submitted-secret-value"}
+        }))).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(response).await.to_string();
+        assert!(body.contains("Environment variable names"));
+        assert!(!body.contains("submitted-secret-value"));
+        let persisted = body_json(
+            build_app(state.clone())
+                .oneshot(auth_get(&route, &token))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(persisted["env"], server["env"]);
+        assert_eq!(persisted["description"], server["description"]);
+        assert_eq!(
+            state
+                .vault_service
+                .list_bindings_for_principal(&user_id, &principal)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    let response = build_app(state.clone()).oneshot(auth_post_json("/api/mcp/servers", &token,
+        serde_json::json!({"manifest":sample_manifest(), "extra_env":{"BAD=KEY":"install-secret-value"}})
+    )).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        !body_json(response)
+            .await
+            .to_string()
+            .contains("install-secret-value")
+    );
+    let servers = body_json(
+        build_app(state)
+            .oneshot(auth_get("/api/mcp/servers", &token))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(servers.as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn update_wrong_owner_returns_403() {
     let (state, _tmp) = test_app_state().await;
     let (owner_token, _) =

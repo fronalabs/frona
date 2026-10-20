@@ -6,6 +6,8 @@ use surrealdb::types::SurrealValue;
 
 use crate::Entity;
 use crate::core::Principal;
+use crate::core::error::AppError;
+use crate::credential::validation::validate_env_names;
 
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 #[serde(tag = "type", content = "data")]
@@ -225,6 +227,18 @@ pub enum CredentialTarget {
     /// Used by MCP install where the consumer declared a specific env var name
     /// and we project exactly one secret field into it.
     Single { env_var: String, field: VaultField },
+}
+
+impl CredentialTarget {
+    pub fn validate_env_names(&self) -> Result<(), AppError> {
+        let name = match self {
+            // An empty prefix projects the secret's bare field names.
+            Self::Prefix { env_var_prefix } if env_var_prefix.is_empty() => return Ok(()),
+            Self::Prefix { env_var_prefix } => env_var_prefix,
+            Self::Single { env_var, .. } => env_var,
+        };
+        validate_env_names(std::iter::once(name.as_str()))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SurrealValue)]

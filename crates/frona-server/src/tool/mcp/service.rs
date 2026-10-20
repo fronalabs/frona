@@ -14,6 +14,7 @@ use crate::auth::token::service::TokenService;
 use crate::core::Principal;
 use crate::core::error::AppError;
 use crate::credential::keypair::service::KeyPairService;
+use crate::credential::validation::validate_env_names;
 use crate::credential::vault::models::{BindingScope, CredentialTarget};
 use crate::credential::vault::service::VaultService;
 use crate::tool::ToolDefinition;
@@ -299,6 +300,12 @@ impl McpServerService {
         user_handle: &crate::core::Handle,
         req: McpServerInstall,
     ) -> Result<McpServer, AppError> {
+        validate_env_names(req.extra_env.keys().map(String::as_str))?;
+        validate_env_names(
+            req.credentials
+                .iter()
+                .map(|binding| binding.env_var.as_str()),
+        )?;
         let entry = self.resolve_entry(&req).await?;
         let package = pick_package(&entry).ok_or_else(|| {
             AppError::Validation(
@@ -483,6 +490,14 @@ impl McpServerService {
     ) -> Result<UpdateResult, AppError> {
         let mut server = self.load_owned(user_id, server_id).await?;
         let was_running = matches!(server.status, McpServerStatus::Running);
+
+        // Validate before replacing credential bindings or writing any part of the update.
+        if let Some(env) = &req.extra_env {
+            validate_env_names(env.keys().map(String::as_str))?;
+        }
+        if let Some(bindings) = &req.credentials {
+            validate_env_names(bindings.iter().map(|binding| binding.env_var.as_str()))?;
+        }
 
         if let Some(ref policy) = req.sandbox_policy {
             validate_absolute_paths(&policy.read_paths)?;

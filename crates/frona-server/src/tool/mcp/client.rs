@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use rmcp::ServiceExt;
 use rmcp::model::{
@@ -8,11 +8,33 @@ use rmcp::model::{
 use rmcp::service::{NotificationContext, RoleClient, RunningService};
 use rmcp::transport::IntoTransport;
 use rmcp::{ClientHandler, ErrorData as McpError};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::core::error::AppError;
 
 use super::models::CachedMcpTool;
+use super::service::McpServerService;
+use crate::tool::ToolDefinition;
+
+struct ToolRegistration {
+    service: Weak<McpServerService>,
+    user_id: String,
+    handle: String,
+}
+
+impl ToolRegistration {
+    async fn publish(&self, tools: &[CachedMcpTool]) {
+        if let Some(service) = self.service.upgrade() {
+            service
+                .register_tools(
+                    &self.user_id,
+                    &self.handle,
+                    tool_definitions(&self.handle, tools),
+                )
+                .await;
+        }
+    }
+}
 
 /// Handler passed into `rmcp::ServiceExt::serve`. Receives server-initiated notifications
 /// and keeps an in-memory mirror of the server's current tool list so `on_tool_list_changed`
@@ -20,13 +42,19 @@ use super::models::CachedMcpTool;
 pub struct McpClientHandler {
     cached_tools: Arc<RwLock<Vec<CachedMcpTool>>>,
     client_info: ClientConfig,
+    registration: Arc<Mutex<Option<ToolRegistration>>>,
 }
 
 impl McpClientHandler {
-    pub fn new(client_info: ClientConfig, cached_tools: Arc<RwLock<Vec<CachedMcpTool>>>) -> Self {
+    fn new(
+        client_info: ClientConfig,
+        cached_tools: Arc<RwLock<Vec<CachedMcpTool>>>,
+        registration: Arc<Mutex<Option<ToolRegistration>>>,
+    ) -> Self {
         Self {
             cached_tools,
             client_info,
+            registration,
         }
     }
 }
@@ -37,13 +65,19 @@ impl ClientHandler for McpClientHandler {
     }
 
     async fn on_tool_list_changed(&self, ctx: NotificationContext<RoleClient>) {
+        // Serialize fetch, publication and shutdown so an old response cannot
+        // replace a newer registration or restore tools after stop.
+        let registration = self.registration.lock().await;
         match ctx.peer.list_all_tools().await {
             Ok(tools) => {
                 let converted: Vec<CachedMcpTool> = tools
                     .into_iter()
                     .map(cached_from_rmcp_tool)
                     .collect::<Vec<_>>();
-                *self.cached_tools.write().await = converted;
+                *self.cached_tools.write().await = converted.clone();
+                if let Some(registration) = registration.as_ref() {
+                    registration.publish(&converted).await;
+                }
             }
             Err(e) => {
                 tracing::warn!(error = %e, "failed to refresh MCP tool list after notification");
@@ -62,6 +96,7 @@ impl ClientHandler for McpClientHandler {
 pub struct McpClient {
     running: RunningService<RoleClient, McpClientHandler>,
     cached_tools: Arc<RwLock<Vec<CachedMcpTool>>>,
+    registration: Arc<Mutex<Option<ToolRegistration>>>,
 }
 
 impl McpClient {
@@ -74,28 +109,34 @@ impl McpClient {
         E: std::error::Error + Send + Sync + 'static,
     {
         let cached_tools = Arc::new(RwLock::new(Vec::new()));
-        let handler = McpClientHandler::new(client_info, cached_tools.clone());
+        let registration = Arc::new(Mutex::new(None));
+        let handler =
+            McpClientHandler::new(client_info, cached_tools.clone(), registration.clone());
 
         let running = handler
             .serve(transport)
             .await
             .map_err(|e| AppError::Tool(format!("MCP initialize failed: {e}")))?;
 
+        let refresh = registration.lock().await;
         let tools = running
             .list_all_tools()
             .await
             .map_err(|e| AppError::Tool(format!("MCP tools/list failed: {e}")))?;
         *cached_tools.write().await = tools.into_iter().map(cached_from_rmcp_tool).collect();
 
+        drop(refresh);
         Ok(Self {
             running,
             cached_tools,
+            registration,
         })
     }
 
     /// Fresh `tools/list` from the server, bypassing the cache. Updates the cache on
     /// success.
     pub async fn refresh_tools(&self) -> Result<Vec<CachedMcpTool>, AppError> {
+        let registration = self.registration.lock().await;
         let tools = self
             .running
             .list_all_tools()
@@ -103,7 +144,28 @@ impl McpClient {
             .map_err(|e| AppError::Tool(format!("MCP tools/list failed: {e}")))?;
         let converted: Vec<CachedMcpTool> = tools.into_iter().map(cached_from_rmcp_tool).collect();
         *self.cached_tools.write().await = converted.clone();
+        if let Some(registration) = registration.as_ref() {
+            registration.publish(&converted).await;
+        }
         Ok(converted)
+    }
+
+    /// Attach the existing per-user tool registry after the connection is started.
+    /// Publishing the latest cache also covers notifications received during startup.
+    pub(super) async fn register_tools(
+        &self,
+        service: Weak<McpServerService>,
+        user_id: &str,
+        handle: &str,
+    ) {
+        let mut registration = self.registration.lock().await;
+        let target = ToolRegistration {
+            service,
+            user_id: user_id.into(),
+            handle: handle.into(),
+        };
+        target.publish(&self.cached_tools().await).await;
+        *registration = Some(target);
     }
 
     pub async fn cached_tools(&self) -> Vec<CachedMcpTool> {
@@ -130,10 +192,13 @@ impl McpClient {
     }
 
     pub async fn shutdown(self) -> Result<(), AppError> {
-        self.running
-            .cancel()
-            .await
-            .map_err(|e| AppError::Tool(format!("MCP shutdown failed: {e}")))?;
+        // Cancel pending tools/list before waiting for its registration lock.
+        // Once the client has stopped, no notification can restore removed tools.
+        let result = self.running.cancel().await;
+        if let Some(target) = self.registration.lock().await.take() {
+            target.publish(&[]).await;
+        }
+        result.map_err(|e| AppError::Tool(format!("MCP shutdown failed: {e}")))?;
         Ok(())
     }
 }
@@ -152,4 +217,16 @@ fn cached_from_rmcp_tool(tool: Tool) -> CachedMcpTool {
         description: tool.description.map(|c| c.into_owned()).unwrap_or_default(),
         input_schema,
     }
+}
+
+pub(super) fn tool_definitions(handle: &str, tools: &[CachedMcpTool]) -> Vec<ToolDefinition> {
+    tools
+        .iter()
+        .map(|tool| ToolDefinition {
+            id: format!("mcp__{handle}__{}", tool.name),
+            provider_id: format!("mcp:{handle}"),
+            description: tool.description.clone(),
+            parameters: tool.input_schema.clone(),
+        })
+        .collect()
 }

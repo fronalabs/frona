@@ -196,5 +196,5 @@ surrealdb = { version = "=3.2.4", features = ["kv-mem"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
-rmcp = { version = "3.4.1", features = ["client", "server", "macros", "transport-child-process", "transport-async-rw"] }
+rmcp = { version = "3.4.1", features = ["client", "server", "macros", "transport-child-process", "transport-async-rw", "transport-streamable-http-server"] }
 wiremock = "0.6"

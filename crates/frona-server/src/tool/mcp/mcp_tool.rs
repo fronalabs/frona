@@ -96,17 +96,18 @@ impl AgentTool for McpTool {
         &self,
         tool_name: &str,
         arguments: Value,
-        _ctx: &InferenceContext,
+        ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
         let server_id = self
             .manager
-            .server_for_tool(tool_name)
+            .server_for_tool(&ctx.user.id, tool_name)
             .await
             .ok_or_else(|| {
                 AppError::Tool(format!("no running MCP server exposes tool {tool_name}"))
             })?;
 
-        let bare_name = tool_name.split("__").nth(2).unwrap_or(tool_name);
+        let prefix = format!("{}__", self.owner_name);
+        let bare_name = tool_name.strip_prefix(&prefix).unwrap_or(tool_name);
 
         let result = self.manager.call(&server_id, bare_name, arguments).await?;
 

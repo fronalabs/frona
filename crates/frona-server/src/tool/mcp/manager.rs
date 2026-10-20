@@ -8,7 +8,7 @@ use crate::core::error::AppError;
 use crate::tool::ToolDefinition;
 use crate::tool::sandbox::{Sandbox, SandboxManager};
 
-use super::client::{McpClient, default_client_info};
+use super::client::{McpClient, default_client_info, tool_definitions};
 use super::models::{McpServer, McpServerStatus, TransportConfig};
 
 pub struct McpConnection {
@@ -16,7 +16,6 @@ pub struct McpConnection {
     pub handle: crate::core::Handle,
     pub user_id: String,
     pub client: McpClient,
-    pub tools: Vec<ToolDefinition>,
     pub child: Option<tokio::process::Child>,
     pub port: Option<u16>,
     pub restart_count: u32,
@@ -348,16 +347,8 @@ impl McpManager {
         log_path_override: Option<std::path::PathBuf>,
         token_guard: Option<EphemeralTokenGuard>,
     ) -> Result<Vec<ToolDefinition>, AppError> {
-        let cached = client.cached_tools().await;
-        let tools: Vec<ToolDefinition> = cached
-            .into_iter()
-            .map(|c| ToolDefinition {
-                id: format!("mcp__{}__{}", server.handle, c.name),
-                provider_id: format!("mcp:{}", server.handle),
-                description: c.description,
-                parameters: c.input_schema,
-            })
-            .collect();
+        self.stop(&server.id).await?;
+        let tools = tool_definitions(server.handle.as_str(), &client.cached_tools().await);
 
         let log_path = log_path_override.unwrap_or_else(|| {
             std::path::PathBuf::from(&server.workspace_dir)
@@ -370,7 +361,6 @@ impl McpManager {
             handle: server.handle.clone(),
             user_id: server.user_id.clone(),
             client,
-            tools: tools.clone(),
             child,
             port,
             restart_count: 0,
@@ -440,6 +430,17 @@ impl McpManager {
         let connection = connections
             .get(server_id)
             .ok_or_else(|| AppError::Tool(format!("MCP server {server_id} not running")))?;
+        if !connection
+            .client
+            .cached_tools()
+            .await
+            .iter()
+            .any(|tool| tool.name == tool_name)
+        {
+            return Err(AppError::Tool(format!(
+                "MCP server {server_id} no longer exposes tool {tool_name}"
+            )));
+        }
         connection.client.call_tool(tool_name, arguments).await
     }
 
@@ -450,14 +451,17 @@ impl McpManager {
         allowlist: &HashMap<String, HashSet<String>>,
     ) -> Vec<ToolDefinition> {
         let connections = self.connections.read().await;
-        let views: Vec<ConnectionView> = connections
-            .values()
-            .map(|c| ConnectionView {
-                user_id: &c.user_id,
-                handle: c.handle.as_str(),
-                tools: &c.tools,
-            })
-            .collect();
+        let mut views = Vec::new();
+        for connection in connections.values() {
+            views.push(ConnectionView {
+                user_id: &connection.user_id,
+                handle: connection.handle.as_str(),
+                tools: tool_definitions(
+                    connection.handle.as_str(),
+                    &connection.client.cached_tools().await,
+                ),
+            });
+        }
         filter_tools_for_user(&views, user_id, allowlist)
     }
 
@@ -469,10 +473,21 @@ impl McpManager {
             .map(|c| c.server_id.clone())
     }
 
-    pub async fn server_for_tool(&self, namespaced_name: &str) -> Option<String> {
+    pub async fn server_for_tool(&self, user_id: &str, namespaced_name: &str) -> Option<String> {
         let connections = self.connections.read().await;
-        for connection in connections.values() {
-            if connection.tools.iter().any(|t| t.id == namespaced_name) {
+        for connection in connections
+            .values()
+            .filter(|connection| connection.user_id == user_id)
+        {
+            let prefix = format!("mcp__{}__", connection.handle);
+            if let Some(name) = namespaced_name.strip_prefix(&prefix)
+                && connection
+                    .client
+                    .cached_tools()
+                    .await
+                    .iter()
+                    .any(|tool| tool.name == name)
+            {
                 return Some(connection.server_id.clone());
             }
         }
@@ -563,7 +578,7 @@ fn package_manager_env_vars(workspace_dir: &str) -> Vec<(String, String)> {
 struct ConnectionView<'a> {
     user_id: &'a str,
     handle: &'a str,
-    tools: &'a [ToolDefinition],
+    tools: Vec<ToolDefinition>,
 }
 
 fn filter_tools_for_user(
@@ -579,7 +594,7 @@ fn filter_tools_for_user(
         let Some(allowed_names) = allowlist.get(conn.handle) else {
             continue;
         };
-        for def in conn.tools {
+        for def in &conn.tools {
             let name = def.id.rsplit("__").next().unwrap_or(&def.id);
             if allowed_names.is_empty() || allowed_names.contains(name) {
                 out.push(def.clone());
@@ -625,12 +640,12 @@ mod tests {
             ConnectionView {
                 user_id: "user-1",
                 handle: "gmail",
-                tools: &gmail,
+                tools: gmail,
             },
             ConnectionView {
                 user_id: "user-2",
                 handle: "github",
-                tools: &github,
+                tools: github,
             },
         ];
 
@@ -650,7 +665,7 @@ mod tests {
         let conns = vec![ConnectionView {
             user_id: "user-1",
             handle: "gmail",
-            tools: &gmail,
+            tools: gmail,
         }];
 
         let mut allowlist = HashMap::new();
@@ -666,7 +681,7 @@ mod tests {
         let conns = vec![ConnectionView {
             user_id: "user-1",
             handle: "gmail",
-            tools: &gmail,
+            tools: gmail,
         }];
 
         let mut allowlist = HashMap::new();
@@ -689,7 +704,7 @@ mod tests {
         let conns = vec![ConnectionView {
             user_id: "user-1",
             handle: "gmail",
-            tools: &gmail,
+            tools: gmail,
         }];
 
         let allowlist: HashMap<String, HashSet<String>> = HashMap::new();
@@ -706,12 +721,12 @@ mod tests {
             ConnectionView {
                 user_id: "user-1",
                 handle: "gmail",
-                tools: &gmail,
+                tools: gmail,
             },
             ConnectionView {
                 user_id: "user-1",
                 handle: "github",
-                tools: &github,
+                tools: github,
             },
         ];
 

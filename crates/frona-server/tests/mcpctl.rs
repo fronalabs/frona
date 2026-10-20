@@ -229,7 +229,6 @@ impl Fixture {
                     handle: server.handle,
                     user_id: ctx.user.id.clone(),
                     client,
-                    tools: definitions.clone(),
                     child: None,
                     port: None,
                     restart_count: 0,

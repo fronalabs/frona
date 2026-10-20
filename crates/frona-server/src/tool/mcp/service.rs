@@ -555,7 +555,11 @@ impl McpServerService {
         self.repo.delete(server_id).await
     }
 
-    pub async fn start(&self, user_id: &str, server_id: &str) -> Result<StartResult, AppError> {
+    pub async fn start(
+        self: &Arc<Self>,
+        user_id: &str,
+        server_id: &str,
+    ) -> Result<StartResult, AppError> {
         let mut server = self.load_owned(user_id, server_id).await?;
         let mut resolved_env = self.resolve_env(&server).await?;
 
@@ -613,8 +617,12 @@ impl McpServerService {
             .collect();
         self.repo.update(&server).await?;
 
-        self.register_tools(user_id, server.handle.as_str(), tools.clone())
-            .await;
+        if let Some(connection) = self.manager.connections_mut().await.get(server_id) {
+            connection
+                .client
+                .register_tools(Arc::downgrade(self), user_id, server.handle.as_str())
+                .await;
+        }
 
         Ok(StartResult { tools })
     }
@@ -822,6 +830,7 @@ impl McpServerService {
     ) -> Result<Vec<frona_api_types::mcp::BridgeServerInfo>, AppError> {
         let servers = self.list_for_user(user_id).await?;
         let allowed = self.bridge_allowed_tools(user_id, agent_id).await?;
+        let definitions = self.tool_manager.definitions(user_id).await;
         let result = servers
             .into_iter()
             .filter(|server| server.status == McpServerStatus::Running)
@@ -831,13 +840,15 @@ impl McpServerService {
                     .is_none_or(|map| map.contains_key(server.handle.as_str()))
             })
             .map(|server| {
-                let tool_count = server
-                    .tool_cache
+                let prefix = format!("mcp__{}__", server.handle);
+                let tool_count = definitions
                     .iter()
                     .filter(|tool| {
-                        allowed.as_ref().is_none_or(|map| {
-                            map.get(server.handle.as_str())
-                                .is_some_and(|names| names.contains(&tool.name))
+                        tool.id.strip_prefix(&prefix).is_some_and(|name| {
+                            allowed.as_ref().is_none_or(|map| {
+                                map.get(server.handle.as_str())
+                                    .is_some_and(|names| names.contains(name))
+                            })
                         })
                     })
                     .count();
@@ -872,18 +883,22 @@ impl McpServerService {
             None => None,
         };
 
-        let tools = server
-            .tool_cache
+        let prefix = format!("mcp__{handle}__");
+        let tools = self
+            .tool_manager
+            .definitions(user_id)
+            .await
             .into_iter()
-            .filter(|t| {
+            .filter_map(|tool| {
+                let name = tool.id.strip_prefix(&prefix)?;
                 allowed_tools
                     .as_ref()
-                    .is_none_or(|allowed| allowed.contains(&t.name))
-            })
-            .map(|t| frona_api_types::mcp::BridgeToolInfo {
-                name: t.name,
-                description: t.description,
-                input_schema: t.input_schema,
+                    .is_none_or(|allowed| allowed.contains(name))
+                    .then(|| frona_api_types::mcp::BridgeToolInfo {
+                        name: name.to_string(),
+                        description: tool.description,
+                        input_schema: tool.parameters,
+                    })
             })
             .collect();
 

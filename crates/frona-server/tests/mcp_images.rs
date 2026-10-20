@@ -115,7 +115,6 @@ async fn fixture(result: CallToolResult) -> McpFixture {
             handle: Handle::try_new("images").unwrap(),
             user_id: ctx.user.id.clone(),
             client,
-            tools: definitions.clone(),
             child: None,
             port: None,
             restart_count: 0,

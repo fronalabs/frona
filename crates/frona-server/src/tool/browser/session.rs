@@ -67,20 +67,23 @@ impl BrowserSessionManager {
         lock
     }
 
-    /// Inserts `/` before the query string — browserless v2 returns HTTP 400 without it.
     fn ws_url_for_profile(
         config: &BrowserConfig,
         user_handle: &crate::core::Handle,
         provider: &str,
-    ) -> String {
-        let user_data_dir = config.profile_path(user_handle, provider);
-        let base = config.ws_url.trim_end_matches('/');
-        format!(
-            "{}/?--user-data-dir={}&timeout={}",
-            base,
-            user_data_dir.display(),
-            BROWSERLESS_SESSION_TIMEOUT.as_millis()
-        )
+    ) -> Result<url::Url, AppError> {
+        config
+            .websocket_url(&[
+                (
+                    "--user-data-dir",
+                    &config.profile_path(user_handle, provider).to_string_lossy(),
+                ),
+                (
+                    "timeout",
+                    &BROWSERLESS_SESSION_TIMEOUT.as_millis().to_string(),
+                ),
+            ])
+            .map_err(|_| AppError::Browser("Invalid Browserless URL".into()))
     }
 
     async fn create_connection(
@@ -95,14 +98,14 @@ impl BrowserSessionManager {
         self.kill_browserless_sessions_for_profile(user_handle, provider)
             .await;
 
-        let ws_url = Self::ws_url_for_profile(config, user_handle, provider);
-        tracing::debug!(ws_url = %ws_url, browserless_ws_url = %config.ws_url, "Connecting to browser");
+        let ws_url = Self::ws_url_for_profile(config, user_handle, provider)?;
+        tracing::debug!("Connecting to browser");
 
         let timeout = Duration::from_millis(config.connection_timeout_ms);
         let lifetime = BROWSERLESS_SESSION_TIMEOUT.saturating_sub(SELF_EVICT_MARGIN);
         let mut retries = CONNECT_RETRY_DELAYS.into_iter();
         loop {
-            match BrowserConnection::connect(&ws_url, timeout, lifetime).await {
+            match BrowserConnection::connect(ws_url.as_str(), timeout, lifetime).await {
                 Ok(connection) => return Ok(connection),
                 Err(error) => {
                     if error.is_retryable_connect_error()
@@ -157,11 +160,16 @@ impl BrowserSessionManager {
         let Some(config) = self.config.as_ref() else {
             return vec![];
         };
-        let http_base = config.http_base_url();
         let client = Self::admin_http_client();
 
-        let sessions_url = format!("{http_base}/sessions?token={}", config.api_token());
-        let req = match hyper::Request::get(&sessions_url).body(Body::empty()) {
+        let sessions_url = match config.http_url(&["sessions"], Some(config.api_token()), &[]) {
+            Ok(url) => url,
+            Err(_) => {
+                tracing::warn!("Invalid Browserless sessions URL");
+                return vec![];
+            }
+        };
+        let req = match hyper::Request::get(sessions_url.as_str()).body(Body::empty()) {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("Failed to build sessions list request: {e}");
@@ -187,8 +195,8 @@ impl BrowserSessionManager {
 
         match serde_json::from_slice(&body) {
             Ok(s) => s,
-            Err(e) => {
-                tracing::warn!("Failed to parse sessions response: {e}");
+            Err(_) => {
+                tracing::warn!("Failed to parse Browserless sessions response");
                 vec![]
             }
         }
@@ -201,12 +209,17 @@ impl BrowserSessionManager {
         let Some(config) = self.config.as_ref() else {
             return;
         };
-        let http_base = config.http_base_url();
         let client = Self::admin_http_client();
 
         for id in browser_ids {
-            let kill_url = format!("{http_base}/kill/{id}?token={}", config.api_token());
-            let req = match hyper::Request::get(&kill_url).body(Body::empty()) {
+            let kill_url = match config.http_url(&["kill", id], Some(config.api_token()), &[]) {
+                Ok(url) => url,
+                Err(_) => {
+                    tracing::warn!("Invalid Browserless kill URL");
+                    continue;
+                }
+            };
+            let req = match hyper::Request::get(kill_url.as_str()).body(Body::empty()) {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::warn!("Failed to build kill request: {e}");
@@ -333,10 +346,11 @@ mod tests {
             &cfg("ws://browserless:3333"),
             &crate::handle!("alice"),
             "openai",
-        );
+        )
+        .unwrap();
         assert_eq!(
-            url,
-            "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai&timeout=86400000"
+            url.as_str(),
+            "ws://browserless:3333/?--user-data-dir=%2Fprofiles%2Falice%2Fopenai&timeout=86400000"
         );
     }
 
@@ -346,10 +360,11 @@ mod tests {
             &cfg("ws://browserless:3333/"),
             &crate::handle!("alice"),
             "openai",
-        );
+        )
+        .unwrap();
         assert_eq!(
-            url,
-            "ws://browserless:3333/?--user-data-dir=/profiles/alice/openai&timeout=86400000"
+            url.as_str(),
+            "ws://browserless:3333/?--user-data-dir=%2Fprofiles%2Falice%2Fopenai&timeout=86400000"
         );
     }
 
@@ -370,7 +385,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires FRONA_TEST_BROWSER_WS_URL"]
     async fn real_browser_profiles_share_connections_and_reconnect_independently() {
-        let config = cfg(&std::env::var("FRONA_TEST_BROWSER_WS_URL").unwrap());
+        let mut config = cfg(&std::env::var("FRONA_TEST_BROWSER_WS_URL").unwrap());
+        config.api_token = std::env::var("FRONA_TEST_BROWSER_API_TOKEN").ok();
         let manager = BrowserSessionManager::new(Some(config));
         let user =
             crate::core::Handle::try_new(format!("session-test-{}", std::process::id())).unwrap();

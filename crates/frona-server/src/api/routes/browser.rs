@@ -43,28 +43,46 @@ async fn debugger_proxy(
             "Browser is not configured".into(),
         ))
     })?;
-    let browserless_base = browser_config.http_base_url();
-
-    let profile_path = browser_config.profile_path(&auth.handle, &credential.provider);
-    let target_url = format!(
-        "{}/debugger?--user-data-dir={}",
-        browserless_base,
-        profile_path.display()
-    );
+    // Request the directory directly to avoid redirects that could expose query tokens.
+    let target_url = browser_config
+        .http_url(
+            &["debugger", ""],
+            browser_config.api_token.as_deref(),
+            &[(
+                "--user-data-dir",
+                &browser_config
+                    .profile_path(&auth.handle, &credential.provider)
+                    .to_string_lossy(),
+            )],
+        )
+        .map_err(|_| {
+            crate::core::error::AppError::Browser("Invalid Browserless debugger URL".into())
+        })?;
 
     let client = Client::builder(TokioExecutor::new()).build_http();
 
-    let req = Request::get(&target_url).body(Body::empty()).map_err(|e| {
-        ApiError::from(crate::core::error::AppError::Browser(format!(
-            "Failed to build proxy request: {e}"
-        )))
-    })?;
+    let req = Request::get(target_url.as_str())
+        .body(Body::empty())
+        .map_err(|e| {
+            ApiError::from(crate::core::error::AppError::Browser(format!(
+                "Failed to build proxy request: {e}"
+            )))
+        })?;
 
     let resp = client.request(req).await.map_err(|e| {
         ApiError::from(crate::core::error::AppError::Browser(format!(
             "Failed to proxy to browserless: {e}"
         )))
     })?;
+
+    if !resp.status().is_success() {
+        // Upstream error bodies and redirect headers can echo the authenticated URL.
+        return Err(crate::core::error::AppError::Browser(format!(
+            "Browserless debugger returned HTTP {}",
+            resp.status()
+        ))
+        .into());
+    }
 
     let (parts, body) = resp.into_parts();
     let bytes = body.collect().await.map_err(|e| {

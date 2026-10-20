@@ -257,7 +257,7 @@ impl Default for DatabaseConfig {
 pub struct BrowserConfig {
     #[schemars(description = "WebSocket URL for browserless (e.g. ws://browserless:3333).")]
     pub ws_url: String,
-    #[schemars(description = "Authentication token for the browserless HTTP API.")]
+    #[schemars(description = "Authentication token for Browserless sessions and HTTP endpoints.")]
     #[serde(default)]
     pub api_token: Option<String>,
     #[schemars(description = "Path to store browser profiles.")]
@@ -278,10 +278,59 @@ impl Default for BrowserConfig {
 }
 
 impl BrowserConfig {
-    pub fn http_base_url(&self) -> String {
-        self.ws_url
-            .replace("ws://", "http://")
-            .replace("wss://", "https://")
+    pub fn websocket_url(&self, query: &[(&str, &str)]) -> Result<url::Url, url::ParseError> {
+        self.url_with_query(self.api_token.as_deref(), query)
+    }
+
+    pub fn http_url(
+        &self,
+        path: &[&str],
+        token: Option<&str>,
+        query: &[(&str, &str)],
+    ) -> Result<url::Url, url::ParseError> {
+        let mut url = self.url_with_query(token, query)?;
+        let scheme = if url.scheme() == "wss" {
+            "https"
+        } else {
+            "http"
+        };
+        url.set_scheme(scheme)
+            .map_err(|()| url::ParseError::RelativeUrlWithCannotBeABaseBase)?;
+        url.path_segments_mut()
+            .map_err(|()| url::ParseError::RelativeUrlWithCannotBeABaseBase)?
+            .pop_if_empty()
+            .extend(path);
+        Ok(url)
+    }
+
+    fn url_with_query(
+        &self,
+        token: Option<&str>,
+        query: &[(&str, &str)],
+    ) -> Result<url::Url, url::ParseError> {
+        let mut url = url::Url::parse(&self.ws_url)?;
+        let mut replacements = query.to_vec();
+        if let Some(token) = token {
+            // Explicit configuration takes precedence over any other token.
+            replacements.retain(|(key, _)| *key != "token");
+            replacements.insert(0, ("token", token));
+        }
+        if !replacements.is_empty() {
+            let retained: Vec<_> = url
+                .query_pairs()
+                .filter(|(key, _)| {
+                    !replacements
+                        .iter()
+                        .any(|(replacement, _)| key.as_ref() == *replacement)
+                })
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect();
+            url.query_pairs_mut()
+                .clear()
+                .extend_pairs(retained)
+                .extend_pairs(replacements);
+        }
+        Ok(url)
     }
 
     /// Browserless v2 requires a `token` query param on management endpoints

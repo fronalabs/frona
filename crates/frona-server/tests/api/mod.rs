@@ -4,6 +4,7 @@ mod agents;
 mod app_supervisor;
 mod apps;
 mod auth;
+mod browser;
 mod channels;
 mod chats;
 mod commands;
@@ -209,6 +210,7 @@ fn build_app(state: AppState) -> Router {
         .merge(routes::admin::router())
         .merge(routes::activity::router())
         .merge(routes::auth::router())
+        .merge(routes::browser::router())
         .merge(routes::agents::router())
         .merge(routes::chats::router())
         .merge(routes::commands::router())

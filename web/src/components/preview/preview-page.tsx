@@ -4,9 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowDownTrayIcon } from "@heroicons/react/24/outline";
 import { fileResponseFilename } from "@/lib/file-transfer";
+import { detectContentType } from "@/lib/file-manager-utils";
 import { apiFetch, getAccessToken } from "@/lib/api-client";
 import { FileDownloadButton } from "@/components/preview/file-download-button";
-import { FilePreviewContent } from "@/components/preview/file-preview-content";
+import { FilePreviewContent, canPreviewFile } from "@/components/preview/file-preview-content";
 
 /** Short form (`/s/{id}`) honours the `Share::File.public` flag — public
  *  shares mint a presigned URL so logged-out viewers can see the file.
@@ -18,7 +19,7 @@ export type PreviewSource =
 
 type FetchState =
   | { status: "loading" }
-  | { status: "ok"; content: string; filename: string; contentType: string; rawUrl: string }
+  | { status: "ok"; content: string | null; filename: string; contentType: string; rawUrl: string }
   | { status: "not_found" }
   | { status: "no_access" }
   | { status: "error" };
@@ -69,11 +70,11 @@ export function PreviewPage({ source }: { source: PreviewSource }) {
       return;
     }
 
-    const content = await response.text();
-    const contentType = response.headers.get("Content-Type")?.split(";")[0].trim() ?? "text/plain";
     // `response.url` is the final URL after redirects (presigned for public
     // shares, canonical otherwise) — usable as the filename fallback.
     const filename = fileResponseFilename(response, path);
+    const contentType = detectContentType(filename, response.headers.get("Content-Type"));
+    const content = canPreviewFile(contentType, filename) ? await response.text() : null;
     // Anchor `href` is a real navigation, so it needs the backend host —
     // `apiFetch` adds that for us but the anchor bypasses it.
     const apiUrl = process.env.NEXT_PUBLIC_FRONA_SERVER_BACKEND_URL || "";
@@ -153,11 +154,13 @@ export function PreviewPage({ source }: { source: PreviewSource }) {
       </header>
       <main className="flex-1 overflow-auto p-4 sm:p-6">
         <div className="mx-auto max-w-3xl">
-          <FilePreviewContent
+          {state.content === null ? (
+            <p className="text-sm text-text-secondary">Preview unavailable. Download this file to view it.</p>
+          ) : <FilePreviewContent
             content={state.content}
             filename={state.filename}
             contentType={state.contentType}
-          />
+          />}
         </div>
       </main>
     </div>

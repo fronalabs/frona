@@ -29,7 +29,7 @@ export function CodeBlock({
         if (!cancelled) setHtml(result);
       })
       .catch(() => {
-        if (!cancelled) setHtml(`<pre><code>${code}</code></pre>`);
+        if (!cancelled) setHtml(null);
       });
     return () => { cancelled = true; };
   }, [code, language]);

@@ -51,3 +51,37 @@ describe("standalone preview", () => {
     expect(screen.getByTitle("dashboard.html")).toBeInTheDocument();
   });
 });
+
+it.each(["application/octet-stream", "application/pdf"])("keeps binary %s as Download without decoding its body as text", async (mime) => {
+  const response = new Response(new Uint8Array([0, 255, 0, 1]), {
+    headers: { "Content-Type": mime, "Content-Disposition": 'inline; filename="disguised.html"' },
+  });
+  const text = vi.spyOn(response, "text");
+  fetchMock.mockResolvedValueOnce(response).mockResolvedValue(new Response(new Uint8Array([0, 255, 0, 1])));
+  // Use an unknown suffix for the generic case: an .html octet-stream is deliberately previewable.
+  if (mime === "application/octet-stream") response.headers.set("Content-Disposition", 'inline; filename="unknown.bin"');
+  vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: vi.fn(() => "blob:download"), revokeObjectURL: vi.fn() }));
+  const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  render(<PreviewPage source={{ kind: "long", owner: "user", handle: "alice", path: "file" }} />);
+  expect(await screen.findByText("Preview unavailable. Download this file to view it.")).toBeInTheDocument();
+  expect(text).not.toHaveBeenCalled();
+  expect(document.querySelector("iframe, img, video, audio")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: /Download/ }));
+  await waitFor(() => expect(click).toHaveBeenCalledOnce());
+  expect(fetchMock).toHaveBeenLastCalledWith("/api/files/user/alice/file?download=true", expect.objectContaining({ headers: { Authorization: "Bearer private-token" } }));
+});
+
+it("uses the filename when the response has no MIME header", async () => {
+  const response = new Response("# Missing MIME\n\nNotes", { headers: { "Content-Disposition": 'inline; filename="NOTES.MD"' } });
+  response.headers.delete("Content-Type");
+  fetchMock.mockResolvedValueOnce(response);
+  render(<PreviewPage source={{ kind: "short", id: "missing-mime" }} />);
+  expect(await screen.findByRole("heading", { name: "Missing MIME" })).toBeInTheDocument();
+});
+
+it("honors explicit plain text for an HTML filename in the standalone page", async () => {
+  fetchMock.mockResolvedValueOnce(new Response("<script>alert(1)</script>", { headers: { "Content-Type": "text/plain", "Content-Disposition": 'inline; filename="dashboard.html"' } }));
+  render(<PreviewPage source={{ kind: "short", id: "plain-html" }} />);
+  expect(await screen.findByText("<script>alert(1)</script>")).toBeInTheDocument();
+  expect(document.querySelector("iframe, script")).toBeNull();
+});

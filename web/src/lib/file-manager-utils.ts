@@ -93,14 +93,53 @@ export function getFileOwnerPath(
   return { owner: `user:${userId}`, path: userSubpath(fileId) };
 }
 
+function normalizedBasename(filename: string): string {
+  return filename.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+}
+
+const EXT_TO_LANGUAGE: Record<string, string> = {
+  js: "javascript", jsx: "jsx", ts: "typescript", tsx: "tsx",
+  py: "python", rb: "ruby", rs: "rust", go: "go", java: "java",
+  c: "c", cpp: "cpp", h: "c", hpp: "cpp", cs: "csharp",
+  swift: "swift", kt: "kotlin", scala: "scala", php: "php",
+  sh: "bash", bash: "bash", zsh: "bash", fish: "fish",
+  html: "html", htm: "html", css: "css", scss: "scss", less: "less",
+  json: "json", yaml: "yaml", yml: "yaml", toml: "toml", xml: "xml",
+  sql: "sql", graphql: "graphql", gql: "graphql",
+  md: "markdown", mdx: "mdx", tex: "latex",
+  dockerfile: "dockerfile", makefile: "makefile",
+  tf: "hcl", hcl: "hcl", nix: "nix",
+  lua: "lua", r: "r", dart: "dart", zig: "zig", v: "v",
+  svelte: "svelte", vue: "vue", astro: "astro",
+};
+
+export function languageFromFilename(filename: string): string | null {
+  const basename = normalizedBasename(filename);
+  if (basename === "dockerfile" || basename === "containerfile") return "dockerfile";
+  if (basename === "makefile" || basename === "gnumakefile") return "makefile";
+  const ext = basename.includes(".") ? basename.split(".").pop() : undefined;
+  if (!ext) return null;
+  return Object.hasOwn(EXT_TO_LANGUAGE, ext) ? EXT_TO_LANGUAGE[ext] : null;
+}
+
 const EXTENSION_MIME_MAP: Record<string, string> = {
   txt: "text/plain",
   md: "text/markdown",
+  mdx: "text/markdown",
+  markdown: "text/markdown",
+  log: "text/plain",
+  conf: "text/plain",
+  cfg: "text/plain",
+  ini: "text/plain",
+  env: "text/plain",
+  properties: "text/plain",
   html: "text/html",
   htm: "text/html",
   css: "text/css",
-  js: "application/javascript",
-  ts: "application/typescript",
+  js: "text/javascript",
+  mjs: "text/javascript",
+  ts: "text/typescript",
+  tsx: "text/typescript",
   json: "application/json",
   xml: "application/xml",
   csv: "text/csv",
@@ -115,6 +154,17 @@ const EXTENSION_MIME_MAP: Record<string, string> = {
   wav: "audio/wav",
   mp4: "video/mp4",
   webm: "video/webm",
+  ogg: "audio/ogg",
+  oga: "audio/ogg",
+  opus: "audio/ogg",
+  flac: "audio/flac",
+  aac: "audio/aac",
+  m4a: "audio/mp4",
+  m4v: "video/mp4",
+  ogv: "video/ogg",
+  mov: "video/quicktime",
+  mkv: "video/matroska",
+  avi: "video/x-msvideo",
   zip: "application/zip",
   tar: "application/x-tar",
   gz: "application/gzip",
@@ -124,9 +174,9 @@ const EXTENSION_MIME_MAP: Record<string, string> = {
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ppt: "application/vnd.ms-powerpoint",
   pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  yaml: "application/x-yaml",
-  yml: "application/x-yaml",
-  toml: "application/toml",
+  yaml: "text/yaml",
+  yml: "text/yaml",
+  toml: "text/toml",
   rs: "text/x-rust",
   py: "text/x-python",
   rb: "text/x-ruby",
@@ -135,8 +185,19 @@ const EXTENSION_MIME_MAP: Record<string, string> = {
   sh: "text/x-shellscript",
 };
 
-export function detectContentType(filename: string): string {
-  const ext = filename.split(".").pop()?.toLowerCase();
-  if (ext && ext in EXTENSION_MIME_MAP) return EXTENSION_MIME_MAP[ext];
-  return "application/octet-stream";
+const TEXT_CONFIG_NAMES = new Set([
+  ".gitignore", ".gitattributes", ".gitmodules", ".dockerignore", ".editorconfig", ".npmrc", ".yarnrc",
+]);
+
+export function detectContentType(filename: string, contentType?: string | null): string {
+  const mime = contentType?.split(";")[0].trim().toLowerCase();
+  if (mime && mime !== "application/octet-stream") return mime;
+
+  const basename = normalizedBasename(filename);
+  if (basename === ".env" || basename.startsWith(".env.") || TEXT_CONFIG_NAMES.has(basename)) return "text/plain";
+  if (basename === "dockerfile" || basename === "containerfile") return "text/x-dockerfile";
+  if (basename === "makefile" || basename === "gnumakefile") return "text/x-makefile";
+  const ext = basename.includes(".") ? basename.split(".").pop() : undefined;
+  if (ext && Object.hasOwn(EXTENSION_MIME_MAP, ext)) return EXTENSION_MIME_MAP[ext];
+  return languageFromFilename(filename) ? "text/plain" : "application/octet-stream";
 }

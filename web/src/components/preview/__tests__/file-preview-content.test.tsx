@@ -35,3 +35,22 @@ describe("file preview content", () => {
     expect(document.querySelector("script, iframe")).toBeNull();
   });
 });
+
+it.each(["dashboard.html", "dashboard.HTM", "notes.md", "path/<img onerror=alert(1)>.html"])("keeps explicit plain text inert despite filename %s", (filename) => {
+  const content = '# Not a heading\n<script>alert(1)</script><img src=x onerror=alert(1)>';
+  render(<FilePreviewContent content={content} filename={filename} contentType="Text/Plain; charset=utf-8" />);
+  expect(screen.getByText(content, { normalizer: (text) => text })).toBeInTheDocument();
+  expect(document.querySelector("iframe, script, img, h1")).toBeNull();
+});
+
+it.each(["nested/README.MD", "C:\\project\\GUIDE.MDX"])("renders generic Markdown fallback %s without executing embedded HTML", (filename) => {
+  render(<FilePreviewContent content={'# Guide\n<script>alert(1)</script>'} filename={filename} contentType="application/octet-stream" />);
+  expect(screen.getByRole("heading", { name: "Guide" })).toBeInTheDocument();
+  expect(document.querySelector("script, iframe")).toBeNull();
+});
+
+it.each(["nested/BUILD.LOG", "C:\\app\\.ENV.LOCAL", "nested/Containerfile", "nested/Makefile"])("renders text fallback %s inertly", (filename) => {
+  render(<FilePreviewContent content="<script>alert(1)</script>" filename={filename} contentType="application/octet-stream" />);
+  expect(screen.getByText("<script>alert(1)</script>")).toBeInTheDocument();
+  expect(document.querySelector("script, iframe")).toBeNull();
+});

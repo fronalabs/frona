@@ -34,6 +34,10 @@ pub struct ServerConfig {
     #[schemars(description = "Maximum request body size in bytes.")]
     pub max_body_size_bytes: usize,
     #[schemars(
+        description = "Maximum uploaded file size in bytes (default 100 MiB). The file upload route allows an additional 1 MiB for multipart metadata instead of the general request body limit."
+    )]
+    pub max_upload_file_size_bytes: usize,
+    #[schemars(
         description = "Graceful shutdown timeout in seconds. Server force-exits after this duration."
     )]
     pub shutdown_timeout_secs: u64,
@@ -48,6 +52,10 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
+    pub fn max_upload_request_size_bytes(&self) -> usize {
+        self.max_upload_file_size_bytes.saturating_add(1024 * 1024)
+    }
+
     pub fn public_base_url(&self) -> String {
         self.backend_url
             .as_deref()
@@ -94,6 +102,7 @@ impl Default for ServerConfig {
             frontend_url: None,
             external_url: None,
             max_body_size_bytes: 104_857_600,
+            max_upload_file_size_bytes: 104_857_600,
             shutdown_timeout_secs: 60,
             sse_pending_events_secs: 60,
             timezone: String::new(),

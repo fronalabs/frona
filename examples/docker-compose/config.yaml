@@ -14,6 +14,7 @@
 #   sandbox_max_total_memory_pct: 90.0
 #   sandbox_timeout_secs: 0                  # 0 = no timeout
 #   max_body_size_bytes: 104857600           # 100 MB
+#   max_upload_file_size_bytes: 104857600    # 100 MiB per file; upload requests allow 1 MiB extra for multipart data
 #   shutdown_timeout_secs: 60
 #   base_url: "https://your-domain.com"      # public URL (optional)
 #   backend_url: "https://api.your-domain.com"  # override API URL (optional)

@@ -37,12 +37,34 @@ fn defaults_are_sensible() {
     assert!(config.server.cors_origins.is_none());
     assert!(config.server.base_url.is_none());
     assert_eq!(config.server.max_body_size_bytes, 104_857_600);
+    assert_eq!(config.server.max_upload_file_size_bytes, 104_857_600);
+    assert_eq!(config.server.max_upload_request_size_bytes(), 105_906_176);
     assert!(config.search.provider.is_none());
     assert!(config.search.searxng_base_url.is_none());
     assert_eq!(config.inference.max_tool_turns, 200);
     assert_eq!(config.inference.default_max_tokens, 8192);
     assert_eq!(config.inference.compaction_trigger_pct, 80);
     assert_eq!(config.inference.history_truncation_pct, 90);
+}
+
+#[test]
+fn upload_size_config_defaults_overrides_and_saturates() {
+    let default: Config = serde_json::from_value(serde_json::json!({"server": {}})).unwrap();
+    assert_eq!(default.server.max_upload_file_size_bytes, 100 * 1024 * 1024);
+    let configured: Config = serde_json::from_value(serde_json::json!({
+        "server": {"max_upload_file_size_bytes": 12345}
+    }))
+    .unwrap();
+    assert_eq!(configured.server.max_upload_file_size_bytes, 12345);
+    assert_eq!(
+        configured.server.max_upload_request_size_bytes(),
+        12345 + 1024 * 1024
+    );
+    let maximum = ServerConfig {
+        max_upload_file_size_bytes: usize::MAX,
+        ..Default::default()
+    };
+    assert_eq!(maximum.max_upload_request_size_bytes(), usize::MAX);
 }
 
 #[test]

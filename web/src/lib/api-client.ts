@@ -269,7 +269,9 @@ export async function uploadFile(file: File, relativePath?: string): Promise<Att
   });
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: res.statusText }));
+    const body = await res.json().catch(() => ({
+      error: res.status === 413 ? "Upload exceeds the server's size limit" : res.statusText,
+    }));
     throw new ApiError(res.status, body.error || "Upload failed");
   }
 

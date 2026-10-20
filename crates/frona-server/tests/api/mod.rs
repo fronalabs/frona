@@ -217,7 +217,7 @@ fn build_app(state: AppState) -> Router {
         .merge(routes::channels::router())
         .merge(routes::spaces::router())
         .merge(routes::tasks::router())
-        .merge(routes::files::router())
+        .merge(routes::files::router(&state.config.server))
         .merge(routes::share::router())
         .merge(routes::contacts::router())
         .merge(routes::navigation::router())

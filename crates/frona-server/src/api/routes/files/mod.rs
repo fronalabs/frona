@@ -5,7 +5,7 @@ mod upload;
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{FromRequestParts, Query};
+use axum::extract::{DefaultBodyLimit, FromRequestParts, Query};
 use axum::http::header;
 use axum::http::request::Parts;
 use axum::response::Response;
@@ -18,12 +18,11 @@ use crate::storage::{VirtualPath, detect_content_type};
 
 use super::super::error::ApiError;
 use super::super::middleware::auth::AuthUser;
+use crate::core::config::ServerConfig;
 use crate::core::error::{AppError, AuthErrorCode};
 use crate::core::state::AppState;
 
 use models::{FileAuth, PresignQuery};
-
-const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10MB
 
 /// Presentation only: both modes require the same file authorization.
 #[derive(Default, Deserialize)]
@@ -32,9 +31,14 @@ pub(super) struct FileResponseQuery {
     pub(super) download: bool,
 }
 
-pub fn router() -> Router<AppState> {
+pub fn router(server: &ServerConfig) -> Router<AppState> {
     Router::new()
-        .route("/api/files", post(upload::upload_file))
+        .route(
+            "/api/files",
+            post(upload::upload_file).layer(DefaultBodyLimit::max(
+                server.max_upload_request_size_bytes(),
+            )),
+        )
         .route("/api/files/presign", post(upload::presign_file))
         .route(
             "/api/files/user/{handle}/{*filename}",

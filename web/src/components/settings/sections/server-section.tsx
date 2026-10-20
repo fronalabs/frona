@@ -86,9 +86,18 @@ export function ServerSection({ server, onChange }: ServerSectionProps) {
 
       <NumberInput
         label="Max Body Size (MB)"
-        description="Maximum request body size in megabytes"
+        description="Maximum request body size; file uploads use the separate limit below"
         value={Math.round(server.max_body_size_bytes / 1048576)}
         onChange={(mb) => onChange({ ...server, max_body_size_bytes: mb * 1048576 })}
+        min={1}
+        placeholder="100"
+      />
+
+      <NumberInput
+        label="Max Upload File Size (MiB)"
+        description="Maximum size of an uploaded file. Takes effect after restart."
+        value={server.max_upload_file_size_bytes / 1048576}
+        onChange={(mib) => onChange({ ...server, max_upload_file_size_bytes: mib * 1048576 })}
         min={1}
         placeholder="100"
       />

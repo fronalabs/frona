@@ -6,6 +6,143 @@ use tower::ServiceExt;
 use super::super::*;
 
 #[tokio::test]
+async fn upload_file_size_cap_allows_multipart_overhead_and_rejects_excess() {
+    let (mut state, tmp) = test_app_state().await;
+    let (token, _) = register_user(&state, "size-cap", "sizecap@example.com", "password123").await;
+    for file_cap in [12345, 10 * 1024 * 1024, 12 * 1024 * 1024] {
+        std::sync::Arc::make_mut(&mut state.config)
+            .server
+            .max_upload_file_size_bytes = file_cap;
+        for size in [file_cap - 1, file_cap, file_cap + 1] {
+            let filename = format!("file-{size}.bin");
+            let request = multipart_upload_with_path(
+                &token,
+                &filename,
+                &vec![b'x'; size],
+                &format!("nested/{filename}"),
+            );
+            // Production applies a configurable outer limit; the upload route must override it.
+            let response = build_app(state.clone())
+                .layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024))
+                .oneshot(request)
+                .await
+                .unwrap();
+            let path = tmp
+                .path()
+                .join("users/size-cap/files/nested")
+                .join(&filename);
+            if size <= file_cap {
+                assert_eq!(response.status(), StatusCode::OK);
+                assert_eq!(body_json(response).await["size_bytes"], size);
+                assert_eq!(fs::read(path).await.unwrap(), vec![b'x'; size]);
+            } else {
+                assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+                assert_eq!(
+                    body_json(response).await["error"],
+                    format!("File too large (max {file_cap} bytes)")
+                );
+                assert!(!path.exists());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn upload_request_limit_bounds_multipart_metadata() {
+    const REQUEST_CAP: usize = 12345 + 1024 * 1024;
+    let (mut state, tmp) = test_app_state().await;
+    std::sync::Arc::make_mut(&mut state.config)
+        .server
+        .max_upload_file_size_bytes = 12345;
+    let (token, _) = register_user(&state, "body-cap", "bodycap@example.com", "password123").await;
+    for size in [REQUEST_CAP, REQUEST_CAP + 1] {
+        let filename = format!("file-{size}.txt");
+        let boundary = "request-limit";
+        let prefix = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n\r\nhello\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"metadata\"\r\n\r\n"
+        );
+        let suffix = format!("\r\n--{boundary}--\r\n");
+        let mut body = prefix.into_bytes();
+        body.resize(size - suffix.len(), b'x');
+        body.extend_from_slice(suffix.as_bytes());
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/files")
+            .header("authorization", format!("Bearer {token}"))
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .unwrap();
+        let response = build_app(state.clone()).oneshot(request).await.unwrap();
+        let path = tmp.path().join("users/body-cap/files").join(&filename);
+        if size == REQUEST_CAP {
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(fs::read(path).await.unwrap(), b"hello");
+        } else {
+            assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+            assert!(
+                body_json(response).await["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&format!("{REQUEST_CAP} bytes"))
+            );
+            assert!(!path.exists());
+        }
+    }
+}
+
+#[tokio::test]
+async fn upload_oversized_stream_is_rejected_without_draining_the_request() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let (mut state, _tmp) = test_app_state().await;
+    std::sync::Arc::make_mut(&mut state.config)
+        .server
+        .max_upload_file_size_bytes = 10 * 1024 * 1024;
+    let (token, _) =
+        register_user(&state, "stream-cap", "streamcap@example.com", "password123").await;
+    let consumed = Arc::new(AtomicUsize::new(0));
+    let counter = consumed.clone();
+    let stream = futures::stream::unfold(0, move |index| {
+        let counter = counter.clone();
+        async move {
+            if index > 64 {
+                return None;
+            }
+            tokio::task::yield_now().await;
+            let chunk = if index == 0 {
+                b"--stream-limit\r\nContent-Disposition: form-data; name=\"metadata\"\r\n\r\n"
+                    .to_vec()
+            } else {
+                vec![b'x'; 1024 * 1024]
+            };
+            counter.fetch_add(chunk.len(), Ordering::SeqCst);
+            Some((Ok::<_, std::io::Error>(chunk), index + 1))
+        }
+    });
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/files")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "multipart/form-data; boundary=stream-limit")
+        .body(Body::from_stream(stream))
+        .unwrap();
+    let response = build_app(state).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(
+        body_json(response).await["error"]
+            .as_str()
+            .unwrap()
+            .contains("11534336 bytes")
+    );
+    assert!(consumed.load(Ordering::SeqCst) <= 12 * 1024 * 1024);
+}
+
+#[tokio::test]
 async fn upload_file_returns_attachment() {
     let (state, _tmp) = test_app_state().await;
     let (token, _) = register_user(&state, "uploader", "uploader@example.com", "password123").await;

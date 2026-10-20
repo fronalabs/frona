@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use axum::Json;
+use axum::extract::multipart::MultipartError;
 use axum::extract::{Multipart, State};
+use axum::http::StatusCode;
 use tokio::fs;
 
 use crate::storage::{
@@ -14,45 +16,49 @@ use super::models::PresignRequest;
 use crate::core::error::AppError;
 use crate::core::state::AppState;
 
-use super::MAX_FILE_SIZE;
+fn multipart_error(error: MultipartError, max_request_size: usize) -> ApiError {
+    if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        ApiError(AppError::Http {
+            status: StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
+            message: format!(
+                "Upload request too large (max {max_request_size} bytes including multipart data)"
+            ),
+        })
+    } else {
+        ApiError(AppError::Validation(error.body_text()))
+    }
+}
 
 pub(crate) async fn upload_file(
     auth: AuthUser,
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<Attachment>, ApiError> {
+    let max_file_size = state.config.server.max_upload_file_size_bytes;
+    let map_multipart_error =
+        |error| multipart_error(error, state.config.server.max_upload_request_size_bytes());
     let mut file_data: Option<(String, Vec<u8>)> = None;
     let mut relative_path: Option<String> = None;
 
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| ApiError(AppError::Validation(e.to_string())))?
-    {
+    while let Some(mut field) = multipart.next_field().await.map_err(map_multipart_error)? {
         match field.name() {
             Some("path") => {
-                relative_path = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|e| ApiError(AppError::Validation(e.to_string())))?,
-                );
+                relative_path = Some(field.text().await.map_err(map_multipart_error)?);
             }
             Some("file") | Some("upload") => {
                 let filename = field.file_name().unwrap_or("upload").to_string();
-                let bytes = field
-                    .bytes()
-                    .await
-                    .map_err(|e| ApiError(AppError::Validation(e.to_string())))?;
-
-                if bytes.len() > MAX_FILE_SIZE {
-                    return Err(ApiError(AppError::Validation(format!(
-                        "File too large (max {}MB)",
-                        MAX_FILE_SIZE / 1024 / 1024
-                    ))));
+                let mut bytes = Vec::new();
+                while let Some(chunk) = field.chunk().await.map_err(map_multipart_error)? {
+                    if chunk.len() > max_file_size - bytes.len() {
+                        return Err(ApiError(AppError::Http {
+                            status: StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
+                            message: format!("File too large (max {max_file_size} bytes)"),
+                        }));
+                    }
+                    bytes.extend_from_slice(&chunk);
                 }
 
-                file_data = Some((filename, bytes.to_vec()));
+                file_data = Some((filename, bytes));
             }
             _ => {}
         }

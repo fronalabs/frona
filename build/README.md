@@ -93,6 +93,27 @@ This builds for both platforms and pushes to `ghcr.io/fronalabs/frona:latest`. S
 
 See [RELEASE.md](RELEASE.md) for the full release process, versioning scheme, and Docker tagging strategy.
 
+## Browser integration tests
+
+With Podman or Docker and curl installed, run from the repository root:
+
+```nu
+mise run test:browser
+```
+
+The script prefers Podman and falls back to Docker. To select a runtime explicitly:
+
+```nu
+with-env { CONTAINER_RUNTIME: "docker" } { mise run test:browser }
+```
+
+It starts the pinned Browserless image from `docker-compose.yml` on an
+available localhost port, waits for readiness, and runs the browser crate and
+server session tests serially, including the otherwise ignored integration tests.
+Browser profiles live in temporary container storage.
+It removes the container on completion or interruption and prints browser logs
+on failure. The development stack does not need to be running.
+
 ## Build storage
 
 Frona uses ordinary `npm ci`, `npm install`, and `npm run` commands. In dv,

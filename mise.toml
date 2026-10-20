@@ -75,6 +75,10 @@ mise run test
 mise run test:e2e
 """
 
+[tasks."test:browser"]
+description = "Run browser integration tests against an isolated Browserless container"
+run = "bash build/test-browser.sh"
+
 [tasks.container]
 description = "Build production Docker image"
 run = "build/build.sh"

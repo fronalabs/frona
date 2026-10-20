@@ -2,9 +2,11 @@
 
 import { useRef, useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { ComposerPrimitive, ThreadPrimitive, AttachmentPrimitive, useAui, unstable_useTriggerPopoverScopeContextOptional } from "@assistant-ui/react";
+import { ComposerPrimitive, ThreadPrimitive, AttachmentPrimitive, useAui, useAuiState, unstable_useTriggerPopoverScopeContextOptional } from "@assistant-ui/react";
 import { useThreadIsRunning } from "@assistant-ui/core/react";
 import { LexicalComposerInput } from "@assistant-ui/react-lexical";
+import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
+import { COMMAND_PRIORITY_NORMAL, KEY_ENTER_COMMAND } from "lexical";
 import type { Unstable_TriggerItem } from "@assistant-ui/core";
 import { PaperAirplaneIcon, StopIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/solid";
 import { ArrowUpTrayIcon, CloudIcon, FolderOpenIcon } from "@heroicons/react/24/outline";
@@ -15,7 +17,7 @@ import {
   fronaSlashFormatter,
   fronaAtFormatter,
 } from "@/components/chat/frona-trigger-adapter";
-import { registerBackendAttachment, getBackendAttachment } from "@/lib/use-chat-runtime";
+import { registerBackendAttachment, getBackendAttachments } from "@/lib/use-chat-runtime";
 import { useContext } from "react";
 import { usePendingTools } from "@/lib/pending-tools-context";
 import { ChatContext } from "@/lib/chat-context";
@@ -24,14 +26,29 @@ import { api } from "@/lib/api-client";
 import type { ToolWizardState } from "./external-tool-drawer";
 import type { Attachment } from "@/lib/types";
 
+function SubmitOnEnter() {
+  const [editor] = useLexicalComposerContext();
+  // The input's higher-priority handler lets slash/@ suggestions consume Enter first.
+  useEffect(() => editor.registerCommand(KEY_ENTER_COMMAND, (event) => {
+    if (!event || event.isComposing || event.shiftKey || event.ctrlKey || event.metaKey) return false;
+    event.preventDefault();
+    editor.getRootElement()?.closest("form")?.requestSubmit();
+    return true;
+  }, COMMAND_PRIORITY_NORMAL), [editor]);
+  return null;
+}
+
 function ComposerAttachmentBadge() {
+  const status = useAuiState((s) => s.attachment.status);
   return (
     <AttachmentPrimitive.Root className="inline-flex items-center gap-1 rounded-md bg-surface-tertiary px-2 py-1 text-xs text-text-secondary">
       <span className="max-w-[200px] truncate">
         <AttachmentPrimitive.Name />
       </span>
+      {status.type === "running" && <span>Uploading…</span>}
+      {status.type === "incomplete" && <span role="alert" className="text-error-text">{status.message}</span>}
       <AttachmentPrimitive.Remove asChild>
-        <button type="button" className="ml-0.5 hover:text-text-primary">
+        <button type="button" aria-label="Remove attachment" className="ml-0.5 hover:text-text-primary">
           <XMarkIcon className="h-3 w-3" />
         </button>
       </AttachmentPrimitive.Remove>
@@ -85,6 +102,11 @@ export function FronaComposer({
   const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const canSend = useAuiState((s) => s.composer.canSend);
+  const attachmentsPending = useAuiState((s) => s.composer.attachments.some(
+    (attachment) => attachment.status.type === "running" || attachment.status.type === "incomplete",
+  ));
   const menuRef = useRef<HTMLDivElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -193,25 +215,6 @@ export function FronaComposer({
     [composerRuntime],
   );
 
-  // HomeComposer (custom `onSend`) needs to go through the form's onSubmit;
-  // Lexical's default Enter handler bypasses the form by calling send() directly.
-  const submitMode: "enter" | "none" = onSend ? "none" : "enter";
-
-  // Restore Enter-submits-form behaviour when submitMode is "none".
-  const editorBridgeRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!onSend) return;
-    const el = editorBridgeRef.current;
-    if (!el) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key !== "Enter" || e.shiftKey || (e as KeyboardEvent).isComposing) return;
-      e.preventDefault();
-      el.closest("form")?.requestSubmit();
-    };
-    el.addEventListener("keydown", handler);
-    return () => el.removeEventListener("keydown", handler);
-  }, [onSend]);
-
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <ComposerPrimitive.Unstable_TriggerPopover char="/" adapter={slashAdapter} className={POPOVER_PANEL_CLASS}>
@@ -248,35 +251,46 @@ export function FronaComposer({
             ? "bg-transparent p-4"
             : "rounded-2xl border border-border bg-surface-secondary p-4 focus-within:border-accent transition-colors"
           }
-          {...(currentPendingTool
-            ? { onSubmit: handleWizardAnswer }
-            : onSend
-              ? {
-                  onSubmit: (e: React.FormEvent) => {
-                    e.preventDefault();
-                    const state = composerRuntime.getState();
-                    const text = state.text.trim();
-                    if (!text && !state.attachments.length) return;
-                    const backendAttachments = state.attachments
-                      .map((a) => getBackendAttachment(a.id))
-                      .filter((a): a is Attachment => a != null);
-                    onSend(text, backendAttachments.length > 0 ? backendAttachments : undefined);
-                  },
-                }
-              : {})}
+          onSubmit={(e: React.FormEvent) => {
+            e.preventDefault();
+            if (currentPendingTool) {
+              handleWizardAnswer();
+              return;
+            }
+            if (threadRunning || !composerRuntime.getState().canSend) return;
+            const state = composerRuntime.getState();
+            const text = state.text.trim();
+            if (!text && !state.attachments.length) return;
+            let backendAttachments: Attachment[];
+            try {
+              backendAttachments = getBackendAttachments(state.attachments);
+            } catch (error) {
+              setAttachmentError(error instanceof Error ? error.message : "Attachment unavailable");
+              return;
+            }
+            setAttachmentError(null);
+            if (onSend) {
+              onSend(text, backendAttachments.length > 0 ? backendAttachments : undefined);
+            } else {
+              composerRuntime.send();
+            }
+          }}
         >
+          {attachmentError && <p role="alert" className="mb-2 text-sm text-error-text">{attachmentError}</p>}
           <div className="flex flex-wrap gap-1.5 empty:hidden">
             <ComposerPrimitive.Attachments
               components={{ Attachment: ComposerAttachmentBadge }}
             />
           </div>
-          <div ref={editorBridgeRef}>
+          <div>
             <LexicalComposerInput
               autoFocus
               placeholder={activePlaceholder}
-              submitMode={submitMode}
+              submitMode="none"
               className="aui-frona-composer-input w-full text-sm leading-5 text-text-primary"
-            />
+            >
+              <SubmitOnEnter />
+            </LexicalComposerInput>
           </div>
           <div className="flex items-center justify-between pt-2">
             <div className="relative">
@@ -349,23 +363,14 @@ export function FronaComposer({
                 </ComposerPrimitive.Cancel>
               </ThreadPrimitive.If>
               <ThreadPrimitive.If running={false}>
-                {onSend || currentPendingTool ? (
                   <button
                     type="submit"
+                    aria-label="Send message"
+                    disabled={!currentPendingTool && (attachmentsPending || !canSend)}
                     className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary transition"
                   >
                     <PaperAirplaneIcon className="h-5 w-5" />
                   </button>
-                ) : (
-                  <ComposerPrimitive.Send asChild>
-                    <button
-                      type="button"
-                      className="shrink-0 rounded-lg p-1.5 text-text-secondary hover:text-text-primary transition"
-                    >
-                      <PaperAirplaneIcon className="h-5 w-5" />
-                    </button>
-                  </ComposerPrimitive.Send>
-                )}
               </ThreadPrimitive.If>
               </>
               )}

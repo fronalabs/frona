@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useEffect, useCallback, useRef, useSyncExternalStore } from "react";
-import { useExternalStoreRuntime } from "@assistant-ui/react";
+import { MessageNotSentError, useExternalStoreRuntime } from "@assistant-ui/react";
 import type { CompleteAttachment, AppendMessage, AttachmentAdapter, PendingAttachment } from "@assistant-ui/react";
 import type { ExternalStoreAdapter } from "@assistant-ui/react";
 import { ChatStore, type RetryInfo } from "./chat-store";
@@ -23,6 +23,22 @@ export function getBackendAttachment(id: string): Attachment | undefined {
   return backendAttachmentRegistry.get(id);
 }
 
+export function getBackendAttachments(attachments: readonly (PendingAttachment | CompleteAttachment)[]): Attachment[] {
+  return attachments.map((attachment) => {
+    if (attachment.status.type === "running") {
+      throw new Error(`Wait for "${attachment.name}" to finish uploading.`);
+    }
+    if (attachment.status.type === "incomplete") {
+      throw new Error(attachment.status.message ?? `Remove and reattach "${attachment.name}" before sending.`);
+    }
+    const backend = getBackendAttachment(attachment.id);
+    if (!backend) {
+      throw new Error(`"${attachment.name}" is no longer available. Remove and reattach it before sending.`);
+    }
+    return backend;
+  });
+}
+
 function convertBackendAttachment(att: Attachment): CompleteAttachment {
   const url = att.url ?? "";
   const isImage = att.content_type.startsWith("image/");
@@ -40,20 +56,38 @@ function convertBackendAttachment(att: Attachment): CompleteAttachment {
 }
 
 export const fronaAttachmentAdapter: AttachmentAdapter = {
-  accept: "*/*",
+  accept: "*",
 
-  async add({ file }: { file: File }): Promise<PendingAttachment> {
-    const uploaded = await uploadFile(file);
-    backendAttachmentRegistry.set(uploaded.path, uploaded);
-    return {
-      id: uploaded.path,
+  async *add({ file }: { file: File }): AsyncGenerator<PendingAttachment> {
+    const attachment: PendingAttachment = {
+      id: crypto.randomUUID(),
       type: "file",
-      name: uploaded.filename,
-      contentType: uploaded.content_type,
-      status: { type: "requires-action", reason: "composer-send" },
+      name: file.name,
+      contentType: file.type,
+      status: { type: "running", reason: "uploading", progress: 0 },
       content: [],
       file,
     };
+    yield attachment;
+    try {
+      const uploaded = await uploadFile(file);
+      backendAttachmentRegistry.set(attachment.id, uploaded);
+      yield {
+        ...attachment,
+        name: uploaded.filename,
+        contentType: uploaded.content_type,
+        status: { type: "requires-action", reason: "composer-send" },
+      };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "Upload failed";
+      yield {
+        ...attachment,
+        status: {
+          type: "incomplete", reason: "error",
+          message: `Could not upload "${file.name}": ${detail}. Remove and reattach it to retry.`,
+        },
+      };
+    }
   },
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
@@ -389,12 +423,13 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
       .map((p) => p.text)
       .join("");
 
-    const attachments: Attachment[] = [];
-    if ("attachments" in message && message.attachments) {
-      for (const att of message.attachments) {
-        const backend = backendAttachmentRegistry.get(att.id);
-        if (backend) attachments.push(backend);
-      }
+    let attachments: Attachment[];
+    try {
+      attachments = getBackendAttachments(message.attachments ?? []);
+    } catch (error) {
+      store.failMessage(messageProcessingError(error));
+      // This control error restores the installed runtime's unsent composer draft.
+      throw new MessageNotSentError(error instanceof Error ? error.message : "Attachment unavailable");
     }
 
     let sendChatId = currentChatIdRef.current;

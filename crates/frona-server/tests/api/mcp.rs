@@ -183,28 +183,37 @@ async fn uninstall_nonexistent_returns_404() {
 }
 
 #[tokio::test]
-async fn update_server_extra_env() {
+async fn update_server_extra_env_replaces_clears_and_preserves_omitted_maps() {
     let (state, _tmp) = test_app_state().await;
     let (token, _) =
         register_user(&state, "mcp-update", "mcpupdate@example.com", "password123").await;
-
     let server = install_via_manifest(&state, &token, sample_manifest()).await;
-    let id = server["id"].as_str().unwrap();
-
-    let app = build_app(state);
-    let resp = app
-        .oneshot(auth_patch_json(
-            &format!("/api/mcp/servers/{id}"),
-            &token,
-            serde_json::json!({
-                "extra_env": { "LOG_LEVEL": "debug" }
-            }),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["restart_required"], false);
+    let route = format!("/api/mcp/servers/{}", server["id"].as_str().unwrap());
+    let two = serde_json::json!({"FIRST":"one", "SECOND":"two"});
+    for (patch, expected) in [
+        (serde_json::json!({"extra_env":two}), two.clone()),
+        (
+            serde_json::json!({"description":"Environment unchanged"}),
+            two,
+        ),
+        (
+            serde_json::json!({"extra_env":{"SECOND":"two"}}),
+            serde_json::json!({"SECOND":"two"}),
+        ),
+        (serde_json::json!({"extra_env":{}}), serde_json::json!({})),
+    ] {
+        let response = build_app(state.clone())
+            .oneshot(auth_patch_json(&route, &token, patch))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["restart_required"], false);
+        let response = build_app(state.clone())
+            .oneshot(auth_get(&route, &token))
+            .await
+            .unwrap();
+        assert_eq!(body_json(response).await["env"], expected);
+    }
 }
 
 #[tokio::test]

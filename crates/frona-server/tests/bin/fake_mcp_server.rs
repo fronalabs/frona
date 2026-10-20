@@ -22,8 +22,13 @@ impl EchoServer {
         }
     }
 
-    #[tool(description = "Echo back the provided text.")]
+    #[tool(description = "Echo text or inspect a requested test environment variable.")]
     fn echo(&self, Parameters(args): Parameters<JsonObject>) -> Result<CallToolResult, McpError> {
+        if let Some(name) = args.get("env").and_then(|value| value.as_str()) {
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
+                std::env::var(name).unwrap_or_default(),
+            )]));
+        }
         let text = args
             .get("text")
             .and_then(|v| v.as_str())

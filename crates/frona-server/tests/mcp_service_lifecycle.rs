@@ -1,8 +1,8 @@
 //! Lifecycle integration test for `McpServerService`:
 //! install → update → uninstall, exercising grant verification, binding
 //! persistence, binding replacement on update, and grant+binding sweep on
-//! uninstall. Does not exercise `start` (which requires spawning a real
-//! sandboxed child process).
+//! uninstall. The ignored environment regression also starts the existing
+//! fake-mcp-server binary as a real child process.
 
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -143,7 +143,7 @@ async fn build_test_harness(
     vault.sync_config_connections().await.unwrap();
 
     let factory = Arc::new(frona::tool::sandbox::SandboxFactory::new(
-        true, // sandbox_disabled: we never actually start servers in these tests
+        true, // sandbox_disabled: real process tests exercise the unsandboxed driver
         Arc::new(
             frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
                 80.0, 80.0, 90.0, 90.0,
@@ -645,5 +645,148 @@ async fn environment_validation_precedes_binding_changes() {
             .unwrap()
             .description,
         server.description
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires fake-mcp-server built with --features __test-bins"]
+async fn next_start_receives_replaced_environment_and_retains_bound_credentials() {
+    use frona::core::repository::Repository;
+    use std::collections::BTreeMap;
+    let (db, vault, service, _tmp) = build_test_harness(vec![]).await;
+    let now = chrono::Utc::now();
+    SurrealRepo::new(db.clone())
+        .create(&frona::auth::User {
+            id: "user1".into(),
+            handle: frona::handle!("user1"),
+            email: "user1@example.com".into(),
+            name: "User".into(),
+            password_hash: "unused".into(),
+            timezone: None,
+            groups: vec![],
+            deactivated_at: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .unwrap();
+    let service = Arc::new(service);
+    let mut server = service
+        .install(
+            "user1",
+            &frona::handle!("user1"),
+            McpServerInstall {
+                registry_id: Some("io.example/workspace-mcp".into()),
+                extra_env: [
+                    ("FRONA_ENV_FIRST".into(), "one".into()),
+                    ("FRONA_ENV_SECOND".into(), "two".into()),
+                ]
+                .into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let binary =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/fake-mcp-server");
+    assert!(
+        binary.exists(),
+        "build fake-mcp-server with --features __test-bins first"
+    );
+    server.command = binary
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    server.args.clear();
+    server.transports.clear();
+    server.package.runtime = frona::tool::mcp::models::McpRuntime::Binary;
+    SurrealRepo::new(db.clone()).update(&server).await.unwrap();
+    let principal = Principal::mcp_server(&server.id);
+    let credential =
+        seed_credential_and_grant(&vault, "user1", principal.clone(), "bound", "vault value").await;
+    vault
+        .create_binding(
+            "user1",
+            principal.clone(),
+            "bound",
+            "local",
+            &credential,
+            CredentialTarget::Single {
+                env_var: "FRONA_ENV_BOUND".into(),
+                field: VaultField::Password,
+            },
+            BindingScope::Durable,
+            None,
+        )
+        .await
+        .unwrap();
+    service.start("user1", &server.id).await.unwrap();
+    for (replacement, old_first, old_second, new_second) in [
+        (
+            BTreeMap::from([("FRONA_ENV_SECOND".into(), "changed".into())]),
+            "one",
+            "two",
+            "changed",
+        ),
+        (BTreeMap::new(), "", "changed", ""),
+    ] {
+        let updated = service
+            .update(
+                "user1",
+                &server.id,
+                McpServerUpdate {
+                    extra_env: Some(replacement),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(updated.restart_required);
+        for (name, expected) in [
+            ("FRONA_ENV_FIRST", old_first),
+            ("FRONA_ENV_SECOND", old_second),
+        ] {
+            let result = service
+                .bridge_call_tool(
+                    "user1",
+                    None,
+                    server.handle.as_str(),
+                    "echo",
+                    serde_json::json!({"env":name}),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.content, expected);
+        }
+        service.stop("user1", &server.id).await.unwrap();
+        service.start("user1", &server.id).await.unwrap();
+        for (name, expected) in [
+            ("FRONA_ENV_FIRST", ""),
+            ("FRONA_ENV_SECOND", new_second),
+            ("FRONA_ENV_BOUND", "vault value"),
+        ] {
+            let result = service
+                .bridge_call_tool(
+                    "user1",
+                    None,
+                    server.handle.as_str(),
+                    "echo",
+                    serde_json::json!({"env":name}),
+                )
+                .await
+                .unwrap();
+            assert!(!result.is_error);
+            assert_eq!(result.content, expected);
+        }
+    }
+    service.stop("user1", &server.id).await.unwrap();
+    assert_eq!(
+        vault
+            .list_bindings_for_principal("user1", &principal)
+            .await
+            .unwrap()
+            .len(),
+        1
     );
 }

@@ -65,7 +65,7 @@ run = "cargo test --workspace"
 description = "Build the fake MCP server and run end-to-end tests"
 run = """
 cargo build -p frona-server --bin fake-mcp-server --features __test-bins
-cargo test -p frona-server --test mcp_e2e -- --ignored
+cargo test -p frona-server --test mcp_e2e --test mcp_service_lifecycle -- --ignored
 """
 
 [tasks."test:all"]

@@ -279,7 +279,7 @@ function McpServerPage() {
       }
       await api.patch(`/api/mcp/servers/${serverId}`, {
         description: description !== (server.description ?? "") ? description : undefined,
-        extra_env: Object.keys(extra_env).length > 0 ? extra_env : undefined,
+        extra_env,
         sandbox_policy: sandboxConfig
           ? (() => {
               const entries = (sandboxConfig.shared_paths ?? []).filter((e) => e.path);
@@ -796,6 +796,7 @@ function McpServerPage() {
                             setDirty(true);
                           }
                         }}
+                        aria-label={`Remove ${key}`}
                         className="mt-2 p-1.5 text-text-tertiary hover:text-danger transition rounded-lg hover:bg-surface-tertiary"
                       >
                         <TrashIcon className="h-4 w-4" />

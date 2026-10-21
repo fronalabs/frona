@@ -1976,7 +1976,7 @@ async fn compaction_candidates_never_truncate_and_fallback_preserves_usage_scope
                 result
                     .unwrap_err()
                     .to_string()
-                    .contains("Complete compaction input exceeds context limit")
+                    .contains("Complete input exceeds context limit")
             );
             assert_eq!(fallback.calls(), 0);
         }
@@ -2080,7 +2080,7 @@ async fn oversized_conversation_prefix_cannot_use_a_larger_legacy_compaction_mod
     assert!(
         error
             .to_string()
-            .contains("Complete compaction input exceeds context limit")
+            .contains("Complete input exceeds context limit")
     );
     assert_eq!(app.model.calls(), 0);
     assert!(
@@ -2558,7 +2558,7 @@ async fn calibrated_summary_does_not_lend_its_estimate_to_a_fallback_model() {
             .err()
             .unwrap()
             .to_string()
-            .contains("Complete compaction input exceeds context limit")
+            .contains("Complete input exceeds context limit")
     );
     assert_eq!(app.model.calls(), 1);
     assert_eq!(app.model.model_names(), vec!["conversation-model"]);

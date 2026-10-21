@@ -248,57 +248,6 @@ fn validate_tool_groups(history: &[RigMessage]) -> Result<(), String> {
     }
 }
 
-/// Trims `history` to fit `history_truncation_pct` of the budget left over
-/// after `max_output_tokens` and the system prompt. Newest messages are kept;
-/// older ones are dropped first. Operates on a resolved window budget
-/// (typically from `resolve_context_window`) - doesn't know about model identity.
-pub(crate) fn truncate_streaming_history(
-    history: Vec<RigMessage>,
-    system_prompt: &str,
-    context_window: usize,
-    max_output_tokens: usize,
-    history_truncation_pct: usize,
-) -> Vec<RigMessage> {
-    let window = context_window;
-    let system_tokens = estimate_tokens(system_prompt);
-    let budget = window
-        .saturating_sub(max_output_tokens)
-        .saturating_sub(system_tokens);
-    let budget = budget * history_truncation_pct / 100;
-
-    let total: usize = history.iter().map(estimate_message_tokens).sum();
-    if total <= budget {
-        return history;
-    }
-
-    let original_len = history.len();
-    let mut result: Vec<RigMessage> = Vec::new();
-    let mut used = 0usize;
-
-    for msg in history.into_iter().rev() {
-        let cost = estimate_message_tokens(&msg);
-        if used + cost > budget {
-            break;
-        }
-        used += cost;
-        result.push(msg);
-    }
-
-    result.reverse();
-    // We only get here when the history is over budget and messages are being
-    // dropped oldest-first - a silent context loss the caller can't see. Surface
-    // it for ordinary inference. Chat compaction rejects oversized input instead
-    // of entering this truncation path. No-op truncations returned above.
-    tracing::warn!(
-        estimated_tokens = total,
-        budget,
-        dropped_messages = original_len - result.len(),
-        kept_messages = result.len(),
-        "history over budget: dropped oldest messages to fit (silent context loss)"
-    );
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

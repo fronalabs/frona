@@ -382,15 +382,214 @@ async fn nonstreaming_keeps_a_text_assistant_followup_with_its_user_input() {
 }
 
 #[tokio::test]
-async fn streaming_keeps_its_existing_truncation_policy() {
+async fn streaming_rejects_oversized_input_without_sending_a_truncated_request() {
     let history = mixed_history();
-    let budget = cost(&history[8..]);
-    let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
-        "streamed answer".into(),
-    )]));
-    let group = group(provider.clone(), budget);
+    let provider = Arc::new(MockModelProvider::new(vec![]));
+    let group = group(provider.clone(), cost(&history[8..]));
     let (events, _, _) = helpers::test_event_sender().await;
-    group
+    let error = group
+        .stream_inference(
+            ModelRequest {
+                input_token_estimate: None,
+                system_prompt: SYSTEM,
+                history,
+                tools: vec![],
+                usage_service: &test_metrics_ctx(),
+                usage_context: &test_usage_ctx(),
+                overrides: Default::default(),
+            },
+            &events,
+            &tokio_util::sync::CancellationToken::new(),
+            &mut String::new(),
+        )
+        .await
+        .err()
+        .expect("oversized complete input must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("Complete input exceeds context limit")
+    );
+    assert!(provider.histories().is_empty());
+}
+
+fn active_history() -> Vec<Message> {
+    let mut history = mixed_history();
+    if let Message::Assistant { id, content } = &mut history[4] {
+        *id = Some("assistant-original".into());
+        content.insert(
+            0,
+            AssistantContent::Reasoning(
+                rig_core::completion::message::Reasoning::new_with_signature(
+                    "Original reasoning",
+                    Some("opaque-signature+/=".into()),
+                ),
+            ),
+        );
+    }
+    *history.last_mut().unwrap() = Message::User {
+        content: vec![
+            UserContent::text("Original task: analyze the attached report and image"),
+            UserContent::image_base64("ZXhhY3QtaW1hZ2U=", None, None),
+            UserContent::document("Exact report attachment", None),
+        ],
+    };
+    history
+}
+
+#[tokio::test]
+async fn streaming_tool_result_retries_and_fallback_preserve_the_complete_active_turn() {
+    use frona::inference::tool_loop::{ToolLoopOutcome, run_tool_loop};
+    use frona::tool::registry::AgentToolRegistry;
+
+    let history = active_history();
+    let primary = Arc::new(MockModelProvider::new(vec![
+        MockResponse::ToolCalls(vec![(
+            "large-call".into(),
+            "read".into(),
+            serde_json::json!({}),
+        )]),
+        MockResponse::Error(InferenceError::RateLimited {
+            retry_after_secs: 0,
+        }),
+        MockResponse::Error(InferenceError::InferenceFailed(
+            "primary unavailable".into(),
+        )),
+    ]));
+    let fallback = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
+        "Complete answer".into(),
+    )]));
+    let mut group = group(primary.clone(), 20_000);
+    Arc::make_mut(&mut group.providers).insert("backup".into(), fallback.clone());
+    let mut candidate = group.main.clone();
+    candidate.provider_handle = frona::core::Handle::try_new("backup").unwrap();
+    candidate.model_id = "backup-model".into();
+    candidate.request_settings.max_tokens = Some(100);
+    group.fallbacks.push(candidate);
+    // The obsolete streaming trim would drop the entire post-tool history at
+    // this percentage, even though the complete request fits the real window.
+    group.inference.history_truncation_pct = 5;
+    let large_result = "exact large result ".repeat(500);
+    let mut registry = AgentToolRegistry::empty();
+    registry.register(Arc::new(helpers::MockInternalTool::new(
+        "read",
+        vec![large_result.clone()],
+    )));
+    let (events, _, _) = helpers::test_event_sender().await;
+    let outcome = run_tool_loop(
+        &group,
+        SYSTEM,
+        history.clone(),
+        &registry,
+        events,
+        tokio_util::sync::CancellationToken::new(),
+        &helpers::mock_context(),
+        &test_metrics_ctx(),
+        &helpers::test_chat_service().await,
+        "active-turn",
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(outcome, ToolLoopOutcome::Completed { text, .. } if text == "Complete answer")
+    );
+    let requests = primary.histories();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0], history);
+    assert_eq!(requests[1][..history.len()], history);
+    assert_eq!(requests[1].len(), history.len() + 2);
+    assert_eq!(requests[1], requests[2]);
+    assert_eq!(fallback.histories(), vec![requests[1].clone()]);
+    let Message::Assistant { content, .. } = &requests[1][history.len()] else {
+        panic!("tool call must precede its result")
+    };
+    let AssistantContent::ToolCall(call) = &content[0] else {
+        panic!("missing tool call")
+    };
+    let Message::User { content } = requests[1].last().unwrap() else {
+        panic!("missing tool result")
+    };
+    let UserContent::ToolResult(result) = &content[0] else {
+        panic!("missing tool result")
+    };
+    assert_eq!(result.call, call.id);
+    assert_eq!(result.content, vec![ToolResultContent::text(large_result)]);
+}
+
+#[tokio::test]
+async fn streaming_smaller_fallback_limits_fail_explicitly_without_losing_history() {
+    for local_limit in [false, true] {
+        let history = active_history();
+        let primary = Arc::new(MockModelProvider::new(vec![MockResponse::Error(
+            InferenceError::InferenceFailed("primary unavailable".into()),
+        )]));
+        let fallback = Arc::new(MockModelProvider::new(vec![MockResponse::Error(
+            InferenceError::CompletionFailed(rig_core::completion::CompletionError::ProviderError(
+                "400 context limit exceeded".into(),
+            )),
+        )]));
+        let mut group = group(primary.clone(), cost(&history));
+        Arc::make_mut(&mut group.providers).insert("backup".into(), fallback.clone());
+        let mut candidate = group.main.clone();
+        candidate.provider_handle = frona::core::Handle::try_new("backup").unwrap();
+        candidate.model_id = "small-context-model".into();
+        if local_limit {
+            candidate.request_settings.max_tokens = Some((OUTPUT + 1) as u64);
+        }
+        group.fallbacks.push(candidate);
+        let (events, _, _) = helpers::test_event_sender().await;
+        let error = group
+            .stream_inference(
+                ModelRequest {
+                    input_token_estimate: None,
+                    system_prompt: SYSTEM,
+                    history: history.clone(),
+                    tools: vec![],
+                    usage_service: &test_metrics_ctx(),
+                    usage_context: &test_usage_ctx(),
+                    overrides: Default::default(),
+                },
+                &events,
+                &tokio_util::sync::CancellationToken::new(),
+                &mut String::new(),
+            )
+            .await
+            .err()
+            .expect("context limit must surface");
+        assert_eq!(primary.histories(), vec![history.clone()]);
+        if local_limit {
+            assert!(fallback.histories().is_empty());
+            assert!(
+                error
+                    .to_string()
+                    .contains("Complete input exceeds context limit")
+            );
+        } else {
+            assert_eq!(fallback.histories(), vec![history]);
+            assert!(error.to_string().contains("400 context limit exceeded"));
+        }
+        assert!(error.to_string().contains("backup/small-context-model"));
+    }
+}
+
+#[tokio::test]
+async fn streaming_in_flight_cancellation_keeps_the_original_request() {
+    let history = active_history();
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Barrier(
+        barrier.clone(),
+        Box::new(MockResponse::Pending),
+    )]));
+    let group = group(provider.clone(), cost(&history));
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let cancel = cancellation.clone();
+    let canceller = tokio::spawn(async move {
+        barrier.wait().await;
+        cancel.cancel();
+    });
+    let (events, _, _) = helpers::test_event_sender().await;
+    let result = group
         .stream_inference(
             ModelRequest {
                 input_token_estimate: None,
@@ -402,12 +601,17 @@ async fn streaming_keeps_its_existing_truncation_policy() {
                 overrides: Default::default(),
             },
             &events,
-            &tokio_util::sync::CancellationToken::new(),
+            &cancellation,
             &mut String::new(),
         )
         .await
         .unwrap();
-    assert_eq!(provider.histories(), vec![history[8..].to_vec()]);
+    canceller.await.unwrap();
+    assert!(matches!(
+        result,
+        frona::inference::retry::StreamResult::Cancelled
+    ));
+    assert_eq!(provider.histories(), vec![history]);
 }
 
 #[tokio::test]

@@ -11,9 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::chat::broadcast::EventSender;
 
-use crate::inference::context::{
-    estimate_message_tokens, estimate_tokens, truncate_history, truncate_streaming_history,
-};
+use crate::inference::context::{estimate_message_tokens, estimate_tokens, truncate_history};
 use crate::inference::error::InferenceError;
 use crate::inference::provider::ModelProvider;
 use crate::inference::provider::{InferenceOutput, ModelConfig, StreamToken};
@@ -87,8 +85,6 @@ where
 #[derive(Clone, Copy)]
 pub(crate) enum HistoryOverflow {
     TruncateOldest,
-    // Active streamed turns have a separate retention policy (CHAT02).
-    TruncateStreaming,
     Reject,
 }
 
@@ -121,15 +117,6 @@ fn completion_history(
             group.inference.history_truncation_pct,
         );
     }
-    if matches!(overflow, HistoryOverflow::TruncateStreaming) {
-        return Ok(truncate_streaming_history(
-            history.to_vec(),
-            system_prompt,
-            group.context_window,
-            max_output,
-            group.inference.history_truncation_pct,
-        ));
-    }
     let tokens = history.iter().map(estimate_message_tokens).sum::<usize>()
         + estimate_tokens(system_prompt)
         + tools
@@ -143,7 +130,7 @@ fn completion_history(
     let available = group.context_window.saturating_sub(max_output);
     if tokens > available {
         return Err(format!(
-            "Complete compaction input exceeds context limit ({tokens} estimated tokens, {available} available)"
+            "Complete input exceeds context limit ({tokens} estimated tokens, {available} available)"
         ));
     }
     Ok(history.to_vec())
@@ -500,7 +487,7 @@ pub(crate) async fn stream_with_retry_and_fallback(
             &tools,
             model_group,
             max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize,
-            HistoryOverflow::TruncateStreaming,
+            HistoryOverflow::Reject,
             if index == 0 {
                 input_token_estimate
             } else {

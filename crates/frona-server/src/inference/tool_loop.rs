@@ -517,10 +517,9 @@ pub async fn run_tool_loop(
 
         tracing::debug!(turn, "Tool loop turn");
 
-        // Context is compaction-aware at load time;
-        // an over-budget turn is sent as-is and the provider rejects it (fail
-        // loud) rather than being silently truncated. The leading-orphan strip
-        // below is kept as a cheap structural invariant.
+        // Context is compaction-aware at load time. Retain the complete turn;
+        // local budget checks or provider limits fail explicitly. The leading-
+        // orphan strip below is kept as a cheap structural invariant.
         while let Some(RigMessage::User { content }) = chat_history.first() {
             if content
                 .iter()

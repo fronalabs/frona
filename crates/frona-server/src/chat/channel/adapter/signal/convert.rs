@@ -27,7 +27,7 @@ pub async fn handle<S: Store>(
     tracing::debug!(
         channel_id = %channel_id,
         sender = %content.metadata.sender.raw_uuid(),
-        timestamp = %content.metadata.timestamp,
+        timestamp = %content.metadata.client_timestamp,
         body_kind = content_body_kind(&content.body),
         needs_receipt = content.metadata.needs_receipt,
         unidentified = content.metadata.unidentified_sender,
@@ -59,9 +59,9 @@ pub async fn handle<S: Store>(
         .and_then(|q| q.id)
         .map(|ts| ts.to_string());
     let sender = content.metadata.sender;
-    // libsignal-service now exposes `timestamp` as a DateTime<Utc>; Signal read
-    // receipts reference the original message's millis-since-epoch id.
-    let inbound_ts = content.metadata.timestamp.timestamp_millis() as u64;
+    // Signal read receipts reference the sender's original message timestamp,
+    // not the time the server received it.
+    let inbound_ts = content.metadata.client_timestamp.timestamp_millis() as u64;
 
     // Spawn the resolve + emit work off the worker loop. The Signal worker
     // runs on a single-threaded runtime; if resolve_hitl reaches back into
@@ -153,7 +153,6 @@ fn content_body_kind(body: &ContentBody) -> &'static str {
         ContentBody::ReceiptMessage(_) => "ReceiptMessage",
         ContentBody::TypingMessage(_) => "TypingMessage",
         ContentBody::StoryMessage(_) => "StoryMessage",
-        ContentBody::PniSignatureMessage(_) => "PniSignatureMessage",
         ContentBody::EditMessage(_) => "EditMessage",
         ContentBody::NullMessage(_) => "NullMessage",
         ContentBody::DecryptionErrorMessage(_) => "DecryptionErrorMessage",
@@ -229,11 +228,12 @@ mod tests {
             sender_device: presage::libsignal_service::protocol::DeviceId::new(1).unwrap(),
             destination,
             server_guid: None,
-            timestamp: ts,
+            client_timestamp: ts,
             server_timestamp: ts,
             needs_receipt: false,
             unidentified_sender: false,
             was_plaintext: false,
+            pni_verified: None,
         }
     }
 

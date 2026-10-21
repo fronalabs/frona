@@ -27,8 +27,8 @@ bon = "3"
 moka = { version = "0.12", features = ["future", "sync"] }
 cedar-policy = { version = "4", features = ["partial-eval"] }
 # Git-only because the Signal client is not published on crates.io.
-presage = { git = "https://github.com/whisperfish/presage", rev = "f74b96e0fb9099ce8be2b28b7ca9d11f78a6faea" }
-presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "f74b96e0fb9099ce8be2b28b7ca9d11f78a6faea" }
+presage = { git = "https://github.com/whisperfish/presage", rev = "b79321f172294681af0ad917975ffcdd9e60df5e" }
+presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "b79321f172294681af0ad917975ffcdd9e60df5e" }
 
 # Signal's fork of curve25519-dalek shares the upstream crate name, so
 # `[patch.crates-io]` is the only way to substitute it. Mirrors presage's

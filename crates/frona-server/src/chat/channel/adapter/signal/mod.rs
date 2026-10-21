@@ -7,49 +7,6 @@
 //!
 //! The closest in-tree reference is `adapter/whatsapp_user.rs`; the structural
 //! divergence is the threading model — see `worker.rs` for the constraint.
-//!
-//! # Known issue: first-contact senders silently dropped
-//!
-//! Upstream presage (rev `6793c3e`, current HEAD as of 2026-05-19) has a bug
-//! in its receive-side cipher routing: envelopes destined for our **PNI**
-//! (Phone Number Identifier) are misrouted to the ACI cipher and rejected
-//! with `mismatching destination service id`. The envelope is silently
-//! dropped — no error reaches our adapter, no message reaches the agent.
-//! Fix lives in PR #395 (https://github.com/whisperfish/presage/pull/395),
-//! open since 2026-04-05, no maintainer engagement.
-//!
-//! ## When the bug fires
-//!
-//! A sender's Signal app encrypts to whichever identity it has cached for
-//! our number. It learns our **ACI** (the bug-free path) when:
-//!   - Our number is saved as a contact on their phone → Signal's Contact
-//!     Discovery Service (CDSI) resolves phone → ACI and caches it
-//!   - They have received a message from us (ACI is in the envelope source)
-//!   - They opened a 1:1 chat and Signal fetched our profile
-//!
-//! If none of those happened, their app falls back to encrypting to our
-//! **PNI**, which triggers the bug. In practice this means:
-//!   - Messages from established contacts (saved your number, exchanged
-//!     messages before): **work fine**
-//!   - Messages from group conversations where both sides are mutually
-//!     saved: **work fine**
-//!   - First message from a brand-new sender who typed our phone number
-//!     directly without saving it as a contact: **silently dropped**
-//!
-//! ## User-facing workaround (document in the setup guide)
-//!
-//! Tell users that anyone who wants to message the linked number must
-//! **save it as a contact on their phone first**, then send. Signal's CDSI
-//! lookup runs automatically when a contact is added; once the sender's
-//! cache has our ACI, all subsequent messages are ACI-destined and decrypt
-//! correctly.
-//!
-//! ## When to drop the workaround
-//!
-//! Re-pin `presage` to a rev that includes PR #395 (or our own fork
-//! carrying the cherry-pick). At that point this comment block, the
-//! "Known issue" callout in the user guide, and the test-from-an-unsaved-
-//! contact failure mode all become obsolete.
 
 use std::time::Duration;
 

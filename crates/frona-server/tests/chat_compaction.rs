@@ -1357,8 +1357,10 @@ async fn switch_agent_command_compacts_and_keeps_the_target_agent_context() {
             .unwrap()
             .tool_registry
             .definitions()
-            .len(),
-        2
+            .iter()
+            .map(|tool| tool.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["mcpctl", "read", "write"].into_iter().collect()
     );
     app.history(MessageRole::User, false).await;
     let mut agent = helpers::mock_context().agent;
@@ -1652,7 +1654,13 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
             let normal_system = app.model.system_prompts().last().unwrap().clone();
             let normal_tools = app.model.tool_histories().last().unwrap().clone();
             let normal_settings = *app.model.request_settings().last().unwrap();
-            assert_eq!(normal_tools.len(), 2);
+            assert_eq!(
+                normal_tools
+                    .iter()
+                    .map(|tool| tool.name.as_str())
+                    .collect::<std::collections::BTreeSet<_>>(),
+                ["mcpctl", "read", "write"].into_iter().collect()
+            );
             let builder = make_builder();
             let mut session = ChatSessionContext::build(
                 &app.harness,
@@ -2618,7 +2626,13 @@ async fn only_latest_final_tool_turn_counts_and_initial_tool_request_keeps_full_
     app.run_next().await.unwrap();
     assert_eq!(app.summary_calls(), 0);
     assert_eq!(app.model.calls(), 1);
-    assert_eq!(app.model.tool_histories()[0].len(), 1);
+    assert_eq!(
+        app.model.tool_histories()[0]
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["mcpctl", "read"].into_iter().collect()
+    );
     let outgoing = serde_json::to_string(&app.model.histories()[0]).unwrap();
     assert!(outgoing.contains("old-2"));
     assert!(outgoing.contains("old-3"));

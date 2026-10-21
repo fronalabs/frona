@@ -16,12 +16,13 @@ import {
 } from "recharts";
 
 import { useNavigation } from "@/lib/navigation-context";
-import { useUsage } from "../usage-context";
+import { hasIncompleteUsage, useUsage } from "../usage-context";
 import {
   CHART_PALETTE,
   CHART_TOOLTIP_STYLE,
   Card,
   EmptyState,
+  IncompleteUsageNote,
   SectionHeader,
   SummaryCard,
   fmtBucketLabel,
@@ -74,6 +75,8 @@ export default function CostPage() {
       .sort((a, b) => b.cost - a.cost);
   }, [data]);
 
+  const incomplete = data ? hasIncompleteUsage(data.totals) : false;
+
   const avgCostPerCall =
     data && data.totals.calls > 0 ? data.totals.cost_usd / data.totals.calls : 0;
   const avgCostPerMillion =
@@ -92,13 +95,15 @@ export default function CostPage() {
         </p>
       </div>
 
+      {incomplete && <IncompleteUsageNote />}
+
       <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4">
         <SummaryCard label="Total spend" value={fmtUsd(data?.totals.cost_usd ?? 0)} loading={loading && !data} />
         <SummaryCard label="Avg / request" value={fmtUsd(avgCostPerCall)} loading={loading && !data} />
         <SummaryCard
           label="Cost / 1M tokens"
-          value={fmtUsd(avgCostPerMillion)}
-          hint="input + output blended"
+          value={incomplete ? "Unavailable" : fmtUsd(avgCostPerMillion)}
+          hint={incomplete ? "Input counts incomplete" : "input + output blended"}
           loading={loading && !data}
         />
         <SummaryCard label="API requests" value={(data?.totals.calls ?? 0).toLocaleString()} loading={loading && !data} />

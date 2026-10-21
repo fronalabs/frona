@@ -20,6 +20,7 @@ export type ChatSSEEvent =
 /// One row of inference accounting — fired per provider call, gated on
 /// chat_id. See `crates/frona-server/src/inference/metrics/service.rs`.
 export interface UsageRecorded {
+  total_tokens?: number;
   chat_id: string;
   user_id: string | null;
   agent_id: string | null;

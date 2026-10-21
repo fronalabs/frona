@@ -16,12 +16,13 @@ import {
 } from "recharts";
 
 import { useNavigation } from "@/lib/navigation-context";
-import { useUsage } from "./usage-context";
+import { hasIncompleteUsage, useUsage } from "./usage-context";
 import {
   CHART_PALETTE,
   CHART_TOOLTIP_STYLE,
   Card,
   EmptyState,
+  IncompleteUsageNote,
   SectionHeader,
   SummaryCard,
   fmtBucketLabel,
@@ -33,6 +34,8 @@ import {
 export default function UsageOverviewPage() {
   const { range, data, loading, error } = useUsage();
   const { standaloneChats, archivedChats } = useNavigation();
+
+  const incomplete = data ? hasIncompleteUsage(data.totals) : false;
 
   const chatTitleById = useMemo(() => {
     const m = new Map<string, string>();
@@ -46,7 +49,8 @@ export default function UsageOverviewPage() {
     return data.series.map((b) => ({
       label: fmtBucketLabel(b.bucket, range.bucket),
       cached: b.cached_input_tokens,
-      fresh: Math.max(0, b.input_tokens - b.cached_input_tokens),
+      input: b.input_tokens,
+      otherInput: Math.max(0, b.input_tokens - b.cached_input_tokens),
       output: b.output_tokens,
     }));
   }, [data, range]);
@@ -79,6 +83,8 @@ export default function UsageOverviewPage() {
         </Card>
       )}
 
+      {incomplete && <IncompleteUsageNote />}
+
       <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4">
         <SummaryCard
           label="Cost"
@@ -93,7 +99,7 @@ export default function UsageOverviewPage() {
         <SummaryCard
           label="Tokens (in/out)"
           value={`${fmtK(data?.totals.input_tokens ?? 0)} / ${fmtK(data?.totals.output_tokens ?? 0)}`}
-          hint={data && data.totals.input_tokens > 0 ? `${cacheRatio.toFixed(0)}% cached` : undefined}
+          hint={incomplete ? "Cache ratio unavailable" : data && data.totals.input_tokens > 0 ? `${cacheRatio.toFixed(0)}% cached` : undefined}
           loading={loading && !data}
         />
         <SummaryCard
@@ -106,7 +112,7 @@ export default function UsageOverviewPage() {
       <Card className="mb-6">
         <SectionHeader
           title="Tokens over time"
-          subtitle="Cached + fresh input stacked under output."
+          subtitle={incomplete ? "Recorded input and output per bucket." : "Cache reads + other input (fresh input and cache writes), stacked under output."}
         />
         <div className="mt-4 h-60">
           {chartData.length === 0 ? (
@@ -118,8 +124,8 @@ export default function UsageOverviewPage() {
                 <XAxis dataKey="label" stroke="var(--text-tertiary)" fontSize={11} tickLine={false} axisLine={false} />
                 <YAxis stroke="var(--text-tertiary)" fontSize={11} tickLine={false} axisLine={false} tickFormatter={fmtK} />
                 <RTooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={((v: number) => fmtK(v)) as never} />
-                <Area type="monotone" dataKey="cached" stackId="t" stroke="var(--accent)" fill="var(--accent)" fillOpacity={0.7} isAnimationActive={false} />
-                <Area type="monotone" dataKey="fresh" stackId="t" stroke="var(--accent)" fill="var(--accent)" fillOpacity={0.3} isAnimationActive={false} />
+                {!incomplete && <Area type="monotone" name="Cache reads" dataKey="cached" stackId="t" stroke="var(--accent)" fill="var(--accent)" fillOpacity={0.7} isAnimationActive={false} />}
+                <Area type="monotone" dataKey={incomplete ? "input" : "otherInput"} name={incomplete ? "Recorded input" : "Other input"} stackId="t" stroke="var(--accent)" fill="var(--accent)" fillOpacity={0.3} isAnimationActive={false} />
                 <Area type="monotone" dataKey="output" stackId="t" stroke="var(--text-tertiary)" fill="var(--text-tertiary)" fillOpacity={0.25} isAnimationActive={false} />
               </AreaChart>
             </ResponsiveContainer>

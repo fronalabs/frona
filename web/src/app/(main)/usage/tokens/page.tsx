@@ -13,11 +13,12 @@ import {
   YAxis,
 } from "recharts";
 
-import { useUsage } from "../usage-context";
+import { hasIncompleteUsage, useUsage } from "../usage-context";
 import {
   CHART_TOOLTIP_STYLE,
   Card,
   EmptyState,
+  IncompleteUsageNote,
   SectionHeader,
   SummaryCard,
   fmtBucketLabel,
@@ -27,12 +28,15 @@ import {
 export default function TokensPage() {
   const { range, data, loading } = useUsage();
 
+  const incomplete = data ? hasIncompleteUsage(data.totals) : false;
+
   const tokenSeries = useMemo(() => {
     if (!data?.series) return [];
     return data.series.map((b) => ({
       label: fmtBucketLabel(b.bucket, range.bucket),
       cached: b.cached_input_tokens,
-      fresh: Math.max(0, b.input_tokens - b.cached_input_tokens),
+      input: b.input_tokens,
+      otherInput: Math.max(0, b.input_tokens - b.cached_input_tokens),
       output: b.output_tokens,
     }));
   }, [data, range]);
@@ -41,7 +45,7 @@ export default function TokensPage() {
     if (!data?.series) return [];
     return data.series.map((b) => ({
       label: fmtBucketLabel(b.bucket, range.bucket),
-      ratio:
+      ratio: hasIncompleteUsage(b) ? null :
         b.input_tokens > 0
           ? Number(((b.cached_input_tokens / b.input_tokens) * 100).toFixed(1))
           : 0,
@@ -57,6 +61,7 @@ export default function TokensPage() {
         cached: r.cached_input_tokens,
         output: r.output_tokens,
         calls: r.calls,
+        incomplete: hasIncompleteUsage(r),
       }))
       .filter((m) => m.input + m.output > 0)
       .sort((a, b) => b.input + b.output - (a.input + a.output));
@@ -81,12 +86,14 @@ export default function TokensPage() {
         </p>
       </div>
 
+      {incomplete && <IncompleteUsageNote />}
+
       <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4">
         <SummaryCard label="Input tokens" value={fmtK(data?.totals.input_tokens ?? 0)} loading={loading && !data} />
         <SummaryCard
           label="Cached"
           value={fmtK(data?.totals.cached_input_tokens ?? 0)}
-          hint={`${cacheRatioTotal.toFixed(0)}% of input`}
+          hint={incomplete ? "Cache ratio unavailable" : `${cacheRatioTotal.toFixed(0)}% of input`}
           loading={loading && !data}
         />
         <SummaryCard label="Output tokens" value={fmtK(data?.totals.output_tokens ?? 0)} loading={loading && !data} />
@@ -96,7 +103,7 @@ export default function TokensPage() {
       <Card className="mb-6">
         <SectionHeader
           title="Tokens over time"
-          subtitle="Stacked input (cached + fresh) and output per bucket."
+          subtitle={incomplete ? "Recorded input and output per bucket." : "Cache reads + other input (fresh input and cache writes), stacked under output."}
         />
         <div className="mt-4 h-72">
           {tokenSeries.length === 0 ? (
@@ -108,8 +115,8 @@ export default function TokensPage() {
                 <XAxis dataKey="label" stroke="var(--text-tertiary)" fontSize={11} tickLine={false} axisLine={false} />
                 <YAxis stroke="var(--text-tertiary)" fontSize={11} tickLine={false} axisLine={false} tickFormatter={fmtK} />
                 <RTooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={((v: number) => fmtK(v)) as never} />
-                <Area type="monotone" dataKey="cached" stackId="t" stroke="var(--accent)" fill="var(--accent)" fillOpacity={0.7} isAnimationActive={false} />
-                <Area type="monotone" dataKey="fresh" stackId="t" stroke="var(--accent)" fill="var(--accent)" fillOpacity={0.3} isAnimationActive={false} />
+                {!incomplete && <Area type="monotone" name="Cache reads" dataKey="cached" stackId="t" stroke="var(--accent)" fill="var(--accent)" fillOpacity={0.7} isAnimationActive={false} />}
+                <Area type="monotone" dataKey={incomplete ? "input" : "otherInput"} name={incomplete ? "Recorded input" : "Other input"} stackId="t" stroke="var(--accent)" fill="var(--accent)" fillOpacity={0.3} isAnimationActive={false} />
                 <Area type="monotone" dataKey="output" stackId="t" stroke="var(--text-tertiary)" fill="var(--text-tertiary)" fillOpacity={0.25} isAnimationActive={false} />
               </AreaChart>
             </ResponsiveContainer>
@@ -120,10 +127,12 @@ export default function TokensPage() {
       <Card className="mb-6">
         <SectionHeader
           title="Cache-hit ratio over time"
-          subtitle="Percentage of input that was a cache read. Higher = lower bill."
+          subtitle="Percentage of input that was a cache read. Buckets with incomplete input counts are omitted."
         />
         <div className="mt-4 h-52">
-          {cacheRatioSeries.length === 0 ? (
+          {cacheRatioSeries.length > 0 && cacheRatioSeries.every((b) => b.ratio === null) ? (
+            <p className="text-sm text-text-tertiary">Cache ratio unavailable</p>
+          ) : cacheRatioSeries.length === 0 ? (
             <EmptyState loading={loading} />
           ) : (
             <ResponsiveContainer width="100%" height="100%">
@@ -165,7 +174,7 @@ export default function TokensPage() {
                     <span className="tabular-nums text-text-primary">
                       {fmtK(total)}
                       <span className="ml-2 text-xs text-text-tertiary">
-                        ({fmtK(m.input)}↑ {fmtK(m.output)}↓ · {cachePct.toFixed(0)}% cached)
+                        ({fmtK(m.input)}↑ {fmtK(m.output)}↓ · {m.incomplete ? "cache ratio unavailable" : `${cachePct.toFixed(0)}% cached`})
                       </span>
                     </span>
                   </div>

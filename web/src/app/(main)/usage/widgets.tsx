@@ -102,3 +102,12 @@ export const CHART_TOOLTIP_STYLE = {
   borderRadius: 8,
   fontSize: 12,
 };
+
+export function IncompleteUsageNote() {
+  return (
+    <p className="mb-4 text-sm text-text-tertiary">
+      Some usage records have incomplete input counts. Recorded totals and costs are retained;
+      cache percentages and input breakdowns are unavailable for those records.
+    </p>
+  );
+}

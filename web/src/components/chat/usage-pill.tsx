@@ -83,6 +83,7 @@ function TooltipPanel({
   const ctxColor =
     ctxPct > 85 ? "bg-amber-500" : ctxPct > 60 ? "bg-yellow-500" : "bg-accent";
 
+  const incomplete = (totals.incompleteUsageCalls ?? totals.calls) > 0;
   const cachedPctOfInput =
     totals.inputTokens > 0
       ? (totals.cachedInputTokens / totals.inputTokens) * 100
@@ -121,7 +122,7 @@ function TooltipPanel({
           }
           value={fmtK(totals.inputTokens)}
         />
-        {totals.inputTokens > 0 && (
+        {!incomplete && totals.inputTokens > 0 && (
           <div className="flex flex-col gap-0.5">
             <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-border">
               {totals.cachedInputTokens > 0 && (
@@ -144,12 +145,18 @@ function TooltipPanel({
                   Cached {fmtK(totals.cachedInputTokens)} · {cachedPctOfInput.toFixed(0)}%
                 </span>
                 <span className="inline-flex items-center gap-1">
-                  Fresh {fmtK(totals.inputTokens - totals.cachedInputTokens)}
+                  Other input {fmtK(totals.inputTokens - totals.cachedInputTokens)}
                   <span className="h-1.5 w-1.5 rounded-full bg-accent/30" aria-hidden />
                 </span>
               </div>
             )}
+            <p className="text-text-tertiary">Other input includes fresh input and cache writes.</p>
           </div>
+        )}
+        {incomplete && (
+          <p className="text-text-tertiary">
+            Input counts are incomplete. Cache ratio unavailable.
+          </p>
         )}
       </section>
 
@@ -271,6 +278,7 @@ export function PerMessageUsageFooter({ totals, modelRef }: PerMessageUsageFoote
       {" · "}{fmtK(totals.outputTokens)} out
       {" · "}{fmtUsd(totals.costUsd)}
       {modelRef && <> — {modelRef}</>}
+      {(totals.incompleteUsageCalls ?? totals.calls) > 0 && <> · input counts incomplete</>}
     </div>
   );
 }

@@ -8,6 +8,7 @@ export interface RunningTotals {
   outputTokens: number;
   costUsd: number;
   calls: number;
+  incompleteUsageCalls?: number;
 }
 
 const ZERO_TOTALS: RunningTotals = {
@@ -16,15 +17,22 @@ const ZERO_TOTALS: RunningTotals = {
   outputTokens: 0,
   costUsd: 0,
   calls: 0,
+  incompleteUsageCalls: 0,
 };
 
 function addUsage(totals: RunningTotals, u: UsageRecorded): RunningTotals {
+  const incomplete =
+    u.total_tokens === undefined ||
+    u.input_tokens < u.cached_input_tokens ||
+    u.input_tokens + u.output_tokens !== u.total_tokens ||
+    [u.input_tokens, u.cached_input_tokens, u.output_tokens].some((n) => !Number.isInteger(n) || n < 0);
   return {
     inputTokens: totals.inputTokens + u.input_tokens,
     cachedInputTokens: totals.cachedInputTokens + u.cached_input_tokens,
     outputTokens: totals.outputTokens + u.output_tokens,
     costUsd: totals.costUsd + (u.cost_usd ?? 0),
     calls: totals.calls + 1,
+    incompleteUsageCalls: (totals.incompleteUsageCalls ?? totals.calls) + (incomplete ? 1 : 0),
   };
 }
 
@@ -163,6 +171,7 @@ export class ChatStore {
           output_tokens: number;
           cost_usd: number;
           calls: number;
+          incomplete_usage_calls?: number;
         };
         last_chat_input_tokens: number | null;
         total_tool_calls: number;
@@ -174,6 +183,7 @@ export class ChatStore {
           outputTokens: data.totals.output_tokens,
           costUsd: data.totals.cost_usd,
           calls: data.totals.calls,
+          incompleteUsageCalls: data.totals.incomplete_usage_calls ?? data.totals.calls,
         },
         data.last_chat_input_tokens ?? 0,
         data.total_tool_calls,

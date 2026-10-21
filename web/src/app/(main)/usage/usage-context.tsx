@@ -11,6 +11,7 @@ export type UsageRollup = {
   output_tokens: number;
   cost_usd: number;
   calls: number;
+  incomplete_usage_calls?: number;
 };
 
 export type UsageBucket = {
@@ -20,7 +21,13 @@ export type UsageBucket = {
   output_tokens: number;
   cost_usd: number;
   calls: number;
+  incomplete_usage_calls?: number;
 };
+
+// Without completeness data, nonempty aggregates cannot support reliable ratios.
+export function hasIncompleteUsage(usage: { calls: number; incomplete_usage_calls?: number }): boolean {
+  return (usage.incomplete_usage_calls ?? usage.calls) > 0;
+}
 
 export type LatencyPercentiles = {
   duration_ms_p50: number | null;

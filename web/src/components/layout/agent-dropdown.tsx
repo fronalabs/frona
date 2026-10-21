@@ -33,6 +33,7 @@ export function AgentDropdown() {
   const { agents, deleteAgent } = useNavigation();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -41,8 +42,18 @@ export function AgentDropdown() {
         setOpen(false);
       }
     }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    }
     document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
   }, [open]);
 
   const handleDelete = async (e: React.MouseEvent, agent: Agent) => {
@@ -54,6 +65,8 @@ export function AgentDropdown() {
   return (
     <div ref={ref} className="relative flex items-center">
       <button
+        ref={triggerRef}
+        aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         className={`relative flex items-center justify-center h-10 w-10 transition cursor-pointer ${
           open ? "rounded-t-xl rounded-b-none bg-surface-secondary text-text-primary z-[61] border border-border border-b-0" : "rounded-full bg-surface-tertiary text-text-secondary hover:brightness-125"
@@ -64,8 +77,8 @@ export function AgentDropdown() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full z-[60] w-64 rounded-xl rounded-tr-none border border-border bg-surface-secondary shadow-lg">
-          <div className="absolute -top-px right-0 w-[calc(theme(spacing.10)-3px)] h-[2px] bg-surface-secondary z-[60]" />
+        <div className="fixed left-4 right-4 top-14 z-[60] max-h-[70vh] overflow-y-auto md:absolute md:left-auto md:right-0 md:top-full md:w-64 rounded-xl rounded-tr-none border border-border bg-surface-secondary shadow-lg">
+          <div className="hidden md:block absolute -top-px right-0 w-[calc(theme(spacing.10)-3px)] h-[2px] bg-surface-secondary z-[60]" />
           <div className="pb-1">
             <div className="flex items-center justify-between px-4 py-2 border-b border-border shrink-0">
               <span className="text-sm font-medium text-text-secondary">Agents</span>
@@ -80,7 +93,7 @@ export function AgentDropdown() {
                 }}
               >
                 <AgentIcon agent={agent} />
-                <span className="flex-1 truncate text-sm text-text-secondary group-hover:text-text-primary">
+                <span className="min-w-0 flex-1 truncate text-sm text-text-secondary group-hover:text-text-primary">
                   {agentDisplayName(agent.id, agent.name)}
                 </span>
                 <button
@@ -89,16 +102,18 @@ export function AgentDropdown() {
                     router.push(`/agents?id=${agent.id}`);
                     setOpen(false);
                   }}
-                  className="p-1 rounded text-text-tertiary hover:text-text-primary transition opacity-0 group-hover:opacity-100"
+                  className="p-1 rounded text-text-tertiary hover:text-text-primary transition row-action group-hover:opacity-100 group-focus-within:opacity-100"
                   title="Configure"
+                  aria-label={`Configure ${agentDisplayName(agent.id, agent.name)}`}
                 >
                   <Cog6ToothIcon className="h-4 w-4" />
                 </button>
                 {!agent.is_shared && (
                   <button
                     onClick={(e) => handleDelete(e, agent)}
-                    className="p-1 rounded text-text-tertiary hover:text-error-text transition opacity-0 group-hover:opacity-100"
+                    className="p-1 rounded text-text-tertiary hover:text-error-text transition row-action group-hover:opacity-100 group-focus-within:opacity-100"
                     title="Delete"
+                    aria-label={`Delete ${agentDisplayName(agent.id, agent.name)}`}
                   >
                     <TrashIcon className="h-4 w-4" />
                   </button>

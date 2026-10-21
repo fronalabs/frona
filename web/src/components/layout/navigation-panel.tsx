@@ -26,7 +26,7 @@ function setCookie(name: string, value: string, days = 365) {
 
 function NavigationContent({ activeTab }: { activeTab: string }) {
   return (
-    <div className="flex-1 overflow-y-auto">
+    <div className="flex-1 min-h-0 min-w-0 overflow-y-auto">
       {activeTab === "chat" && <ChatsTab />}
       {activeTab === "tasks" && <TasksTab />}
     </div>
@@ -140,12 +140,14 @@ export function NavigationPanel() {
 
   if (collapsed) {
     return (
-      <div
+      <button
+        type="button"
+        aria-label="Expand navigation panel"
         onClick={toggleCollapsed}
         className="group/nav relative flex h-full flex-col items-center border-r border-border bg-surface-nav w-6 shrink-0 cursor-pointer transition-colors hover:bg-surface-tertiary/30"
       >
         <Bars3Icon className="h-4 w-4 mt-3 text-text-tertiary" />
-      </div>
+      </button>
     );
   }
 
@@ -159,10 +161,10 @@ export function NavigationPanel() {
         <div className="flex-1"><TabBar /></div>
       </div>
 
-      {/* Collapse button — visible on hover */}
+      {/* Collapse control also remains available to touch and keyboard users. */}
       <button
         onClick={toggleCollapsed}
-        className="absolute top-1/2 -translate-y-1/2 -right-3 z-10 flex items-center justify-center h-6 w-6 rounded-full border border-border bg-surface shadow-sm text-text-tertiary hover:text-text-primary hover:bg-surface-secondary transition opacity-0 group-hover/nav:opacity-100"
+        className="absolute top-1/2 -translate-y-1/2 -right-3 z-10 flex items-center justify-center h-6 w-6 rounded-full border border-border bg-surface shadow-sm text-text-tertiary hover:text-text-primary hover:bg-surface-secondary transition row-action group-hover/nav:opacity-100 group-focus-within/nav:opacity-100 focus:opacity-100"
         title="Collapse panel"
       >
         <ChevronLeftIcon className="h-3 w-3" />

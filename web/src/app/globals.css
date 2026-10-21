@@ -478,3 +478,15 @@
 .aui-trigger-popover:not(:has([role="option"])) {
   display: none;
 }
+
+/* Row controls remain discoverable on touch screens and while tabbing. */
+@layer components {
+  .row-action {
+    opacity: 1;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .row-action {
+      opacity: 0;
+    }
+  }
+}

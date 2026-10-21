@@ -180,7 +180,7 @@ export function ChatsTab() {
           </button>
           <button
             onClick={() => setSpaceMenu((id) => (id === space.id ? null : space.id))}
-            className="mr-1 rounded p-0.5 text-text-tertiary opacity-0 transition hover:text-text-primary group-hover:opacity-100 focus:opacity-100"
+            className="mr-1 rounded p-0.5 text-text-tertiary row-action transition hover:text-text-primary group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100"
             aria-label={`Actions for ${space.name}`}
           >
             <EllipsisVerticalIcon className="h-5 w-5" />

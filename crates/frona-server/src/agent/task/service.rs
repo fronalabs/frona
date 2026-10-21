@@ -458,7 +458,13 @@ impl TaskService {
 
         task.updated_at = chrono::Utc::now();
 
-        self.repo.update(&task).await
+        let task = self.repo.update(&task).await?;
+        self.broadcast(
+            &task,
+            status_str(&task.status),
+            task.result_summary.as_deref(),
+        );
+        Ok(task)
     }
 
     pub async fn find_deferred_due(&self) -> Result<Vec<Task>, AppError> {

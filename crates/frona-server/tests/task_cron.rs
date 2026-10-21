@@ -1,6 +1,7 @@
 use chrono::{Duration, Utc};
 use frona::agent::task::models::{Task, TaskKind, TaskStatus};
 use frona::agent::task::service::TaskService;
+use frona::chat::broadcast::{BroadcastEventKind, BroadcastService};
 use frona::core::repository::Repository;
 use frona::db::init as db;
 use frona::db::repo::generic::SurrealRepo;
@@ -161,7 +162,8 @@ async fn cron_template_space_id_is_inherited_by_spawned_runs() {
 #[tokio::test]
 async fn advance_cron_template_updates_next_run_at() {
     let db = test_db().await;
-    let svc = make_task_service(db);
+    let broadcast = BroadcastService::new();
+    let svc = TaskService::new(SurrealRepo::new(db), broadcast.clone());
 
     let first_next = next_cron_occurrence("0 9 * * *", "UTC").unwrap();
     let template = svc
@@ -186,17 +188,45 @@ async fn advance_cron_template_updates_next_run_at() {
         .await
         .unwrap();
 
+    let mut template = template;
+    template.status = TaskStatus::InProgress;
+    template.result_summary = Some("Previous result".into());
+    svc.repo().update(&template).await.unwrap();
+    let mut events = broadcast.subscribe_raw();
+
     let new_next = first_next + Duration::days(1);
     let advanced = svc
         .advance_cron_template(&template.id, new_next)
         .await
         .unwrap();
 
-    match &advanced.kind {
-        TaskKind::Cron { next_run_at, .. } => {
-            assert_eq!(*next_run_at, Some(new_next));
+    let event = events
+        .try_recv()
+        .expect("advancing a template must notify clients");
+    assert_eq!(event.user_id, template.user_id);
+    match event.kind {
+        BroadcastEventKind::TaskUpdate {
+            task_id,
+            status,
+            result_summary,
+            ..
+        } => {
+            assert_eq!(task_id, template.id);
+            assert_eq!(status, "inprogress");
+            assert_eq!(result_summary, template.result_summary);
         }
-        _ => panic!("Expected Cron variant"),
+        _ => panic!("Expected TaskUpdate event"),
+    }
+    assert!(events.try_recv().is_err(), "only one update should be sent");
+
+    let persisted = svc.repo().find_by_id(&template.id).await.unwrap().unwrap();
+    for task in [advanced, persisted] {
+        match task.kind {
+            TaskKind::Cron { next_run_at, .. } => {
+                assert_eq!(next_run_at, Some(new_next));
+            }
+            _ => panic!("Expected Cron variant"),
+        }
     }
 }
 

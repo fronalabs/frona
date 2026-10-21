@@ -107,7 +107,7 @@ export function MemorySection({ memory, models, activeBackend, onChange }: Memor
         <div className="space-y-2">
           <div className="inline-flex items-center gap-1 text-sm font-medium text-text-secondary">
             Backend
-            <HelpTip content="Which memory subsystem runs. Takes effect after a restart." />
+            <HelpTip label="Help for Backend" content="Which memory subsystem runs. Takes effect after a restart." />
           </div>
 
           <div

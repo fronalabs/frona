@@ -500,7 +500,7 @@ function CreateChannelDialog({
             label={
               <>
                 Space
-                <HelpTip content="Spaces group related chats. Messages from this channel land here as new chats, and the assigned agent replies in them." />
+                <HelpTip label="Help for Space" content="Spaces group related chats. Messages from this channel land here as new chats, and the assigned agent replies in them." />
                 {!availableSpaces.some((s) => s.name === spaceName.trim()) && (
                   <span className="rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] font-medium text-green-500">
                     New
@@ -518,7 +518,7 @@ function CreateChannelDialog({
           <div className="space-y-1">
             <label className="flex items-center gap-2 text-xs font-medium text-text-secondary">
               Agent
-              <HelpTip content="The agent assigned to this channel. It reads every incoming message and, when configured to reply, sends the response back." />
+              <HelpTip label="Help for Agent" content="The agent assigned to this channel. It reads every incoming message and, when configured to reply, sends the response back." />
             </label>
             <select
               value={agentId}
@@ -537,7 +537,7 @@ function CreateChannelDialog({
           <div className="space-y-1">
             <label className="flex items-center gap-2 text-xs font-medium text-text-secondary">
               When a message arrives
-              <HelpTip content="Treat as a message from you: the agent runs as if you wrote the message yourself. Only works once the channel is paired to your account. Hand off to a waiting agent: the message goes to whichever task is currently waiting for input, such as a 2FA code or a confirmation link." />
+              <HelpTip label="Help for When a message arrives" content="Treat as a message from you: the agent runs as if you wrote the message yourself. Only works once the channel is paired to your account. Hand off to a waiting agent: the message goes to whichever task is currently waiting for input, such as a 2FA code or a confirmation link." />
             </label>
             <select
               value={dispatchMode}

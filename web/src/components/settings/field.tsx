@@ -3,6 +3,7 @@
 import { useId, useState } from "react";
 import { InformationCircleIcon, XMarkIcon } from "@heroicons/react/16/solid";
 import * as Tooltip from "@radix-ui/react-tooltip";
+import * as Popover from "@radix-ui/react-popover";
 import type { SensitiveField } from "@/lib/config-types";
 import { isSensitiveSet } from "@/lib/config-types";
 
@@ -14,27 +15,45 @@ export function InputResetButton({ label, onClick, className = "" }: { label: st
   </button>;
 }
 
-export function HelpTip({ content }: { content: string }) {
+const helpTipClassName = "z-50 max-w-[min(20rem,calc(100vw-1rem))] max-h-[var(--radix-popper-available-height)] overflow-y-auto break-words rounded-lg bg-surface-secondary border border-border px-3 py-2 text-xs text-text-secondary shadow-lg animate-in fade-in-0 zoom-in-95";
+
+export function HelpTip({ content, label = "Help" }: { content: string; label?: string }) {
+  const [open, setOpen] = useState(false);
+  const [hoverOpen, setHoverOpen] = useState(false);
+  const contentId = useId();
   return (
-    <Tooltip.Provider delayDuration={200}>
-      <Tooltip.Root>
-        <Tooltip.Trigger asChild>
-          <button type="button" className="inline-flex items-center p-0 leading-none">
-            <InformationCircleIcon className="h-3.5 w-3.5 text-text-tertiary hover:text-text-secondary transition-colors" />
-          </button>
-        </Tooltip.Trigger>
-        <Tooltip.Portal>
-          <Tooltip.Content
-            side="top"
-            sideOffset={4}
-            className="z-50 max-w-xs rounded-lg bg-surface-secondary border border-border px-3 py-2 text-xs text-text-secondary shadow-lg animate-in fade-in-0 zoom-in-95"
-          >
-            {content}
-            <Tooltip.Arrow className="fill-surface-secondary" />
-          </Tooltip.Content>
-        </Tooltip.Portal>
-      </Tooltip.Root>
-    </Tooltip.Provider>
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Tooltip.Provider delayDuration={200}>
+        <Tooltip.Root open={!open && hoverOpen} onOpenChange={nextOpen => setHoverOpen(!open && nextOpen)}>
+          {/* Keyboard users open the popover; returning focus must not reopen the tooltip. */}
+          <Tooltip.Trigger asChild onFocus={event => event.preventDefault()}>
+            <Popover.Trigger asChild>
+              <button type="button" aria-label={label} className="inline-flex items-center p-0 leading-none rounded focus-visible:outline-2 focus-visible:outline-accent">
+                <InformationCircleIcon aria-hidden="true" className="h-3.5 w-3.5 text-text-tertiary hover:text-text-secondary transition-colors" />
+              </button>
+            </Popover.Trigger>
+          </Tooltip.Trigger>
+          <Tooltip.Portal>
+            <Tooltip.Content
+              side="top"
+              sideOffset={4}
+              collisionPadding={8}
+              className={helpTipClassName}
+            >
+              {content}
+              <Tooltip.Arrow className="fill-surface-secondary" />
+            </Tooltip.Content>
+          </Tooltip.Portal>
+        </Tooltip.Root>
+      </Tooltip.Provider>
+      <Popover.Portal>
+        <Popover.Content side="top" sideOffset={4} collisionPadding={8}
+          aria-label={label} aria-describedby={contentId} className={helpTipClassName}>
+          <p id={contentId}>{content}</p>
+          <Popover.Arrow className="fill-surface-secondary" />
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 
@@ -48,12 +67,12 @@ interface FieldProps {
 export function Field({ label, description, htmlFor, children }: FieldProps) {
   return (
     <div className="space-y-1">
-      <label htmlFor={htmlFor} className="inline-flex items-center gap-1 text-sm font-medium text-text-secondary">
-        {label}
+      <div className="inline-flex items-center gap-1 text-sm font-medium text-text-secondary">
+        <label htmlFor={htmlFor}>{label}</label>
         {description && (
-          <HelpTip content={description} />
+          <HelpTip content={description} label={`Help for ${label}`} />
         )}
-      </label>
+      </div>
       {children}
     </div>
   );
@@ -292,7 +311,7 @@ export function SectionPanel({ title, icon: Icon, helpTip, children, className }
         <div className="-mt-1 pb-3 border-b border-border flex items-center gap-2">
           {Icon && <Icon className="h-4.5 w-4.5 text-text-tertiary" />}
           <h4 className="text-base font-semibold text-text-primary">{title}</h4>
-          {helpTip && <HelpTip content={helpTip} />}
+          {helpTip && <HelpTip content={helpTip} label={`Help for ${title}`} />}
         </div>
       )}
       {children}

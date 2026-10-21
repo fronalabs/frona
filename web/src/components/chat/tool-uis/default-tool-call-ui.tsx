@@ -13,6 +13,7 @@ import { useToolTimeline } from "./tool-timeline-context";
 import { InlineCode } from "./inline-code";
 import { pickView, TOOL_VIEWS_DEFAULT_EXPANDED } from "./views";
 import { SafeToolView } from "./views/safe-tool-view";
+import { MarkdownErrorBoundary } from "../markdown-error-boundary";
 
 type ToolStatus = ToolCallMessagePartStatus["type"];
 
@@ -130,19 +131,21 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = (props) => {
             className="inline-block rounded-r-md bg-surface-tertiary pl-4 pr-3 py-1.5 text-xs text-text-secondary leading-none [&_p]:m-0"
             style={{ marginLeft: "11px" }}
           >
-            <ReactMarkdown
-              components={{
-                pre: ({ children }) => <>{children}</>,
-                code: ({ className, children }) => {
-                  const lang = className?.replace("language-", "");
-                  const code = String(children).replace(/\n$/, "");
-                  if (!className) return <code className="text-xs">{children}</code>;
-                  return <InlineCode code={code} language={lang} />;
-                },
-              }}
-            >
-              {turnText}
-            </ReactMarkdown>
+            <MarkdownErrorBoundary text={turnText}>
+              <ReactMarkdown
+                components={{
+                  pre: ({ children }) => <>{children}</>,
+                  code: ({ className, children }) => {
+                    const lang = className?.replace("language-", "");
+                    const code = String(children).replace(/\n$/, "");
+                    if (!className) return <code className="text-xs">{children}</code>;
+                    return <InlineCode code={code} language={lang} />;
+                  },
+                }}
+              >
+                {turnText}
+              </ReactMarkdown>
+            </MarkdownErrorBoundary>
           </div>
         </div>
       )}

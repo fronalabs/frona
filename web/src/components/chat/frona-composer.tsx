@@ -10,6 +10,7 @@ import { COMMAND_PRIORITY_NORMAL, KEY_ENTER_COMMAND } from "lexical";
 import type { Unstable_TriggerItem } from "@assistant-ui/core";
 import { PaperAirplaneIcon, StopIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/solid";
 import { ArrowUpTrayIcon, CloudIcon, FolderOpenIcon } from "@heroicons/react/24/outline";
+import { ComposerPastePlugin } from "./composer-paste-plugin";
 import { FileBrowserModal } from "@/components/chat/file-browser-modal";
 import { tryDispatchClientBuiltin } from "@/components/chat/client-commands";
 import {
@@ -290,6 +291,7 @@ export function FronaComposer({
               className="aui-frona-composer-input w-full text-sm leading-5 text-text-primary"
             >
               <SubmitOnEnter />
+              <ComposerPastePlugin onAttachmentError={setAttachmentError} />
             </LexicalComposerInput>
           </div>
           <div className="flex items-center justify-between pt-2">

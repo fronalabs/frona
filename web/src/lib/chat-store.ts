@@ -116,6 +116,8 @@ export class ChatStore {
   private listeners = new Set<() => void>();
   private _snapshot: StoreSnapshot | null = null;
   private streamingNotificationScheduled = false;
+  private activityRevision = 0;
+  private historyRequest = 0;
 
   subscribe(callback: () => void): () => void {
     this.listeners.add(callback);
@@ -216,6 +218,7 @@ export class ChatStore {
   }
 
   markRunning() {
+    this.activityRevision += 1;
     this.isRunning = true;
     this.notify();
   }
@@ -228,6 +231,7 @@ export class ChatStore {
 
   /** Add a user message optimistically (before backend echo). */
   addUserMessage(content: string, attachments?: Attachment[]) {
+    this.activityRevision += 1;
     this.messages.push({
       id: `__user_${Date.now()}`,
       chat_id: "",
@@ -241,6 +245,8 @@ export class ChatStore {
   }
 
   async loadMessages(chatId: string) {
+    const request = ++this.historyRequest;
+    const activityRevision = this.activityRevision;
     // Fire usage seed in parallel — failures are non-fatal (counter just
     // starts from zero and SSE catches up).
     void this.loadUsageSeed(chatId);
@@ -248,22 +254,34 @@ export class ChatStore {
       const { messages, has_more } = await api.get<{ messages: MessageResponse[]; has_more: boolean }>(
         `/api/chats/${chatId}/messages`,
       );
-      // Merge instead of overwrite so messages that arrived first — via
-      // buffered SSE events on an unloaded chat, or the optimistic user
-      // message from onNew — survive the historical fetch. Historical
-      // messages predate anything in the store, so they go in front.
-      if (this.messages.length === 0) {
-        this.messages = messages;
-      } else {
-        const existing = new Set(this.messages.map((m) => m.id));
-        const historical = messages.filter((m) => !existing.has(m.id));
-        this.messages = [...historical, ...this.messages];
-      }
+      if (request !== this.historyRequest) return;
+      const unchanged = activityRevision === this.activityRevision;
+      const latest = messages.at(-1);
+      const previous = latest && this.messages.find((message) => message.id === latest.id);
+      const pendingSend = this.messages.some((message) => message.id.startsWith("__user_"));
+      const stored = new Map(messages.map((message) => [message.id, message]));
+      const existing = new Set(this.messages.map((message) => message.id));
+      // Refresh persisted messages without overwriting events or optimistic
+      // changes that arrived while the request was in flight.
+      this.messages = [
+        ...messages.filter((message) => !existing.has(message.id)),
+        ...this.messages.map((message) => unchanged ? stored.get(message.id) ?? message : message),
+      ];
       this.sortMessagesChronologically();
+      if (unchanged && !pendingSend && latest?.role === "agent") {
+        if (latest.status === "executing") {
+          this.isRunning = true;
+        } else if (latest.status && (!previous || previous.status !== latest.status || !this.isRunning)) {
+          // A terminal message already known before a newer run began is not
+          // evidence that this run has finished.
+          this.clearStreaming();
+        }
+      }
       this.hasMore = has_more;
     } catch {
       // leave any optimistic/SSE-delivered messages alone
     }
+    if (request !== this.historyRequest) return;
     this.hydrateExternalTools();
     this.loaded = true;
     this.notify();
@@ -306,6 +324,7 @@ export class ChatStore {
   }
 
   handleEvent(event: ChatSSEEvent) {
+    if (event.type !== "usage_recorded") this.activityRevision += 1;
     switch (event.type) {
       case "token":
         this.isRunning = true;
@@ -626,6 +645,7 @@ export class ChatStore {
   }
 
   resolveToolCall(toolCallId: string, result: string) {
+    this.activityRevision += 1;
     // Check pending external tools (streaming state) — optimistic update
     const pending = this.pendingExternalTools.get(toolCallId);
     if (pending?.hitl) {
@@ -709,6 +729,7 @@ export class ChatStore {
   }
 
   clearStreaming() {
+    this.activityRevision += 1;
     this.isRunning = false;
     this.streamingText = "";
     this.streamingReasoning = "";

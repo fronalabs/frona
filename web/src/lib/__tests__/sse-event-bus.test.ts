@@ -1,6 +1,8 @@
 import { makeMessageError } from "./fixtures/message-error";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { SSEEventBus, type ChatSSEEvent, type GlobalSSEEvent } from "../sse-event-bus";
+
+vi.mock("../api-client", () => ({ ensureAccessToken: vi.fn(async () => ({ ok: false })), API_URL: "" }));
 
 describe("SSEEventBus: chat event routing", () => {
   let bus: SSEEventBus;
@@ -372,27 +374,107 @@ describe("SSEEventBus: global events", () => {
 
 describe("SSEEventBus: reconnect behavior", () => {
   let bus: SSEEventBus;
+  let connection: AbortController;
+  let streams: ReadableStreamDefaultController<Uint8Array>[];
 
   beforeEach(() => {
+    vi.useFakeTimers();
     bus = new SSEEventBus();
+    connection = new AbortController();
+    streams = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, options: RequestInit) => ({
+      ok: true,
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          streams.push(controller);
+          options.signal?.addEventListener("abort", () => controller.error(new DOMException("Aborted", "AbortError")));
+        },
+      }),
+    })));
   });
 
-  it("calls reconnect listeners", () => {
-    const listener = vi.fn();
-    bus.onReconnect(listener);
-
-    // Simulate reconnect by connecting twice — the second connect triggers reconnect
-    // We can test onReconnect directly by verifying it registers/unregisters
-    expect(listener).not.toHaveBeenCalled();
+  afterEach(() => {
+    connection.abort();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
-  it("unsubscribing reconnect listener works", () => {
-    const listener = vi.fn();
-    const unsub = bus.onReconnect(listener);
-    unsub();
+  async function connect() {
+    bus.connect(connection.signal);
+    await vi.advanceTimersByTimeAsync(0);
+  }
 
-    // Listener should be removed — no way to trigger reconnect without a real stream,
-    // but we verified the unsub mechanics
-    expect(listener).not.toHaveBeenCalled();
+  async function reconnect(disconnect = "error") {
+    if (disconnect === "eof") streams.at(-1)!.close();
+    else streams.at(-1)!.error(new Error("network disconnected"));
+    await vi.advanceTimersByTimeAsync(1000);
+  }
+
+  function emit(content: string) {
+    streams.at(-1)!.enqueue(new TextEncoder().encode(
+      `event: token\ndata: ${JSON.stringify({ chat_id: "chat-1", content })}\n\n`,
+    ));
+  }
+
+  it.each(["error", "eof"])("keeps the same waiting consumer alive through repeated %s disconnects", async (disconnect) => {
+    const consumer = new AbortController();
+    const received: ChatSSEEvent[] = [];
+    const consume = (async () => {
+      for await (const event of bus.subscribe("chat-1", consumer.signal)) received.push(event);
+    })();
+    const listener = vi.fn();
+    const unsubscribe = bus.onReconnect(listener);
+    await connect();
+    emit("first");
+    await vi.advanceTimersByTimeAsync(0);
+    await reconnect(disconnect);
+    emit("second");
+    await vi.advanceTimersByTimeAsync(0);
+    await reconnect(disconnect);
+    emit("third");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(received).toEqual(["first", "second", "third"].map((content) => ({ type: "token", content })));
+    expect(listener).toHaveBeenCalledTimes(2);
+    unsubscribe();
+    await reconnect(disconnect);
+    expect(listener).toHaveBeenCalledTimes(2);
+    consumer.abort();
+    await consume;
+  });
+
+  it("discards stale subscriber queues and unmounted-chat cancellations while preserving new ordering", async () => {
+    const consumer = new AbortController();
+    const iterator = bus.subscribe("chat-1", consumer.signal)[Symbol.asyncIterator]();
+    await connect();
+    bus.routeEvent("inference_cancelled", "chat-1", { reason: "old run" });
+    bus.routeEvent("inference_cancelled", "unmounted", { reason: "old run" });
+    await reconnect();
+    emit("new-1");
+    emit("new-2");
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await iterator.next()).value).toEqual({ type: "token", content: "new-1" });
+    expect((await iterator.next()).value).toEqual({ type: "token", content: "new-2" });
+    bus.routeEvent("inference_start", "unmounted", {});
+    const reopened = bus.subscribe("unmounted", consumer.signal)[Symbol.asyncIterator]();
+    expect((await reopened.next()).value).toEqual({ type: "inference_start" });
+    consumer.abort();
+    expect((await iterator.next()).done).toBe(true);
+    expect((await reopened.next()).done).toBe(true);
+  });
+
+  it("cleans up aborted/returned consumers and never replays their remaining queue", async () => {
+    const consumer = new AbortController();
+    const remove = vi.spyOn(consumer.signal, "removeEventListener");
+    const iterator = bus.subscribe("chat-1", consumer.signal)[Symbol.asyncIterator]();
+    bus.routeEvent("token", "chat-1", { content: "queued" });
+    await iterator.return?.();
+    expect((await iterator.next()).done).toBe(true);
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+    consumer.abort();
+    const alreadyAborted = bus.subscribe("chat-1", consumer.signal)[Symbol.asyncIterator]();
+    expect((await alreadyAborted.next()).done).toBe(true);
+    await connect();
+    await reconnect();
+    expect((await iterator.next()).done).toBe(true);
   });
 });

@@ -49,7 +49,7 @@ interface ChatSubscriber {
   chatId: string;
   push: (event: ChatSSEEvent) => void;
   close: () => void;
-  /** Soft-reset on SSE reconnect: clear buffered events, resolve any active read with done. */
+  /** Soft-reset on SSE reconnect: discard buffered events and keep active reads waiting. */
   notifyReconnect: () => void;
 }
 
@@ -83,7 +83,7 @@ export class SSEEventBus {
     const bus = this;
     return {
       [Symbol.asyncIterator]() {
-        const buffered = bus.chatBuffers.get(chatId);
+        const buffered = signal.aborted ? undefined : bus.chatBuffers.get(chatId);
         const queue: ChatSSEEvent[] = buffered ? buffered.splice(0) : [];
         if (buffered && buffered.length === 0) bus.chatBuffers.delete(chatId);
 
@@ -104,6 +104,7 @@ export class SSEEventBus {
           },
           close() {
             done = true;
+            queue.length = 0;
             if (resolve) {
               const r = resolve;
               resolve = null;
@@ -112,11 +113,6 @@ export class SSEEventBus {
           },
           notifyReconnect() {
             queue.length = 0;
-            if (resolve) {
-              const r = resolve;
-              resolve = null;
-              r({ value: undefined as unknown as ChatSSEEvent, done: true });
-            }
           },
         };
 
@@ -128,12 +124,14 @@ export class SSEEventBus {
         subs.add(subscriber);
 
         const cleanup = () => {
+          signal.removeEventListener("abort", cleanup);
           subscriber.close();
           subs!.delete(subscriber);
           if (subs!.size === 0) bus.chatSubscribers.delete(chatId);
         };
 
         signal.addEventListener("abort", cleanup);
+        if (signal.aborted) cleanup();
 
         return {
           next(): Promise<IteratorResult<ChatSSEEvent>> {
@@ -201,12 +199,9 @@ export class SSEEventBus {
         sub.notifyReconnect();
       }
     }
-    // Preserve buffers for chats with no subscriber yet (React effect race).
-    for (const chatId of [...this.chatBuffers.keys()]) {
-      if (this.chatSubscribers.has(chatId)) {
-        this.chatBuffers.delete(chatId);
-      }
-    }
+    // Unmounted chats also reconcile from history when reopened. Their old
+    // lifecycle events must not overwrite activity from the new connection.
+    this.chatBuffers.clear();
   }
 
   private async runLoop(signal: AbortSignal) {
@@ -216,15 +211,17 @@ export class SSEEventBus {
 
     while (!signal.aborted) {
       try {
-        const isReconnect = hadConnection;
-        await this.connectStream(signal, isReconnect ? () => {
-          this.notifySubscribersReconnect();
-          for (const listener of this.reconnectListeners) {
-            try { listener(); } catch { /* ignore */ }
+        await this.connectStream(signal, () => {
+          if (hadConnection) {
+            this.notifySubscribersReconnect();
+            for (const listener of this.reconnectListeners) {
+              try { listener(); } catch { /* ignore */ }
+            }
           }
-        } : undefined);
-        hadConnection = true;
-        delay = 1000;
+          // A reader error can end a successfully established connection.
+          hadConnection = true;
+          delay = 1000;
+        });
       } catch {
         if (signal.aborted) return;
       }

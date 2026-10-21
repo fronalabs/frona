@@ -138,6 +138,7 @@ impl TimeBucket {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
 pub struct UsageBucket {
+    pub incomplete_usage_calls: u64,
     pub bucket: DateTime<Utc>,
     pub input_tokens: u64,
     pub cached_input_tokens: u64,

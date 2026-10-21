@@ -29,12 +29,17 @@ pub struct InferenceUsage {
     pub model_id: String,
     pub model_ref: String,
 
-    // Usage. `cached_input_tokens` stores cache reads. Pricing also consumes
-    // Rig's separate cache-write count before projecting usage into this row;
-    // writes contribute to cost_usd but have no dedicated persisted column.
+    /// Total prompt input: fresh tokens, cache reads, and cache writes. Cache
+    /// reads are a subset; input minus reads includes writes, not just fresh.
+    /// The normalization migration recovers historical input from provider
+    /// totals when consistent; unrecoverable rows retain their original counts.
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
     pub output_tokens: u64,
+    /// Raw provider total, retained so compaction can detect inconsistent usage.
+    /// Missing historical totals decode as zero and cannot calibrate compaction.
+    #[serde(default)]
+    #[surreal(default)]
     pub total_tokens: u64,
     pub fallback_index: u8,
     pub duration_ms: u64,
@@ -62,6 +67,9 @@ pub struct InferenceUsage {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
 pub struct UsageRollup {
+    /// Rows whose recorded total does not support a complete prompt count.
+    /// Costs remain valid, but token ratios for these aggregates are unknown.
+    pub incomplete_usage_calls: u64,
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
     pub output_tokens: u64,

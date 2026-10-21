@@ -2479,20 +2479,34 @@ async fn cached_provider_totals_are_normalized_without_adding_cache_tokens_twice
             true,
         ),
     ] {
-        let app = App::with_provider(18_000, true, provider).await;
-        app.history(MessageRole::User, false).await;
-        app.recorded_stats(frona::inference::Usage {
-            input_tokens: input,
-            cached_input_tokens: cached,
-            cache_creation_input_tokens: writes,
-            output_tokens: 5,
-            total_tokens: total,
-            ..Default::default()
-        })
-        .await;
-        app.next_request().await;
-        app.run_next().await.unwrap();
-        assert_eq!(app.summary_calls(), usize::from(expected_compaction));
+        for legacy in [false, true] {
+            let app = App::with_provider(18_000, true, provider.clone()).await;
+            app.history(MessageRole::User, false).await;
+            app.recorded_stats(frona::inference::Usage {
+                input_tokens: input,
+                cached_input_tokens: cached,
+                cache_creation_input_tokens: writes,
+                output_tokens: 5,
+                total_tokens: total,
+                ..Default::default()
+            })
+            .await;
+            if legacy {
+                app.db
+                    .query("UPDATE inference_usage SET input_tokens = $input")
+                    .bind(("input", input))
+                    .await
+                    .unwrap()
+                    .check()
+                    .unwrap();
+            }
+            frona::db::migrations::run_migrations(&app.db)
+                .await
+                .unwrap();
+            app.next_request().await;
+            app.run_next().await.unwrap();
+            assert_eq!(app.summary_calls(), usize::from(expected_compaction));
+        }
     }
 }
 

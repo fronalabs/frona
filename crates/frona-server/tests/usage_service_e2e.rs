@@ -920,3 +920,323 @@ async fn top_chats_by_user_skips_rootless_rows() {
     assert_eq!(ids, ["c1", "c2"]);
     assert!(rows.iter().all(|row| row.calls == 1));
 }
+
+#[tokio::test]
+async fn normalized_prompt_usage_agrees_across_storage_rollups_sse_and_metrics() {
+    use frona::core::{Handle, config::ProviderModel};
+    use frona::inference::Usage;
+    use frona::inference::usage::service::LatencyMetrics;
+    use serde_json::json;
+
+    let metrics = frona::core::metrics::setup_metrics_recorder();
+    let (db, _) = fresh_service().await;
+    let mut snapshot = ModelCatalogSnapshot::empty();
+    snapshot.version = "normalization-fixture".into();
+    snapshot.entries.insert(
+        "catalog/fixture".into(),
+        ModelEntry {
+            cost: Some(Cost {
+                input: 3.0,
+                output: 10.0,
+                cache_read: Some(0.3),
+                cache_write: Some(3.75),
+            }),
+            ..Default::default()
+        },
+    );
+    let broadcast = BroadcastService::new();
+    let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+    broadcast.register_session("normalized-usage", sender).await;
+    let svc = UsageService::new(
+        ModelCatalogStore::new(snapshot),
+        SurrealRepo::new(db.clone()),
+        broadcast,
+    );
+    let anthropic: rig_core::providers::anthropic::completion::Usage = serde_json::from_value(json!({
+        "input_tokens": 200, "cache_read_input_tokens": 600, "cache_creation_input_tokens": 200, "output_tokens": 100
+    })).unwrap();
+    let openrouter: rig_core::providers::openrouter::Usage = serde_json::from_value(json!({
+        "prompt_tokens": 1000, "completion_tokens": 100, "total_tokens": 1100,
+        "prompt_tokens_details": {"cached_tokens": 600, "cache_write_tokens": 200}
+    }))
+    .unwrap();
+    for (provider, handle, usage) in [
+        ("anthropic", "company-account", Usage::from(anthropic)),
+        ("openrouter", "anthropic", Usage::from(openrouter)),
+        (
+            "openai",
+            "openrouter",
+            Usage {
+                input_tokens: 1000,
+                cached_input_tokens: 600,
+                cache_creation_input_tokens: 200,
+                output_tokens: 100,
+                total_tokens: 1100,
+                ..Default::default()
+            },
+        ),
+    ] {
+        let model = ModelConfig {
+            provider_handle: Handle::try_new(handle).unwrap(),
+            provider: ProviderModel::from_name(provider),
+            catalog_provider: "catalog".into(),
+            model_id: "fixture".into(),
+            request_settings: Default::default(),
+        };
+        svc.record(
+            &chat_usage_ctx("normalized-usage", "a", "c", provider),
+            &model,
+            &usage,
+            0,
+            LatencyMetrics::default(),
+        )
+        .await;
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let frame = helpers::parse_sse_frame(event).await.unwrap();
+        assert_eq!(frame.event, "usage_recorded");
+        assert_eq!(frame.data["total_tokens"], 1100);
+        assert_eq!(frame.data["input_tokens"], 1000);
+        assert_eq!(frame.data["cached_input_tokens"], 600);
+        assert!((frame.data["cost_usd"].as_f64().unwrap() - 0.00253).abs() < 1e-9);
+    }
+    let rows = list_all_rows(&db).await;
+    assert_eq!(rows.len(), 3);
+    for row in rows {
+        assert_eq!(
+            (row.input_tokens, row.cached_input_tokens, row.total_tokens),
+            (1000, 600, 1100)
+        );
+        assert_eq!(row.pricing_version, "normalization-fixture");
+        assert!((row.cost_usd.unwrap() - 0.00253).abs() < 1e-9);
+    }
+    let repo = SurrealRepo::<InferenceUsage>::new(db);
+    let totals = repo
+        .aggregate_by_user("normalized-usage", None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            totals.input_tokens,
+            totals.cached_input_tokens,
+            totals.incomplete_usage_calls
+        ),
+        (3000, 1800, 0)
+    );
+    assert_eq!(repo.last_chat_input_tokens("c").await.unwrap(), Some(1000));
+    let rendered = metrics.render();
+    for (name, value) in [
+        ("frona_inference_input_tokens_total", 1000),
+        ("frona_inference_cached_input_tokens_total", 600),
+    ] {
+        let lines: Vec<_> = rendered
+            .lines()
+            .filter(|line| {
+                line.starts_with(&format!("{name}{{"))
+                    && line.contains("user_id=\"normalized-usage\"")
+            })
+            .collect();
+        assert_eq!(lines.len(), 3, "{rendered}");
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.ends_with(&format!(" {value}"))),
+            "{lines:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn usage_migration_recovers_supported_totals_without_repricing_or_guessing_missing_counts() {
+    use frona::inference::Usage;
+    use frona::inference::usage::service::LatencyMetrics;
+
+    struct HistoricalUsage {
+        message: &'static str,
+        input: u64,
+        cached: u64,
+        output: u64,
+        total: Option<u64>,
+        expected_input: u64,
+    }
+    let fixtures = [
+        HistoricalUsage {
+            message: "anthropic",
+            input: 200,
+            cached: 600,
+            output: 100,
+            total: Some(1100),
+            expected_input: 1000,
+        },
+        HistoricalUsage {
+            message: "openrouter",
+            input: 1000,
+            cached: 600,
+            output: 100,
+            total: Some(1100),
+            expected_input: 1000,
+        },
+        HistoricalUsage {
+            message: "inconsistent",
+            input: 4000,
+            cached: 4000,
+            output: 5,
+            total: Some(6000),
+            expected_input: 4000,
+        },
+        HistoricalUsage {
+            message: "underflow",
+            input: 200,
+            cached: 100,
+            output: 100,
+            total: Some(50),
+            expected_input: 200,
+        },
+        HistoricalUsage {
+            message: "missing",
+            input: 200,
+            cached: 600,
+            output: 100,
+            total: None,
+            expected_input: 200,
+        },
+        HistoricalUsage {
+            message: "null",
+            input: 200,
+            cached: 600,
+            output: 100,
+            total: None,
+            expected_input: 200,
+        },
+        HistoricalUsage {
+            message: "zero",
+            input: 0,
+            cached: 0,
+            output: 0,
+            total: Some(0),
+            expected_input: 0,
+        },
+    ];
+    let (db, svc) = fresh_service().await;
+    let mut model = fast_retry_model_group(vec![]).main;
+    // The connection name cannot identify the historical wire protocol.
+    model.provider_handle = frona::core::Handle::try_new("company-account").unwrap();
+    for fixture in &fixtures {
+        svc.record(
+            &chat_usage_ctx("u", "a", fixture.message, fixture.message),
+            &model,
+            &Usage {
+                input_tokens: fixture.input,
+                cached_input_tokens: fixture.cached,
+                output_tokens: fixture.output,
+                total_tokens: fixture.total.unwrap_or_default(),
+                ..Default::default()
+            },
+            0,
+            LatencyMetrics::default(),
+        )
+        .await;
+        if fixture.total.is_none() {
+            let query = if fixture.message == "null" {
+                "UPDATE inference_usage SET total_tokens = NULL WHERE message_id = $message"
+            } else {
+                "UPDATE inference_usage UNSET total_tokens WHERE message_id = $message"
+            };
+            db.query(query)
+                .bind(("message", fixture.message.to_owned()))
+                .await
+                .unwrap()
+                .check()
+                .unwrap();
+        }
+    }
+    let query = "SELECT *, meta::id(id) AS id FROM inference_usage ORDER BY message_id";
+    let mut expected: Vec<serde_json::Value> = db.query(query).await.unwrap().take(0).unwrap();
+    for row in &mut expected {
+        let fixture = fixtures
+            .iter()
+            .find(|f| row["message_id"] == f.message)
+            .unwrap();
+        row["input_tokens"] = fixture.expected_input.into();
+    }
+    // Exercise the actual startup runner twice, and the migration itself again
+    // to cover interruption/re-entry as well as the persisted cursor guard.
+    for _ in 0..2 {
+        frona::db::migrations::run_migrations(&db).await.unwrap();
+        let actual: Vec<serde_json::Value> = db.query(query).await.unwrap().take(0).unwrap();
+        assert_eq!(actual, expected); // Includes unchanged cost and pricing snapshot.
+    }
+    let migration = frona::db::migrations::all_migrations()
+        .into_iter()
+        .find(|m| m.datetime().to_rfc3339() == "2026-10-21T00:00:00+00:00")
+        .unwrap();
+    (migration.run)(&db).await.unwrap();
+    let actual: Vec<serde_json::Value> = db.query(query).await.unwrap().take(0).unwrap();
+    assert_eq!(actual, expected);
+
+    let repo = SurrealRepo::<InferenceUsage>::new(db);
+    assert_eq!(
+        repo.last_chat_usage("missing")
+            .await
+            .unwrap()
+            .unwrap()
+            .total_tokens,
+        0
+    );
+    assert_eq!(
+        repo.last_chat_input_tokens("anthropic").await.unwrap(),
+        Some(1000)
+    );
+    let user = repo.aggregate_by_user("u", None, None).await.unwrap();
+    let agent = repo.aggregate_by_agent("a", None, None).await.unwrap();
+    let by_kind = repo.aggregate_by_kind("u", None, None).await.unwrap();
+    let by_model = repo.aggregate_by_model("u", None, None).await.unwrap();
+    for rollup in [&user, &agent, &by_kind["Text"], &by_model[&model.as_str()]] {
+        assert_eq!(rollup.incomplete_usage_calls, 4);
+        assert_eq!(rollup.calls, 7);
+        assert_eq!(
+            rollup.input_tokens,
+            fixtures.iter().map(|f| f.expected_input).sum::<u64>()
+        );
+    }
+    for chat in ["missing", "null", "underflow", "inconsistent"] {
+        assert_eq!(
+            repo.aggregate_by_chat(chat, None, None)
+                .await
+                .unwrap()
+                .incomplete_usage_calls,
+            1
+        );
+    }
+    assert_eq!(
+        repo.aggregate_by_chat("zero", None, None)
+            .await
+            .unwrap()
+            .incomplete_usage_calls,
+        0
+    );
+    let now = chrono::Utc::now();
+    let buckets = repo
+        .aggregate_buckets_by_user(
+            "u",
+            now - chrono::Duration::days(1),
+            now + chrono::Duration::days(1),
+            TimeBucket::Day,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        buckets
+            .iter()
+            .map(|b| b.incomplete_usage_calls)
+            .sum::<u64>(),
+        4
+    );
+    assert_eq!(
+        buckets.iter().map(|b| b.input_tokens).sum::<u64>(),
+        user.input_tokens
+    );
+}

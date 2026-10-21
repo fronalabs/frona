@@ -70,6 +70,7 @@ pub struct UsageRecorded {
     pub message_id: Option<String>,
     pub kind_tag: String,
     pub model_ref: String,
+    pub total_tokens: u64,
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
     pub output_tokens: u64,

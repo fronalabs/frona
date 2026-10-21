@@ -18,13 +18,18 @@ use super::generic::SurrealRepo;
 /// returns a generic `number`, which doesn't deserialize into `f64` via
 /// `SurrealValue`. The cast pins the result type so `UsageRollup.cost_usd`
 /// reads cleanly even when actual prices are populated.
-const ROLLUP_SELECT: &str = "SELECT \
+// The explicit IF matters: SurrealDB's AND does not protect subtraction from
+// missing/NULL totals. Input/output/cache columns are nonnegative u64 values.
+const ROLLUP_FIELDS: &str = "\
+    count(IF type::is_int(total_tokens) { \
+        total_tokens < output_tokens OR total_tokens - output_tokens != input_tokens \
+        OR input_tokens < cached_input_tokens \
+    } ELSE { true }) AS incomplete_usage_calls, \
     math::sum(input_tokens) AS input_tokens, \
     math::sum(cached_input_tokens) AS cached_input_tokens, \
     math::sum(output_tokens) AS output_tokens, \
     <float>math::sum(cost_usd ?? 0.0) AS cost_usd, \
-    count() AS calls \
-    FROM inference_usage";
+    count() AS calls";
 
 #[async_trait]
 impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
@@ -35,7 +40,9 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
         until: Option<DateTime<Utc>>,
     ) -> Result<UsageRollup, AppError> {
         let (window_clause, bindings) = window_clause(since, until);
-        let query = format!("{ROLLUP_SELECT} WHERE chat_id = $chat_id{window_clause} GROUP ALL");
+        let query = format!(
+            "SELECT {ROLLUP_FIELDS} FROM inference_usage WHERE chat_id = $chat_id{window_clause} GROUP ALL"
+        );
         let mut req = self
             .db()
             .query(&query)
@@ -57,7 +64,9 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
         until: Option<DateTime<Utc>>,
     ) -> Result<UsageRollup, AppError> {
         let (window_clause, bindings) = window_clause(since, until);
-        let query = format!("{ROLLUP_SELECT} WHERE user_id = $user_id{window_clause} GROUP ALL");
+        let query = format!(
+            "SELECT {ROLLUP_FIELDS} FROM inference_usage WHERE user_id = $user_id{window_clause} GROUP ALL"
+        );
         let mut req = self
             .db()
             .query(&query)
@@ -79,7 +88,9 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
         until: Option<DateTime<Utc>>,
     ) -> Result<UsageRollup, AppError> {
         let (window_clause, bindings) = window_clause(since, until);
-        let query = format!("{ROLLUP_SELECT} WHERE agent_id = $agent_id{window_clause} GROUP ALL");
+        let query = format!(
+            "SELECT {ROLLUP_FIELDS} FROM inference_usage WHERE agent_id = $agent_id{window_clause} GROUP ALL"
+        );
         let mut req = self
             .db()
             .query(&query)
@@ -104,11 +115,7 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
         let query = format!(
             "SELECT \
                 kind_tag AS key, \
-                math::sum(input_tokens) AS input_tokens, \
-                math::sum(cached_input_tokens) AS cached_input_tokens, \
-                math::sum(output_tokens) AS output_tokens, \
-                <float>math::sum(cost_usd ?? 0.0) AS cost_usd, \
-                count() AS calls \
+                {ROLLUP_FIELDS} \
                 FROM inference_usage \
                 WHERE user_id = $user_id{window_clause} \
                 GROUP BY kind_tag"
@@ -186,11 +193,7 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
         let query = format!(
             "SELECT \
                 model_ref AS key, \
-                math::sum(input_tokens) AS input_tokens, \
-                math::sum(cached_input_tokens) AS cached_input_tokens, \
-                math::sum(output_tokens) AS output_tokens, \
-                <float>math::sum(cost_usd ?? 0.0) AS cost_usd, \
-                count() AS calls \
+                {ROLLUP_FIELDS} \
                 FROM inference_usage \
                 WHERE user_id = $user_id{window_clause} \
                 GROUP BY model_ref"
@@ -230,11 +233,7 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
         let query = format!(
             "SELECT \
                 time::floor(created_at, {dur}) AS bucket, \
-                math::sum(input_tokens) AS input_tokens, \
-                math::sum(cached_input_tokens) AS cached_input_tokens, \
-                math::sum(output_tokens) AS output_tokens, \
-                <float>math::sum(cost_usd ?? 0.0) AS cost_usd, \
-                count() AS calls \
+                {ROLLUP_FIELDS} \
                 FROM inference_usage \
                 WHERE user_id = $user_id AND created_at >= $since AND created_at < $until \
                 GROUP BY bucket \
@@ -517,6 +516,7 @@ fn window_clause(
 struct GroupedRollup {
     #[serde(alias = "kind_tag", alias = "model_ref", alias = "key")]
     key: String,
+    incomplete_usage_calls: u64,
     #[serde(default)]
     input_tokens: u64,
     #[serde(default)]
@@ -532,6 +532,7 @@ struct GroupedRollup {
 impl GroupedRollup {
     fn rollup(self) -> UsageRollup {
         UsageRollup {
+            incomplete_usage_calls: self.incomplete_usage_calls,
             input_tokens: self.input_tokens,
             cached_input_tokens: self.cached_input_tokens,
             output_tokens: self.output_tokens,

@@ -232,19 +232,10 @@ impl ChatCompactor {
         {
             return None;
         }
-        // Rig Anthropic input excludes cache reads/writes; total includes both.
-        // OpenAI input already includes cached reads. Never add caches to total.
-        // Reject incomplete/inconsistent usage instead of guessing provider rules.
+        // Input is normalized at recording/migration. A missing or inconsistent
+        // provider total cannot calibrate estimates; never guess cache counts.
         let input = usage.total_tokens.checked_sub(usage.output_tokens)?;
-        let minimum_input = if crate::inference::protocol::parameters::WireDialect::for_model(
-            &context.model_group.main.provider,
-        ) == crate::inference::protocol::parameters::WireDialect::Anthropic
-        {
-            usage.input_tokens.checked_add(usage.cached_input_tokens)?
-        } else {
-            usage.input_tokens.max(usage.cached_input_tokens)
-        };
-        if input == 0 || input < minimum_input {
+        if input == 0 || input != usage.input_tokens || input < usage.cached_input_tokens {
             return None;
         }
         let total = usize::try_from(usage.total_tokens).ok()?;

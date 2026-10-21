@@ -9,6 +9,7 @@ use rig_core::completion::request::Usage;
 use crate::chat::broadcast::BroadcastService;
 use crate::core::repository::{Repository, new_id};
 use crate::db::repo::generic::SurrealRepo;
+use crate::inference::protocol::parameters::WireDialect;
 use crate::inference::provider::ModelConfig;
 use crate::inference::usage::UsageContext;
 use frona_model_catalog::ModelCatalogStore;
@@ -127,6 +128,7 @@ impl UsageService {
                 message_id: row.message_id.clone(),
                 kind_tag: row.kind_tag.clone(),
                 model_ref: row.model_ref.clone(),
+                total_tokens: row.total_tokens,
                 input_tokens: row.input_tokens,
                 cached_input_tokens: row.cached_input_tokens,
                 output_tokens: row.output_tokens,
@@ -223,7 +225,14 @@ fn build_row(
         provider: model_ref.provider_name().to_string(),
         model_id: model_ref.model_id.clone(),
         model_ref: model_ref.as_str(),
-        input_tokens: usage.input_tokens,
+        input_tokens: if WireDialect::for_model(&model_ref.provider) == WireDialect::Anthropic {
+            usage
+                .input_tokens
+                .saturating_add(usage.cached_input_tokens)
+                .saturating_add(usage.cache_creation_input_tokens)
+        } else {
+            usage.input_tokens
+        },
         cached_input_tokens: usage.cached_input_tokens,
         output_tokens: usage.output_tokens,
         total_tokens: usage.total_tokens,

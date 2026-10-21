@@ -3,6 +3,7 @@
 import type { FC } from "react";
 import { LockClosedIcon } from "@heroicons/react/24/solid";
 import { CodeBlock } from "@/components/ui/code-block";
+import { CopyButton } from "@/components/ui/copy-button";
 import { cn } from "@/lib/utils";
 import { ToolRow } from "./tool-row";
 import { bestSeverity, parseShellOutput } from "./shell-sandbox";
@@ -63,15 +64,37 @@ export function makeCodeExecView(config: CodeExecConfig): ToolView {
               ? null
               : typeof e === "string"
                 ? e
-                : JSON.stringify(e);
+                : JSON.stringify(e, null, 2);
           })()
         : null;
+
+    // Compare whole lines/blocks, but preserve the original text in the copy.
+    // In particular, sandbox parsing strips details needed to diagnose a denial.
+    const outputForComparison = resultText.replaceAll("\r\n", "\n").trim();
+    const errorForComparison = errorText?.replaceAll("\r\n", "\n").trim();
+    const errorIncludedInOutput = errorForComparison &&
+      `\n${outputForComparison}\n`.includes(`\n${errorForComparison}\n`);
+    const transcript = [
+      code,
+      resultText && `Output:\n${resultText}`,
+      errorForComparison && !errorIncludedInOutput && `Error:\n${errorText}`,
+    ].filter(Boolean).join("\n\n");
+
+    const commandBlock = code ? (
+      <CodeBlock
+        code={code}
+        language={config.language}
+        wrap={config.wrap}
+        lineNumbers={config.lineNumbers}
+        copyValue={transcript}
+      />
+    ) : transcript ? <CopyButton value={transcript} className="self-end mr-2 mt-2" /> : null;
 
     const { events: sandboxEvents, remainingText } = parseShellOutput(resultText);
     const sandboxSeverity = bestSeverity(sandboxEvents);
 
     const expandable =
-      code.length > 0 || resultText.length > 0 || sandboxEvents.length > 0;
+      code.length > 0 || resultText.length > 0 || !!errorText;
 
     // Title/subtitle. Shell-like tools pass a summarizer that derives both
     // from the command itself. Code-exec tools (python/node) fall back to the
@@ -106,14 +129,7 @@ export function makeCodeExecView(config: CodeExecConfig): ToolView {
 
         <ToolRow.Body isExpanded={isExpanded} unstyled>
           <div className="flex flex-col gap-2">
-            {code && (
-              <CodeBlock
-                code={code}
-                language={config.language}
-                wrap={config.wrap}
-                lineNumbers={config.lineNumbers}
-              />
-            )}
+            {commandBlock}
             {sandboxEvents.length > 0 && <SandboxBlock events={sandboxEvents} />}
             {remainingText && (
               <pre className="whitespace-pre-wrap text-text-secondary text-xs overflow-x-auto px-3 pb-3">
@@ -125,14 +141,7 @@ export function makeCodeExecView(config: CodeExecConfig): ToolView {
 
         <ToolRow.Error>
           <div className="flex flex-col gap-2">
-            {code && (
-              <CodeBlock
-                code={code}
-                language={config.language}
-                wrap={config.wrap}
-                lineNumbers={config.lineNumbers}
-              />
-            )}
+            {commandBlock}
             {sandboxEvents.length > 0 && <SandboxBlock events={sandboxEvents} />}
             <div className="text-xs px-3 pb-3">
               <p className="font-semibold text-danger">{config.failureLabel}</p>

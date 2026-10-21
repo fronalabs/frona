@@ -11,11 +11,13 @@ export function CodeBlock({
   language,
   lineNumbers = false,
   wrap = false,
+  copyValue,
 }: {
   code: string;
   language?: string;
   lineNumbers?: boolean;
   wrap?: boolean;
+  copyValue?: string;
 }) {
   const [html, setHtml] = useState<string | null>(null);
 
@@ -62,7 +64,7 @@ export function CodeBlock({
           <code>{code}</code>
         </pre>
       )}
-      <CopyButton value={code} className="absolute right-2 top-2 opacity-0 group-hover/code:opacity-100" />
+      <CopyButton value={copyValue ?? code} className="absolute right-2 top-2 opacity-0 group-hover/code:opacity-100" />
     </div>
   );
 }

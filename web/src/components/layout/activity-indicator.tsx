@@ -62,14 +62,14 @@ export function ActivityIndicator({ compact = false }: { compact?: boolean }) {
             ? "z-[61] rounded-t-xl rounded-b-none border-border border-b-0 bg-surface-secondary text-text-primary"
             : "rounded-full border-info-text/25 bg-info-bg text-info-text hover:border-info-text/40"
         } ${
-          compact ? "h-10 min-w-10 px-2" : "h-10 px-3"
+          compact ? "h-10 w-10 shrink-0" : "h-10 px-3"
         }`}
         aria-expanded={open}
         aria-label={`${executions.length} active ${executions.length === 1 ? "execution" : "executions"}`}
       >
         <ArrowPathIcon className="h-4 w-4 animate-spin" />
         {compact ? (
-          <span className="text-xs font-semibold tabular-nums">{executions.length}</span>
+          <span className="absolute bottom-0 right-0 max-w-full truncate rounded bg-info-bg px-0.5 text-[10px] font-semibold tabular-nums">{executions.length}</span>
         ) : (
           <span className="text-sm font-medium whitespace-nowrap">
             {executions.length} active

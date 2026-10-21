@@ -40,6 +40,8 @@ export function TopBar() {
   const menuRef = useRef<HTMLDivElement>(null);
 
   const isChatRelated = pathname.startsWith("/chat") || pathname.startsWith("/home") || pathname.startsWith("/space");
+  const configurationRoute = ["/agents", "/channels", "/mcp"].includes(pathname);
+  const usesSubNav = configurationRoute || pathname.startsWith("/settings");
   const activeTab = isChatRelated ? "chat" : (topTabs.find((t) => pathname.startsWith(t.href))?.id ?? null);
 
   useEffect(() => {
@@ -73,10 +75,14 @@ export function TopBar() {
     return (
       <>
       <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
-      <div className="flex items-center h-14 px-3 bg-surface-nav border-b border-border shrink-0 gap-2">
+      <div className="flex items-center h-14 px-2 min-[400px]:px-3 bg-surface-nav border-b border-border shrink-0 gap-1 min-[400px]:gap-2">
         <button
+          id="mobile-navigation-toggle"
+          aria-label={configurationRoute ? "Open configuration navigation" : "Open navigation"}
+          aria-expanded={usesSubNav ? mobileSubNavOpen : mobileNavOpen}
+          aria-controls={configurationRoute ? "configuration-navigation" : undefined}
           onClick={() => {
-            if (pathname.startsWith("/settings")) {
+            if (usesSubNav) {
               setMobileSubNavOpen(!mobileSubNavOpen);
             } else {
               setMobileNavOpen(!mobileNavOpen);
@@ -88,12 +94,13 @@ export function TopBar() {
         </button>
 
         <button
+          aria-label="Home"
           onClick={() => { setActiveChat(null); router.push("/home"); }}
           className="flex items-center gap-1 cursor-pointer"
         >
-          <Logo size={52} />
+          <Logo size={28} />
           <span
-            className="text-lg font-bold text-text-primary tracking-wide"
+            className="hidden min-[480px]:inline text-lg font-bold text-text-primary tracking-wide"
             style={{ fontFamily: "var(--font-brand)" }}
           >
             FRONA
@@ -104,7 +111,8 @@ export function TopBar() {
 
         {hasActiveExecutions && <ActivityIndicator compact />}
 
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0 min-[400px]:gap-1">
+          <AgentDropdown />
           <AppDropdown />
           <NotificationDropdown />
           <ServerDropdown />

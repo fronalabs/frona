@@ -1,8 +1,9 @@
 "use client";
 
+import { ConfigurationSidebar } from "@/components/layout/configuration-sidebar";
+
 import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { ArrowLeftIcon } from "@heroicons/react/24/outline";
 import { api } from "@/lib/api-client";
 import { useNavigation } from "@/lib/navigation-context";
 import { getConfig, type SandboxConfig } from "@/lib/config-types";
@@ -214,47 +215,29 @@ function AgentSettings() {
   }
 
   return (
-    <div className="flex h-full bg-surface">
+    <div className="flex h-full min-h-0 min-w-0 bg-surface">
       {/* Sidebar */}
-      <div
-        className="border-r border-border bg-surface-nav p-4 flex flex-col"
-        style={{ width: 289 }}
-      >
-        <button
-          onClick={() => router.push("/chat")}
-          className="flex items-center gap-2 text-sm text-text-secondary hover:text-text-primary transition mb-4"
-        >
-          <ArrowLeftIcon className="h-4 w-4" />
-          Back
-        </button>
-        <h2 className="text-lg font-semibold text-text-primary mb-4 truncate">
-          {agentDisplayName(agent.id, agent.name)}
-        </h2>
-        <nav className="space-y-1 flex-1">
-          {SECTIONS.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => setActiveSection(s.id)}
-              className={`w-full text-left rounded-lg px-3 py-2 text-sm transition ${
-                activeSection === s.id
-                  ? "bg-accent/10 text-accent font-medium"
-                  : "text-text-secondary hover:bg-surface-tertiary hover:text-text-primary"
-              }`}
-            >
-              {s.label}
-            </button>
-          ))}
-        </nav>
-      </div>
+      <ConfigurationSidebar
+        backHref="/chat"
+        backLabel="Back"
+        sections={SECTIONS}
+        activeSection={activeSection}
+        onSectionChange={setActiveSection}
+        header={
+          <h2 className="text-lg font-semibold text-text-primary mb-4 truncate">
+            {agentDisplayName(agent.id, agent.name)}
+          </h2>
+        }
+      />
 
       {/* Content */}
-      <div className={`flex-1 ${activeSection === "prompt" ? "flex flex-col" : "overflow-y-auto"}`}>
-        <div className={`max-w-2xl mx-auto p-8 space-y-6 ${activeSection === "prompt" ? "flex-1 flex flex-col" : ""}`}>
+      <div className={`flex-1 min-h-0 min-w-0 overflow-y-auto [overflow-wrap:anywhere] ${activeSection === "prompt" ? "flex flex-col" : ""}`}>
+        <div className={`w-full max-w-2xl mx-auto p-4 md:p-8 space-y-6 ${activeSection === "prompt" ? "flex-1 min-h-0 flex flex-col" : ""}`}>
           {error && (
             <div className="rounded-lg bg-error-bg p-3 text-sm text-error-text">{error}</div>
           )}
 
-          <div className={activeSection === "prompt" ? "flex-1 flex flex-col" : ""}>
+          <div className={activeSection === "prompt" ? "flex-1 min-h-0 flex flex-col" : ""}>
             {activeSection === "profile" && (
               <ProfileSection
                 agentId={agentId!}

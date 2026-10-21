@@ -4,11 +4,16 @@ import { beforeEach, expect, it, vi } from "vitest";
 const api = vi.hoisted(() => ({ get: vi.fn(), patch: vi.fn(), post: vi.fn(), delete: vi.fn() }));
 vi.mock("@/lib/api-client", () => ({ api, API_URL: "", getAccessToken: () => null }));
 vi.mock("next/navigation", () => ({
+  usePathname: () => "/mcp",
   useSearchParams: () => new URLSearchParams("id=server-1&section=config"),
   useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
 }));
 vi.mock("@/components/agents/configure/sandbox-section", () => ({ SandboxSection: () => null }));
 vi.mock("@/components/agents/configure/creds-section", () => ({ AddCredentialForm: () => null }));
+
+vi.mock("@/lib/use-mobile", () => ({ useMobile: () => false }));
+const setMobileSubNavOpen = vi.fn();
+vi.mock("@/lib/navigation-context", () => ({ useNavigation: () => ({ mobileSubNavOpen: false, setMobileSubNavOpen }) }));
 
 import Page from "../page";
 

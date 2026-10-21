@@ -1,9 +1,10 @@
 "use client";
 
+import { ConfigurationSidebar } from "@/components/layout/configuration-sidebar";
+
 import { useState, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
-  ArrowLeftIcon,
   ChatBubbleLeftRightIcon,
   PlayIcon,
   StopIcon,
@@ -456,7 +457,7 @@ function ChannelDetailPage() {
   const displayName = space?.name ?? manifest?.display_name ?? channel.provider;
 
   return (
-    <div className="flex h-full bg-surface">
+    <div className="flex h-full min-h-0 min-w-0 bg-surface">
       <DeleteConfirmDialog
         open={confirmDeleteOpen}
         onCancel={() => {
@@ -492,58 +493,38 @@ function ChannelDetailPage() {
         confirming={actionLoading}
         confirmingLabel="Deleting..."
       />
-      <div
-        className="border-r border-border bg-surface-nav p-4 flex flex-col"
-        style={{ width: 289 }}
-      >
-        <button
-          onClick={() => router.push("/settings#channels")}
-          className="flex items-center gap-2 text-sm text-text-secondary hover:text-text-primary transition mb-4"
-        >
-          <ArrowLeftIcon className="h-4 w-4" />
-          Back to Channels
-        </button>
-
-        <div className="flex items-center gap-2 mb-4">
-          <ChatBubbleLeftRightIcon className="h-8 w-8 text-text-tertiary shrink-0" />
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-text-primary truncate">{displayName}</h2>
-            <div className="flex items-center gap-1 flex-wrap mt-0.5">
-              <span
-                className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${providerBadgeClass(channel.provider, allManifests)}`}
-              >
-                {manifest?.display_name ?? channel.provider}
-              </span>
-              <span
-                className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                  STATUS_BADGE[statusBadge] ?? STATUS_BADGE.disconnected
-                }`}
-              >
-                {statusBadge}
-              </span>
+      <ConfigurationSidebar
+        backHref="/settings#channels"
+        backLabel="Back to Channels"
+        sections={visibleSections}
+        activeSection={activeSection}
+        onSectionChange={setActiveSection}
+        header={
+          <div className="flex items-center gap-2 mb-4">
+            <ChatBubbleLeftRightIcon className="h-8 w-8 text-text-tertiary shrink-0" />
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold text-text-primary truncate">{displayName}</h2>
+              <div className="flex items-center gap-1 flex-wrap mt-0.5">
+                <span
+                  className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${providerBadgeClass(channel.provider, allManifests)}`}
+                >
+                  {manifest?.display_name ?? channel.provider}
+                </span>
+                <span
+                  className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                    STATUS_BADGE[statusBadge] ?? STATUS_BADGE.disconnected
+                  }`}
+                >
+                  {statusBadge}
+                </span>
+              </div>
             </div>
           </div>
-        </div>
+        }
+      />
 
-        <nav className="space-y-1 flex-1">
-          {visibleSections.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => setActiveSection(s.id)}
-              className={`w-full text-left rounded-lg px-3 py-2 text-sm transition ${
-                activeSection === s.id
-                  ? "bg-accent/10 text-accent font-medium"
-                  : "text-text-secondary hover:bg-surface-tertiary hover:text-text-primary"
-              }`}
-            >
-              {s.label}
-            </button>
-          ))}
-        </nav>
-      </div>
-
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-2xl mx-auto p-8 space-y-6">
+      <div className="flex-1 min-h-0 min-w-0 overflow-y-auto [overflow-wrap:anywhere]">
+        <div className="max-w-2xl mx-auto p-4 md:p-8 space-y-6">
           {activeSection === "about" && manifest && (
             <div className="space-y-6">
               <SectionHeader

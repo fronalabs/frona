@@ -1,6 +1,6 @@
 services:
   browserless:
-    image: ghcr.io/browserless/chromium:v2.57.1
+    image: ghcr.io/browserless/chromium:v2.57.2
     ports:
       - "3333:3333"
     environment:
@@ -14,7 +14,8 @@ services:
     restart: ${CONTAINER_RESTART_POLICY:-unless-stopped}
 
   searxng:
-    image: docker.io/searxng/searxng:2026.5.9-0cba32c15
+    # Upstream still bundles certifi 2026.07.22, including the affected emSign root.
+    image: docker.io/searxng/searxng:2026.10.19-81371861f
     ports:
       - "8080:8080"
     environment:

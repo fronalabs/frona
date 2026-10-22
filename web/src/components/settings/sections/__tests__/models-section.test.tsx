@@ -205,10 +205,15 @@ it("waits for a manually selected model's settings before resetting incompatible
   const pending = new Promise<ModelDirectory>(resolve => { finishDiscovery = resolve; });
   vi.mocked(api.get).mockImplementation(async path => path === "/api/config/schema" ? {}
     : path.includes("manual-new") ? pending : directory());
-  render(<Harness initial={{ primary: { provider: "account", model: "exact", api: "responses", reasoning_effort: "xhigh" } }} />);
+  // Settle initial discovery and the combobox selection effects before typing.
+  await act(async () => {
+    render(<Harness initial={{ primary: { provider: "account", model: "exact", api: "responses", reasoning_effort: "xhigh" } }} />);
+  });
   await waitFor(() => expect(primary().getByRole("combobox", { name: "Model" })).toHaveAttribute("placeholder", "Select or enter model"));
   fireEvent.change(primary().getByRole("combobox", { name: "Model" }), { target: { value: "manual-new" } });
+  expect(primary().getByRole("combobox", { name: "Model" })).toHaveValue("manual-new");
   fireEvent.blur(primary().getByRole("combobox", { name: "Model" }));
+  expect(draft().primary.model).toBe("manual-new");
   await waitFor(() => expect(api.get).toHaveBeenCalledWith(expect.stringContaining("manual-new")));
   expect(draft().primary.reasoning_effort).toBe("xhigh");
   const data = directory(["manual-new"]);

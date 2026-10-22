@@ -614,6 +614,7 @@ mod tests {
 
     #[test]
     fn find_playbooks_searches_pending_entity_view() {
+        let (ready_send, ready_receive) = std::sync::mpsc::sync_channel(1);
         let (send, receive) = std::sync::mpsc::sync_channel(1);
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -703,6 +704,7 @@ mod tests {
                     tokio_util::sync::CancellationToken::new(),
                     tokio_util::sync::CancellationToken::new(),
                 );
+                ready_send.send(()).unwrap();
                 let output = tool
                     .execute(
                         "find_playbooks",
@@ -715,6 +717,9 @@ mod tests {
             let _ = send.send(result);
         });
 
+        // Database setup is unrelated to the search deadlock this test guards.
+        // Start the watchdog only once the worker is ready to execute the tool.
+        ready_receive.recv().expect("playbook fixture setup failed");
         let output = receive
             .recv_timeout(Duration::from_secs(2))
             .expect("find_playbooks deadlocked while searching the entity view")

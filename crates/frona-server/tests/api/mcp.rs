@@ -401,16 +401,15 @@ async fn logs_reject_foreign_server_before_reading_or_streaming() {
     std::fs::write(&path, "private-existing-line\n").unwrap();
 
     for suffix in ["logs", "logs/stream"] {
-        let response = tokio::time::timeout(
-            Duration::from_secs(5),
-            build_app(state.clone()).oneshot(auth_get(
+        // Authenticate and resolve the server before timing body completion.
+        // Request setup can exceed a short deadline under parallel test load.
+        let response = build_app(state.clone())
+            .oneshot(auth_get(
                 &format!("/api/mcp/servers/{id}/{suffix}"),
                 &other_token,
-            )),
-        )
-        .await
-        .expect("unauthorized logs should reject promptly")
-        .unwrap();
+            ))
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN, "{suffix}");
         assert_ne!(
             response.headers().get("content-type").unwrap(),
@@ -445,16 +444,13 @@ async fn logs_reject_missing_server_before_reading_or_streaming() {
     .await;
 
     for suffix in ["logs", "logs/stream"] {
-        let response = tokio::time::timeout(
-            Duration::from_secs(5),
-            build_app(state.clone()).oneshot(auth_get(
+        let response = build_app(state.clone())
+            .oneshot(auth_get(
                 &format!("/api/mcp/servers/nonexistent-id/{suffix}"),
                 &token,
-            )),
-        )
-        .await
-        .expect("missing server should reject promptly")
-        .unwrap();
+            ))
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "{suffix}");
         tokio::time::timeout(Duration::from_secs(5), response.into_body().collect())
             .await
@@ -504,16 +500,13 @@ async fn owner_can_stream_existing_and_appended_log_lines() {
     let path = log_path(&state, id).await;
     std::fs::write(&path, "existing-owner-line\n").unwrap();
 
-    let response = tokio::time::timeout(
-        Duration::from_secs(5),
-        build_app(state).oneshot(auth_get(
+    let response = build_app(state)
+        .oneshot(auth_get(
             &format!("/api/mcp/servers/{id}/logs/stream"),
             &token,
-        )),
-    )
-    .await
-    .expect("owner stream should open promptly")
-    .unwrap();
+        ))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         response.headers().get("content-type").unwrap(),

@@ -508,26 +508,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_sandboxed_streaming_slow_process() {
+    async fn test_execute_sandboxed_streams_before_process_exit() {
         let sandbox = test_sandbox();
         let config = test_config(10);
         let (tx, mut rx) = mpsc::channel(16);
+        let (stdin_tx, stdin_rx) = mpsc::channel(1);
 
         let handle = tokio::spawn(async move {
-            let mut timestamps = Vec::new();
-            while let Some(_line) = rx.recv().await {
-                timestamps.push(tokio::time::Instant::now());
+            let mut lines = Vec::new();
+            while let Some(line) = rx.recv().await {
+                lines.push(line);
+                stdin_tx.send("ack\n".to_string()).await.unwrap();
             }
-            timestamps
+            lines
         });
 
+        // The child cannot emit the next line or exit until its previous line
+        // has reached the receiver. Buffering until exit would time out.
         let output = execute_sandboxed(
             &*sandbox,
             "bash",
-            &["-c", "for i in 1 2 3; do echo $i; sleep 0.1; done"],
+            &[
+                "-c",
+                "for i in 1 2 3; do echo $i; read -r ack || exit 1; done",
+            ],
             &config,
             Some(tx),
-            None,
+            Some(stdin_rx),
             None,
             None,
             None,
@@ -535,19 +542,11 @@ mod tests {
         .await
         .unwrap();
 
-        let timestamps = handle.await.unwrap();
-        assert_eq!(timestamps.len(), 3);
+        let lines = handle.await.unwrap();
+        assert_eq!(lines, ["1", "2", "3"]);
+        assert_eq!(output.stdout, "1\n2\n3\n");
         assert_eq!(output.exit_code, Some(0));
-
-        let spread = timestamps
-            .last()
-            .unwrap()
-            .duration_since(*timestamps.first().unwrap());
-        assert!(
-            spread >= std::time::Duration::from_millis(150),
-            "lines should arrive incrementally, spread was {:?}",
-            spread
-        );
+        assert!(!output.timed_out);
     }
 
     #[tokio::test]

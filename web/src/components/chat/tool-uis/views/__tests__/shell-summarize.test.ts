@@ -53,6 +53,15 @@ describe("summarizeCommand — single commands", () => {
     });
   });
 
+  it.each([
+    ["FOO=bar > output.txt", "Shell", "FOO=bar"],
+    ["cat < input.txt report.txt", "Cat", "report.txt"],
+    ["export FOO=bar", "Export", "FOO=bar"],
+    ["{ python3 run.py; } > output.txt", "Python3", "run.py"],
+  ])("summarizes assignments and redirects: %s", (command, title, subtitle) => {
+    expect(summarizeCommand(command)).toEqual({ title, subtitle });
+  });
+
   it("capitalizes unknown commands and uses first positional", () => {
     expect(summarizeCommand("xyzunknown arg1 arg2")).toEqual({
       title: "Xyzunknown",

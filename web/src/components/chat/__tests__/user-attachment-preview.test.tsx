@@ -63,12 +63,16 @@ it("renders a URL-less live upload locally and revokes its URL on unmount", asyn
   const view = render(<Chat />);
   const file = new File(["x"], "photo.png", { type: "image/png" });
   await act(() => runtime.thread.composer.addAttachment(file));
-  act(() => runtime.thread.composer.send());
-  expect(await screen.findByRole("img")).toHaveAttribute("src", "blob:preview-1");
-  expect(URL.createObjectURL).toHaveBeenCalledExactlyOnceWith(file);
+  await act(async () => runtime.thread.composer.send());
+  const previewUrl = screen.getByRole("img").getAttribute("src");
+  const created = vi.mocked(URL.createObjectURL).mock.results.map((result) => result.value);
+  expect(created).toContain(previewUrl);
+  expect(vi.mocked(URL.createObjectURL).mock.calls.every(([blob]) => blob === file)).toBe(true);
+  expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(previewUrl);
   expect(mocks.sendMessage).toHaveBeenCalledWith("chat-preview", { content: "", attachments: [backend] });
   view.unmount();
-  expect(URL.revokeObjectURL).toHaveBeenCalledExactlyOnceWith("blob:preview-1");
+  // Sending can replace the submission preview with the persisted message preview.
+  expect(vi.mocked(URL.revokeObjectURL).mock.calls.map(([url]) => url).sort()).toEqual(created.sort());
 });
 
 it.each([undefined, "", "   "])("renders a named placeholder without a URL or local file (%s)", (url) => {

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { MessagePrimitive, AttachmentPrimitive, useAuiState } from "@assistant-ui/react";
-import type { CompleteAttachment } from "@assistant-ui/react";
+import type { Attachment } from "@assistant-ui/react";
 import { presignFile } from "@/lib/api-client";
 import { getBackendAttachment } from "@/lib/use-chat-runtime";
 import { formatFullTimestamp, formatTime, useTimezone } from "@/lib/format-time";
@@ -50,11 +50,11 @@ function CommandTypeBadge({ command }: { command: MessageCommand }) {
   );
 }
 
-function useAttachmentUrl(attachment: CompleteAttachment, isImage: boolean) {
+function useAttachmentUrl(attachment: Attachment, isImage: boolean) {
   const backend = getBackendAttachment(attachment.id);
   const owner = backend?.owner;
   const path = backend?.path;
-  const signedUrl = attachment.content.find((part) => part.type === "image")?.image.trim()
+  const signedUrl = attachment.content?.find((part) => part.type === "image")?.image.trim()
     || backend?.url?.trim() || null;
   const file = !signedUrl && isImage && attachment.file?.type.startsWith("image/") ? attachment.file : undefined;
   const source = `${owner ?? ""}\0${attachment.id}\0${signedUrl ?? ""}`;
@@ -87,7 +87,7 @@ function useAttachmentUrl(attachment: CompleteAttachment, isImage: boolean) {
   };
 }
 
-function UserAttachment({ attachment }: { attachment: CompleteAttachment }) {
+function UserAttachment({ attachment }: { attachment: Attachment }) {
   const isImage = attachment.type === "image" || !!attachment.contentType?.startsWith("image/");
   const { url, refresh } = useAttachmentUrl(attachment, isImage);
 

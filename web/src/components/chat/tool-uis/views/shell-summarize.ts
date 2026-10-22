@@ -2,7 +2,7 @@ import { parse } from "unbash";
 import type {
   Command,
   CompoundList,
-  Node,
+  SyntaxNode as Node,
   Word,
 } from "unbash";
 
@@ -97,6 +97,7 @@ function findActionCommand(node: Node): Command | null {
     case "Command":
       return node;
     case "Statement":
+    case "Redirected":
       return findActionCommand(node.command);
     case "For":
     case "While":
@@ -133,10 +134,10 @@ function summarizeSingleCommand(cmd: Command): ShellSummary {
   const name = wordValue(cmd.name);
   if (!name) {
     // Assignment-only statement: `FOO=bar`
-    const assigns = cmd.prefix.map((p) => p.text).join(" ");
+    const assigns = cmd.prefix.filter((p) => p.type === "Assignment").map((p) => p.text).join(" ");
     return { title: "Shell", subtitle: truncate(assigns) };
   }
-  const argv = cmd.suffix.map(wordValue).filter((s) => s.length > 0);
+  const argv = cmd.args.map((arg) => arg.type === "Word" ? wordValue(arg) : arg.text).filter((s) => s.length > 0);
   const formatter = FORMATTERS[name];
   const subtitleRaw = formatter ? formatter(argv) : firstPositional(argv) ?? "";
   return {
@@ -157,6 +158,7 @@ function flattenCompound(node: Node): string {
       return subtitle ? `${lower} ${subtitle}` : lower;
     }
     case "Statement":
+    case "Redirected":
       return flattenCompound(node.command);
     case "Pipeline": {
       const parts = node.commands.map(flattenCompound).filter(Boolean);

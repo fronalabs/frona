@@ -86,7 +86,7 @@ describe("Markdown render recovery", () => {
     await waitFor(() => expect(screen.getByRole("textbox")).toHaveTextContent("Draft still editable"));
     expect(faults.attempts.mock.calls.filter(([text]) => text === raw)).toHaveLength(attempts);
     fireEvent.click(screen.getByRole("button", { name: "Remove attachment" }));
-    expect(runtime.thread.composer.getState().attachments).toHaveLength(0);
+    await waitFor(() => expect(runtime.thread.composer.getState().attachments).toHaveLength(0));
 
     view.rerender(<Chat text="**Recovered answer**" role={role} />);
     expect(await screen.findByText("Recovered answer", { selector: "strong" })).toBeInTheDocument();

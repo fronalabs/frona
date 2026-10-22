@@ -1,4 +1,4 @@
-ca-certificates=20250419~deb12u1
+ca-certificates=20250419~deb12u2
 libgfortran5=12.2.0-14+deb12u1
 libopenblas0=0.3.21+ds-4
 
@@ -22,12 +22,12 @@ libheif1=1.15.1-1+deb12u1
 libdjvulibre21=3.5.28-2.2~deb12u1
 
 libpq5=15.19-0+deb12u1
-libmariadb3=1:10.11.18-0+deb12u1
-mariadb-common=1:10.11.18-0+deb12u1
+libmariadb3=1:10.11.19-0+deb12u1
+mariadb-common=1:10.11.19-0+deb12u1
 
 gnupg=2.2.40-1.1+deb12u2
 
-jq=1.6-2.1+deb12u2
+jq=1.6-2.1+deb12u3
 file=1:5.44-3
 patch=2.7.6-7
 procps=2:4.0.2-3
@@ -35,5 +35,3 @@ sensible-utils=0.0.17+nmu1
 rsync=3.2.7-1+deb12u6
 smbclient=2:4.17.12+dfsg-0+deb12u4
 fd-find=8.6.0-3
-
-nodejs=24.21.0-1nodesource1

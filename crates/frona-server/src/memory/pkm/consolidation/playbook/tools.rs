@@ -188,7 +188,7 @@ impl ReadTranscriptTool {
         if !consume(&self.total)
             || self
                 .remaining
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
                     remaining.checked_sub(1)
                 })
                 .is_err()
@@ -428,7 +428,7 @@ impl GetToolOutputTool {
         if !consume(&self.total)
             || self
                 .remaining
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
                     remaining.checked_sub(1)
                 })
                 .is_err()
@@ -463,7 +463,7 @@ impl GetToolOutputTool {
 
 fn consume(counter: &AtomicUsize) -> bool {
     counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
             remaining.checked_sub(1)
         })
         .is_ok()

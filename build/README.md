@@ -11,7 +11,7 @@ The Dockerfile is a multi-stage build with two final targets: `dev` and `prod`.
 5. **syd-builder** — compiles the tagged Syd source with upstream's builder image and Makefile for the target architecture
 6. **python-builder** — pip installs into a `/install` prefix
 7. **prod** — minimal `python:3.12-slim-bookworm` image with the compiled binary, static frontend, CLI tools, and Python packages
-8. **dev** — the same Python base with Rust 1.98.1, Bacon hot-reload, and Node.js
+8. **dev** — the same Python base with Rust 1.99.1, Bacon hot-reload, and Node.js
 
 Rust dependency caching relies on [cargo-chef](https://github.com/LukeMathWalker/cargo-chef) — dependencies are compiled once from `recipe.json` and cached across builds as long as `Cargo.toml`/`Cargo.lock` don't change.
 
@@ -250,3 +250,6 @@ Run `mise run container:update-versions` to refresh the dependency pins, or
 `bash build/update-versions.sh --dry-run` to preview changes. The updater uses
 Podman when installed, falling back to Docker. Set `CONTAINER_RUNTIME` to
 `docker` or `podman` to choose explicitly.
+
+Node.js is copied from the pinned official `node-runtime` image into both dev and
+prod, so they use the same Node.js and npm release as the frontend builder.

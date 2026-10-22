@@ -1,6 +1,6 @@
 [tools]
-rust = "1.98.1"
-node = "24.21.0"
+rust = "1.99.1"
+node = "24.22.1"
 rust-analyzer = "latest"
 
 [env]

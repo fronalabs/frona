@@ -68,7 +68,7 @@ fn spend_entity_tool_call(
     let budget = budget.as_ref()?;
     use std::sync::atomic::Ordering;
     budget
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
             remaining.checked_sub(1)
         })
         .err()

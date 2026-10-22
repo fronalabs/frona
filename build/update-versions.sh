@@ -263,21 +263,17 @@ main() {
 	parse_args "$@"
 	select_runtime
 
-	local rust_image python_image node_major
+	local rust_image python_image
 	# These stages use official Docker Hub images. Qualify them so Podman does
 	# not need a short-name alias or an interactive registry selection.
 	rust_image=$(awk '/^FROM .* AS planner/{print "docker.io/library/" $2}' "$DOCKERFILE")
 	python_image=$(awk '/^FROM .* AS python-builder/{print "docker.io/library/" $2}' "$DOCKERFILE")
-	node_major=$(grep 'nodesource.com/setup_' "$DOCKERFILE" | head -1 | sed 's/.*setup_\([0-9]*\).*/\1/')
 
 	echo "==> Container runtime: $RUNTIME"
 	echo "==> Base images (from Dockerfile):"
 	echo "    rust:   $rust_image"
 	echo "    python: $python_image"
-	echo "    node:   ${node_major}.x (via NodeSource)"
 	echo ""
-
-	local nodesource_setup="curl -fsSL https://deb.nodesource.com/setup_${node_major}.x 2>/dev/null | bash -"
 
 	[[ "$DRY_RUN" == true ]] && echo "==> Dry run — files will NOT be written"
 	echo "==> Querying latest versions..."
@@ -285,7 +281,7 @@ main() {
 	update_binary_file "$PKGS_DIR/prod-pkgs.txt"
 	update_apt_file "$PKGS_DIR/builder-rust-apt.txt" "$rust_image"
 	update_apt_file "$PKGS_DIR/builder-python-apt.txt" "$python_image"
-	update_apt_file "$PKGS_DIR/prod-apt.txt" "$python_image" "$nodesource_setup"
+	update_apt_file "$PKGS_DIR/prod-apt.txt" "$python_image"
 	update_apt_file "$SCRIPT_DIR/dev/pkgs/apt.txt" "$python_image"
 	update_cargo_file "$PKGS_DIR/builder-rust-cargo.txt"
 	update_pip_file "$PKGS_DIR/builder-python-pip.txt" "$python_image"

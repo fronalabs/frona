@@ -635,7 +635,7 @@ impl OntologyCatalogue {
                 candidate == *needle || squashed_match(&squash(needle), &candidate, false)
             })
         };
-        if exact(&decamel(local_name(iri))) || label.is_some_and(&exact) {
+        if exact(&decamel(local_name(iri))) || label.is_some_and(exact) {
             return true;
         }
         self.graph.id_of(iri).is_some_and(|id| {

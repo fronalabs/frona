@@ -256,7 +256,7 @@ impl InferenceCounter {
     fn decrement(&self) {
         let val = self
             .count
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 Some(v.saturating_sub(1))
             })
             .unwrap_or(0)

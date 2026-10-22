@@ -1,6 +1,6 @@
 ARG TARGETARCH
 
-FROM rust:1.98.1-bookworm AS catalog-builder
+FROM rust:1.99.1-bookworm AS catalog-builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
@@ -13,14 +13,16 @@ COPY --from=catalog-builder /app/target/release/frona-model-catalog /usr/local/b
 COPY crates/frona-model-catalog/resources/modelparams-schema.json /catalogs/modelparams-schema.json
 RUN frona-model-catalog download --output /catalogs
 
-FROM node:24.21.0-slim AS frontend-builder
+FROM node:24.22.1-bookworm-slim AS node-runtime
+
+FROM node-runtime AS frontend-builder
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json* ./
 RUN npm ci
 COPY web/ .
 RUN npm run build
 
-FROM rust:1.98.1-bookworm AS planner
+FROM rust:1.99.1-bookworm AS planner
 RUN --mount=type=bind,source=build/pkgs/builder-rust-cargo.txt,target=/tmp/cargo.txt \
   for line in $(grep -vE '^\s*(#|$)' /tmp/cargo.txt); do \
     crate=${line%%=*}; version=${line#*=}; \
@@ -31,7 +33,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 RUN cargo chef prepare --recipe-path recipe.json
 
-FROM rust:1.98.1-bookworm AS backend-builder
+FROM rust:1.99.1-bookworm AS backend-builder
 RUN --mount=type=bind,source=build/pkgs/builder-rust-apt.txt,target=/tmp/packages.txt \
   apt-get update && apt-get install -y --no-install-recommends \
   $(grep -vE '^\s*(#|$)' /tmp/packages.txt | tr '\n' ' ') \
@@ -132,11 +134,13 @@ FROM python:3.12-slim-bookworm AS dev
 RUN --mount=type=bind,source=build/pkgs/prod-apt.txt,target=/tmp/packages.txt \
   apt-get update \
   && apt-get install -y --no-install-recommends \
-     $(grep -vE '^\s*(#|$)|^nodejs=' /tmp/packages.txt | tr '\n' ' ') \
-  && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
-  && apt-get install -y --no-install-recommends \
-     $(grep '^nodejs=' /tmp/packages.txt) \
+     $(grep -vE '^\s*(#|$)' /tmp/packages.txt | tr '\n' ' ') \
   && rm -rf /var/lib/apt/lists/*
+# Use the same patched Node distribution as the frontend build.
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+  && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 RUN --mount=type=bind,source=build/dev/pkgs/apt.txt,target=/tmp/packages.txt \
   apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -149,7 +153,7 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-  | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.98.1 \
+  | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.99.1 \
   && rustup component add clippy rustfmt
 
 COPY --from=python-builder /install /usr/local
@@ -197,11 +201,13 @@ LABEL org.opencontainers.image.created="$CREATED"
 RUN --mount=type=bind,source=build/pkgs/prod-apt.txt,target=/tmp/packages.txt \
   apt-get update \
   && apt-get install -y --no-install-recommends \
-     $(grep -vE '^\s*(#|$)|^nodejs=' /tmp/packages.txt | tr '\n' ' ') \
-  && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
-  && apt-get install -y --no-install-recommends \
-     $(grep '^nodejs=' /tmp/packages.txt) \
+     $(grep -vE '^\s*(#|$)' /tmp/packages.txt | tr '\n' ' ') \
   && rm -rf /var/lib/apt/lists/*
+# Use the same patched Node distribution as the frontend build.
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+  && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 COPY --from=cli-tools /usr/local/bin/op /usr/local/bin/bw /usr/local/bin/surreal /usr/local/bin/
 COPY --from=syd-builder /usr/local/bin/syd /usr/local/bin/syd

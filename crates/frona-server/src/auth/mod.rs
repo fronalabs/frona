@@ -336,14 +336,10 @@ impl AuthService {
     }
 
     fn hash_password(&self, password: &str) -> Result<String, AppError> {
-        use argon2::{
-            Argon2,
-            password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
-        };
-        let salt = SaltString::generate(&mut OsRng);
+        use argon2::{Argon2, password_hash::PasswordHasher};
         let argon2 = Argon2::default();
         argon2
-            .hash_password(password.as_bytes(), &salt)
+            .hash_password(password.as_bytes())
             .map(|h| h.to_string())
             .map_err(|e| AppError::Internal(format!("Password hashing failed: {e}")))
     }
@@ -351,7 +347,7 @@ impl AuthService {
     fn verify_password(&self, password: &str, hash: &str) -> Result<(), AppError> {
         use argon2::{
             Argon2,
-            password_hash::{PasswordHash, PasswordVerifier},
+            password_hash::{PasswordVerifier, phc::PasswordHash},
         };
         let parsed = PasswordHash::new(hash)
             .map_err(|e| AppError::Internal(format!("Invalid password hash: {e}")))?;
@@ -361,7 +357,7 @@ impl AuthService {
         Argon2::default()
             .verify_password(password.as_bytes(), &parsed)
             .map_err(|error| match error {
-                argon2::password_hash::Error::Password => AppError::Auth {
+                argon2::password_hash::Error::PasswordInvalid => AppError::Auth {
                     message: "Invalid email or password".into(),
                     code: AuthErrorCode::InvalidCredentials,
                 },
@@ -373,6 +369,31 @@ impl AuthService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn password_hashes_use_unique_salts_and_verify() {
+        let service = AuthService::new();
+        let first = service.hash_password("a-test-password").unwrap();
+        let second = service.hash_password("a-test-password").unwrap();
+        assert_ne!(first, second);
+        assert!(service.verify_password("a-test-password", &first).is_ok());
+        assert!(service.verify_password("a-test-password", &second).is_ok());
+    }
+
+    #[test]
+    fn verifies_legacy_argon2_hash_and_rejects_wrong_password() {
+        // PHC test vector also supported by argon2 0.5, before this upgrade.
+        let hash = "$argon2id$v=19$m=65536,t=2,p=1$c29tZXNhbHQ$CTFhFdXPJO1aFaMaO6Mm5c8y7cJHAph8ArZWb2GRPPc";
+        let service = AuthService::new();
+        assert!(service.verify_password("password", hash).is_ok());
+        assert!(matches!(
+            service.verify_password("wrong-password", hash),
+            Err(AppError::Auth {
+                code: AuthErrorCode::InvalidCredentials,
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn validate_password_accepts_8_chars() {

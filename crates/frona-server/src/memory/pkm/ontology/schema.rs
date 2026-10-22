@@ -175,9 +175,11 @@ pub fn parse_delta(ofn: &str) -> Result<Delta, AppError> {
     } else {
         ofn
     };
-    let (onto, _prefixes): (Delta, _) =
-        ofn::reader::read(Cursor::new(doc.as_bytes()), ParserConfiguration::default())
-            .map_err(|e| AppError::Internal(format!("ontology: parse delta OFN: {e}")))?;
+    let (onto, _prefixes): (Delta, _) = ofn::reader::read(
+        &mut Cursor::new(doc.as_bytes()),
+        ParserConfiguration::default(),
+    )
+    .map_err(|e| AppError::Internal(format!("ontology: parse delta OFN: {e}")))?;
     Ok(onto)
 }
 

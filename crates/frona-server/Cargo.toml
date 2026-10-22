@@ -33,8 +33,8 @@ deunicode = "1"
 arc-swap = "1"
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
-struct-patch = "0.13"
-argon2 = "0.5"
+struct-patch = "0.14"
+argon2 = "0.6"
 ed25519-dalek = { version = "3", features = ["rand_core", "pkcs8"] }
 rand = "0.10"
 nanoid = "0.5"
@@ -74,7 +74,7 @@ rig-core = { workspace = true }
 rig-bedrock = "=0.42.0"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-bedrockruntime = { version = "1.143", default-features = false, features = ["rt-tokio", "default-https-client"] }
-aws-sdk-bedrock = { version = "=1.157.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
+aws-sdk-bedrock = { version = "=1.162.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
 aws-smithy-runtime-api = { version = "1", features = ["client"] }
 aws-smithy-types = "1"
 async-stream = { workspace = true }
@@ -102,10 +102,9 @@ cron = "0.17"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 vaultrs = { version = "0.8", default-features = false, features = ["rustls"] }
-# 0.13.23–0.13.25 allow AES 0.8 with cipher 0.5, which fails to compile.
-keepass = "=0.13.22"
+keepass = "0.17"
 cookie = "0.18.1"
-minijinja = "2"
+minijinja = "3"
 schemars = { version = "1", features = ["chrono04"] }
 # Repairs the JSON some models emit as prose instead of a structured tool call - fences,
 # trailing commas, truncation, and braces inside string values. Replaces a brace-counting
@@ -123,18 +122,19 @@ unicode-normalization = "0.1"
 regex = "1"
 infer = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+# 0.3 adds serde_yml/libyml, flagged by RUSTSEC-2025-0068/0067.
 agent-skills = "0.2"
 notify = "8"
 rmcp = { version = "3.4.1", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 xz2 = "0.1"
 inventory = "0.3"
-jsonschema = { version = "0.49", default-features = false }
+jsonschema = { version = "0.59", default-features = false }
 
 # horned-owl: typed OWL schema building + I/O; reasonable: OWL 2 RL materializer
 # + validation diagnostics; oxsdatatypes: XSD datatype/facet checks (code);
 # oxrdf: shared RDF term model; oxigraph (no default features → pure-Rust
 # in-memory store, no RocksDB C++) : SPARQL query + reactive substrate.
-horned-owl = "3"
+horned-owl = "4"
 reasonable = "0.4"
 oxsdatatypes = "0.2"
 oxrdf = "0.3"

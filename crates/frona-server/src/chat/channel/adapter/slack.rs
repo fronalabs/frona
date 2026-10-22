@@ -221,11 +221,9 @@ impl ChannelAdapter for SlackAdapter {
                 }
             };
             let label = attachment::button_label(att);
-            let btn = SlackBlockButtonElement::new(
-                SlackActionId(format!("att:{}:{i}", msg.id)),
-                pt(&truncate_label(&label)),
-            )
-            .with_url(parsed);
+            let btn = SlackBlockButtonElement::new(pt(&truncate_label(&label)))
+                .with_action_id(SlackActionId(format!("att:{}:{i}", msg.id)))
+                .with_url(parsed);
             elements.push(btn.into());
         }
 
@@ -578,7 +576,8 @@ fn build_slack_blocks(
 
     let url_button = || -> Option<SlackBlockButtonElement> {
         url::Url::parse(url).ok().map(|u| {
-            SlackBlockButtonElement::new(SlackActionId(format!("u:{tcid}")), pt("Open on web →"))
+            SlackBlockButtonElement::new(pt("Open on web →"))
+                .with_action_id(SlackActionId(format!("u:{tcid}")))
                 .with_url(u)
         })
     };
@@ -591,9 +590,11 @@ fn build_slack_blocks(
 
     match kind {
         HitlKind::Approval => {
-            let yes = SlackBlockButtonElement::new(SlackActionId(format!("r:{tcid}:y")), pt("Yes"))
+            let yes = SlackBlockButtonElement::new(pt("Yes"))
+                .with_action_id(SlackActionId(format!("r:{tcid}:y")))
                 .with_style(SlackBlockButtonStyle::Primary);
-            let no = SlackBlockButtonElement::new(SlackActionId(format!("r:{tcid}:n")), pt("No"))
+            let no = SlackBlockButtonElement::new(pt("No"))
+                .with_action_id(SlackActionId(format!("r:{tcid}:n")))
                 .with_style(SlackBlockButtonStyle::Danger);
             let mut elements: Vec<SlackActionBlockElement> = vec![yes.into(), no.into()];
             if let Some(b) = url_button() {
@@ -613,11 +614,9 @@ fn build_slack_blocks(
                 .iter()
                 .enumerate()
                 .map(|(i, opt)| {
-                    SlackBlockButtonElement::new(
-                        SlackActionId(format!("r:{tcid}:c:{i}")),
-                        pt(&truncate_label(opt)),
-                    )
-                    .into()
+                    SlackBlockButtonElement::new(pt(&truncate_label(opt)))
+                        .with_action_id(SlackActionId(format!("r:{tcid}:c:{i}")))
+                        .into()
                 })
                 .collect();
             vec![prompt_block, SlackActionsBlock::new(elements).into()]

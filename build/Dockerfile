@@ -169,7 +169,7 @@ COPY --from=syd-builder /usr/local/bin/syd /usr/local/bin/syd
 COPY --from=syd-builder /usr/local/share/doc/syd /usr/local/share/doc/syd
 COPY build/dev/install-kache.sh /tmp/install-kache.sh
 RUN sh /tmp/install-kache.sh && rm /tmp/install-kache.sh
-COPY build/dev/kache.toml /etc/kache/config.toml
+COPY --chmod=0644 build/dev/kache.toml /etc/kache/config.toml
 
 ARG DEV_UID=1000
 ARG DEV_GID=1000

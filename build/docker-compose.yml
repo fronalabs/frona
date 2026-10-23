@@ -81,6 +81,9 @@ services:
       - CARGO_PROFILE_DEV_DEBUG=line-tables-only
       - CARGO_PROFILE_TEST_DEBUG=line-tables-only
       - RUSTC_WRAPPER=kache
+      # Pin the local cache path for every compiler wrapper invocation.
+      - KACHE_CACHE_DIR=/cache/kache/local
+      - KACHE_RUNTIME_DIR=/tmp/dv-kache
       - KACHE_BUILD_SCRIPT_CACHE=0
       - KACHE_VERIFY_RESTORES=always
       # GNU ld dominated backend restart time. LLVM lld is installed in the dev image.

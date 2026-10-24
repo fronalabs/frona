@@ -10,6 +10,7 @@ use tower_http::timeout::TimeoutBody;
 
 use super::super::error::ApiError;
 use crate::api::cookie::extract_refresh_token_from_cookie_header;
+use crate::api::middleware::auth::AuthUser;
 use crate::auth::models::Claims;
 use crate::core::config::BrowserConfig;
 use crate::core::error::{AppError, AuthErrorCode};
@@ -29,6 +30,7 @@ localStorage.setItem(key, JSON.stringify(settings));"#;
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/api/browser/snapshot", get(snapshot))
         .route("/api/auth/browser/{credential_id}", get(auth_gate))
         .route("/api/browser/debugger/{credential_id}", get(document))
         .route("/api/browser/debugger/{credential_id}/", get(document))
@@ -36,6 +38,40 @@ pub fn router() -> Router<AppState> {
             "/api/browser/debugger/{credential_id}/{*path}",
             get(resource),
         )
+}
+
+async fn snapshot(auth: AuthUser, State(state): State<AppState>) -> Result<Response, ApiError> {
+    // Match BrowserTool's profile selection without exposing profile credentials.
+    let provider = state
+        .vault_service
+        .list_credentials(&auth.user_id)
+        .await?
+        .into_iter()
+        .next()
+        .map(|credential| credential.provider)
+        .unwrap_or_else(|| "default".to_string());
+    let Some(connection) = state
+        .browser_session_manager
+        .existing_connection(&auth.handle, &provider)
+        .await
+    else {
+        return Ok((StatusCode::NO_CONTENT, [("cache-control", "no-store")]).into_response());
+    };
+    let capture = tokio::time::timeout(Duration::from_secs(10), connection.screenshot_bytes(false))
+        .await
+        .map_err(|_| AppError::Browser("Browser snapshot timed out".into()))?;
+    let bytes = match capture {
+        Ok(bytes) => bytes,
+        Err(frona_browser::Error::NoActivePage) => {
+            return Ok((StatusCode::NO_CONTENT, [("cache-control", "no-store")]).into_response());
+        }
+        Err(_) => return Err(AppError::Browser("Browser snapshot unavailable".into()).into()),
+    };
+    Ok((
+        [("content-type", "image/png"), ("cache-control", "no-store")],
+        bytes,
+    )
+        .into_response())
 }
 
 async fn credential_for_user(

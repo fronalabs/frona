@@ -19,6 +19,8 @@ import { UpdateIdentityView } from "./update-identity";
 import { WebFetchView } from "./web-fetch";
 import { WebSearchView } from "./web-search";
 import type { ToolView } from "./types";
+import { BrowserView } from "./browser";
+import { isBrowserTool } from "../browser-tool-state";
 
 export type ToolMatcher = { match: (toolName: string) => boolean; view: ToolView };
 
@@ -46,7 +48,9 @@ export const TOOL_VIEWS_EXACT: Record<string, ToolView> = {
   set_heartbeat: HeartbeatView,
 };
 
-export const TOOL_VIEWS_PATTERN: ToolMatcher[] = [];
+export const TOOL_VIEWS_PATTERN: ToolMatcher[] = [
+  { match: isBrowserTool, view: BrowserView },
+];
 
 /**
  * Per-tool predicate that decides whether the row should start expanded.

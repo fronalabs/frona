@@ -9,7 +9,8 @@ import {
   useMemo,
   useRef,
 } from "react";
-import { useAuiState } from "@assistant-ui/react";
+import { useAuiState, type ToolCallMessagePart, type ToolCallMessagePartStatus } from "@assistant-ui/react";
+import { browserCallStatus, isBrowserTool } from "./browser-tool-state";
 import { useThreadIsRunning } from "@assistant-ui/core/react";
 import { ChevronRightIcon, ChevronUpIcon, WrenchScrewdriverIcon } from "@heroicons/react/24/outline";
 import { AnimatePresence, motion } from "motion/react";
@@ -29,6 +30,8 @@ const EXCLUDED_TOOLS = new Set([
 ]);
 
 interface ToolTimelineContextValue {
+  browserCalls: readonly ToolCallMessagePart[];
+  browserStatus?: ToolCallMessagePartStatus;
   isVisible: (toolCallId: string) => boolean;
   isLastVisible: (toolCallId: string) => boolean;
   isFirstVisible: (toolCallId: string) => boolean;
@@ -50,6 +53,12 @@ export function ToolTimelineProvider({
   const message = useAuiState((state) => state.message);
   const isRunning = useThreadIsRunning();
 
+  const browserCalls = useMemo(() => message.content.filter(
+    (part): part is ToolCallMessagePart => part.type === "tool-call" && isBrowserTool(part.toolName),
+  ), [message.content]);
+  const latestBrowserCall = browserCalls[browserCalls.length - 1];
+  const browserStatus = latestBrowserCall ? browserCallStatus(latestBrowserCall, message.status) : undefined;
+
   const toolCallIds = useMemo(() => {
     if (message.role !== "assistant") return [];
     return (
@@ -59,9 +68,10 @@ export function ToolTimelineProvider({
         toolName?: string;
       }>
     )
-      .filter((p) => p.type === "tool-call" && p.toolCallId && !EXCLUDED_TOOLS.has(p.toolName ?? ""))
+      .filter((p) => p.type === "tool-call" && p.toolCallId && !EXCLUDED_TOOLS.has(p.toolName ?? "")
+        && (!isBrowserTool(p.toolName ?? "") || p.toolCallId === browserCalls[0]?.toolCallId))
       .map((p) => p.toolCallId!);
-  }, [message.role, message.content]);
+  }, [message.role, message.content, browserCalls]);
 
   // Stabilise the ID list so downstream memos only recompute when the
   // actual set of tool-call IDs changes, not on every content reference change.
@@ -74,7 +84,7 @@ export function ToolTimelineProvider({
   }
   const stableToolCallIds = stableIdsRef.current;
 
-  const totalTools = stableToolCallIds.length;
+  const totalTools = stableToolCallIds.length + Math.max(0, browserCalls.length - 1);
 
   // Messages loaded from history start collapsed; live messages start expanded.
   // Recently completed messages (remounted after streaming→real ID swap) start
@@ -99,8 +109,13 @@ export function ToolTimelineProvider({
     for (let i = start; i < stableToolCallIds.length; i++) {
       set.add(stableToolCallIds[i]);
     }
+    const browserId = browserCalls[0]?.toolCallId;
+    if (browserId && !set.has(browserId)) {
+      set.delete(stableToolCallIds[start]);
+      set.add(browserId);
+    }
     return set;
-  }, [stableToolCallIds, userToggled]);
+  }, [stableToolCallIds, userToggled, browserCalls]);
 
   const messageIsLast = message.isLast;
   const messageCreatedAt = (message as unknown as { createdAt?: Date }).createdAt;
@@ -121,11 +136,14 @@ export function ToolTimelineProvider({
 
   const isVisible = useCallback(
     (toolCallId: string) => {
+      if (browserCalls.some((call) => call.toolCallId === toolCallId)) {
+        return toolCallId === browserCalls[0]?.toolCallId && !collapsed;
+      }
       if (collapsed) return false;
       if (visibleSet) return visibleSet.has(toolCallId);
       return true;
     },
-    [collapsed, visibleSet],
+    [collapsed, visibleSet, browserCalls],
   );
 
   const isLastVisible = useCallback(
@@ -159,7 +177,7 @@ export function ToolTimelineProvider({
     [toolIndexMap],
   );
 
-  const hiddenCount = visibleSet ? totalTools - visibleSet.size : 0;
+  const hiddenCount = visibleSet ? stableToolCallIds.length - visibleSet.size : 0;
 
   const handleToggle = useCallback(() => {
     setCollapsed((prev) => !prev);
@@ -167,8 +185,8 @@ export function ToolTimelineProvider({
   }, []);
 
   const value = useMemo(
-    () => ({ isVisible, isLastVisible, isFirstVisible, getToolIndex, hiddenCount }),
-    [isVisible, isLastVisible, isFirstVisible, getToolIndex, hiddenCount],
+    () => ({ isVisible, isLastVisible, isFirstVisible, getToolIndex, hiddenCount, browserCalls, browserStatus }),
+    [isVisible, isLastVisible, isFirstVisible, getToolIndex, hiddenCount, browserCalls, browserStatus],
   );
 
   if (totalTools === 0) return <>{children}</>;

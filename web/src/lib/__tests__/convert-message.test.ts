@@ -33,6 +33,18 @@ function makeToolCall(overrides: Partial<ToolCall> = {}): ToolCall {
   };
 }
 
+it("distinguishes a pending browser call from a completed empty result", () => {
+  for (const pending of [true, false]) {
+    const message = convertMessage(makeAgentMessage({
+      status: "executing",
+      tool_calls: [makeToolCall({ name: "browser_go_back", result: "", _pending: pending })],
+    }));
+    const call = message?.content.find((part) => part.type === "tool-call");
+    expect(call).toBeDefined();
+    expect(call && "result" in call ? call.result : undefined).toBe(pending ? undefined : "");
+  }
+});
+
 it("marks a saved failed reply as an error rather than a completed response", () => {
   expect(convertMessage(makeAgentMessage({ status: "failed", content: "" }))?.status)
     .toEqual({ type: "incomplete", reason: "error", error: "Message processing failed." });

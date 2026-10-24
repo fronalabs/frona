@@ -6,6 +6,30 @@ use std::sync::Arc;
 use wiremock::matchers::{path, query_param, query_param_is_missing};
 
 #[tokio::test]
+async fn snapshot_requires_auth_and_does_not_start_a_browser() {
+    let (mut state, _directory) = test_app_state_with_sandbox(true).await;
+    let (token, _) =
+        register_user(&state, "previewuser", "preview@example.com", "password123").await;
+    let upstream = MockServer::start().await;
+    state.browser_session_manager = Arc::new(BrowserSessionManager::new(Some(BrowserConfig {
+        ws_url: upstream.uri().replacen("http://", "ws://", 1),
+        ..Default::default()
+    })));
+    let response = build_app(state.clone())
+        .oneshot(auth_get("/api/browser/snapshot", &token))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert!(upstream.received_requests().await.unwrap().is_empty());
+    let response = build_app(state)
+        .oneshot(auth_get("/api/browser/snapshot", "invalid"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn debugger_auth_preserves_the_ui_and_never_forwards_upstream_diagnostics() {
     let (mut state, _directory) = test_app_state_with_sandbox(true).await;
     let (user_token, user_id) =
@@ -438,6 +462,17 @@ async fn live_browserless_debugger_ui_and_cdp_are_scoped_to_owner() {
     assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
     assert_eq!(png.len(), screenshot.size_bytes);
     assert!(png.len() > 100);
+    let response = build_app(state.clone())
+        .oneshot(auth_get("/api/browser/snapshot", &token))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "image/png");
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let snapshot = axum::body::to_bytes(response.into_body(), 4 << 20)
+        .await
+        .unwrap();
+    assert!(snapshot.starts_with(b"\x89PNG\r\n\x1a\n"));
     let (foreign_token, foreign_user_id) = register_user(
         &state,
         "foreignbrowser",

@@ -59,6 +59,20 @@ impl BrowserSessionManager {
         self.config.as_ref()
     }
 
+    /// Viewing a preview must never launch or reconnect a browser.
+    pub async fn existing_connection(
+        &self,
+        user_handle: &crate::core::Handle,
+        provider: &str,
+    ) -> Option<BrowserConnection> {
+        self.sessions
+            .read()
+            .await
+            .get(&Self::profile_key(user_handle, provider))
+            .filter(|connection| connection.is_alive())
+            .cloned()
+    }
+
     fn profile_key(user_handle: &crate::core::Handle, provider: &str) -> String {
         format!("{user_handle}/{provider}")
     }

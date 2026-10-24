@@ -622,6 +622,7 @@ export class ChatStore {
           name: tc.toolName,
           arguments: tc.args as Record<string, unknown>,
           result: res?.result ?? "",
+          _pending: !res,
           success: res ? !res.isError : true,
           duration_ms: 0,
           description: tc.args.description as string | undefined,

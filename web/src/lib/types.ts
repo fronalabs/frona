@@ -288,6 +288,8 @@ export type MessageEvent =
 export type MessageStatus = "executing" | "paused" | "completed" | "failed" | "cancelled";
 
 export interface ToolCall {
+  /** Frontend-only: no tool_result event has arrived for this streamed call. */
+  _pending?: boolean;
   id: string;
   chat_id: string;
   message_id: string;

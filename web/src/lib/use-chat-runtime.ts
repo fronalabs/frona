@@ -291,7 +291,7 @@ export function convertMessage(msg: MessageResponse, localImageFiles?: ReadonlyM
               ...(!te.success ? { isError: true } : {}),
             } as Record<string, string | number | boolean | null>,
             argsText: JSON.stringify(te.arguments || {}),
-            result: te.result,
+            ...(te._pending ? {} : { result: te.result }),
           });
         }
       }

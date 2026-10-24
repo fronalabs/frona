@@ -10,6 +10,8 @@ path = "src/lib.rs"
 [dependencies]
 chromiumoxide = { version = "0.9", default-features = false, features = ["bytes"] }
 html2md = "0.2"
+psl = "2"
+url = "2"
 tokio = { workspace = true }
 futures = "0.3"
 serde = { workspace = true }

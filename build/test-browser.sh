@@ -43,6 +43,7 @@ trap 'exit 143' TERM
 # Isolate destructive session tests from the development browser and its profiles.
 "$runtime" run --detach --name "$container_name" \
   --publish 127.0.0.1::3333 --shm-size=1g --add-host host.frona.test:host-gateway \
+  --add-host ui.frona.test:host-gateway --add-host external.test:host-gateway \
   --env PORT=3333 --env TIMEOUT=1800000 \
   --env MAX_CONCURRENT_SESSIONS=10 --env ENABLE_DEBUGGER=true \
   --tmpfs /profiles:rw,mode=1777 "$image" >/dev/null

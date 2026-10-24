@@ -63,7 +63,7 @@ impl AgentTool for BrowserTool {
                     "type": "object",
                     "properties": {
                         "url": { "type": "string", "description": "URL to navigate to" },
-                        "wait_for_load": { "type": "boolean", "description": "Wait for navigation to complete", "default": true }
+                        "wait_for_load": { "type": "boolean", "description": "Wait for the main DOM and started same-domain iframe DOMs. Third-party and unstarted lazy frames do not block. Iframe timeouts return warnings; false skips the readiness wait", "default": true }
                     },
                     "required": ["url"]
                 }),

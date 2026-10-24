@@ -3378,6 +3378,7 @@ dependencies = [
  "chromiumoxide",
  "futures",
  "html2md",
+ "psl",
  "reqwest 0.13.5",
  "serde",
  "serde_json",
@@ -3387,6 +3388,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tungstenite 0.28.0",
+ "url",
 ]
 
 [[package]]
@@ -7637,6 +7639,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e36c2f31e0a47f9280fb347ef5e461ffcd2c52dd520d8e216b52f93b0b0d7d6"
 dependencies = [
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "psl"
+version = "2.1.245"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46cce9bc841c0eeb395275a775d11e3cc91b904e6ab370a9a42369e111b3038e"
+dependencies = [
+ "psl-types",
 ]
 
 [[package]]

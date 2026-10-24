@@ -17,6 +17,8 @@ pub enum ExtractFormat {
 pub struct PageInfo {
     pub url: String,
     pub title: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

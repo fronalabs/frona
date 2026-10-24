@@ -22,6 +22,8 @@ struct Handle {
     /// Set shorter than Browserless's per-job timeout so we self-evict before
     /// Browserless force-closes the WS mid-op.
     expires_at: Instant,
+    navigation_timeout: Duration,
+    navigation_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Drop for Handle {
@@ -57,6 +59,8 @@ impl BrowserConnection {
             alive: AtomicBool::new(true),
             disconnect_error: Mutex::new(None),
             expires_at: Instant::now() + lifetime,
+            navigation_timeout: timeout,
+            navigation_lock: Arc::new(tokio::sync::Mutex::new(())),
         });
 
         let weak = Arc::downgrade(&inner);
@@ -123,6 +127,14 @@ impl BrowserConnection {
 
     pub fn expires_at(&self) -> Instant {
         self.inner.expires_at
+    }
+
+    pub(crate) async fn lock_navigation(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.inner.navigation_lock.clone().lock_owned().await
+    }
+
+    pub(crate) fn navigation_timeout(&self) -> Duration {
+        self.inner.navigation_timeout
     }
 
     pub(crate) async fn active_page(&self) -> Result<Page> {

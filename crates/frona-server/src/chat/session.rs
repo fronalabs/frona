@@ -165,13 +165,13 @@ impl ChatSessionContext {
             &resolved_tz,
         );
 
-        let model_group =
-            harness
-                .chat_service
-                .model_providers()
-                .resolve(&crate::inference::ModelRef(
-                    agent_config.model_group.clone().into(),
-                ))?;
+        let model_group = harness
+            .chat_service
+            .model_providers()
+            .resolve_with_fallback(
+                &crate::inference::ModelRef(agent_config.model_group.clone().into()),
+                &crate::inference::ModelRef::PRIMARY,
+            )?;
 
         let loaded = harness
             .chat_service

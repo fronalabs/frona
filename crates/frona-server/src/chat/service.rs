@@ -477,9 +477,10 @@ impl ChatService {
         let system_prompt = agent_config.system_prompt;
         let model_group_name = agent_config.model_group;
 
-        let model_group = self
-            .model_providers
-            .resolve(&crate::inference::ModelRef(model_group_name.clone().into()))?;
+        let model_group = self.model_providers.resolve_with_fallback(
+            &crate::inference::ModelRef(model_group_name.clone().into()),
+            &crate::inference::ModelRef::PRIMARY,
+        )?;
         let loaded = self.compactor.load_conversation(chat_id).await?;
         let conversation_summary = loaded.summary;
         let stored_messages = loaded.messages;

@@ -1134,6 +1134,94 @@ impl App {
 }
 
 #[tokio::test]
+async fn agent_model_fallback_covers_api_tasks_and_heartbeats() {
+    use frona::inference::conversation::{HeartbeatConversationBuilder, TaskConversationBuilder};
+
+    for path in ["stream", "text", "task", "heartbeat"] {
+        for (requested, has_primary, expected) in [
+            ("reasoning", true, Some("primary")),
+            ("conversation", true, Some("conversation")),
+            ("reasoning", false, None),
+        ] {
+            let app = App::with_route(128_000, has_primary).await;
+            let repo = SurrealRepo::<frona::agent::models::Agent>::new(app.db.clone());
+            let mut agent = repo.find_by_id(&app.chat.agent_id).await.unwrap().unwrap();
+            agent.model_group = requested.into();
+            if path == "heartbeat" {
+                agent.heartbeat_chat_id = Some(app.chat.id.clone());
+            }
+            repo.update(&agent).await.unwrap();
+
+            let result = if path == "text" {
+                app.chat_service
+                    .send_message(
+                        &app.user.id,
+                        &app.chat.id,
+                        frona::chat::message::models::SendMessageRequest {
+                            content: "Hello".into(),
+                            attachments: vec![],
+                            metadata: None,
+                        },
+                    )
+                    .await
+                    .map(|_| ())
+            } else {
+                app.next_request().await;
+                let state = &app.fixture.state;
+                let builder: Box<dyn ConversationBuilder> = match path {
+                    "task" => Box::new(TaskConversationBuilder {
+                        user_service: state.user_service.clone(),
+                        storage_service: state.storage_service.clone(),
+                        agent_service: state.agent_service.clone(),
+                        continuation_prompt: Some("Complete the task".into()),
+                    }),
+                    "heartbeat" => Box::new(HeartbeatConversationBuilder {
+                        user_service: state.user_service.clone(),
+                        storage_service: state.storage_service.clone(),
+                        agent_service: state.agent_service.clone(),
+                        continuation_prompt: None,
+                        heartbeat_content: "Check for updates".into(),
+                    }),
+                    _ => app.builder(),
+                };
+                app.harness
+                    .run_loop(
+                        &app.user.id,
+                        &app.chat.id,
+                        "new-response",
+                        CancellationToken::new(),
+                        builder,
+                        &[],
+                        None,
+                    )
+                    .await
+                    .map(|_| ())
+            };
+
+            match expected {
+                Some(group) => {
+                    result.unwrap_or_else(|error| panic!("{path}/{requested}: {error}"));
+                    assert_eq!(app.model.calls(), usize::from(group == "conversation"));
+                    assert_eq!(app.other_models[0].calls(), usize::from(group == "primary"));
+                    assert_eq!(app.other_models[1].calls(), 0);
+                }
+                None => {
+                    assert!(
+                        matches!(&result, Err(AppError::Inference(error)) if matches!(
+                            error.as_ref(),
+                            frona::inference::InferenceError::ModelGroupNotFound(name)
+                                if name == requested
+                        )),
+                        "{path}/{requested}: {result:?}"
+                    );
+                    assert_eq!(app.model.calls(), 0);
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn harness_dispatches_clear_after_normal_session_build() {
     let app = App::new().await;
     let request = row("active", 1, MessageRole::User, "ordinary request");

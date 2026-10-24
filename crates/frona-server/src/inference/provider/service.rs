@@ -788,21 +788,17 @@ impl ModelProviderService {
         if !crate::inference::credential::setup::provider(&connection, request.method).is_some() {
             return Err(unsupported_login());
         }
-        let metadata = if let Some(id) = request.config.credential_id {
-            self.store
-                .vault()
-                .status_by_id(id)
-                .await?
-                .ok_or_else(|| AppError::NotFound("managed credential".into()))?
-                .metadata
+        let current = if let Some(id) = request.config.credential_id {
+            self.store.vault().status_by_id(id).await?
         } else {
-            json!({"name":handle})
+            None
         };
         let target = crate::credential::managed::login::service::LoginTarget {
             vault: self.store.vault().clone(),
             key: crate::credential::managed::Key::new(handle.to_string(), request.method.as_str()),
-            expected_id: request.config.credential_id,
-            metadata,
+            // A reference copied from another database starts a fresh login.
+            expected_id: current.as_ref().map(|status| status.item_id),
+            metadata: current.map_or_else(|| json!({"name":handle}), |status| status.metadata),
         };
         Ok((
             crate::inference::credential::setup::provider(&connection, request.method)

@@ -84,6 +84,23 @@ beforeEach(() => {
 });
 
 describe("metadata-driven provider connections", () => {
+  it("requires reconnecting an existing provider whose managed credential is missing", async () => {
+    const restored = { ...config, api_key: null, credential_id: "missing-credential" };
+    inspections = [inspection({ configuration: restored, credentials: [],
+      effective_authentication: { method: null, source: "unavailable" } })];
+    render(<Harness initial={{ account: restored }} />);
+    const card = await screen.findByRole("region", { name: "Connection account" });
+    await within(card).findByText("The saved credential is missing. Enter a new API key or reconnect this provider.");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save fixture" })).toBeDisabled());
+    await validate(card);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save fixture" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Save fixture" }));
+    await screen.findByText("Restart required");
+    expect(api.put).toHaveBeenCalledWith("/api/config", expect.objectContaining({
+      patch: { providers: { account: expect.objectContaining({ credential_id: "saved-credential" }) } },
+    }));
+  });
+
   it.each<NonNullable<LoginAttempt["challenge"]>["kind"]>(["device_code", "redirect"])("copies only the code from a %s login challenge", async kind => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });

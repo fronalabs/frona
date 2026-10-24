@@ -273,7 +273,7 @@ impl ProviderCredentials {
             .map_err(internal)?;
         let saved = match candidate {
             Candidate::Secret(payload) => match current_id {
-                Some(id) => {
+                Some(id) if pending.base_generation > 0 => {
                     let current = self
                         .vault
                         .status_by_id(id)
@@ -283,7 +283,11 @@ impl ProviderCredentials {
                         .replace_by_id(id, pending.version, integration, current.metadata, payload)
                         .await?
                 }
-                None => self.vault.create(integration, metadata, payload).await?,
+                // A config copied into a fresh database can reference a credential
+                // that was already absent when validation began. Save the newly
+                // validated secret under a new ID; never recreate the missing ID.
+                // Existing credentials still require their validated version above.
+                _ => self.vault.create(integration, metadata, payload).await?,
             },
             Candidate::Existing(version) => self
                 .vault

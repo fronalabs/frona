@@ -75,13 +75,21 @@ it("uses the loaded revision, preserves the edit after a stale save, and retains
   expect(api.get).toHaveBeenCalledWith("/api/config");
 });
 
-it.each(["settings", "setup"])("saves a validated API key in %s and retains its reference after a failed save", async page => {
+it.each([
+  { page: "settings", missingCredential: false }, { page: "setup", missingCredential: false },
+  { page: "settings", missingCredential: true }, { page: "setup", missingCredential: true },
+])("saves a validated API key in $page (missing credential: $missingCredential) and retains its reference after a failed save", async ({ page, missingCredential }) => {
+  const configured = missingCredential ? { ...provider, credential_id: "missing-credential" } : provider;
   const keyBrand = { ...brand, auth_methods: [{ ...brand.auth_methods[0], id: "api-key", credential_method: "api_key", interaction: "form", persistence: "database",
     fields: [{ id: "key", label: "API key", target: { kind: "credential", field: "api_key" }, schema: { type: "string" }, required: true, sensitive: true, suggested_env: [] }] }] };
   const original = vi.mocked(api.get).getMockImplementation()!;
   vi.mocked(api.get).mockImplementation(async (path, ...args) => {
+    if (path === "/api/config") {
+      const saved = document();
+      return { ...saved, config: { ...saved.config, providers: { account: configured } } };
+    }
     if (path === "/api/config/provider-catalog") return { providers: [keyBrand], source_status: {} };
-    if (path === "/api/config/providers") return { providers: [{ handle: "account", configuration: provider, setup: keyBrand, credentials: [], affected_groups: [], authentication_methods: [] }] };
+    if (path === "/api/config/providers") return { providers: [{ handle: "account", configuration: configured, setup: keyBrand, credentials: [], affected_groups: [], authentication_methods: [] }] };
     return original(path, ...args);
   });
   vi.mocked(api.post).mockImplementation(async path => path.endsWith("/validate")
@@ -92,6 +100,11 @@ it.each(["settings", "setup"])("saves a validated API key in %s and retains its 
   if (page === "setup") {
     fireEvent.click(await screen.findByRole("button", { name: "Next" }));
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
+  }
+  if (missingCredential) {
+    await screen.findByText("The saved credential is missing. Enter a new API key or reconnect this provider.");
+    await waitFor(() => expect(screen.getByRole("button", { name: page === "settings" ? /^Save$/ : "Next" })).toBeDisabled());
+    if (page === "setup") expect(screen.getByRole("button", { name: "Skip" })).toBeDisabled();
   }
   fireEvent.change(await screen.findByLabelText("API key *"), { target: { value: "test-key" } });
   await screen.findByRole("img", { name: "Connection validated" }, { timeout: 3000 });

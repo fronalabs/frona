@@ -164,8 +164,11 @@ function ConnectionCard({ handle, config, entry, inspection, draft, revision, ha
   const proof = matchingDraft(config, draft);
   const saved = !!inspection;
   const changed = !saved || providerFingerprint(config) !== providerFingerprint(inspection.configuration);
+  const missingCredential = !!config.credential_id && config.credential_id === inspection?.configuration.credential_id
+    && !inspection.credentials.some(credential => credential.credential_id === config.credential_id && credential.state === "active");
   const reason = config.enabled === false && !changed ? null : busy ? `${handle}: validation in progress` : error
-    ? `${handle}: ${error}` : changed && !config.credential_id && !proof ? `${handle}: validate the connection before saving` : null;
+    ? `${handle}: ${error}` : missingCredential && !proof ? `${handle}: reconnect the missing credential before saving`
+    : changed && !config.credential_id && !proof ? `${handle}: validate the connection before saving` : null;
   useEffect(() => { report(handle, reason); }, [handle, reason, report]);
 
   function invalidate() {
@@ -336,6 +339,7 @@ function ConnectionCard({ handle, config, entry, inspection, draft, revision, ha
       }} />
 
     {inspection && <p className="text-sm text-text-secondary">Active authentication: {authenticationSourceLabel(inspection.effective_authentication?.source)}.</p>}
+    {missingCredential && !proof && <p role="status" className="text-sm text-warning">The saved credential is missing. Enter a new API key or reconnect this provider.</p>}
     {inspection?.affected_groups.length ? <p className="text-sm">Used by: {inspection.affected_groups.join(", ")}</p> : null}
     {inspection?.pending_removal && <p role="status">Removal is pending restart.</p>}
     {entry.warnings.map(warning => <p key={warning} className="text-sm text-warning">{warning}</p>)}

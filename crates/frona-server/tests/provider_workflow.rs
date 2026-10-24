@@ -19,7 +19,9 @@ use frona::{
         provider::{
             InferenceCounter,
             platform::ProviderPlatform,
-            service::{CredentialInput, DraftRequest, ModelProviderService, ValidateRequest},
+            service::{
+                CredentialInput, DraftRequest, LoginRequest, ModelProviderService, ValidateRequest,
+            },
             validation::{ProviderValidationService, binding},
         },
     },
@@ -274,6 +276,89 @@ async fn ambient_aws_draft_proof_describes_manual_models_and_rejects_binding_cha
             "changed {changed} must invalidate the proof"
         );
     }
+}
+
+#[tokio::test]
+async fn missing_credential_can_start_a_new_provider_login() {
+    let db = Surreal::new::<Mem>(()).await.unwrap();
+    frona::db::init::setup_schema(&db).await.unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let service = administration(&db, directory.path(), "fixture-encryption").await;
+    let handle = Handle::const_validated("account");
+    let (provider, target) = service
+        .prepare_login(
+            &handle,
+            LoginRequest {
+                config: ModelProviderConfig {
+                    provider: Some("openai".into()),
+                    credential_id: Some(uuid::Uuid::new_v4()),
+                    ..Default::default()
+                },
+                method: CredentialMethod::Oauth,
+            },
+        )
+        .await
+        .expect("a missing managed credential must allow a new login");
+    assert_eq!(provider, "openai_codex");
+    assert_eq!(target.expected_id, None);
+    assert_eq!(target.metadata, json!({"name": "account"}));
+}
+
+#[tokio::test]
+async fn existing_config_with_missing_credential_can_be_reconnected() {
+    let db = Surreal::new::<Mem>(()).await.unwrap();
+    frona::db::init::setup_schema(&db).await.unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let server = server("restored").await;
+    let handle = Handle::const_validated("account");
+    let missing_id = uuid::Uuid::new_v4();
+    let mut config = connection(&server);
+    config.credential_id = Some(missing_id);
+    std::fs::write(
+        directory.path().join("config.yaml"),
+        serde_yaml::to_string(&json!({
+            "providers": {"account": config},
+            "models": {"primary": {"provider": "account", "model": "manual-unlisted", "api": "completions"}}
+        })).unwrap(),
+    ).unwrap();
+    let service = administration(&db, directory.path(), "fixture-encryption").await;
+    assert!(service.saved_credentials().await.unwrap().is_empty());
+    let proof = service
+        .validate(
+            "admin",
+            &handle,
+            ValidateRequest {
+                config: config.clone(),
+                credential: CredentialInput::ApiKey {
+                    api_key: "key-restored".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let accepted = service
+        .accept(
+            "admin",
+            &handle,
+            DraftRequest {
+                config: config.clone(),
+                validation_id: proof.validation_id,
+                method: CredentialMethod::ApiKey,
+                source: "database".into(),
+                manual_models: vec![],
+            },
+        )
+        .await
+        .expect("a newly validated API key must recover a missing managed credential");
+    assert_ne!(accepted.credential_id, Some(missing_id));
+    config.credential_id = accepted.credential_id;
+    service
+        .config_service
+        .save(json!({"providers": {"account": config}}), None)
+        .await
+        .unwrap();
+    let restarted = administration(&db, directory.path(), "fixture-encryption").await;
+    infer(&restarted, "restored").await;
 }
 
 #[tokio::test]

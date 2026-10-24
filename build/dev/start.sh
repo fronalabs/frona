@@ -12,6 +12,13 @@ if [[ ! -f bacon.toml ]]; then
   exit 1
 fi
 
+# Bind-mounted node_modules may be empty, hiding dependencies from the image.
+# Finish installation before either watcher starts, and abort if it fails.
+(
+  cd web
+  npm install
+)
+
 # Give each watcher its own process group so shutdown also reaches its children.
 set -m
 pids=()
@@ -28,9 +35,6 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 (
-  cd web
-  npm install
-  cd ..
   exec bash build/dev/run-command.sh 12 bacon --headless server-container
 ) &
 pids+=("$!")

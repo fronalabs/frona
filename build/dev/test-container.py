@@ -9,11 +9,84 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
 BUILD_DIR = Path(__file__).resolve().parents[1]
 FORWARDED_KEYS = ("CARGO_BUILD_JOBS", "RUST_TEST_THREADS")
+
+
+class FrontendStartupTests(unittest.TestCase):
+    def test_dependencies_finish_before_watchers_start(self):
+        for install_status in (0, 23):
+            with self.subTest(install_status=install_status), tempfile.TemporaryDirectory(
+                prefix="frona-startup-test-"
+            ) as directory:
+                root = Path(directory)
+                (root / "build/dev").mkdir(parents=True)
+                for name in ("start.sh", "run-command.sh"):
+                    shutil.copyfile(BUILD_DIR / "dev" / name, root / "build/dev" / name)
+                (root / "bacon.toml").touch()
+                (root / "web/node_modules/.bin").mkdir(parents=True)
+                bin_dir = root / "bin"
+                bin_dir.mkdir()
+                npm = bin_dir / "npm"
+                npm.write_text(
+                    f"#!{sys.executable}\n"
+                    "import os, sys, time\nfrom pathlib import Path\n"
+                    f"root = Path({str(root)!r})\n"
+                    "if sys.argv[1:] == ['install']:\n"
+                    "    (root / 'install-started').touch()\n"
+                    "    while not (root / 'release-install').exists(): time.sleep(.01)\n"
+                    f"    if {install_status}: sys.exit({install_status})\n"
+                    "    next_bin = root / 'web/node_modules/.bin/next'\n"
+                    "    next_bin.write_text('#!/bin/sh\\nexit 0\\n')\n"
+                    "    next_bin.chmod(0o700)\n"
+                    "    (root / 'installed').touch()\n"
+                    "elif sys.argv[1:] == ['run', 'dev']:\n"
+                    "    (root / 'frontend-started').touch()\n"
+                    "    os.environ['PATH'] = str(root / 'web/node_modules/.bin')\n"
+                    "    os.execl('/bin/sh', 'sh', '-c', 'next dev')\n"
+                    "else: sys.exit(99)\n"
+                )
+                npm.chmod(0o700)
+                bacon = bin_dir / "bacon"
+                bacon.write_text(
+                    f"#!{sys.executable}\nfrom pathlib import Path\nimport time\n"
+                    f"Path({str(root / 'backend-started')!r}).touch()\n"
+                    "while True: time.sleep(.01)\n"
+                )
+                bacon.chmod(0o700)
+                process = subprocess.Popen(
+                    ["bash", str(root / "build/dev/start.sh")],
+                    env=dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}"),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                )
+                try:
+                    deadline = time.monotonic() + 5
+                    while not (root / "install-started").exists() and time.monotonic() < deadline:
+                        time.sleep(.01)
+                    self.assertTrue((root / "install-started").exists())
+                    # Hold installation open to expose startup races independently of npm speed.
+                    time.sleep(.2)
+                    premature = any((root / name).exists() for name in (
+                        "frontend-started", "backend-started",
+                    ))
+                    (root / "release-install").touch()
+                    stdout, stderr = process.communicate(timeout=5)
+                    self.assertFalse(premature, stdout + stderr)
+                    self.assertEqual(process.returncode, install_status, stdout + stderr)
+                    self.assertEqual((root / "frontend-started").exists(), install_status == 0)
+                    if install_status:
+                        self.assertFalse((root / "backend-started").exists())
+                    else:
+                        self.assertTrue((root / "installed").exists())
+                finally:
+                    (root / "release-install").touch()
+                    if process.poll() is None:
+                        process.terminate()
+                    process.communicate(timeout=5)
 
 
 class CargoEnvironmentTests(unittest.TestCase):

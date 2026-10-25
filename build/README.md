@@ -146,6 +146,25 @@ Passing `--no-build` yourself skips the automatic build entirely.
 This controls image stages, not Cargo jobs. Instructions within a stage and
 stages that depend on earlier outputs still execute in dependency order.
 
+## Shared image build cache
+
+Set `CONTAINER_CACHE_REGISTRY` to an OCI repository such as
+`127.0.0.1:5050/build-cache` to share Podman intermediate build images across
+workspaces. The launcher adds `--cache-from` and `--cache-to` to its existing
+`--layers` build, for both development and production targets. Use a repository
+without `http://`, `https://`, or an image tag. The registry must already exist;
+authentication and TLS trust use normal Podman configuration.
+
+The devvm registry playbook provisions the endpoint and environment default.
+No Podman wrapper is required. The first build populates the remote cache;
+subsequent workspaces can download matching build steps. Existing local final
+images are still reused without building or contacting the registry. An unset
+or empty variable disables remote caching. `--no-build` still skips all builds.
+Docker Compose behavior is unchanged; this setting applies to the launcher's
+direct Podman builds.
+
+Run `python3 build/dev/test-container-cache.py` for the optional-cache tests.
+
 ## Development compiler cache
 
 The launcher queries the workspace's `kache --version` when building the

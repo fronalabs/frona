@@ -91,6 +91,11 @@ if [[ "$runtime" == podman ]]; then
       --target "$profile"
       --tag "$image"
     )
+    # Podman expects a repository (host[:port]/path), without a URL scheme.
+    # Empty/unset keeps ordinary local caching and needs no registry access.
+    if [[ -n "${CONTAINER_CACHE_REGISTRY:-}" ]]; then
+      build_args+=(--cache-from "$CONTAINER_CACHE_REGISTRY" --cache-to "$CONTAINER_CACHE_REGISTRY")
+    fi
     if [[ "$profile" == dev ]]; then
       resolve_kache_version
       build_args+=(

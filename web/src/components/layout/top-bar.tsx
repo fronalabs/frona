@@ -96,9 +96,10 @@ export function TopBar() {
         <button
           aria-label="Home"
           onClick={() => { setActiveChat(null); router.push("/home"); }}
-          className="flex items-center gap-1 cursor-pointer"
+          className="flex shrink-0 items-center gap-1 cursor-pointer"
         >
-          <Logo size={28} />
+          {/* Artwork fills 80% of the SVG: 50px matches the 40px header buttons. */}
+          <Logo size={50} />
           <span
             className="hidden min-[480px]:inline text-lg font-bold text-text-primary tracking-wide"
             style={{ fontFamily: "var(--font-brand)" }}

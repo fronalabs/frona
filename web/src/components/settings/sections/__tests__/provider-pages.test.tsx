@@ -73,7 +73,7 @@ it.each([
   viewport.mobile = true;
   window.history.replaceState(null, "", `/admin/settings#${hash}`);
   render(<AdminSettingsPage />);
-  const button = await screen.findByRole("button", { name: label, exact: true });
+  const button = await screen.findByRole("button", { name: label });
   const drawer = button.closest(".fixed");
   expect(drawer).toHaveClass("translate-x-0");
   fireEvent.touchStart(button);

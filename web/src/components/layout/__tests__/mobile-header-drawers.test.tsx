@@ -52,7 +52,7 @@ describe("mobile header drawers", () => {
     window.history.replaceState(null, "", href);
     render(<TopBar />);
     tap(screen.getByTitle("user@example.test"));
-    tap(await screen.findByRole("button", { name: label, exact: true }));
+    tap(await screen.findByRole("button", { name: label }));
     expect(screen.queryByText("Account", { exact: true })).not.toBeInTheDocument();
     if (href.includes("#")) expect(window.location.hash).toBe(href.slice(href.indexOf("#")));
     else expect(mocks.push).toHaveBeenCalledExactlyOnceWith(href);
@@ -61,7 +61,7 @@ describe("mobile header drawers", () => {
   it.each(["About", "Logout"])("closes the account drawer on %s", async label => {
     render(<TopBar />);
     tap(screen.getByTitle("user@example.test"));
-    tap(await screen.findByRole("button", { name: label, exact: true }));
+    tap(await screen.findByRole("button", { name: label }));
     expect(screen.queryByText("Account", { exact: true })).not.toBeInTheDocument();
     if (label === "About") expect(screen.getByRole("dialog")).toHaveTextContent("About Frona");
     else expect(mocks.replace).toHaveBeenCalledExactlyOnceWith("/login");
@@ -75,8 +75,8 @@ describe("mobile header drawers", () => {
     window.history.replaceState(null, "", `/admin/settings#${hash}`);
     render(<TopBar />);
     tap(screen.getByTitle("Administration"));
-    tap(await screen.findByRole("button", { name: label, exact: true }));
-    expect(screen.queryByRole("button", { name: label, exact: true })).not.toBeInTheDocument();
+    tap(await screen.findByRole("button", { name: label }));
+    expect(screen.queryByRole("button", { name: label })).not.toBeInTheDocument();
     expect(window.location.hash).toBe(`#${hash}`);
   });
 

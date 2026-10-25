@@ -92,8 +92,8 @@ describe("mobile chat navigation", () => {
   it("keeps the drawer open when using row actions or expanding archived chats", () => {
     render(<MobileNavigation />);
     tap(screen.getAllByRole("button", { name: "Chat actions" })[0]);
-    expect(screen.getByRole("button", { name: "Archive", exact: true })).toBeInTheDocument();
-    tap(screen.getByRole("button", { name: "Archived", exact: true }));
+    expect(screen.getByRole("button", { name: "Archive" })).toBeInTheDocument();
+    tap(screen.getByRole("button", { name: "Archived" }));
     expect(route.push).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Open navigation" })).toHaveAttribute("aria-expanded", "true");
   });

@@ -38,6 +38,7 @@ services:
       args:
         DEV_UID: ${CONTAINER_UID:-1000}
         DEV_GID: ${CONTAINER_GID:-1000}
+        KACHE_VERSION: ${KACHE_VERSION:-}
     ports:
       - "3001:3001"
       - "3000:3000"

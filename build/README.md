@@ -148,7 +148,13 @@ stages that depend on earlier outputs still execute in dependency order.
 
 ## Development compiler cache
 
-The development image installs checksum-pinned Kache via `dev/install-kache.sh`.
+The launcher queries the workspace's `kache --version` when building the
+development image and passes it as the `KACHE_VERSION` build argument.
+`dev/install-kache.sh` downloads that release and verifies its published SHA-256
+checksum. This keeps the container's cache-key format aligned with the workspace.
+Set `KACHE_VERSION` explicitly when workspace Kache is unavailable; direct
+Compose or Dockerfile builds must also supply it. Existing images are reused:
+run `mise run container:dev:build` after updating workspace Kache.
 Compose selects it with `RUSTC_WRAPPER=kache`; `dev/watch.sh` starts its daemon
 before compiling. Production builds continue to use cargo-chef.
 
@@ -168,8 +174,9 @@ without project-specific limits. Development/test profiles retain reduced debug
 information. Run the launcher regression checks with Python 3 and Bash. The
 provider-parsing check also runs when Podman and podman-compose are installed:
 
-```bash
+```nu
 python3 build/dev/test-container.py
+python3 build/dev/test-kache.py
 ```
 
 ## Bacon development workflow

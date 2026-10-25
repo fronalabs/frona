@@ -64,6 +64,22 @@ else
   export CONTAINER_RESTART_POLICY="${CONTAINER_RESTART_POLICY:-unless-stopped}"
 fi
 
+resolve_kache_version() {
+  if [[ -z "${KACHE_VERSION:-}" ]]; then
+    local version_output
+    if ! version_output=$(kache --version); then
+      echo "Cannot query workspace Kache. Install Kache or set KACHE_VERSION before building the dev image." >&2
+      exit 1
+    fi
+    KACHE_VERSION="${version_output#kache }"
+  fi
+  if [[ ! "$KACHE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+    echo "Invalid Kache version: $KACHE_VERSION" >&2
+    exit 1
+  fi
+  export KACHE_VERSION
+}
+
 # Prebuild explicitly so both missing-image startup and requested rebuilds use
 # parallel stages rather than podman-compose's default serial image build.
 if [[ "$runtime" == podman ]]; then
@@ -76,9 +92,11 @@ if [[ "$runtime" == podman ]]; then
       --tag "$image"
     )
     if [[ "$profile" == dev ]]; then
+      resolve_kache_version
       build_args+=(
         --build-arg "DEV_UID=$CONTAINER_UID"
         --build-arg "DEV_GID=$CONTAINER_GID"
+        --build-arg "KACHE_VERSION=$KACHE_VERSION"
       )
     fi
     "$runtime" "${build_args[@]}" .
@@ -117,6 +135,17 @@ if [[ "$runtime" == podman ]]; then
     fi
     set -- ${filtered_args[@]+"${filtered_args[@]}"}
   fi
+fi
+
+# Docker Compose builds images itself and receives the version through its
+# build arguments. Non-building commands must work without workspace Kache.
+if [[ "$runtime" != podman && "$profile" == dev ]]; then
+  may_build=false
+  case "$action" in build | up) may_build=true ;; esac
+  for arg in "$@"; do
+    case "$arg" in --no-build | -h | --help) may_build=false ;; esac
+  done
+  if [[ "$may_build" == true ]]; then resolve_kache_version; fi
 fi
 
 # Podman requires bind-mount source paths to exist before container creation.

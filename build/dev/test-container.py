@@ -248,6 +248,9 @@ class ParallelBuildTests(unittest.TestCase):
             shutil.copyfile(BUILD_DIR / "container.sh", launcher)
             bin_dir = root / "bin"
             bin_dir.mkdir()
+            kache = bin_dir / "kache"
+            kache.write_text("#!/bin/sh\nprintf 'kache 1.2.2\\n'\n")
+            kache.chmod(0o700)
             runtime = bin_dir / "podman"
             runtime.write_text(
                 f"#!{sys.executable}\n"

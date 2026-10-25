@@ -36,7 +36,7 @@ interface TaskItemProps {
 export function TaskItem({ task }: TaskItemProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const { activeTaskId } = useSession();
-  const { tasks, deleteTask } = useNavigation();
+  const { tasks, deleteTask, setMobileNavOpen } = useNavigation();
   const router = useRouter();
   const isCron = task.kind.type === "Cron";
   const isCronActive = isCron && task.status !== "cancelled";
@@ -92,7 +92,10 @@ export function TaskItem({ task }: TaskItemProps) {
         }`}
       >
         <button
-          onClick={() => router.push(`/chat?task=${task.id}`)}
+          onClick={() => {
+            setMobileNavOpen(false);
+            router.push(`/chat?task=${task.id}`);
+          }}
           className="flex-1 min-w-0 px-3 py-2 text-left text-sm"
           title={isCron && cronNextRun ? `Next run: ${cronNextRun}` : undefined}
         >

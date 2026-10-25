@@ -31,6 +31,7 @@ export function ChatsTab() {
     archiveChat,
     unarchiveChat,
     deleteChat,
+    setMobileNavOpen,
   } = useNavigation();
   const { activeChatId, activeChat, setActiveChat } = useSession();
   const selectedChatId = activeChatId ?? activeChat?.id ?? null;
@@ -50,9 +51,15 @@ export function ChatsTab() {
   const [spaceActionPending, setSpaceActionPending] = useState(false);
   const [spaceError, setSpaceError] = useState<string | null>(null);
 
+  const navigate = (href: string) => {
+    // Dismiss on selection, including the current route, without waiting for navigation.
+    setMobileNavOpen(false);
+    router.push(href);
+  };
+
   const handleNewChat = () => {
     setActiveChat(null);
-    router.push("/chat");
+    navigate("/chat");
   };
 
   const handleCreateSpace = async (e: React.FormEvent) => {
@@ -171,7 +178,7 @@ export function ChatsTab() {
           }`}
         >
           <button
-            onClick={() => router.push(`/space?id=${space.id}`)}
+            onClick={() => navigate(`/space?id=${space.id}`)}
             className="flex min-w-0 flex-1 items-center gap-1 px-3 py-2 text-left"
           >
             <FolderIcon className="h-4 w-4 shrink-0 text-text-tertiary" />
@@ -277,7 +284,7 @@ export function ChatsTab() {
               }`}
             >
               <button
-                onClick={() => router.push(`/chat?id=${chat.id}`)}
+                onClick={() => navigate(`/chat?id=${chat.id}`)}
                 className="flex-1 min-w-0 px-3 py-2 text-left text-sm truncate"
               >
                 {chat.title ?? "New chat"}
@@ -317,7 +324,7 @@ export function ChatsTab() {
               }`}
             >
               <button
-                onClick={() => router.push(`/chat?id=${chat.id}`)}
+                onClick={() => navigate(`/chat?id=${chat.id}`)}
                 className="flex-1 min-w-0 px-3 py-2 text-left text-sm truncate"
               >
                 {chat.title ?? "New chat"}

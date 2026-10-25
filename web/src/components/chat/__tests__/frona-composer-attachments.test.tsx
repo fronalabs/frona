@@ -37,6 +37,34 @@ it("opens an unrestricted native file picker", async () => {
   fireEvent.change(input, { target: { files: [] } });
 });
 
+it.each([false, true])("uploads files selected after the attachment menu closes (standalone: %s)", async (standalone) => {
+  const backend = { path: "uploads/picker", filename: "notes.txt", content_type: "text/plain", size_bytes: 1, owner: "user" };
+  const secondBackend = { ...backend, path: "uploads/picker-second", filename: "second.txt" };
+  mocks.uploadFile.mockResolvedValueOnce(backend).mockResolvedValueOnce(secondBackend);
+  const onSend = standalone ? vi.fn() : undefined;
+  render(<Harness onSend={onSend} />);
+  fireEvent.click(screen.getByTitle("Attach"));
+  fireEvent.click(screen.getByText("Upload files"));
+  expect(screen.queryByRole("button", { name: "Upload files" })).not.toBeInTheDocument();
+  const input = document.querySelector<HTMLInputElement>('input[type="file"]')!;
+  const file = new File(["x"], "notes.txt", { type: "text/plain" });
+  const secondFile = new File(["y"], "second.txt", { type: "text/plain" });
+  fireEvent.change(input, { target: { files: [file, secondFile] } });
+  await waitFor(() => expect(mocks.uploadFile).toHaveBeenCalledWith(file));
+  expect(mocks.uploadFile).toHaveBeenCalledWith(secondFile);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled());
+  expect(screen.getByText("notes.txt")).toBeVisible();
+  expect(screen.getByText("second.txt")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => {
+    if (onSend) {
+      expect(onSend).toHaveBeenCalledWith("", [backend, secondBackend]);
+    } else {
+      expect(mocks.sendMessage).toHaveBeenCalledWith("chat-1", { content: "", attachments: [backend, secondBackend] });
+    }
+  });
+});
+
 it.each([false, true])("keeps missing metadata recoverable in the composer (standalone: %s)", async (standalone) => {
   const onSend = standalone ? vi.fn() : undefined;
   render(<Harness onSend={onSend} />);

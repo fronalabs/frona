@@ -305,42 +305,43 @@ export function FronaComposer({
               >
                 <PlusIcon className="h-5 w-5" />
               </button>
-              {menuOpen && (
-                <div
-                  ref={menuRef}
-                  className="absolute bottom-full left-0 mb-1 w-max rounded-lg border border-border bg-surface-secondary py-1 shadow-lg"
-                >
-                  <ComposerPrimitive.AddAttachment asChild multiple>
-                    <button
-                      type="button"
-                      className="flex w-full items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:bg-surface-tertiary transition-colors"
-                      onClick={() => setMenuOpen(false)}
-                    >
-                      <ArrowUpTrayIcon className="h-4 w-4" />
-                      Upload files
-                    </button>
-                  </ComposerPrimitive.AddAttachment>
+              {/* Keep AddAttachment mounted while the native picker is open;
+                  unmounting it invalidates the pending file selection. */}
+              <div
+                ref={menuRef}
+                hidden={!menuOpen}
+                className="absolute bottom-full left-0 mb-1 w-max rounded-lg border border-border bg-surface-secondary py-1 shadow-lg"
+              >
+                <ComposerPrimitive.AddAttachment asChild multiple>
                   <button
                     type="button"
                     className="flex w-full items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:bg-surface-tertiary transition-colors"
-                    onClick={() => {
-                      setBrowseOpen(true);
-                      setMenuOpen(false);
-                    }}
-                  >
-                    <FolderOpenIcon className="h-4 w-4" />
-                    Browse files
-                  </button>
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-2 px-3 py-2 text-sm text-text-tertiary cursor-default"
                     onClick={() => setMenuOpen(false)}
                   >
-                    <CloudIcon className="h-4 w-4" />
-                    Connect to Google Drive
+                    <ArrowUpTrayIcon className="h-4 w-4" />
+                    Upload files
                   </button>
-                </div>
-              )}
+                </ComposerPrimitive.AddAttachment>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:bg-surface-tertiary transition-colors"
+                  onClick={() => {
+                    setBrowseOpen(true);
+                    setMenuOpen(false);
+                  }}
+                >
+                  <FolderOpenIcon className="h-4 w-4" />
+                  Browse files
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-sm text-text-tertiary cursor-default"
+                  onClick={() => setMenuOpen(false)}
+                >
+                  <CloudIcon className="h-4 w-4" />
+                  Connect to Google Drive
+                </button>
+              </div>
             </div>
             <div className="flex items-center gap-1">
               {wizard?.submitted && threadRunning ? (

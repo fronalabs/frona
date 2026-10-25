@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import AdminSettingsPage from "@/app/(main)/admin/settings/page";
@@ -8,8 +8,12 @@ import { api } from "@/lib/api-client";
 vi.mock("@/lib/api-client", async importOriginal => ({ ...await importOriginal<object>(), api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() } }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: vi.fn(), push: vi.fn() }) }));
 vi.mock("@/lib/auth", () => ({ useAuth: () => ({ user: { permissions: { is_admin: true, list_users: true } } }) }));
-vi.mock("@/lib/use-mobile", () => ({ useMobile: () => false }));
-vi.mock("@/lib/navigation-context", () => ({ useNavigation: () => ({ mobileSubNavOpen: false, setMobileSubNavOpen: vi.fn() }) }));
+const viewport = vi.hoisted(() => ({ mobile: false }));
+vi.mock("@/lib/use-mobile", () => ({ useMobile: () => viewport.mobile }));
+vi.mock("@/lib/navigation-context", () => ({ useNavigation: function useNavigation() {
+  const [mobileSubNavOpen, setMobileSubNavOpen] = useState(viewport.mobile);
+  return { mobileSubNavOpen, setMobileSubNavOpen };
+} }));
 vi.mock("@/components/require-auth", () => ({ RequireAuth: ({ children }: { children: React.ReactNode }) => children }));
 vi.mock("@/components/settings/sections/models-section", () => ({ ModelsSection: ({ models, onChange }: {
   models: Record<string, import("@/lib/config-types").ModelGroupConfig>;
@@ -45,6 +49,7 @@ function document() {
 }
 beforeEach(() => {
   vi.resetAllMocks();
+  viewport.mobile = false;
   window.history.replaceState(null, "", "/#providers");
   vi.mocked(api.get).mockImplementation(async path => {
     if (path === "/api/config") return document();
@@ -57,6 +62,25 @@ beforeEach(() => {
   vi.mocked(api.post).mockImplementation(async path => path.endsWith("/validate") ? { validation_id: "validated-page-draft", credential: { method: "anonymous", state: "pending", generation: 0, version: "draft" }, models: [] }
     : path.endsWith("/models") ? { models: [], directory_status: "live", manual_entry: true } : {});
   vi.mocked(api.put).mockResolvedValue({ ...document(), persisted_revision: "persisted-after-edit" });
+});
+
+it.each([
+  ["Providers", "providers"], ["Models", "models"], ["Memory", "memory"], ["Skills", "skills"],
+  ["Search", "search"], ["Voice", "voice"], ["Browser", "browser"], ["Vault", "vault"],
+  ["Sandbox", "sandbox"], ["Authentication", "auth"], ["Single Sign-On", "sso"],
+  ["Users", "users"], ["Timezone", "timezone"], ["Server", "server"], ["Advanced", "advanced"],
+])("closes the mobile server settings drawer when reselecting %s", async (label, hash) => {
+  viewport.mobile = true;
+  window.history.replaceState(null, "", `/admin/settings#${hash}`);
+  render(<AdminSettingsPage />);
+  const button = await screen.findByRole("button", { name: label, exact: true });
+  const drawer = button.closest(".fixed");
+  expect(drawer).toHaveClass("translate-x-0");
+  fireEvent.touchStart(button);
+  fireEvent.touchEnd(button);
+  fireEvent.click(button);
+  expect(drawer).toHaveClass("-translate-x-full");
+  expect(window.location.hash).toBe(`#${hash}`);
 });
 
 it("uses the loaded revision, preserves the edit after a stale save, and retains restart state", async () => {

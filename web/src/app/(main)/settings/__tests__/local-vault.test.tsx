@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SettingsPage from "../page";
@@ -8,9 +9,13 @@ vi.mock("@/lib/api-client", () => ({
   listVaultConnections: vi.fn(), createVaultConnection: vi.fn(), deleteVaultConnection: vi.fn(),
   toggleVaultConnection: vi.fn(), testVaultConnection: vi.fn(),
 }));
-vi.mock("@/lib/use-mobile", () => ({ useMobile: () => false }));
+const viewport = vi.hoisted(() => ({ mobile: false }));
+vi.mock("@/lib/use-mobile", () => ({ useMobile: () => viewport.mobile }));
 vi.mock("@/lib/navigation-context", () => ({
-  useNavigation: () => ({ mobileSubNavOpen: false, setMobileSubNavOpen: vi.fn() }),
+  useNavigation: function useNavigation() {
+    const [mobileSubNavOpen, setMobileSubNavOpen] = useState(viewport.mobile);
+    return { mobileSubNavOpen, setMobileSubNavOpen };
+  },
 }));
 vi.mock("@/components/settings/sections/profile-section", () => ({ ProfileSection: () => null }));
 vi.mock("@/components/settings/sections/mcp-section", () => ({ McpSection: () => null }));
@@ -21,6 +26,7 @@ vi.mock("@/components/settings/sections/user-memory-section", () => ({ UserMemor
 describe("saving local vault secrets from settings", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    viewport.mobile = false;
     window.history.replaceState(null, "", "/settings#vault");
     vi.mocked(listVaultConnections).mockResolvedValue([]);
     vi.mocked(api.get).mockResolvedValue([]);
@@ -29,6 +35,20 @@ describe("saving local vault secrets from settings", () => {
       vi.mocked(api.get).mockResolvedValue([saved]);
       return saved;
     });
+  });
+
+  it.each(["Profile", "Channels", "Skills", "MCP", "Vault", "Memory"])("closes the mobile drawer when reselecting %s", async label => {
+    viewport.mobile = true;
+    window.history.replaceState(null, "", `/settings#${label.toLowerCase()}`);
+    render(<SettingsPage />);
+    const button = await screen.findByRole("button", { name: label, exact: true });
+    const drawer = button.closest(".fixed");
+    expect(drawer).toHaveClass("translate-x-0");
+    fireEvent.touchStart(button);
+    fireEvent.touchEnd(button);
+    fireEvent.click(button);
+    expect(drawer).toHaveClass("-translate-x-full");
+    expect(window.location.hash).toBe(`#${label.toLowerCase()}`);
   });
 
   it("lets a user create and save a new API key", async () => {

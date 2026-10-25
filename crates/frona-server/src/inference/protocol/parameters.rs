@@ -309,7 +309,14 @@ fn request_parameters(
         }
         // These settings already have Rig's native additional-parameter shape.
         // Ollama itself nests the options and separates the top-level `think` flag.
-        ProviderModel::Anthropic { params } => serialize(params)?,
+        ProviderModel::Anthropic { params } => {
+            let mut additional = serialize(params)?;
+            // Automatic prefix caching: Rig preserves this native top-level
+            // control for both streaming and non-streaming Messages requests.
+            // https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+            additional["cache_control"] = json!({"type": "ephemeral"});
+            additional
+        }
         ProviderModel::Ollama { params } => serialize(params)?,
         ProviderModel::OpenAI { params, .. }
         | ProviderModel::Groq { params }

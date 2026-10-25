@@ -1283,7 +1283,15 @@ mod tests {
             params: AnthropicParams::default(),
         };
         let plan = WireParameters::prepare(&model, None, None, false).unwrap();
-        assert_eq!(plan.request.additional_params, None);
+        // Automatic caching is a request default, not a configured sampler field.
+        assert_eq!(
+            serde_json::to_value(AnthropicParams::default()).unwrap(),
+            serde_json::json!({})
+        );
+        assert_eq!(
+            plan.request.additional_params,
+            Some(serde_json::json!({"cache_control": {"type": "ephemeral"}}))
+        );
         model.provider = ProviderModel::Gemini {
             params: GeminiParams::default(),
         };

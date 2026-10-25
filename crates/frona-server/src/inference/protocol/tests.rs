@@ -826,3 +826,22 @@ fn common_metadata_preserves_protocol_paths_and_excludes_local_config() {
         assert_eq!(bindings[1].wire_path.join("."), temperature);
     }
 }
+
+#[tokio::test]
+async fn anthropic_activates_automatic_cache_in_both_native_request_paths() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(502))
+        .mount(&server)
+        .await;
+    let (provider, model) = setup("anthropic", &server.uri(), json!({}));
+    for stream in [false, true] {
+        capture(provider.as_ref(), &model, stream).await;
+    }
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in requests {
+        let body: Value = request.body_json().unwrap();
+        assert_eq!(body["cache_control"], json!({"type":"ephemeral"}));
+    }
+}

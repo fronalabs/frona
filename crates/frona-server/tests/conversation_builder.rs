@@ -460,3 +460,41 @@ async fn prepends_conversation_summary() {
 }
 
 mod helpers;
+
+#[tokio::test]
+async fn frozen_context_and_tool_instructions_keep_their_original_positions() {
+    let db = test_db().await;
+    let builder = test_builder(&db).await;
+    let mut user = user_message("chat", "original command");
+    user.processed_content = Some("<user_profile>new memory</user_profile>\n<temporal_context>fixed time</temporal_context>\nfrozen skill expansion".into());
+    let assistant = agent_message("chat", "done", Some(MessageStatus::Completed));
+    let mut first = tool_call("chat", &assistant.id, 0, "first");
+    first.system_prompt = Some("first tool instructions".into());
+    first.signature = Some("opaque signature".into());
+    let mut second = tool_call("chat", &assistant.id, 0, "second");
+    second.system_prompt = Some("second tool instructions".into());
+    let history = builder
+        .build(
+            &[user.clone(), assistant.clone()],
+            &[first, second],
+            &test_ctx(),
+            None,
+        )
+        .await;
+    assert_eq!(history.row_ends, vec![1, 6]);
+    assert_eq!(
+        history.history[0],
+        RigMessage::user(user.inference_content())
+    );
+    assert!(
+        matches!(&history.history[2], RigMessage::User { content } if content.len() == 2 && content.iter().all(|c| matches!(c, UserContent::ToolResult(_))))
+    );
+    assert_eq!(
+        history.history[3],
+        RigMessage::user("first tool instructions")
+    );
+    assert_eq!(
+        history.history[4],
+        RigMessage::user("second tool instructions")
+    );
+}

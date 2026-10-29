@@ -30,7 +30,7 @@ use crate::inference::provider::service::ModelProviderService;
 use crate::inference::text_inference;
 use crate::memory::basic::models::{Memory, MemoryEntry, MemorySourceType};
 use crate::memory::basic::repository::{MemoryEntryRepository, MemoryRepository};
-use crate::memory::service::{MemoryContext, MemoryService};
+use crate::memory::service::MemoryService;
 use crate::scheduler::Scheduler;
 use crate::space::repository::SpaceRepository;
 use crate::tool::AgentTool;
@@ -549,91 +549,67 @@ impl MemoryService for BasicMemoryService {
         ]
     }
 
-    async fn retrieve(&self, mcx: &mut MemoryContext<'_>) -> Result<(), AppError> {
-        // Static usage section first - read fresh so prompt edits apply live;
-        // constant across turns, so `[head][section]` stays a cacheable prefix
-        // and the dynamic memory tags follow.
-        let section = self.prompts.read("MEMORY.md").unwrap_or_default();
-        if !section.is_empty() {
-            mcx.system_prompt.push_str("\n\n");
-            mcx.system_prompt.push_str(&section);
-        }
+    async fn instructions(&self, _: &crate::auth::User) -> Result<String, AppError> {
+        Ok(self.prompts.try_read("MEMORY.md")?.unwrap_or_default())
+    }
 
-        let user_id = mcx.ctx.user.id.clone();
-        let agent_id = mcx.ctx.agent.id.clone();
-        let space_id = mcx.ctx.chat.as_ref().and_then(|c| c.space_id.clone());
-
-        // <space_context>
-        if let Some(sid) = space_id.as_deref()
-            && let Some(space_mem) = self.get_memory(MemorySourceType::Space, sid).await?
+    async fn collect(
+        &self,
+        scope: &crate::agent::context::AgentContextScope<'_>,
+    ) -> Result<Vec<crate::agent::context::AgentContextSection>, AppError> {
+        use crate::agent::context::{AgentContextKind as Kind, AgentContextSection as Section};
+        use std::collections::BTreeMap;
+        let mut sections = Vec::new();
+        if let Some(sid) = &scope.space_id
+            && let Some(mem) = self.get_memory(MemorySourceType::Space, sid).await?
         {
-            mcx.system_prompt.push_str("\n\n<space_context>\n");
-            mcx.system_prompt.push_str(&space_mem.content);
-            mcx.system_prompt.push_str("\n</space_context>");
+            sections.push(Section::prose(
+                Kind::SpaceContext,
+                "space_context",
+                mem.content,
+            ));
         }
-
-        // <user_memory>: compacted summary + entries after compacted_until, else raw.
-        if let Some(mem) = self.get_memory(MemorySourceType::User, &user_id).await? {
-            mcx.system_prompt.push_str("\n\n<user_memory>\n");
-            mcx.system_prompt.push_str(&mem.content);
-            let until = compacted_until(&mem);
-            let entries = match until {
-                Some(t) => {
-                    self.memory_entry_repo
-                        .find_by_user_id_after(&user_id, t)
-                        .await?
+        for (source, id, kind, tag) in [
+            (
+                MemorySourceType::User,
+                &scope.user.id,
+                Kind::UserMemory,
+                "user_memory",
+            ),
+            (
+                MemorySourceType::Agent,
+                &scope.agent.id,
+                Kind::AgentMemory,
+                "agent_memory",
+            ),
+        ] {
+            let memory = self.get_memory(source.clone(), id).await?;
+            let until = memory.as_ref().and_then(compacted_until);
+            let entries = match (&source, until) {
+                (MemorySourceType::User, Some(t)) => {
+                    self.memory_entry_repo.find_by_user_id_after(id, t).await?
                 }
-                None => self.memory_entry_repo.find_by_user_id(&user_id).await?,
+                (MemorySourceType::User, None) => {
+                    self.memory_entry_repo.find_by_user_id(id).await?
+                }
+                (_, Some(t)) => self.memory_entry_repo.find_by_agent_id_after(id, t).await?,
+                (_, None) => self.memory_entry_repo.find_by_agent_id(id).await?,
             };
-            if !entries.is_empty() {
-                mcx.system_prompt.push('\n');
-                for e in &entries {
-                    mcx.system_prompt.push_str(&format!("- {}\n", e.content));
-                }
+            let mut values = BTreeMap::new();
+            if let Some(mem) = memory {
+                values.insert("0:summary".into(), format!("{}\n", mem.content));
             }
-            mcx.system_prompt.push_str("</user_memory>");
-        } else {
-            let entries = self.memory_entry_repo.find_by_user_id(&user_id).await?;
-            if !entries.is_empty() {
-                mcx.system_prompt.push_str("\n\n<user_memory>\n");
-                for e in &entries {
-                    mcx.system_prompt.push_str(&format!("- {}\n", e.content));
-                }
-                mcx.system_prompt.push_str("</user_memory>");
+            for entry in entries {
+                values.insert(
+                    format!("entry:{}", entry.id),
+                    format!("- {}\n", entry.content),
+                );
+            }
+            if !values.is_empty() {
+                sections.push(Section::tagged(kind, tag, values));
             }
         }
-
-        // <agent_memory>
-        if let Some(mem) = self.get_memory(MemorySourceType::Agent, &agent_id).await? {
-            mcx.system_prompt.push_str("\n\n<agent_memory>\n");
-            mcx.system_prompt.push_str(&mem.content);
-            let until = compacted_until(&mem);
-            let entries = match until {
-                Some(t) => {
-                    self.memory_entry_repo
-                        .find_by_agent_id_after(&agent_id, t)
-                        .await?
-                }
-                None => self.memory_entry_repo.find_by_agent_id(&agent_id).await?,
-            };
-            if !entries.is_empty() {
-                mcx.system_prompt.push('\n');
-                for e in &entries {
-                    mcx.system_prompt.push_str(&format!("- {}\n", e.content));
-                }
-            }
-            mcx.system_prompt.push_str("</agent_memory>");
-        } else {
-            let entries = self.memory_entry_repo.find_by_agent_id(&agent_id).await?;
-            if !entries.is_empty() {
-                mcx.system_prompt.push_str("\n\n<agent_memory>\n");
-                for e in &entries {
-                    mcx.system_prompt.push_str(&format!("- {}\n", e.content));
-                }
-                mcx.system_prompt.push_str("</agent_memory>");
-            }
-        }
-        Ok(())
+        Ok(sections)
     }
 
     fn register_maintenance(&self, scheduler: &Scheduler) {

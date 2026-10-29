@@ -138,3 +138,22 @@ impl ChatRepository for SurrealRepo<Chat> {
         Ok(chat)
     }
 }
+
+impl SurrealRepo<Chat> {
+    /// Update source bookkeeping without replacing other chat fields.
+    pub async fn save_agent_context_state(
+        &self,
+        chat_id: &str,
+        state: &crate::agent::context::AgentContextState,
+    ) -> Result<(), AppError> {
+        self.db()
+            .query("UPDATE type::record('chat', $id) SET agent_context_state = $state")
+            .bind(("id", chat_id.to_owned()))
+            .bind(("state", state.clone()))
+            .await
+            .map_err(|error| AppError::Database(error.to_string()))?
+            .check()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        Ok(())
+    }
+}

@@ -66,9 +66,12 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
 
         DEFINE TABLE IF NOT EXISTS message SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_message_chat ON TABLE message COLUMNS chat_id;
+        DEFINE INDEX IF NOT EXISTS idx_message_chat_order ON TABLE message COLUMNS chat_id, created_at, id;
+        DEFINE INDEX IF NOT EXISTS idx_message_context_signature ON TABLE message COLUMNS chat_id, agent_context_signature;
         DEFINE INDEX IF NOT EXISTS idx_message_delivery_due ON TABLE message COLUMNS delivery.state, delivery.next_attempt_at;
 
         DEFINE TABLE IF NOT EXISTS chat_summary SCHEMALESS;
+        DEFINE TABLE IF NOT EXISTS agent_context_snapshot SCHEMALESS;
         DEFINE INDEX IF NOT EXISTS idx_chat_summary_chat ON TABLE chat_summary COLUMNS chat_id UNIQUE;
 
         DEFINE TABLE IF NOT EXISTS task SCHEMALESS;

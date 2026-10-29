@@ -247,6 +247,7 @@ async fn seed_agent(db: &Surreal<Db>) {
 
 async fn seed_chat(db: &Surreal<Db>) -> Chat {
     let chat = Chat {
+        agent_context_state: Default::default(),
         id: frona::core::repository::new_id(),
         user_id: USER.into(),
         space_id: None,

@@ -1495,3 +1495,127 @@ async fn test_tool_loop_deduplicates_attachments_before_lifecycle_return() {
         other => panic!("Expected Completed, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn tool_instructions_leave_system_stable_and_replay_the_exact_live_tail() {
+    use frona::chat::message::models::{Message, MessageRole, MessageStatus};
+    use frona::inference::conversation::{
+        ConversationBuilder, ConversationContext, DefaultConversationBuilder,
+    };
+    use frona::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
+    struct Instructions(&'static str);
+    #[async_trait::async_trait]
+    impl AgentTool for Instructions {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn definitions(&self) -> Vec<ToolDefinition> {
+            vec![ToolDefinition {
+                id: self.0.into(),
+                provider_id: String::new(),
+                description: self.0.into(),
+                parameters: serde_json::json!({"type":"object"}),
+            }]
+        }
+        async fn execute(
+            &self,
+            _: &str,
+            _: serde_json::Value,
+            _: &InferenceContext,
+        ) -> Result<ToolOutput, AppError> {
+            Ok(ToolOutput::text("result")
+                .with_system_prompt(format!("instructions for {}", self.0)))
+        }
+    }
+    let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+        .await
+        .unwrap();
+    frona::db::init::setup_schema(&db).await.unwrap();
+    let fixture = helpers::app_state::build(&db).await;
+    let state = &fixture.state;
+    let provider = Arc::new(MockModelProvider::new(vec![
+        MockResponse::Content(
+            [("a", "first"), ("b", "second")]
+                .into_iter()
+                .map(|(id, name)| {
+                    rig_core::completion::AssistantContent::ToolCall(
+                        rig_core::completion::message::ToolCall::from_wire(
+                            id,
+                            rig_core::completion::message::ToolFunction::new(
+                                name.into(),
+                                serde_json::json!({}),
+                            ),
+                        ),
+                    )
+                })
+                .collect(),
+        ),
+        MockResponse::Text("done".into()),
+    ]));
+    let mut tools = AgentToolRegistry::empty();
+    tools.register(Arc::new(Instructions("first")));
+    tools.register(Arc::new(Instructions("second")));
+    let (events, _, _) = test_event_sender().await;
+    let ctx = mock_context();
+    let group = frona::inference::ModelGroup {
+        providers: test_providers("mock", provider.clone()),
+        ..test_model_group()
+    };
+    run_tool_loop(
+        &group,
+        "standing system",
+        vec![RigMessage::user("input")],
+        &tools,
+        events,
+        CancellationToken::new(),
+        &ctx,
+        &state.usage_service,
+        &state.chat_service,
+        "response",
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        provider.system_prompts(),
+        vec!["standing system", "standing system"]
+    );
+    let calls = state
+        .chat_service
+        .get_tool_calls_by_message("response")
+        .await
+        .unwrap();
+    let message = Message::builder("test-chat", MessageRole::Agent, String::new())
+        .agent_id("test-agent".into())
+        .status(MessageStatus::Executing)
+        .build();
+    let message = Message {
+        id: "response".into(),
+        ..message
+    };
+    let replay = DefaultConversationBuilder {
+        user_service: state.user_service.clone(),
+        agent_service: state.agent_service.clone(),
+        storage_service: state.storage_service.clone(),
+    }
+    .build(
+        &[message],
+        &calls,
+        &ConversationContext {
+            agent_id: "test-agent".into(),
+            user_id: "test-user".into(),
+            model_config: group.main,
+        },
+        None,
+    )
+    .await;
+    assert_eq!(&provider.histories()[1][1..], replay.history);
+    assert_eq!(
+        replay.history[2],
+        RigMessage::user("instructions for first")
+    );
+    assert_eq!(
+        replay.history[3],
+        RigMessage::user("instructions for second")
+    );
+}

@@ -23,6 +23,7 @@ async fn test_db() -> Surreal<Db> {
 fn test_chat(user_id: &str, agent_id: &str, task_id: Option<&str>) -> Chat {
     let now = Utc::now();
     Chat {
+        agent_context_state: Default::default(),
         id: frona::core::repository::new_id(),
         user_id: user_id.to_string(),
         space_id: None,
@@ -41,6 +42,7 @@ fn test_chat(user_id: &str, agent_id: &str, task_id: Option<&str>) -> Chat {
 fn test_chat_in_space(user_id: &str, space_id: &str) -> Chat {
     let now = Utc::now();
     Chat {
+        agent_context_state: Default::default(),
         id: frona::core::repository::new_id(),
         user_id: user_id.to_string(),
         space_id: Some(space_id.to_string()),
@@ -62,6 +64,8 @@ fn test_message(chat_id: &str, content: &str) -> Message {
 
 fn test_message_at(chat_id: &str, content: &str, created_at: chrono::DateTime<Utc>) -> Message {
     Message {
+        agent_context_signature: None,
+        processed_content: None,
         id: frona::core::repository::new_id(),
         chat_id: chat_id.to_string(),
         role: MessageRole::User,

@@ -86,7 +86,12 @@ impl MessageRepository for SurrealRepo<Message> {
         after: Option<DateTime<Utc>>,
         limit: u32,
     ) -> Result<Vec<Message>, AppError> {
-        let mut query = format!("{SELECT_CLAUSE} FROM message WHERE chat_id = $chat_id");
+        // Internal context rows participate in model history, not UI pagination.
+        // The composite ordering index currently includes the exclusive cursor
+        // boundary with this filter. Use the chat index and filter timestamps.
+        let mut query = format!(
+            "{SELECT_CLAUSE} FROM message WITH INDEX idx_message_chat WHERE chat_id = $chat_id AND NOT (role = $system AND content = '' AND (event = NONE OR event = NULL) AND processed_content != NONE AND processed_content != NULL)"
+        );
         let order_desc = after.is_none();
 
         if before.is_some() {
@@ -106,7 +111,8 @@ impl MessageRepository for SurrealRepo<Message> {
             .db()
             .query(&query)
             .bind(("chat_id", chat_id.to_string()))
-            .bind(("limit", limit));
+            .bind(("limit", limit))
+            .bind(("system", crate::chat::message::models::MessageRole::System));
 
         if let Some(before) = before {
             builder = builder.bind(("before", before));

@@ -111,6 +111,12 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
     groups.insert("primary".to_string(), test_model_group());
     let mock_registry = crate::helpers::test_model_service(providers, groups).await;
 
+    let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(
+        state.prompts.clone(),
+        state.storage_service.clone(),
+        helpers::empty_memory_service(),
+        state.skill_service.clone(),
+    );
     let chat_service = ChatService::new(
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
@@ -123,6 +129,8 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
         state.broadcast_service.clone(),
         state.presign_service.clone(),
         state.usage_service.clone(),
+        helpers::empty_agent_context_manager(&state.db),
+        agent_prompt_builder,
     );
     state.chat_service = chat_service.clone();
     // Rebuild Harness so it sees the new chat_service with the mock registry.
@@ -132,7 +140,6 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
         state.storage_service.clone(),
         state.agent_service.clone(),
         helpers::test_memory_service(&state, &db),
-        state.skill_service.clone(),
         state.task_service.clone(),
         state.mcp_service.clone(),
         state.tool_manager.clone(),

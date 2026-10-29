@@ -20,6 +20,7 @@ async fn test_db() -> Surreal<Db> {
 fn channel_chat(channel_id: &str, ext_id: &str) -> Chat {
     let now = Utc::now();
     Chat {
+        agent_context_state: Default::default(),
         id: frona::core::repository::new_id(),
         user_id: "u1".into(),
         space_id: Some("s1".into()),

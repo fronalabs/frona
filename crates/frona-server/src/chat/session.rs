@@ -4,10 +4,7 @@ use rig_core::completion::Message as RigMessage;
 pub use tokio_util::sync::CancellationToken;
 
 use crate::agent::harness::Harness;
-use crate::agent::skill::resolver::Skill;
 use crate::chat::broadcast::EventSender;
-use crate::chat::command::render::render_skill;
-use crate::chat::message::models::{Message, MessageCommand, MessageRole};
 use crate::chat::models::Chat;
 use crate::chat::service::AgentConfig;
 use crate::core::error::AppError;
@@ -35,10 +32,36 @@ pub struct ChatSessionContext {
 }
 
 impl ChatSessionContext {
+    pub fn agent_context_scope(&self) -> crate::agent::context::AgentContextScope<'_> {
+        self.tool_ctx.agent_context_scope()
+    }
+
     pub async fn build(
         harness: &Harness,
         user_id: &str,
         chat: Chat,
+        cancel_token: CancellationToken,
+        builder: Arc<dyn ConversationBuilder>,
+        tool_filters: &[ToolFilter],
+    ) -> Result<Self, AppError> {
+        Self::build_for_response(
+            harness,
+            user_id,
+            chat,
+            None,
+            cancel_token,
+            builder,
+            tool_filters,
+        )
+        .await
+    }
+
+    /// Agent switches reuse the already-initialized turn.
+    pub(crate) async fn build_for_response(
+        harness: &Harness,
+        user_id: &str,
+        chat: Chat,
+        response_id: Option<&str>,
         cancel_token: CancellationToken,
         builder: Arc<dyn ConversationBuilder>,
         tool_filters: &[ToolFilter],
@@ -64,20 +87,16 @@ impl ChatSessionContext {
             .await?
             .ok_or_else(|| AppError::NotFound("User not found".into()))?;
 
-        let skills = harness
-            .skill_service
-            .list(&user.handle, &agent.handle, agent_config.skills.as_deref())
-            .await;
-
         // Load task early so `build_agent_registry` can register
         // task-domain tools in the same pass.
         let task = if let Some(ref task_id) = chat.task_id {
-            harness
-                .task_service
-                .find_by_id(task_id)
-                .await
-                .ok()
-                .flatten()
+            Some(
+                harness
+                    .task_service
+                    .find_by_id(task_id)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound("Task".into()))?,
+            )
         } else {
             None
         };
@@ -118,52 +137,9 @@ impl ChatSessionContext {
             tool_registry.deny(&["send_message"]);
         }
 
-        let allowed_tool_groups = tool_registry.tool_groups();
-
-        let agent_summaries =
-            crate::tool::registry::build_agent_summaries(harness, user_id, &chat.agent_id).await;
-
-        let mcp_servers: Vec<(String, String)> = if harness.config.mcp.bridge_mode {
-            let servers = harness
-                .mcp_service
-                .list_for_user(user_id)
-                .await
-                .unwrap_or_default();
-            let allowed_handles: std::collections::HashSet<String> = allowed_tool_groups
-                .iter()
-                .filter_map(|id| id.strip_prefix("mcp:").map(|handle| handle.to_string()))
-                .collect();
-            servers
-                .into_iter()
-                .filter(|s| s.status == crate::tool::mcp::models::McpServerStatus::Running)
-                .filter(|s| allowed_handles.contains(s.handle.as_str()))
-                .map(|s| {
-                    let desc = s.description.unwrap_or_else(|| s.display_name.clone());
-                    (s.handle.to_string(), desc)
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
         harness
             .mcp_service
             .register_agent_tool(&mut tool_registry, &harness.prompts);
-
-        let resolved_tz = user.resolved_timezone(&harness.config.server.timezone);
-
-        let mut system_prompt = crate::agent::prompt::build_augmented_system_prompt(
-            &agent_config.system_prompt,
-            &agent_config.identity,
-            &harness.prompts,
-            &harness.storage_service,
-            &user.handle,
-            &agent.handle,
-            &skills,
-            &agent_summaries,
-            &mcp_servers,
-            &resolved_tz,
-        );
 
         let model_group = harness
             .chat_service
@@ -178,31 +154,30 @@ impl ChatSessionContext {
             .compactor()
             .load_conversation(&chat.id)
             .await?;
+        let agent_context = loaded.agent_context;
         let conversation_summary = loaded.summary;
-        let stored_messages = loaded.messages;
+        let mut stored_messages = loaded.messages;
+        if let Some(response_id) = response_id {
+            let response_index = stored_messages
+                .iter()
+                .position(|m| m.id == response_id)
+                .ok_or_else(|| {
+                    AppError::Conflict("Response is outside the active conversation".into())
+                })?;
+            stored_messages.truncate(response_index + 1);
+        }
         let tool_calls = harness.chat_service.get_tool_calls(&chat.id).await?;
-
-        // Render skill invocations for the model; persisted message content stays unchanged.
-        let stored_messages = transform_for_commands(stored_messages, &skills);
 
         // Cron is already filtered from `task_in_progress`: TASK.md would prompt
         // complete_task → status=Completed → cron stops firing forever.
-        if task_in_progress && let Some(task_prompt) = harness.prompts.read("TASK.md") {
-            system_prompt.push_str("\n\n");
-            system_prompt.push_str(&task_prompt);
-        }
+        let task_prompt = task_in_progress
+            .then(|| harness.prompts.read("TASK.md"))
+            .flatten();
 
         if task_in_progress {
             tool_registry.apply_filter(&crate::tool::registry::ToolFilter::DenyList(&[
                 "create_recurring_task",
             ]));
-        }
-
-        for te in &tool_calls {
-            if let Some(sp) = &te.system_prompt {
-                system_prompt.push_str("\n\n");
-                system_prompt.push_str(sp);
-            }
         }
 
         let model_config = model_group.main.clone();
@@ -212,34 +187,6 @@ impl ChatSessionContext {
             user_id: user_id.to_string(),
         };
 
-        if let Some(ref task) = task {
-            let tz: chrono_tz::Tz = resolved_tz.parse().unwrap_or(chrono_tz::UTC);
-            let fmt = "%Y-%m-%d %H:%M:%S %Z";
-            let mut items = vec![(
-                "created_at".into(),
-                task.created_at.with_timezone(&tz).format(fmt).to_string(),
-            )];
-            if let Some(run_at) = task.run_at {
-                items.push((
-                    "scheduled_at".into(),
-                    run_at.with_timezone(&tz).format(fmt).to_string(),
-                ));
-            }
-            items.push((
-                "now".into(),
-                chrono::Utc::now()
-                    .with_timezone(&tz)
-                    .format(fmt)
-                    .to_string(),
-            ));
-            crate::agent::prompt::append_tagged_section(
-                &mut system_prompt,
-                "task_time",
-                None,
-                &items,
-            );
-        }
-
         let mut model_history = builder
             .build(
                 &stored_messages,
@@ -248,6 +195,7 @@ impl ChatSessionContext {
                 conversation_summary.as_deref(),
             )
             .await;
+        model_history.set_summary_context(agent_context.as_deref());
 
         let mut file_paths = Vec::new();
         for msg in &stored_messages {
@@ -261,6 +209,18 @@ impl ChatSessionContext {
             }
         }
 
+        let extra = builder.system_prompt();
+        let extra = extra
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty());
+        let additional_instructions: Vec<&str> =
+            task_prompt.as_deref().into_iter().chain(extra).collect();
+        let system_prompt = harness
+            .chat_service
+            .build_system_prompt(&agent_config, &user, &agent, &additional_instructions)
+            .await?;
+
         let mut tool_ctx = InferenceContext::new(
             user,
             agent,
@@ -272,30 +232,8 @@ impl ChatSessionContext {
         tool_ctx.file_paths = file_paths;
         tool_ctx.task = task;
 
-        let mut rig_history = model_history.history.clone();
-        {
-            let mut mcx = crate::memory::service::MemoryContext::new(
-                &mut system_prompt,
-                &mut rig_history,
-                &tool_ctx,
-            );
-            if let Err(e) = harness.memory_service.retrieve(&mut mcx).await {
-                tracing::warn!(error = %e, "memory retrieve failed; continuing without memory block");
-            }
-        }
+        let rig_history;
 
-        if rig_history != model_history.history {
-            return Err(AppError::Conflict(
-                "Memory retrieval changed the mapped conversation history".into(),
-            ));
-        }
-        if let Some(extra) = builder.system_prompt() {
-            let trimmed = extra.trim();
-            if !trimmed.is_empty() {
-                system_prompt.push_str("\n\n");
-                system_prompt.push_str(trimmed);
-            }
-        }
         for filter in tool_filters {
             tool_registry.apply_filter(filter);
         }
@@ -307,10 +245,9 @@ impl ChatSessionContext {
             .chat_service
             .compactor()
             .compact_chat(
-                user_id,
                 &chat.id,
-                &chat.agent_id,
                 super::compactor::CompactionContext {
+                    agent_context: tool_ctx.agent_context_scope(),
                     system_prompt: &system_prompt,
                     model_group: &model_group,
                     model_history: &model_history,
@@ -345,21 +282,4 @@ impl ChatSessionContext {
             cancel_token,
         })
     }
-}
-
-/// Rewrites Skill-command user messages to the rendered SKILL.md body for the
-/// model's view of this turn. The persisted DB row is untouched.
-fn transform_for_commands(messages: Vec<Message>, skills: &[Skill]) -> Vec<Message> {
-    let mut out: Vec<Message> = Vec::with_capacity(messages.len());
-    for mut msg in messages {
-        if matches!(msg.role, MessageRole::User)
-            && let Some(MessageCommand::Skill { name, prompt }) = msg.command.clone()
-            && let Some(rendered) = render_skill(&name, &prompt, skills)
-        {
-            msg.content = rendered;
-        }
-
-        out.push(msg);
-    }
-    out
 }

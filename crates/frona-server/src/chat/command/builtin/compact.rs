@@ -35,10 +35,9 @@ impl Command for CompactCommand {
             .chat_service
             .compactor()
             .compact_chat(
-                &ctx.user.id,
                 &ctx.chat.id,
-                &ctx.chat.agent_id,
                 crate::chat::compactor::CompactionContext {
+                    agent_context: ctx.session.agent_context_scope(),
                     system_prompt: &ctx.session.system_prompt,
                     model_group: &ctx.session.model_group,
                     model_history: &ctx.session.model_history,

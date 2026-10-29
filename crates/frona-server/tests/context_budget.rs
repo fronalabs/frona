@@ -151,6 +151,11 @@ async fn compaction_uses_catalog_budget_and_respects_configured_override() {
             .await
             .unwrap();
         frona::db::init::setup_schema(&db).await.unwrap();
+        let mut chat = helpers::mock_context().chat.unwrap();
+        chat.id = "chat".into();
+        chat.user_id = "user".into();
+        chat.agent_id = "agent".into();
+        SurrealRepo::new(db.clone()).create(&chat).await.unwrap();
         let messages: SurrealMessageRepo = SurrealRepo::new(db.clone());
         for index in 0..6 {
             let mut message = Message::builder("chat", MessageRole::User, "x".repeat(200)).build();
@@ -165,6 +170,7 @@ async fn compaction_uses_catalog_budget_and_respects_configured_override() {
             PromptLoader::new(
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../resources/prompts"),
             ),
+            helpers::empty_agent_context_manager(&db),
         );
         let group = service(&config("small", window), &catalog())
             .await
@@ -192,12 +198,15 @@ async fn compaction_uses_catalog_budget_and_respects_configured_override() {
             None,
         )
         .await;
+        let mut ctx = helpers::mock_context();
+        ctx.user.id = "user".into();
+        ctx.agent.id = "agent".into();
+        ctx.agent.user_id = "user".into();
         let outcome = compactor
             .compact_chat(
-                "user",
                 "chat",
-                "agent",
                 frona::chat::compactor::CompactionContext {
+                    agent_context: ctx.agent_context_scope(),
                     system_prompt: "system",
                     model_group: &group,
                     model_history: &model_history,

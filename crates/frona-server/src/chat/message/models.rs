@@ -150,6 +150,14 @@ impl MessageDelivery {
 #[surreal(crate = "surrealdb::types")]
 #[entity(table = "message")]
 pub struct Message {
+    /// Older messages may have no signature; they replay unchanged.
+    #[serde(default)]
+    #[surreal(default)]
+    pub agent_context_signature: Option<crate::agent::context::AgentContextSignature>,
+    /// Complete, frozen model-facing text. The original `content` stays user-visible.
+    #[serde(default)]
+    #[surreal(default)]
+    pub processed_content: Option<String>,
     pub id: String,
     pub chat_id: String,
     pub role: MessageRole,
@@ -181,6 +189,20 @@ pub struct Message {
 }
 
 impl Message {
+    pub fn is_internal_context(&self) -> bool {
+        matches!(self.role, MessageRole::System)
+            && self.content.is_empty()
+            && self.event.is_none()
+            && self.processed_content.is_some()
+    }
+
+    pub fn inference_content(&self) -> &str {
+        self.processed_content
+            .as_deref()
+            .filter(|text| !text.is_empty())
+            .unwrap_or(&self.content)
+    }
+
     pub fn builder(chat_id: &str, role: MessageRole, content: String) -> MessageBuilder {
         MessageBuilder {
             chat_id: chat_id.to_string(),
@@ -276,6 +298,8 @@ impl MessageBuilder {
 
     pub fn build(self) -> Message {
         Message {
+            agent_context_signature: None,
+            processed_content: None,
             id: crate::core::repository::new_id(),
             chat_id: self.chat_id,
             role: self.role,

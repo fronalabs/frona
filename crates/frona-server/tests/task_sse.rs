@@ -134,6 +134,12 @@ async fn test_app_state_with_mock(mock: Arc<MockModelProvider>) -> (AppState, te
     // Must reuse `state.broadcast_service` - a fresh BroadcastService here
     // would disconnect events fired inside ChatService from SSE sessions
     // registered against state.broadcast_service.
+    let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(
+        prompt_loader.clone(),
+        storage.clone(),
+        helpers::empty_memory_service(),
+        state.skill_service.clone(),
+    );
     let chat_service = frona::chat::service::ChatService::new(
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
@@ -146,6 +152,8 @@ async fn test_app_state_with_mock(mock: Arc<MockModelProvider>) -> (AppState, te
         state.broadcast_service.clone(),
         state.presign_service.clone(),
         state.usage_service.clone(),
+        helpers::empty_agent_context_manager(&state.db),
+        agent_prompt_builder,
     );
     // Replace the chat_service with our version that has the mock provider.
     state.chat_service = chat_service.clone();
@@ -158,7 +166,6 @@ async fn test_app_state_with_mock(mock: Arc<MockModelProvider>) -> (AppState, te
         state.storage_service.clone(),
         agent_service,
         memory_service,
-        state.skill_service.clone(),
         state.task_service.clone(),
         state.mcp_service.clone(),
         state.tool_manager.clone(),

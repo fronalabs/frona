@@ -68,7 +68,7 @@ use crate::core::config::MemoryConfig;
 use crate::core::error::AppError;
 use crate::db::repo::tool_calls::SurrealToolCallRepo;
 use crate::inference::provider::service::ModelProviderService;
-use crate::memory::service::{MemoryContext, MemoryService};
+use crate::memory::service::MemoryService;
 use crate::scheduler::Scheduler;
 use crate::storage::StorageService;
 use crate::tool::AgentTool;
@@ -113,6 +113,10 @@ pub(crate) fn resolve_model_group(
 
 #[async_trait]
 impl MemoryService for PkmService {
+    async fn instructions(&self, user: &crate::auth::User) -> Result<String, AppError> {
+        self.instructions_for(user).await
+    }
+
     fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
         tools::all(
             self.repo.clone(),
@@ -175,7 +179,10 @@ impl MemoryService for PkmService {
         });
     }
 
-    async fn retrieve(&self, mcx: &mut MemoryContext<'_>) -> Result<(), AppError> {
-        self.retrieve_into(mcx).await
+    async fn collect(
+        &self,
+        scope: &crate::agent::context::AgentContextScope<'_>,
+    ) -> Result<Vec<crate::agent::context::AgentContextSection>, AppError> {
+        self.collect_context(scope).await
     }
 }

@@ -6,7 +6,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::task::models::{SignalMode, Task, TaskKind, TaskStatus};
-use crate::chat::message::models::{MessageEvent, MessageRole};
+use crate::chat::message::models::{Message, MessageEvent, MessageRole, MessageStatus};
 use crate::chat::models::CreateChatRequest;
 use crate::core::error::AppError;
 use crate::core::execution::{ExecutionKind, ExecutionSource, ExecutionSourceKind, NewExecution};
@@ -564,7 +564,8 @@ impl TaskExecutor {
 
         let chat_id = self.ensure_task_chat(&mut task).await?;
 
-        self.harness
+        task = self
+            .harness
             .task_service
             .mark_in_progress(&task_id, Some(&chat_id))
             .await?;
@@ -600,7 +601,13 @@ impl TaskExecutor {
                     let msg = self
                         .harness
                         .chat_service
-                        .create_executing_agent_message(&chat_id, &task.agent_id)
+                        .save_task_message(
+                            &task,
+                            Message::builder(&chat_id, MessageRole::Agent, String::new())
+                                .agent_id(task.agent_id.clone())
+                                .status(MessageStatus::Executing)
+                                .build(),
+                        )
                         .await?;
                     msg.id
                 }
@@ -908,18 +915,22 @@ impl TaskExecutor {
 
         self.harness
             .chat_service
-            .save_system_message(
-                &task.user_id,
-                task.space_id.as_deref(),
-                &chat_id,
-                system_message,
+            .save_task_message(
+                &task_for_chat,
+                Message::builder(&chat_id, MessageRole::System, system_message).build(),
             )
             .await?;
 
         let agent_msg = self
             .harness
             .chat_service
-            .create_executing_agent_message(&chat_id, &task.agent_id)
+            .save_task_message(
+                &task_for_chat,
+                Message::builder(&chat_id, MessageRole::Agent, String::new())
+                    .agent_id(task_for_chat.agent_id.clone())
+                    .status(MessageStatus::Executing)
+                    .build(),
+            )
             .await?;
         let agent_msg_id = agent_msg.id.clone();
         let cancel_token = CancellationToken::new();
@@ -1056,13 +1067,11 @@ impl TaskExecutor {
         };
         self.harness
             .chat_service
-            .save_agent_message(
-                &task.user_id,
-                task.space_id.as_deref(),
-                chat_id,
-                source_agent_id,
-                task.description.clone(),
-                None,
+            .save_task_message(
+                task,
+                Message::builder(chat_id, MessageRole::Agent, task.description.clone())
+                    .agent_id(source_agent_id.to_owned())
+                    .build(),
             )
             .await?;
         Ok(())

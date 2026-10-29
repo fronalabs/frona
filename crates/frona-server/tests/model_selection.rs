@@ -62,6 +62,12 @@ async fn title_override_and_fallback_defaults_reach_the_provider_transport() {
     .parse_model_groups(&config.inference, Arc::new(runtime.providers()))
     .unwrap();
     let service = helpers::test_model_service(runtime.providers(), groups).await;
+    let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(
+        state.prompts.clone(),
+        state.storage_service.clone(),
+        helpers::empty_memory_service(),
+        state.skill_service.clone(),
+    );
     let chat = ChatService::new(
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
@@ -74,6 +80,8 @@ async fn title_override_and_fallback_defaults_reach_the_provider_transport() {
         state.broadcast_service.clone(),
         state.presign_service.clone(),
         state.usage_service.clone(),
+        helpers::empty_agent_context_manager(&state.db),
+        agent_prompt_builder,
     );
     assert_eq!(
         chat.generate_title(&ctx.chat.as_ref().unwrap().id, &ctx.agent.id, "hello")
@@ -196,6 +204,12 @@ async fn title_selection_is_explicit_and_missing_title_alone_uses_primary() {
             })
             .collect();
         let service = helpers::test_model_service(providers, settings).await;
+        let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(
+            state.prompts.clone(),
+            state.storage_service.clone(),
+            helpers::empty_memory_service(),
+            state.skill_service.clone(),
+        );
         let chat = ChatService::new(
             SurrealRepo::new(db.clone()),
             SurrealRepo::new(db.clone()),
@@ -208,6 +222,8 @@ async fn title_selection_is_explicit_and_missing_title_alone_uses_primary() {
             state.broadcast_service.clone(),
             state.presign_service.clone(),
             state.usage_service.clone(),
+            helpers::empty_agent_context_manager(&state.db),
+            agent_prompt_builder,
         );
         let result = chat
             .generate_title(&ctx.chat.as_ref().unwrap().id, &ctx.agent.id, "hello")

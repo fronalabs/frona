@@ -182,13 +182,26 @@ impl SkillService {
         agent_handle: &crate::core::Handle,
         agent_skills: Option<&[String]>,
     ) -> Vec<Skill> {
+        self.try_list(user_handle, agent_handle, agent_skills)
+            .await
+            .unwrap_or_default()
+    }
+
+    pub async fn try_list(
+        &self,
+        user_handle: &crate::core::Handle,
+        agent_handle: &crate::core::Handle,
+        agent_skills: Option<&[String]>,
+    ) -> Result<Vec<Skill>, AppError> {
         let cache_key = format!("{user_handle}/{agent_handle}:{}", skills_hash(agent_skills));
         if let Some(cached) = self.list_cache.get(&cache_key).await {
-            return cached;
+            return Ok(cached);
         }
-        let result = self.resolver.list(user_handle, agent_handle, agent_skills);
+        let result = self
+            .resolver
+            .try_list(user_handle, agent_handle, agent_skills)?;
         self.list_cache.insert(cache_key, result.clone()).await;
-        result
+        Ok(result)
     }
 
     pub async fn search(&self, query: &str) -> Result<Vec<SkillSearchResult>, AppError> {

@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 
-use crate::agent::skill::resolver::Skill;
 use crate::agent::workspace::AgentPromptLoader;
 use crate::core::Handle;
 use crate::core::template::render_template;
@@ -32,6 +31,35 @@ impl PromptLoader {
 
     pub fn read(&self, name: &str) -> Option<String> {
         self.read_with_vars(name, &[])
+    }
+
+    /// Optional files may be absent, but unreadable or invalid files are errors.
+    pub fn try_read(&self, name: &str) -> Result<Option<String>, crate::core::error::AppError> {
+        self.try_read_with_vars(name, &[])
+    }
+
+    pub fn try_read_with_vars(
+        &self,
+        name: &str,
+        vars: &[(&str, &str)],
+    ) -> Result<Option<String>, crate::core::error::AppError> {
+        let raw = match std::fs::read_to_string(self.base_dir.join(name)) {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(crate::core::error::AppError::Internal(format!(
+                    "Read prompt {name}: {e}"
+                )));
+            }
+        };
+        let merged = self.merge_vars(vars);
+        let refs: Vec<_> = merged
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        render_template(&raw, &refs).map(Some).map_err(|e| {
+            crate::core::error::AppError::Internal(format!("Render prompt {name}: {e}"))
+        })
     }
 
     pub fn read_with_vars(&self, name: &str, vars: &[(&str, &str)]) -> Option<String> {
@@ -99,108 +127,200 @@ pub fn append_tagged_section(
     result.push_str(&format!("</{tag}>"));
 }
 
-/// Assemble the agent's full system prompt (identity, agent prompt files,
-/// skills, MCP, available agents, temporal context). The **memory** service
-/// contributes only `memory_section` (its static `MEMORY.md`); the dynamic
-/// memory blocks are appended later by `MemoryService::retrieve`. Ordered
-/// static → almost-static → dynamic to maximise the cacheable prefix.
-#[allow(clippy::too_many_arguments)]
-pub fn build_augmented_system_prompt(
-    base_prompt: &str,
-    identity: &BTreeMap<String, String>,
-    prompts: &PromptLoader,
-    storage: &StorageService,
-    user_handle: &Handle,
-    agent_handle: &Handle,
-    skills: &[Skill],
-    agent_summaries: &[(String, String)],
-    mcp_servers: &[(String, String)],
-    user_timezone: &str,
-) -> String {
-    let mut result = base_prompt.to_string();
+/// Renders standing instructions and skill expansions.
+/// Callers persist dynamic text once; replay never renders it again.
+#[derive(Clone)]
+pub struct AgentPromptBuilder {
+    prompts: PromptLoader,
+    storage: StorageService,
+    memory: std::sync::Arc<dyn crate::memory::service::MemoryService>,
+    skills: crate::agent::skill::service::SkillService,
+}
 
-    // IDENTITY.md fallback - only when the agent has no core identity keys.
-    const CORE_IDENTITY_KEYS: &[&str] = &["name", "creature", "vibe"];
-    let has_core_identity = CORE_IDENTITY_KEYS
-        .iter()
-        .all(|core_key| identity.keys().any(|k| k.eq_ignore_ascii_case(core_key)));
-    if !has_core_identity {
-        let ws = storage.agent_workspace(user_handle, agent_handle);
-        if let Some(identity_prompt) = AgentPromptLoader::new(&ws, prompts).read("IDENTITY.md") {
-            result.push_str("\n\n");
-            result.push_str(&identity_prompt);
+impl AgentPromptBuilder {
+    pub fn new(
+        prompts: PromptLoader,
+        storage: StorageService,
+        memory: std::sync::Arc<dyn crate::memory::service::MemoryService>,
+        skills: crate::agent::skill::service::SkillService,
+    ) -> Self {
+        Self {
+            prompts,
+            storage,
+            memory,
+            skills,
         }
     }
 
-    // Static agent prompt files. The memory backend's usage section is no longer
-    // spliced here - `MemoryService::retrieve` prepends it ahead of its own
-    // dynamic tags (so the constant part stays in the cacheable prefix).
-    for name in ["WORKSPACE.md", "TOOLS.md", "SKILLS.md"] {
-        if let Some(content) = prompts.read(name) {
-            result.push_str("\n\n");
-            result.push_str(&content);
+    pub async fn render_skill(
+        &self,
+        user: &crate::auth::models::User,
+        agent: &crate::agent::models::Agent,
+        name: &str,
+        prompt: &str,
+    ) -> Result<Option<String>, crate::core::error::AppError> {
+        let skills = self
+            .skills
+            .try_list(&user.handle, &agent.handle, agent.skills.as_deref())
+            .await?;
+        crate::chat::command::render::try_render_skill(name, prompt, &skills)
+    }
+
+    pub async fn build(
+        &self,
+        base_prompt: &str,
+        identity: &BTreeMap<String, String>,
+        agent_handle: &Handle,
+        user: &crate::auth::User,
+        additional_instructions: &[&str],
+    ) -> Result<String, crate::core::error::AppError> {
+        let mut result = base_prompt.to_string();
+        if !["name", "creature", "vibe"]
+            .iter()
+            .all(|key| identity.keys().any(|k| k.eq_ignore_ascii_case(key)))
+        {
+            let ws = self.storage.agent_workspace(&user.handle, agent_handle);
+            if let Some(text) = AgentPromptLoader::new(&ws, &self.prompts).read("IDENTITY.md") {
+                result.push_str("\n\n");
+                result.push_str(&text);
+            }
         }
-    }
-    if let Some(content) = prompts.read("SCHEDULING.md") {
-        result.push_str("\n\n");
-        result.push_str(&content);
-    }
-
-    let skill_items: Vec<(String, String)> = skills
-        .iter()
-        .filter(|s| !s.disable_model_invocation)
-        .map(|s| {
-            (
-                s.name.clone(),
-                format!("{} (file: {}/SKILL.md)", s.description, s.path),
-            )
-        })
-        .collect();
-    append_tagged_section(&mut result, "available_skills", None, &skill_items);
-
-    if !mcp_servers.is_empty() {
-        if let Some(mcp_prompt) = prompts.read("MCP.md") {
-            result.push_str("\n\n");
-            result.push_str(&mcp_prompt);
+        for name in ["WORKSPACE.md", "TOOLS.md", "SKILLS.md", "SCHEDULING.md"] {
+            if let Some(text) = self.prompts.read(name) {
+                result.push_str("\n\n");
+                result.push_str(&text);
+            }
         }
-        append_tagged_section(&mut result, "mcpservers", None, mcp_servers);
+        append_tagged_section(
+            &mut result,
+            "agent_identity",
+            None,
+            &identity
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<Vec<_>>(),
+        );
+        // The wrapper is stable even when the first server is installed.
+        if let Some(instructions) = self.prompts.read("MCP.md") {
+            result.push_str("\n\n");
+            result.push_str(&instructions);
+        }
+
+        for text in additional_instructions {
+            result.push_str("\n\n");
+            result.push_str(text);
+        }
+        let memory = self.memory.instructions(user).await?;
+        if !memory.is_empty() {
+            result.push_str("\n\n");
+            result.push_str(&memory);
+        }
+        Ok(result)
     }
-
-    append_tagged_section(
-        &mut result,
-        "available_agents",
-        prompts.read("AVAILABLE_AGENTS.md").as_deref(),
-        agent_summaries,
-    );
-
-    let identity_pairs: Vec<(String, String)> = identity
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    append_tagged_section(&mut result, "agent_identity", None, &identity_pairs);
-
-    // Date-only keeps this byte-stable within a day so prefix caches stay warm.
-    let tz: chrono_tz::Tz = user_timezone.parse().unwrap_or(chrono_tz::UTC);
-    let now_local = chrono::Utc::now().with_timezone(&tz);
-    let items = vec![
-        (
-            "current_date_local".to_string(),
-            format!(
-                "{} ({})",
-                now_local.format("%Y-%m-%d"),
-                now_local.format("%A")
-            ),
-        ),
-        ("user_timezone".to_string(), user_timezone.to_string()),
-    ];
-    append_tagged_section(&mut result, "temporal_context", None, &items);
-
-    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn builder_keeps_instruction_order_and_scopes_memory_without_collecting_it() {
+        use crate::agent::context::{AgentContextScope, AgentContextSection};
+        use crate::core::error::AppError;
+        use crate::memory::service::MemoryService;
+        use std::sync::Arc;
+
+        struct MemoryInstructions;
+        #[async_trait::async_trait]
+        impl MemoryService for MemoryInstructions {
+            fn tools(&self) -> Vec<Arc<dyn crate::tool::AgentTool>> {
+                vec![]
+            }
+            async fn instructions(&self, user: &crate::auth::User) -> Result<String, AppError> {
+                if user.id == "unavailable" {
+                    return Err(AppError::Internal("memory instructions unavailable".into()));
+                }
+                Ok(format!("Memory instructions for {}", user.id))
+            }
+            async fn collect(
+                &self,
+                _: &AgentContextScope<'_>,
+            ) -> Result<Vec<AgentContextSection>, AppError> {
+                panic!("Standing prompts must not collect dynamic memory");
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("WORKSPACE.md"), "Workspace instructions").unwrap();
+        let storage = StorageService::new(&crate::core::config::Config::default());
+        let builder = AgentPromptBuilder::new(
+            PromptLoader::new(dir.path()),
+            storage.clone(),
+            Arc::new(MemoryInstructions),
+            crate::agent::skill::service::SkillService::new(
+                crate::agent::skill::registry::SkillRegistryClient::new(
+                    reqwest::Client::new(),
+                    dir.path(),
+                ),
+                crate::agent::skill::resolver::SkillResolver::new(
+                    dir.path(),
+                    storage.clone(),
+                    dir.path(),
+                ),
+                storage,
+                dir.path(),
+                &crate::core::config::CacheConfig::default(),
+            ),
+        );
+        let identity = BTreeMap::from([
+            ("name".into(), "Agent".into()),
+            ("creature".into(), "Assistant".into()),
+            ("vibe".into(), "Helpful".into()),
+        ]);
+        let handle = Handle::try_new("agent").unwrap();
+        let mut user = crate::auth::User {
+            id: "alice".into(),
+            handle: crate::handle!("alice"),
+            email: "alice@example.com".into(),
+            name: "Alice".into(),
+            password_hash: String::new(),
+            timezone: None,
+            groups: vec![],
+            deactivated_at: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        let first = builder
+            .build(
+                "Base instructions",
+                &identity,
+                &handle,
+                &user,
+                &["Task instructions", "Conversation instructions"],
+            )
+            .await
+            .unwrap();
+        assert!(first.starts_with("Base instructions\n\nWorkspace instructions"));
+        assert!(first.ends_with(
+            "\n\nTask instructions\n\nConversation instructions\n\nMemory instructions for alice"
+        ));
+        assert_eq!(first.matches("Memory instructions").count(), 1);
+        user.id = "bob".into();
+        let second = builder
+            .build("Base instructions", &identity, &handle, &user, &[])
+            .await
+            .unwrap();
+        assert!(second.ends_with("Memory instructions for bob"));
+        assert!(!second.contains("alice"));
+        assert!(!second.contains("Task instructions"));
+        user.id = "unavailable".into();
+        assert!(
+            builder
+                .build("Base instructions", &identity, &handle, &user, &[])
+                .await
+                .is_err()
+        );
+    }
 
     fn shared_prompts_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -274,36 +394,6 @@ mod tests {
         assert_eq!(
             content,
             "[CALL_CONNECTED: Now speaking with Alice (+1234567890). Goal: Schedule meeting.]"
-        );
-    }
-
-    #[test]
-    fn assembler_places_base_prompt() {
-        let prompts = PromptLoader::new(shared_prompts_dir());
-        let storage = StorageService::new(&crate::core::config::Config::default());
-        let mut identity = BTreeMap::new();
-        for k in ["name", "creature", "vibe"] {
-            identity.insert(k.to_string(), "x".to_string());
-        }
-        let prompt = build_augmented_system_prompt(
-            "BASE_PROMPT_MARKER",
-            &identity,
-            &prompts,
-            &storage,
-            &crate::handle!("user"),
-            &crate::handle!("agent"),
-            &[],
-            &[],
-            &[],
-            "UTC",
-        );
-        assert!(
-            prompt.starts_with("BASE_PROMPT_MARKER"),
-            "base prompt leads"
-        );
-        assert!(
-            prompt.contains("<temporal_context>"),
-            "dynamic temporal tail present"
         );
     }
 }

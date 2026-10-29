@@ -3,7 +3,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::prompt::PromptLoader;
 use crate::agent::service::AgentService;
-use crate::agent::skill::service::SkillService;
 use crate::agent::task::service::TaskService;
 use crate::auth::UserService;
 use crate::chat::broadcast::BroadcastService;
@@ -58,7 +57,6 @@ pub struct Harness {
     pub(crate) storage_service: StorageService,
     pub(crate) agent_service: AgentService,
     pub(crate) memory_service: Arc<dyn MemoryService>,
-    pub(crate) skill_service: SkillService,
     pub(crate) task_service: TaskService,
     pub(crate) mcp_service: Arc<McpServerService>,
     pub(crate) tool_manager: Arc<ToolManager>,
@@ -81,7 +79,6 @@ impl Harness {
         storage_service: StorageService,
         agent_service: AgentService,
         memory_service: Arc<dyn MemoryService>,
-        skill_service: SkillService,
         task_service: TaskService,
         mcp_service: Arc<McpServerService>,
         tool_manager: Arc<ToolManager>,
@@ -104,7 +101,6 @@ impl Harness {
             storage_service,
             agent_service,
             memory_service,
-            skill_service,
             task_service,
             mcp_service,
             tool_manager,
@@ -565,6 +561,9 @@ impl Harness {
             .get_stored_messages(chat_id)
             .await?
             .into_iter()
+            .take_while(|m| m.id != message_id)
+            .collect::<Vec<_>>()
+            .into_iter()
             .rev()
             .find(|m| matches!(m.role, MessageRole::User));
 
@@ -576,10 +575,23 @@ impl Harness {
             });
         }
 
-        let mut session = ChatSessionContext::build(
+        let mut chat_for_turn = chat.clone();
+        if let Some(request) = &request
+            && let Some(MessageCommand::Command { name, .. }) = &request.command
+            && self.commands.get(name).is_none()
+            && command_context_registry
+                .as_ref()
+                .and_then(|r| r.get(name))
+                .is_none()
+            && let Some(target) = self.agent_service.find_by_handle(user_id, name).await?
+        {
+            chat_for_turn.agent_id = target.id;
+        }
+        let mut session = ChatSessionContext::build_for_response(
             self,
             user_id,
-            chat.clone(),
+            chat_for_turn,
+            Some(message_id),
             cancel_token.clone(),
             builder.into(),
             tool_filters,
@@ -604,14 +616,6 @@ impl Harness {
                 .await?
                 .ok_or_else(|| AppError::NotFound(format!("user {user_id}")))?;
 
-            let cmd = match command_context_registry.as_ref().and_then(|r| r.get(&name)) {
-                Some(c) => Some(c),
-                None => self.commands.resolve(&name, self, &user).await,
-            };
-            let cmd = cmd.ok_or_else(|| {
-                AppError::NotFound(format!("command '{name}' not registered for this chat"))
-            })?;
-
             // `response` is always written via the terminal API at end-of-turn,
             // so no snapshot is needed for it - only chat/request.
             let chat_snapshot = chat.clone();
@@ -626,7 +630,24 @@ impl Harness {
                 response: &mut response,
             };
 
-            let outcome = cmd.run(&args, &mut cmd_ctx).await;
+            let outcome = if let Some(processed) = cmd_ctx
+                .request
+                .processed_content
+                .as_deref()
+                .filter(|text| !text.is_empty())
+            {
+                Ok(CommandOutcome::Prompt(processed.to_owned()))
+            } else {
+                let cmd = match command_context_registry.as_ref().and_then(|r| r.get(&name)) {
+                    Some(c) => Some(c),
+                    None => self.commands.resolve(&name, self, &user).await,
+                };
+                let cmd = cmd.ok_or_else(|| {
+                    AppError::NotFound(format!("command '{name}' not registered for this chat"))
+                })?;
+
+                cmd.run(&args, &mut cmd_ctx).await
+            };
 
             if chat != chat_snapshot {
                 let _ = self.chat_service.save_chat(&chat).await;
@@ -637,9 +658,18 @@ impl Harness {
 
             match outcome {
                 Ok(CommandOutcome::Prompt(rendered)) => {
+                    request = self
+                        .chat_service
+                        .finalize_command_prompt(
+                            &request,
+                            &rendered,
+                            &session.agent_context_scope(),
+                        )
+                        .await?;
+                    response.agent_context_signature = request.agent_context_signature.clone();
                     prompt_override = Some(CommandPromptOverride {
                         request_id: request.id.clone(),
-                        rendered_prompt: rendered,
+                        rendered_prompt: request.inference_content().to_owned(),
                     });
                 }
                 Ok(CommandOutcome::Message(text)) => {

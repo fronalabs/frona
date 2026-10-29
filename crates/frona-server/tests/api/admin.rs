@@ -357,6 +357,7 @@ async fn delete_user_cascades_owned_chats_and_agents() {
     // agents, so the member starts with 4 agent rows + 1 chat row.
     let chat_repo: SurrealRepo<Chat> = SurrealRepo::new(state.db.clone());
     let chat = Chat {
+        agent_context_state: Default::default(),
         id: new_id(),
         user_id: member_id.clone(),
         space_id: None,

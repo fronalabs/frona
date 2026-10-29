@@ -39,6 +39,7 @@ const COMPACT_TARGET_PCT: usize = 70;
 /// Result of a compaction-aware load: the rolling summary (if any) plus the
 /// messages after the cutoff.
 pub struct LoadedConversation {
+    pub agent_context: Option<String>,
     pub summary: Option<String>,
     pub messages: Vec<Message>,
 }
@@ -69,6 +70,7 @@ pub trait ChatSummarizer: Send + Sync {
 
 #[derive(Clone, Copy)]
 pub struct CompactionContext<'a> {
+    pub agent_context: crate::agent::context::AgentContextScope<'a>,
     pub system_prompt: &'a str,
     pub model_group: &'a ModelGroup,
     pub model_history: &'a ModelConversationHistory,
@@ -152,6 +154,7 @@ struct HistoryTokenMeasurement {
 
 #[derive(Clone)]
 pub struct ChatCompactor {
+    agent_context_manager: crate::agent::context::AgentContextManager,
     chat_summary_repo: SurrealChatSummaryRepo,
     message_repo: SurrealMessageRepo,
     summarizer: Arc<dyn ChatSummarizer>,
@@ -164,8 +167,10 @@ impl ChatCompactor {
         message_repo: SurrealMessageRepo,
         summarizer: Arc<dyn ChatSummarizer>,
         prompts: PromptLoader,
+        agent_context_manager: crate::agent::context::AgentContextManager,
     ) -> Self {
         Self {
+            agent_context_manager,
             chat_summary_repo,
             message_repo,
             summarizer,
@@ -264,12 +269,20 @@ impl ChatCompactor {
                     .message_repo
                     .find_by_chat_id_after(chat_id, summary.compacted_until)
                     .await?;
+                let agent_context = match &summary.agent_context_signature {
+                    Some(signature) => {
+                        Some(self.agent_context_manager.load(signature).await?.render())
+                    }
+                    None => None,
+                };
                 Ok(LoadedConversation {
+                    agent_context,
                     summary: Some(summary.content),
                     messages,
                 })
             }
             None => Ok(LoadedConversation {
+                agent_context: None,
                 summary: None,
                 messages: self.message_repo.find_by_chat_id(chat_id).await?,
             }),
@@ -282,17 +295,18 @@ impl ChatCompactor {
     /// Retains compacted messages (does not delete them).
     pub async fn compact_chat(
         &self,
-        user_id: &str,
         chat_id: &str,
-        chat_agent_id: &str,
         context: CompactionContext<'_>,
     ) -> Result<CompactionOutcome, AppError> {
         let CompactionContext {
+            agent_context,
             system_prompt,
             model_group,
             model_history,
             tools,
         } = context;
+        let user_id = &agent_context.user.id;
+        let chat_agent_id = &agent_context.agent.id;
         let context_window = model_group.context_window;
         let max_output_tokens = model_group
             .main
@@ -304,7 +318,7 @@ impl ChatCompactor {
         // Only the messages NOT already covered by the summary are live. Fetch just
         // those in SQL - the compacted rest is retained on disk but represented by
         // the summary, so we never re-read (or re-compact) it each turn.
-        let live: Vec<Message> = match &existing {
+        let mut live: Vec<Message> = match &existing {
             Some(s) => {
                 self.message_repo
                     .find_by_chat_id_after(chat_id, s.compacted_until)
@@ -317,6 +331,22 @@ impl ChatCompactor {
             model_history: model_history.clone(),
             input_token_estimate,
         };
+        if live.is_empty() {
+            return Ok(unchanged(None));
+        }
+
+        // A resumed response may intentionally exclude later incoming rows.
+        // The persisted prefix must still match exactly; future text must not
+        // enter this response's summary or request.
+        let has_later_rows = model_history.row_ids.len() < live.len();
+        if model_history.row_ids.len() < live.len()
+            && model_history
+                .row_ids
+                .iter()
+                .eq(live.iter().take(model_history.row_ids.len()).map(|m| &m.id))
+        {
+            live.truncate(model_history.row_ids.len());
+        }
         if live.is_empty() {
             return Ok(unchanged(None));
         }
@@ -445,6 +475,28 @@ impl ChatCompactor {
             ensure_fits(total_tokens, available)?;
             return Ok(unchanged(input_token_estimate));
         }
+        if has_later_rows {
+            return Err(AppError::Conflict(
+                "Cannot compact an earlier response while newer messages are pending".into(),
+            ));
+        }
+        // Record when the fresh baseline was captured, before source collection and inference.
+        let now = live
+            .last()
+            .map_or_else(Utc::now, |message| Utc::now().max(message.created_at));
+        // Fresh sources must all succeed before even the summarizer runs.
+        let chat = crate::db::repo::chats::SurrealChatRepo::new(self.message_repo.db().clone())
+            .find_by_id(chat_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Chat".into()))?;
+        let mut agent_context_state = chat.agent_context_state.clone();
+        let snapshot = self
+            .agent_context_manager
+            .prepare(&agent_context, None, &mut agent_context_state)
+            .await?
+            .snapshot;
+        let context_text = snapshot.render();
+        let has_agent_context = !context_text.is_empty();
         let messages_to_compact = &live[..keep_from_idx];
 
         let prefix_end = model_history.row_range(keep_from_idx - 1).end;
@@ -486,19 +538,24 @@ impl ChatCompactor {
 
         // Do not publish a summary that still cannot fit alongside the retained
         // request. The original rows and prior summary remain recoverable on error.
-        ensure_fits(
-            system_tokens
-                + summary_tokens_for(&content)
-                + costs[keep_from_idx..].iter().sum::<usize>(),
-            available,
-        )?;
-        let now = Utc::now();
+        if !has_agent_context {
+            ensure_fits(
+                system_tokens
+                    + summary_tokens_for(&content)
+                    + costs[keep_from_idx..].iter().sum::<usize>(),
+                available,
+            )?;
+        }
+        let mut compacted_history = model_history.clone();
+        compacted_history.replace_prefix(keep_from_idx, &content);
+        compacted_history.set_summary_context(Some(&context_text));
         let compacted_until = messages_to_compact
             .last()
             .map(|m| m.created_at)
             .unwrap_or(now);
         let item_count = messages_to_compact.len() as i64;
         let row = ChatSummary {
+            agent_context_signature: Some(snapshot.signature),
             id: existing
                 .as_ref()
                 .map(|s| s.id.clone())
@@ -511,14 +568,26 @@ impl ChatCompactor {
             created_at: existing.as_ref().map(|s| s.created_at).unwrap_or(now),
             updated_at: now,
         };
+        if has_agent_context {
+            validate_initial_context(
+                &compacted_history.history,
+                system_prompt,
+                model_group,
+                tools,
+                None,
+            )?;
+        }
         if existing.is_some() {
             self.chat_summary_repo.update(&row).await?;
         } else {
             self.chat_summary_repo.create(&row).await?;
         }
-        let mut compacted_history = model_history.clone();
-        compacted_history.replace_prefix(keep_from_idx, &content);
-        let input_token_estimate = calibrated.then(|| {
+        if agent_context_state != chat.agent_context_state {
+            crate::db::repo::chats::SurrealChatRepo::new(self.message_repo.db().clone())
+                .save_agent_context_state(chat_id, &agent_context_state)
+                .await?;
+        }
+        let input_token_estimate = (calibrated && !has_agent_context).then(|| {
             InputTokenEstimate::new(
                 system_tokens
                     + summary_tokens_for(&content)

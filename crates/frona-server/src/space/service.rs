@@ -198,6 +198,7 @@ mod tests {
         for (id, archived_at) in [("active", None), ("archived", Some(Utc::now()))] {
             chat_repo
                 .create(&Chat {
+                    agent_context_state: Default::default(),
                     id: id.into(),
                     user_id: "user-1".into(),
                     space_id: Some(space.id.clone()),

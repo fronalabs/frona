@@ -1,3 +1,4 @@
+pub mod agent_context_snapshots;
 pub mod agents;
 pub mod apps;
 pub mod basic_memory;
@@ -11,6 +12,7 @@ pub mod inference_usage;
 pub mod keypairs;
 pub mod managed_vault;
 pub mod mcp_servers;
+pub mod message_context;
 pub mod messages;
 pub mod notifications;
 pub mod oauth;

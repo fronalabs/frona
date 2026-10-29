@@ -122,6 +122,12 @@ impl Fixture {
         )
         .await;
         let state = &mut app.state;
+        let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(
+            state.prompts.clone(),
+            state.storage_service.clone(),
+            helpers::empty_memory_service(),
+            state.skill_service.clone(),
+        );
         state.chat_service = frona::chat::service::ChatService::new(
             SurrealRepo::new(db.clone()),
             SurrealRepo::new(db.clone()),
@@ -134,6 +140,8 @@ impl Fixture {
             state.broadcast_service.clone(),
             state.presign_service.clone(),
             state.usage_service.clone(),
+            helpers::empty_agent_context_manager(&state.db),
+            agent_prompt_builder,
         );
         state.harness = Arc::new(frona::agent::harness::Harness::new(
             state.chat_service.clone(),
@@ -141,7 +149,6 @@ impl Fixture {
             state.storage_service.clone(),
             state.agent_service.clone(),
             helpers::test_memory_service(state, &db),
-            state.skill_service.clone(),
             state.task_service.clone(),
             state.mcp_service.clone(),
             state.tool_manager.clone(),

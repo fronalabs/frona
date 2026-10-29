@@ -16,6 +16,37 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// Like `read`, but does not hide filesystem failures during context capture.
+    pub fn try_read(&self, path: &str) -> Result<Option<String>, AppError> {
+        for layer in self.layers.iter().chain(self.shared_dir.iter()) {
+            let full = resolve_workspace_path(layer, Path::new(path))?;
+            match std::fs::read_to_string(&full) {
+                Ok(content) => return Ok(Some(content)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(AppError::Internal(format!("Read {}: {e}", full.display()))),
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn try_read_dir(&self, path: &str) -> Result<Vec<String>, AppError> {
+        let mut seen = std::collections::BTreeSet::new();
+        for layer in self.layers.iter().chain(self.shared_dir.iter()) {
+            let dir = resolve_workspace_path(layer, Path::new(path))?;
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(AppError::Internal(format!("List {}: {e}", dir.display()))),
+            };
+            for entry in entries {
+                let entry = entry
+                    .map_err(|e| AppError::Internal(format!("List {}: {e}", dir.display())))?;
+                seen.insert(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+        Ok(seen.into_iter().collect())
+    }
+
     pub fn new(layers: Vec<PathBuf>, shared_dir: Option<PathBuf>) -> Self {
         Self { layers, shared_dir }
     }

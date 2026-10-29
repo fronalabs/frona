@@ -409,6 +409,7 @@ mod tests {
                 updated_at: chrono::Utc::now(),
             },
             crate::chat::models::Chat {
+                agent_context_state: Default::default(),
                 id: "c".into(),
                 user_id: "u".into(),
                 space_id: None,

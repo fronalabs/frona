@@ -103,6 +103,7 @@ async fn seed_chat_sources(
         .unwrap();
     let old = Utc::now() - Duration::hours(1);
     let chat = Chat {
+        agent_context_state: Default::default(),
         id: frona::core::repository::new_id(),
         user_id: user_id.into(),
         space_id: None,

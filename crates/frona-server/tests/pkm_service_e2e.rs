@@ -157,6 +157,7 @@ async fn seed_agent_and_chat(db: &Surreal<Db>) {
 
     SurrealRepo::<frona::chat::models::Chat>::new(db.clone())
         .create(&frona::chat::models::Chat {
+            agent_context_state: Default::default(),
             id: "test-chat".into(),
             user_id: "test-user".into(),
             space_id: None,
@@ -887,10 +888,13 @@ async fn consolidation_routes_self_memories_persists_aliases_and_updates_user_pr
     );
     // <user_profile> reflects the learned self-page enrichment.
     let ctx = mock_context();
-    let mut sp = String::new();
-    let mut hist: Vec<rig_core::completion::Message> = Vec::new();
-    let mut mcx = frona::memory::service::MemoryContext::new(&mut sp, &mut hist, &ctx);
-    service.retrieve(&mut mcx).await.unwrap();
+    let sp = service
+        .collect(&ctx.agent_context_scope())
+        .await
+        .unwrap()
+        .iter()
+        .map(|section| section.render())
+        .collect::<String>();
     assert!(
         sp.contains("<user_profile>") && sp.contains("schema:roleName: Backend engineer"),
         "profile enrichment:\n{sp}"
@@ -898,11 +902,15 @@ async fn consolidation_routes_self_memories_persists_aliases_and_updates_user_pr
 }
 
 /// Self-page + `<user_profile>` injection: the reserved self-page is seeded and
-/// `retrieve()` always injects a profile block - live header from the `User`
+/// `collect()` always supplies a profile block - live header from the `User`
 /// record (name/handle) plus learned enrichment from the self-page's attributes.
 #[tokio::test]
 async fn self_entity_injects_user_profile() {
     let db = test_db().await;
+    test_user_service(&db)
+        .create(&mock_context().user)
+        .await
+        .unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path().to_string_lossy().to_string();
     let config = Config {
@@ -956,18 +964,23 @@ async fn self_entity_injects_user_profile() {
         "self-page lives at the reserved path"
     );
 
-    // retrieve() injects <user_profile>: live header + self-page enrichment.
-    let ctx = mock_context(); // user id "test-user", handle "testuser", name "Test"
-    let mut system_prompt = String::new();
-    let mut history: Vec<rig_core::completion::Message> = Vec::new();
-    let mut mcx =
-        frona::memory::service::MemoryContext::new(&mut system_prompt, &mut history, &ctx);
-    service.retrieve(&mut mcx).await.unwrap();
+    // collect() supplies <user_profile>: live header + self-page enrichment.
+    let mut ctx = mock_context();
+    // Collection uses the supplied session user, without fetching it again.
+    ctx.user.name = "Session user".into();
+    let system_prompt = service
+        .collect(&ctx.agent_context_scope())
+        .await
+        .unwrap()
+        .iter()
+        .map(|section| section.render())
+        .collect::<String>();
 
     assert!(
         system_prompt.contains("<user_profile>"),
         "profile block injected:\n{system_prompt}"
     );
+    assert!(system_prompt.contains("schema:name: Session user (@testuser)"));
     assert!(
         system_prompt.contains("@testuser"),
         "live handle from the User record:\n{system_prompt}"

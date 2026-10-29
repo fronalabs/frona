@@ -788,6 +788,7 @@ pub fn mock_context() -> InferenceContext {
             updated_at: chrono::Utc::now(),
         },
         frona::chat::models::Chat {
+            agent_context_state: Default::default(),
             id: "test-chat".into(),
             user_id: "test-user".into(),
             space_id: None,
@@ -1005,6 +1006,66 @@ pub async fn drain_sse_frames(
     frames
 }
 
+/// Explicit empty source set for tests that do not exercise live catalog collection.
+pub fn empty_agent_context_manager(db: &Surreal<Db>) -> frona::agent::context::AgentContextManager {
+    frona::agent::context::AgentContextManager::new(
+        vec![],
+        frona::db::repo::agent_context_snapshots::SurrealAgentContextSnapshotRepo(db.clone()),
+    )
+}
+
+/// Static memory is outside the subject of these isolated chat tests.
+pub fn empty_memory_service() -> std::sync::Arc<dyn frona::memory::service::MemoryService> {
+    struct EmptyMemory;
+    #[async_trait::async_trait]
+    impl frona::memory::service::MemoryService for EmptyMemory {
+        fn tools(&self) -> Vec<std::sync::Arc<dyn frona::tool::AgentTool>> {
+            vec![]
+        }
+        async fn instructions(
+            &self,
+            _: &frona::auth::User,
+        ) -> Result<String, frona::core::error::AppError> {
+            Ok(String::new())
+        }
+        async fn collect(
+            &self,
+            _: &frona::agent::context::AgentContextScope<'_>,
+        ) -> Result<Vec<frona::agent::context::AgentContextSection>, frona::core::error::AppError>
+        {
+            Ok(vec![])
+        }
+    }
+    std::sync::Arc::new(EmptyMemory)
+}
+
+pub fn chat_service_with_context(
+    state: &frona::core::state::AppState,
+    manager: frona::agent::context::AgentContextManager,
+) -> frona::chat::service::ChatService {
+    let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(
+        state.prompts.clone(),
+        state.storage_service.clone(),
+        test_memory_service(state, &state.db),
+        state.skill_service.clone(),
+    );
+    frona::chat::service::ChatService::new(
+        SurrealRepo::new(state.db.clone()),
+        SurrealRepo::new(state.db.clone()),
+        SurrealRepo::new(state.db.clone()),
+        state.agent_service.clone(),
+        state.model_provider_service.clone(),
+        state.storage_service.clone(),
+        state.user_service.clone(),
+        state.prompts.clone(),
+        state.broadcast_service.clone(),
+        state.presign_service.clone(),
+        state.usage_service.clone(),
+        manager,
+        agent_prompt_builder,
+    )
+}
+
 /// Create a minimal ChatService backed by an in-memory SurrealDB for tool loop tests.
 pub async fn test_chat_service() -> frona::chat::service::ChatService {
     use frona::db::repo::generic::SurrealRepo;
@@ -1057,6 +1118,23 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
         300,
     );
 
+    let skill_service = frona::agent::skill::service::SkillService::new(
+        frona::agent::skill::registry::SkillRegistryClient::new(
+            reqwest::Client::new(),
+            format!("{base}/cache"),
+        ),
+        frona::agent::skill::resolver::SkillResolver::new(&base, storage.clone(), &base),
+        storage.clone(),
+        &base,
+        &config.cache,
+    );
+
+    let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(
+        frona::agent::prompt::PromptLoader::new(&base),
+        storage.clone(),
+        empty_memory_service(),
+        skill_service,
+    );
     frona::chat::service::ChatService::new(
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
@@ -1069,6 +1147,8 @@ pub async fn test_chat_service() -> frona::chat::service::ChatService {
         frona::chat::broadcast::BroadcastService::new(),
         presign_service,
         usage_service,
+        empty_agent_context_manager(&db),
+        agent_prompt_builder,
     )
 }
 
@@ -1150,6 +1230,12 @@ pub async fn test_harness(
     let mut groups = HashMap::new();
     groups.insert("test".to_string(), test_model_group());
     let mock_registry = test_model_service(providers, groups).await;
+    let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(
+        state.prompts.clone(),
+        state.storage_service.clone(),
+        empty_memory_service(),
+        state.skill_service.clone(),
+    );
     let chat_service = ChatService::new(
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
@@ -1162,6 +1248,8 @@ pub async fn test_harness(
         state.broadcast_service.clone(),
         state.presign_service.clone(),
         state.usage_service.clone(),
+        empty_agent_context_manager(&state.db),
+        agent_prompt_builder,
     );
     state.chat_service = chat_service.clone();
     let memory_service = test_memory_service(&state, db);
@@ -1171,7 +1259,6 @@ pub async fn test_harness(
         state.storage_service.clone(),
         state.agent_service.clone(),
         memory_service,
-        state.skill_service.clone(),
         state.task_service.clone(),
         state.mcp_service.clone(),
         state.tool_manager.clone(),

@@ -4,18 +4,24 @@ use crate::agent::config::parse_frontmatter;
 use crate::agent::skill::resolver::Skill;
 use crate::chat::slash::shell_split;
 
-/// Returns `None` if the skill isn't installed — caller falls back to raw content.
-pub fn render_skill(skill_name: &str, prompt: &str, skills: &[Skill]) -> Option<String> {
-    let skill = skills.iter().find(|s| s.name == skill_name)?;
-
+pub fn try_render_skill(
+    skill_name: &str,
+    prompt: &str,
+    skills: &[Skill],
+) -> Result<Option<String>, crate::core::error::AppError> {
+    let Some(skill) = skills.iter().find(|s| s.name == skill_name) else {
+        return Ok(None);
+    };
     let skill_md_path = format!("{}/SKILL.md", skill.path);
-    let raw = std::fs::read_to_string(&skill_md_path).ok()?;
+    let raw = std::fs::read_to_string(&skill_md_path).map_err(|error| {
+        crate::core::error::AppError::Internal(format!("Read skill {skill_name}: {error}"))
+    })?;
     let parsed = parse_frontmatter(&raw);
     let body = parsed.template;
 
     let placeholders = find_placeholders(&body, &skill.arguments);
 
-    if placeholders.is_empty() {
+    Ok(if placeholders.is_empty() {
         if prompt.is_empty() {
             Some(format!(
                 "<skill name=\"{}\">{}</skill>",
@@ -38,7 +44,7 @@ pub fn render_skill(skill_name: &str, prompt: &str, skills: &[Skill]) -> Option<
             escape_attr(prompt),
             interpolated
         ))
-    }
+    })
 }
 
 fn find_placeholders(body: &str, declared_names: &[String]) -> HashSet<Placeholder> {

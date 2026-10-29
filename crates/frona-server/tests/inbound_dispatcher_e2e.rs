@@ -97,6 +97,12 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
     let prompts = frona::agent::prompt::PromptLoader::new(prompts_dir);
     state.prompts = prompts.clone();
 
+    let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(
+        prompts.clone(),
+        state.storage_service.clone(),
+        helpers::empty_memory_service(),
+        state.skill_service.clone(),
+    );
     let chat_service = ChatService::new(
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
@@ -109,6 +115,8 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         state.broadcast_service.clone(),
         state.presign_service.clone(),
         state.usage_service.clone(),
+        helpers::empty_agent_context_manager(&state.db),
+        agent_prompt_builder,
     );
     state.chat_service = chat_service.clone();
     state.harness = Arc::new(frona::agent::harness::Harness::new(
@@ -117,7 +125,6 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         state.storage_service.clone(),
         state.agent_service.clone(),
         helpers::test_memory_service(&state, &db),
-        state.skill_service.clone(),
         state.task_service.clone(),
         state.mcp_service.clone(),
         state.tool_manager.clone(),

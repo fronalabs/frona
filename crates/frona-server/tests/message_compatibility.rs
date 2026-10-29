@@ -299,6 +299,7 @@ async fn memory_maintenance_consumes_a_chat_with_legacy_message_rows() {
             chat_id: "legacy-chat".into(),
             user_id: "user".into(),
             content: "The user prefers Rust".into(),
+            agent_context_signature: None,
             item_count: 2,
             compacted_until: now - chrono::Duration::seconds(1),
             created_at: now,

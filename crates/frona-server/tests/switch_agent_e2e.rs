@@ -103,6 +103,12 @@ async fn build_state(
     groups.insert("primary".to_string(), test_model_group());
     let mock_registry = crate::helpers::test_model_service(providers, groups).await;
 
+    let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(
+        state.prompts.clone(),
+        state.storage_service.clone(),
+        helpers::empty_memory_service(),
+        state.skill_service.clone(),
+    );
     let chat_service = ChatService::new(
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
@@ -115,6 +121,8 @@ async fn build_state(
         state.broadcast_service.clone(),
         state.presign_service.clone(),
         state.usage_service.clone(),
+        helpers::empty_agent_context_manager(&state.db),
+        agent_prompt_builder,
     );
     state.chat_service = chat_service.clone();
     state.harness = Arc::new(frona::agent::harness::Harness::new(
@@ -123,7 +131,6 @@ async fn build_state(
         state.storage_service.clone(),
         state.agent_service.clone(),
         helpers::test_memory_service(&state, &db),
-        state.skill_service.clone(),
         state.task_service.clone(),
         state.mcp_service.clone(),
         state.tool_manager.clone(),
@@ -196,6 +203,15 @@ async fn seed_user_and_two_agents(state: &AppState) -> (String, String) {
 
 #[tokio::test]
 async fn switch_agent_command_reattributes_response() {
+    assert_switch_agent(false).await;
+}
+
+#[tokio::test]
+async fn new_agent_command_in_old_chat_preserves_history() {
+    assert_switch_agent(true).await;
+}
+
+async fn assert_switch_agent(with_old_history: bool) {
     let provider: Arc<dyn frona::inference::provider::ModelProvider> = Arc::new(
         MockModelProvider::new(vec![MockResponse::Text("ack from target".into())]),
     );
@@ -216,6 +232,18 @@ async fn switch_agent_command_reattributes_response() {
         )
         .await
         .expect("chat creates");
+
+    let old_message = if with_old_history {
+        use frona::chat::message::models::{Message, MessageRole};
+        let old = Message::builder(&chat.id, MessageRole::User, "old conversation".into()).build();
+        SurrealRepo::new(state.db.clone())
+            .create(&old)
+            .await
+            .unwrap();
+        Some(old)
+    } else {
+        None
+    };
 
     let user_msg = state
         .chat_service
@@ -243,12 +271,12 @@ async fn switch_agent_command_reattributes_response() {
         .expect("placeholder persists");
     assert_eq!(
         agent_msg.agent_id.as_deref(),
-        Some(default_agent_id.as_str()),
-        "precondition: placeholder starts attributed to default agent",
+        Some("agent-target"),
+        "the placeholder inherits the agent selected during context capture",
     );
 
-    // `run_turn` calls `finalize` internally; `run_loop` doesn't, and
-    // without finalize the DB row keeps the placeholder's `agent_id`.
+    // Execute and finalize the turn; selection must remain consistent with
+    // its prepared snapshot through completion.
     let builder = Box::new(DefaultConversationBuilder {
         user_service: state.user_service.clone(),
         storage_service: state.storage_service.clone(),
@@ -278,6 +306,28 @@ async fn switch_agent_command_reattributes_response() {
         "persisted response should be attributed to target agent",
     );
     assert_eq!(stored.content, "ack from target");
+    assert!(stored.agent_context_signature.is_some());
+    let request = state
+        .chat_service
+        .get_message("user-1", &user_msg.id)
+        .await
+        .unwrap();
+    assert!(request.agent_context_signature.is_some());
+    assert!(request.processed_content.is_some());
+    assert!(request.inference_content().ends_with("hi"));
+    assert_eq!(request.content, "@target hi");
+
+    if let Some(old) = old_message {
+        assert_eq!(
+            state
+                .chat_service
+                .find_message(&old.id)
+                .await
+                .unwrap()
+                .unwrap(),
+            old
+        );
+    }
 
     let chat_after = state
         .chat_service

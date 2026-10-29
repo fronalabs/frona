@@ -1,9 +1,7 @@
 //! What PKM contributes to a turn's prompt.
 //!
-//! Four blocks, appended in a deliberate order that the caching contract on
-//! [`MemoryContext`](crate::memory::service::MemoryContext) depends on: the constant
-//! usage guide and `<user_profile>` first (they stay in the provider's cache prefix),
-//! then the per-turn `<short_memory>` and `<available_playbooks>` tail.
+//! Supplies rendered, keyed sections for immutable agent-context snapshots.
+//! Selection and token budgets remain live; history replay uses the saved text.
 //!
 //! Concept pages stay pull-only - reached on demand through the tools. Only the playbook
 //! *index* is pushed, so the agent knows which procedures exist without a blind search.
@@ -16,10 +14,31 @@ use chrono::Utc;
 use super::PkmService;
 use super::model::{self, EntityCategory};
 use super::vault::VaultScope;
-use crate::memory::service::MemoryContext;
+use crate::agent::context::{AgentContextKind, AgentContextScope, AgentContextSection};
 
 impl PkmService {
-    async fn short_memory_block(&self, user_id: &str) -> Result<Option<String>, AppError> {
+    pub(super) async fn instructions_for(
+        &self,
+        user: &crate::auth::User,
+    ) -> Result<String, AppError> {
+        let vault =
+            VaultScope::resolve(&self.user_service, &self.storage, &user.id, &user.handle).await?;
+        Ok(self
+            .prompts
+            .try_read_with_vars(
+                "pkm/agent_section.md",
+                &[
+                    ("memory_root", &vault.root().to_string_lossy()),
+                    ("directory", vault.directory()),
+                ],
+            )?
+            .unwrap_or_default())
+    }
+
+    async fn short_memory_block(
+        &self,
+        user_id: &str,
+    ) -> Result<Option<AgentContextSection>, AppError> {
         let rows = self.repo.list_short_memory(user_id).await?;
         if rows.is_empty() {
             return Ok(None);
@@ -34,7 +53,7 @@ impl PkmService {
             })
             .filter(|(s, _)| *s >= self.memory_config.pkm_short_memory_demote_threshold)
             .collect();
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
         scored.truncate(self.memory_config.pkm_short_memory_top_n);
 
         let lines: Vec<String> = scored
@@ -45,9 +64,20 @@ impl PkmService {
         // this block, and unlike the playbook index it makes no completeness claim there
         // would be anything to mark against - `agent_section.md` describes it as
         // time-decayed hot context, not the whole of what the agent remembers.
-        let (body, _dropped) =
+        let (body, dropped) =
             take_within_budget(&lines, self.memory_config.pkm_short_memory_token_cap);
-        Ok((!body.is_empty()).then_some(body))
+        Ok((!body.is_empty()).then(|| {
+            AgentContextSection::tagged(
+                AgentContextKind::ShortMemory,
+                "short_memory",
+                scored
+                    .iter()
+                    .zip(lines.iter())
+                    .take(lines.len() - dropped)
+                    .map(|((_, row), line)| (row.id.clone(), line.clone()))
+                    .collect(),
+            )
+        }))
     }
 
     /// Build the `<available_playbooks>` index: name + description + absolute file path per
@@ -59,7 +89,7 @@ impl PkmService {
         &self,
         user_id: &str,
         vault: &VaultScope,
-    ) -> Result<Option<String>, AppError> {
+    ) -> Result<Option<AgentContextSection>, AppError> {
         let mut pages = self
             .repo
             .list_entities_by_category(user_id, EntityCategory::Playbook)
@@ -67,7 +97,7 @@ impl PkmService {
         if pages.is_empty() {
             return Ok(None);
         }
-        pages.sort_by_key(|p| std::cmp::Reverse(p.use_count));
+        pages.sort_by(|a, b| b.use_count.cmp(&a.use_count).then_with(|| a.id.cmp(&b.id)));
 
         let lines: Vec<String> = pages
             .iter()
@@ -80,50 +110,53 @@ impl PkmService {
                 )
             })
             .collect();
-        Ok(render_playbook_index(
-            &lines,
-            self.memory_config.pkm_playbook_index_token_cap,
-        ))
+        let (body, dropped) =
+            take_within_budget(&lines, self.memory_config.pkm_playbook_index_token_cap);
+        if body.is_empty() {
+            return Ok(None);
+        }
+        let mut section = AgentContextSection::tagged(
+            AgentContextKind::Playbooks,
+            "available_playbooks",
+            pages
+                .iter()
+                .zip(lines.iter())
+                .take(lines.len() - dropped)
+                .map(|(page, line)| (page.id.clone(), line.clone()))
+                .collect(),
+        );
+        if dropped > 0 {
+            section.suffix = format!(
+                "- (+{dropped} more playbook(s) not shown — memory_search by task to find them)\n{}",
+                section.suffix
+            );
+        }
+        Ok(Some(section))
     }
 
-    /// The whole per-turn contribution. `MemoryService::retrieve` delegates here.
-    pub(super) async fn retrieve_into(&self, mcx: &mut MemoryContext<'_>) -> Result<(), AppError> {
-        // Usage guide + navigation, read fresh so prompt edits apply live. The
-        // `## Navigation` section needs the per-user vault root + directory, so the
-        // whole file is rendered with them injected. Constant across turns → stays in
-        // the cache prefix ahead of the dynamic <short_memory> tag.
-        let vault = VaultScope::resolve(
-            &self.user_service,
-            &self.storage,
-            &mcx.ctx.user.id,
-            &mcx.ctx.user.handle,
-        )
-        .await?;
-        if let Some(section) = self.prompts.read_with_vars(
-            "pkm/agent_section.md",
-            &[
-                ("memory_root", &vault.root().to_string_lossy()),
-                ("directory", vault.directory()),
-            ],
-        ) && !section.is_empty()
-        {
-            mcx.system_prompt.push_str("\n\n");
-            mcx.system_prompt.push_str(section.trim_end());
-        }
+    /// Collect the whole contribution at a new turn or compaction boundary.
+    pub(super) async fn collect_context(
+        &self,
+        scope: &AgentContextScope<'_>,
+    ) -> Result<Vec<AgentContextSection>, AppError> {
+        let user = scope.user;
+        let mut sections = Vec::new();
+        let vault =
+            VaultScope::resolve(&self.user_service, &self.storage, &user.id, &user.handle).await?;
 
-        // <user_profile>: always injected. Header is live from the `User` record
-        // (never stale, authoritative); enrichment is the self-page's learned
+        // <user_profile>: always injected. Header comes from the resolved session User;
+        // enrichment is the self-page's learned
         // attributes. Placed before <short_memory> so the mostly-static part stays
         // in the cache prefix.
         // Everything is keyed by its ontology CURIE (`schema:name`, `schema:timezone`,
         // …) so the profile the agent reads mirrors the self-page's RDF-keyed
         // attributes rather than ad-hoc labels.
-        let u = &mcx.ctx.user;
+        let u = user;
         let mut profile = format!("schema:name: {} (@{})\n", u.name, u.handle);
         if let Some(tz) = u.timezone.as_deref().filter(|s| !s.is_empty()) {
             profile.push_str(&format!("schema:timezone: {tz}\n"));
         }
-        if let Ok(Some(page)) = self.repo.self_entity(&u.id).await
+        if let Some(page) = self.repo.self_entity(&u.id).await?
             && let Some(map) = page.attributes.as_object()
         {
             // Name/timezone come authoritatively from the live `User` record above -
@@ -140,26 +173,18 @@ impl PkmService {
                 profile.push_str(&format!("{k}: {v}\n"));
             }
         }
-        mcx.system_prompt.push_str("\n\n<user_profile>\n");
-        mcx.system_prompt.push_str(profile.trim_end());
-        mcx.system_prompt.push_str("\n</user_profile>");
-
-        // Auto-injected blocks: short memory (facts), then the playbook index
-        // (existence advertisement). Concept pages are still pull-only - reached on
-        // demand through the tools. The playbook index carries only name +
-        // description + path, so the agent knows which procedures exist and can
-        // `read(<path>)` the body without a blind `memory_search` first.
-        if let Some(block) = self.short_memory_block(&mcx.ctx.user.id).await? {
-            mcx.system_prompt.push_str("\n\n<short_memory>\n");
-            mcx.system_prompt.push_str(&block);
-            mcx.system_prompt.push_str("</short_memory>");
+        sections.push(AgentContextSection::prose(
+            AgentContextKind::UserProfile,
+            "user_profile",
+            profile.trim_end().into(),
+        ));
+        if let Some(section) = self.short_memory_block(&user.id).await? {
+            sections.push(section);
         }
-        if let Some(block) = self.playbook_index_block(&mcx.ctx.user.id, &vault).await? {
-            mcx.system_prompt.push_str("\n\n<available_playbooks>\n");
-            mcx.system_prompt.push_str(&block);
-            mcx.system_prompt.push_str("</available_playbooks>");
+        if let Some(section) = self.playbook_index_block(&user.id, &vault).await? {
+            sections.push(section);
         }
-        Ok(())
+        Ok(sections)
     }
 }
 
@@ -193,6 +218,7 @@ fn take_within_budget(lines: &[String], cap: usize) -> (String, usize) {
 /// marker so the agent knows the list is a hot subset (not the whole set) and falls back to
 /// `memory_search` rather than assuming an unlisted playbook doesn't exist. `None` if empty
 /// or nothing fits.
+#[cfg(test)]
 fn render_playbook_index(lines: &[String], cap: usize) -> Option<String> {
     let (mut body, dropped) = take_within_budget(lines, cap);
     if body.is_empty() {

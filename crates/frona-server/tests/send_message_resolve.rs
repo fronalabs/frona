@@ -17,6 +17,7 @@ async fn test_db() -> Surreal<Db> {
 fn test_chat(id: &str, user_id: &str, agent_id: &str, task_id: Option<&str>) -> Chat {
     let now = Utc::now();
     Chat {
+        agent_context_state: Default::default(),
         id: id.to_string(),
         user_id: user_id.to_string(),
         space_id: None,

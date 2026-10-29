@@ -36,6 +36,11 @@ impl ChatSummarizer for Summary {
 async fn fixture() -> (Surreal<Db>, TestCompactor, SurrealMessageRepo, Arc<Summary>) {
     let db = Surreal::new::<Mem>(()).await.unwrap();
     frona::db::init::setup_schema(&db).await.unwrap();
+    let mut chat = helpers::mock_context().chat.unwrap();
+    chat.id = "chat".into();
+    chat.user_id = "user".into();
+    chat.agent_id = "agent".into();
+    SurrealRepo::new(db.clone()).create(&chat).await.unwrap();
     let messages = SurrealRepo::new(db.clone());
     let summary = Arc::new(Summary::default());
     let compactor = ChatCompactor::new(
@@ -45,6 +50,7 @@ async fn fixture() -> (Surreal<Db>, TestCompactor, SurrealMessageRepo, Arc<Summa
         PromptLoader::new(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../resources/prompts"),
         ),
+        helpers::empty_agent_context_manager(&db),
     );
     let state = helpers::app_state::build(&db).await;
     let compactor = TestCompactor {
@@ -85,7 +91,7 @@ impl TestCompactor {
         };
         let tools: frona::db::repo::tool_calls::SurrealToolCallRepo =
             SurrealRepo::new(self.db.clone());
-        let model_history = builder
+        let mut model_history = builder
             .build(
                 &loaded.messages,
                 &tools.find_by_chat_id(chat).await?,
@@ -97,15 +103,19 @@ impl TestCompactor {
                 loaded.summary.as_deref(),
             )
             .await;
+        model_history.set_summary_context(loaded.agent_context.as_deref());
         let mut group = helpers::test_model_group();
         group.context_window = window;
         group.main.request_settings.max_tokens = Some(output as u64);
+        let mut ctx = helpers::mock_context();
+        ctx.user.id = user.into();
+        ctx.agent.id = agent.into();
+        ctx.agent.user_id = user.into();
         self.inner
             .compact_chat(
-                user,
                 chat,
-                agent,
                 CompactionContext {
+                    agent_context: ctx.agent_context_scope(),
                     system_prompt: system,
                     model_group: &group,
                     model_history: &model_history,
@@ -120,6 +130,11 @@ fn row(id: &str, seconds: i64, role: MessageRole, content: &str) -> Message {
     let mut msg = Message::builder("chat", role, content.into())
         .agent_id("agent".into())
         .build();
+    msg.agent_context_signature = Some(
+        frona::agent::context::AgentContextSnapshot::new(vec![])
+            .unwrap()
+            .signature,
+    );
     msg.id = id.into();
     msg.created_at = chrono::DateTime::from_timestamp(1_700_000_000 + seconds, 0).unwrap();
     msg
@@ -225,6 +240,12 @@ impl App {
         frona::db::init::setup_schema(&db).await.unwrap();
         let fixture = helpers::app_state::build(&db).await;
         let state = &fixture.state;
+        // These tests exercise compaction on initialized histories; legacy
+        // initialization has its own transactional tests in agent_context.rs.
+        frona::db::repo::agent_context_snapshots::SurrealAgentContextSnapshotRepo(db.clone())
+            .ensure_stored(&frona::agent::context::AgentContextSnapshot::new(vec![]).unwrap())
+            .await
+            .unwrap();
         let model = Arc::new(MockModelProvider::new(vec![]));
         let mut conversation = helpers::test_model_group();
         conversation.name = "conversation".into();
@@ -261,6 +282,12 @@ impl App {
             }
         }
         let registry = helpers::test_model_service(providers, groups).await;
+        let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(
+            state.prompts.clone(),
+            state.storage_service.clone(),
+            helpers::empty_memory_service(),
+            state.skill_service.clone(),
+        );
         let chat_service = ChatService::new(
             SurrealRepo::new(db.clone()),
             SurrealRepo::new(db.clone()),
@@ -273,6 +300,8 @@ impl App {
             state.broadcast_service.clone(),
             state.presign_service.clone(),
             state.usage_service.clone(),
+            helpers::empty_agent_context_manager(&state.db),
+            agent_prompt_builder,
         );
         let harness = Harness::new(
             chat_service.clone(),
@@ -280,7 +309,6 @@ impl App {
             state.storage_service.clone(),
             state.agent_service.clone(),
             helpers::test_memory_service(state, &db),
-            state.skill_service.clone(),
             state.task_service.clone(),
             state.mcp_service.clone(),
             state.tool_manager.clone(),
@@ -304,6 +332,20 @@ impl App {
         SurrealRepo::new(db.clone()).create(&user).await.unwrap();
         SurrealRepo::new(db.clone()).create(&agent).await.unwrap();
         SurrealRepo::new(db.clone()).create(&chat).await.unwrap();
+        chat_service
+            .agent_context_manager()
+            .prepare(
+                &frona::agent::context::AgentContextScope {
+                    user: &user,
+                    agent: &agent,
+                    space_id: chat.space_id.as_deref(),
+                    task: None,
+                },
+                None,
+                &mut Default::default(),
+            )
+            .await
+            .unwrap();
         Self {
             db,
             fixture,
@@ -921,10 +963,10 @@ async fn manual_and_automatic_failures_never_report_success_or_lose_requests() {
 async fn text_send_persists_attachments_and_sends_current_request_exactly_once() {
     let app = App::new().await;
     let retained = app.history(MessageRole::User, false).await;
-    // The text path has a smaller system prompt than Harness, so use enough
-    // history to cross its trigger while still fitting its own model window.
+    // Both paths now use the same standing prompt. Cross the trigger while
+    // still fitting the conversation model's own window.
     let mut old = app.messages().find_by_id("old-3").await.unwrap().unwrap();
-    old.content = "OLD-3 ".repeat(7800);
+    old.content = "OLD-3 ".repeat(6600);
     app.messages().update(&old).await.unwrap();
     let attachment = retained[0].attachments[0].clone();
     let content = "new request after compaction";
@@ -963,7 +1005,7 @@ async fn text_send_persists_attachments_and_sends_current_request_exactly_once()
     let request = all.iter().find(|m| m.content == content).unwrap();
     assert_eq!(request.attachments, vec![attachment]);
     let history = app.model.last_history();
-    assert_eq!(history.iter().filter(|m| matches!(m, RigMessage::User { content: items } if items.iter().any(|c| matches!(c, UserContent::Text(t) if t.text == content)))).count(), 1);
+    assert_eq!(history.iter().filter(|m| matches!(m, RigMessage::User { content: items } if items.iter().any(|c| matches!(c, UserContent::Text(t) if t.text == request.inference_content())))).count(), 1);
     assert_eq!(
         history
             .iter()
@@ -1428,9 +1470,41 @@ async fn context_prompt_command_keeps_automatic_compaction_and_session_mutations
     ));
     assert_eq!(app.summary_calls(), 1);
     let history = app.model.last_history();
-    for text in ["custom session context", "rendered command request"] {
+    let saved = app.messages().find_by_id("command").await.unwrap().unwrap();
+    assert!(
+        saved
+            .inference_content()
+            .ends_with("rendered command request")
+    );
+    for text in ["custom session context", saved.inference_content()] {
         assert_eq!(history.iter().filter(|m| matches!(m, RigMessage::User { content } if content.iter().any(|c| matches!(c, UserContent::Text(t) if t.text == text)))).count(), 1);
     }
+    let resumed = app
+        .harness
+        .run_loop(
+            &app.user.id,
+            "chat",
+            "command-response",
+            CancellationToken::new(),
+            app.builder(),
+            &[frona::tool::registry::ToolFilter::AllowList(&[])],
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        resumed.inference,
+        frona::inference::InferenceResponse::Completed { .. }
+    ));
+    assert_eq!(
+        app.messages()
+            .find_by_id("command")
+            .await
+            .unwrap()
+            .unwrap()
+            .processed_content,
+        saved.processed_content
+    );
 }
 
 #[tokio::test]
@@ -1527,7 +1601,9 @@ async fn switch_agent_command_compacts_and_keeps_the_target_agent_context() {
         vec![(Some(4096), Some(0.21)); 2]
     );
     app.assert_summary_usage("target", "target-model").await;
-    assert!(app.model.last_history().iter().any(|m| matches!(m, RigMessage::User { content } if content.iter().any(|c| matches!(c, UserContent::Text(t) if t.text == "selected request")))));
+    let saved = app.messages().find_by_id("command").await.unwrap().unwrap();
+    assert!(saved.inference_content().ends_with("selected request"));
+    assert!(app.model.last_history().iter().any(|m| matches!(m, RigMessage::User { content } if content.iter().any(|c| matches!(c, UserContent::Text(t) if t.text == saved.inference_content())))));
     assert_eq!(
         app.chat_service
             .get_chat(&app.user.id, "chat")
@@ -1636,10 +1712,16 @@ async fn switch_agent_preserves_task_and_heartbeat_builders() {
                 _ => None,
             })
             .collect();
+        let saved = app.messages().find_by_id("command").await.unwrap().unwrap();
+        assert!(
+            saved
+                .inference_content()
+                .ends_with("Selected command request")
+        );
         assert_eq!(
             user_texts
                 .iter()
-                .filter(|text| text.as_str() == "Selected command request")
+                .filter(|text| text.as_str() == saved.inference_content())
                 .count(),
             1
         );
@@ -2516,6 +2598,7 @@ async fn statistics_older_than_summary_use_estimated_trigger_and_split() {
     let now = chrono::Utc::now();
     app.summaries()
         .create(&frona::chat::models::ChatSummary {
+            agent_context_signature: None,
             id: "prior-summary".into(),
             user_id: app.user.id.clone(),
             chat_id: "chat".into(),
@@ -2813,4 +2896,109 @@ async fn fresh_request_and_injected_continuation_are_never_scaled_by_old_usage()
             before
         );
     }
+}
+
+#[tokio::test]
+async fn resumed_response_excludes_later_inputs_and_cannot_compact_their_prefix() {
+    for needs_compaction in [false, true] {
+        let app = App::with_window(if needs_compaction { 18_000 } else { 50_000 }).await;
+        app.history(MessageRole::User, false).await;
+        let later = row(
+            "future",
+            20,
+            MessageRole::User,
+            "FUTURE INPUT MUST NOT LEAK",
+        );
+        app.messages().create(&later).await.unwrap();
+        let state = &app.fixture.state;
+        let result = app
+            .harness
+            .run_loop(
+                &app.user.id,
+                "chat",
+                "placeholder",
+                CancellationToken::new(),
+                Box::new(DefaultConversationBuilder {
+                    user_service: state.user_service.clone(),
+                    storage_service: state.storage_service.clone(),
+                    agent_service: state.agent_service.clone(),
+                }),
+                &[],
+                None,
+            )
+            .await;
+        if needs_compaction {
+            assert!(matches!(result, Err(AppError::Conflict(_))));
+            assert_eq!(app.summary_calls(), 0);
+        } else {
+            assert!(result.is_ok());
+            assert_eq!(app.inference_calls(), 1);
+            assert!(
+                !serde_json::to_string(&app.model.last_history())
+                    .unwrap()
+                    .contains("FUTURE INPUT MUST NOT LEAK")
+            );
+        }
+        assert!(
+            app.summaries()
+                .find_by_chat_id("chat")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            app.messages().find_by_id(&later.id).await.unwrap(),
+            Some(later)
+        );
+    }
+}
+#[tokio::test]
+async fn compaction_keeps_input_received_during_summary() {
+    let app = App::new().await;
+    app.history(MessageRole::User, false).await;
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    app.model.enqueue(MockResponse::Barrier(
+        barrier.clone(),
+        Box::new(MockResponse::Text("summary".into())),
+    ));
+    let append = async {
+        while app.summary_calls() == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let message = app
+            .chat_service
+            .create_stream_user_message(
+                &app.user.id,
+                "chat",
+                "new input during summary",
+                vec![],
+                None,
+            )
+            .await
+            .unwrap();
+        barrier.wait().await;
+        message
+    };
+    let (result, input) = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        tokio::join!(app.session(), append)
+    })
+    .await
+    .expect("summary and input must finish independently");
+    result.unwrap();
+    let summary = app
+        .summaries()
+        .find_by_chat_id("chat")
+        .await
+        .unwrap()
+        .unwrap();
+    let input = app.messages().find_by_id(&input.id).await.unwrap().unwrap();
+    assert!(input.created_at > summary.updated_at);
+    let replay = app
+        .chat_service
+        .compactor()
+        .load_conversation("chat")
+        .await
+        .unwrap();
+    assert!(replay.messages.contains(&input));
+    assert!(replay.agent_context.is_some());
 }

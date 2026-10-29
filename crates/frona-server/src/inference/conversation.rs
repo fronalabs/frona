@@ -83,6 +83,17 @@ impl ModelConversationHistory {
         self.summary_end = 1;
     }
 
+    /// Include the frozen agent context in the leading summary message so both
+    /// remain directly after the system prompt, including during history trimming.
+    pub fn set_summary_context(&mut self, context: Option<&str>) {
+        if let Some(summary) = self.summary.as_deref().filter(|s| !s.trim().is_empty()) {
+            self.history[0] = match context.filter(|s| !s.is_empty()) {
+                Some(context) => summary_message(&format!("{summary}\n\n{context}")),
+                None => summary_message(summary),
+            };
+        }
+    }
+
     fn new(messages: &[Message], summary: Option<&str>) -> Self {
         let mut history = Vec::new();
         if let Some(summary) = summary.filter(|s| !s.trim().is_empty()) {
@@ -141,7 +152,10 @@ impl ConversationBuilder for DefaultConversationBuilder {
         let te_map = group_tool_calls_by_message(tool_calls);
         let mut model_history = ModelConversationHistory::new(messages, summary);
         let result = &mut model_history.history;
-        for msg in messages {
+        for stored in messages {
+            let mut projected = stored.clone();
+            projected.content = stored.inference_content().to_owned();
+            let msg = &projected;
             match msg.role {
                 MessageRole::User | MessageRole::Contact => {
                     // Providers reject empty content blocks. Skip + warn.
@@ -251,7 +265,10 @@ impl ConversationBuilder for TaskConversationBuilder {
         // Agent row. A summary already covers that row; retained Agent rows
         // must keep their normal assistant/tool representation on reload.
         let mut instruction_wrapped = summary.is_some();
-        for msg in messages {
+        for stored in messages {
+            let mut projected = stored.clone();
+            projected.content = stored.inference_content().to_owned();
+            let msg = &projected;
             match msg.role {
                 MessageRole::User | MessageRole::Contact => {
                     // Providers reject empty content blocks. Skip + warn.
@@ -413,7 +430,10 @@ impl ConversationBuilder for ChannelConversationBuilder {
         let te_map = group_tool_calls_by_message(tool_calls);
         let mut model_history = ModelConversationHistory::new(messages, summary);
         let result = &mut model_history.history;
-        for msg in messages {
+        for stored in messages {
+            let mut projected = stored.clone();
+            projected.content = stored.inference_content().to_owned();
+            let msg = &projected;
             match msg.role {
                 MessageRole::User | MessageRole::Contact => {
                     // Providers reject empty content blocks. Skip + warn.
@@ -596,6 +616,11 @@ fn convert_agent_with_tool_calls(
             result.push(RigMessage::User {
                 content: tool_results,
             });
+        }
+        for te in tes.iter() {
+            if let Some(instructions) = &te.system_prompt {
+                result.push(RigMessage::user(instructions));
+            }
         }
     }
 
@@ -810,6 +835,8 @@ mod tests {
 
     fn make_message(role: MessageRole, content: &str) -> Message {
         Message {
+            agent_context_signature: None,
+            processed_content: None,
             id: "m1".to_string(),
             chat_id: "c1".to_string(),
             role,

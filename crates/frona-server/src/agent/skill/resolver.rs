@@ -108,36 +108,42 @@ impl SkillResolver {
         agent_handle: &crate::core::Handle,
         agent_skills: Option<&[String]>,
     ) -> Vec<Skill> {
-        let mut seen = HashMap::new();
+        self.try_list(user_handle, agent_handle, agent_skills)
+            .unwrap_or_default()
+    }
 
+    pub fn try_list(
+        &self,
+        user_handle: &crate::core::Handle,
+        agent_handle: &crate::core::Handle,
+        agent_skills: Option<&[String]>,
+    ) -> Result<Vec<Skill>, crate::core::error::AppError> {
         let ws = self.storage.agent_workspace(user_handle, agent_handle);
-        for name in ws.read_dir("skills") {
-            if seen.contains_key(&name) {
-                continue;
-            }
-            let skill_path = format!("skills/{name}/SKILL.md");
-            if let Some(content) = ws.read(&skill_path) {
+        let mut seen = std::collections::BTreeMap::new();
+        for name in ws.try_read_dir("skills")? {
+            if let Some(content) = ws.try_read(&format!("skills/{name}/SKILL.md"))? {
                 let parsed = parse_frontmatter(&content);
-                let description = parsed
-                    .metadata
-                    .get("description")
-                    .cloned()
-                    .unwrap_or_default();
                 let (disable_model_invocation, argument_hint, arguments) =
                     extract_command_frontmatter(&parsed.metadata);
-
-                let dir_path = ws
-                    .resolve_path(&format!("skills/{name}"))
-                    .and_then(|p| std::fs::canonicalize(&p).ok())
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-
+                let path = ws.resolve_path(&format!("skills/{name}")).ok_or_else(|| {
+                    crate::core::error::AppError::Internal(format!("Missing skill path: {name}"))
+                })?;
+                let path = std::fs::canonicalize(path)
+                    .map_err(|e| {
+                        crate::core::error::AppError::Internal(format!("Resolve skill {name}: {e}"))
+                    })?
+                    .to_string_lossy()
+                    .into_owned();
                 seen.insert(
                     name.clone(),
                     Skill {
                         name,
-                        description,
-                        path: dir_path,
+                        description: parsed
+                            .metadata
+                            .get("description")
+                            .cloned()
+                            .unwrap_or_default(),
+                        path,
                         scope: SkillScope::Agent,
                         disable_model_invocation,
                         argument_hint,
@@ -146,78 +152,68 @@ impl SkillResolver {
                 );
             }
         }
-
-        let user_dir = self.storage.user_skills_path(user_handle);
-        for skill in self.scan_fs_skills(&user_dir, SkillScope::User) {
-            if let Some(allowed) = agent_skills
-                && !allowed.contains(&skill.name)
-            {
-                continue;
+        let dirs = [
+            (self.storage.user_skills_path(user_handle), SkillScope::User),
+            (self.installed_dir.clone(), SkillScope::Shared),
+            (self.config_dir.join("skills"), SkillScope::Builtin),
+        ];
+        for (dir, scope) in dirs {
+            for skill in self.try_scan_fs_skills(&dir, scope)? {
+                if scope != SkillScope::Agent
+                    && agent_skills.is_some_and(|allowed| !allowed.contains(&skill.name))
+                {
+                    continue;
+                }
+                seen.entry(skill.name.clone()).or_insert(skill);
             }
-            seen.entry(skill.name.clone()).or_insert(skill);
         }
-
-        for skill in self.scan_fs_skills(&self.installed_dir, SkillScope::Shared) {
-            if let Some(allowed) = agent_skills
-                && !allowed.contains(&skill.name)
-            {
-                continue;
-            }
-            seen.entry(skill.name.clone()).or_insert(skill);
-        }
-
-        for skill in self.scan_fs_skills(&self.config_dir.join("skills"), SkillScope::Builtin) {
-            if let Some(allowed) = agent_skills
-                && !allowed.contains(&skill.name)
-            {
-                continue;
-            }
-            seen.entry(skill.name.clone()).or_insert(skill);
-        }
-
-        seen.into_values().collect()
+        Ok(seen.into_values().collect())
     }
 
-    fn scan_fs_skills(&self, dir: &Path, scope: SkillScope) -> Vec<Skill> {
-        let mut results = Vec::new();
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return results;
+    fn try_scan_fs_skills(
+        &self,
+        dir: &Path,
+        scope: SkillScope,
+    ) -> Result<Vec<Skill>, crate::core::error::AppError> {
+        let error = |e: std::io::Error| {
+            crate::core::error::AppError::Internal(format!("Read skills {}: {e}", dir.display()))
         };
-
-        for entry in entries.flatten() {
-            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(error(e)),
+        };
+        let mut result = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(error)?;
+            if !entry.file_type().map_err(error)?.is_dir() {
                 continue;
             }
-
-            let skill_name = entry.file_name().to_string_lossy().to_string();
-            let skill_md = entry.path().join("SKILL.md");
-
-            if let Ok(content) = std::fs::read_to_string(&skill_md) {
-                let parsed = parse_frontmatter(&content);
-                let description = parsed
+            let content = match std::fs::read_to_string(entry.path().join("SKILL.md")) {
+                Ok(content) => content,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(error(e)),
+            };
+            let parsed = parse_frontmatter(&content);
+            let (disable_model_invocation, argument_hint, arguments) =
+                extract_command_frontmatter(&parsed.metadata);
+            result.push(Skill {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                description: parsed
                     .metadata
                     .get("description")
                     .cloned()
-                    .unwrap_or_default();
-                let (disable_model_invocation, argument_hint, arguments) =
-                    extract_command_frontmatter(&parsed.metadata);
-
-                let abs_dir = std::fs::canonicalize(entry.path())
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_else(|_| entry.path().to_string_lossy().into_owned());
-
-                results.push(Skill {
-                    scope,
-                    name: skill_name,
-                    description,
-                    path: abs_dir,
-                    disable_model_invocation,
-                    argument_hint,
-                    arguments,
-                });
-            }
+                    .unwrap_or_default(),
+                path: std::fs::canonicalize(entry.path())
+                    .map_err(error)?
+                    .to_string_lossy()
+                    .into_owned(),
+                scope,
+                disable_model_invocation,
+                argument_hint,
+                arguments,
+            });
         }
-
-        results
+        Ok(result)
     }
 }

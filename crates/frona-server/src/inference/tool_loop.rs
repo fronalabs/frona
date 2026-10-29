@@ -140,7 +140,8 @@ pub(crate) fn to_rig_tool_definitions(
     defs: &[ToolDefinition],
     exclude_mcp: bool,
 ) -> Vec<RigToolDefinition> {
-    defs.iter()
+    let mut definitions: Vec<_> = defs
+        .iter()
         .filter(|d| !exclude_mcp || !d.id.starts_with("mcp__"))
         .map(|d| {
             let description = if d.provider_id.is_empty() {
@@ -148,13 +149,17 @@ pub(crate) fn to_rig_tool_definitions(
             } else {
                 format!("{}\n\nTool group: {}", d.description, d.provider_id)
             };
+            let mut parameters = d.parameters.clone();
+            parameters.sort_all_objects();
             RigToolDefinition {
                 name: d.id.clone(),
                 description,
-                parameters: d.parameters.clone(),
+                parameters,
             }
         })
-        .collect()
+        .collect();
+    definitions.sort_by(|a, b| a.name.cmp(&b.name));
+    definitions
 }
 
 async fn check_cancellation(
@@ -299,6 +304,7 @@ async fn execute_tool_calls(
     };
 
     let mut turn_metadata_used = false;
+    let mut turn_results = Vec::new();
 
     for content in contents {
         if ctx.cancel_token.is_cancelled() {
@@ -470,18 +476,25 @@ async fn execute_tool_calls(
                     text,
                     &output,
                 );
-                chat_history.push(msg);
+                if let RigMessage::User { content } = msg {
+                    turn_results.extend(content);
+                }
             } else {
-                chat_history.push(RigMessage::User {
-                    content: vec![UserContent::ToolResult(ToolResult {
-                        call: tool_call.id.clone(),
-                        provider: tool_call.provider.clone(),
-                        name: tool_name.clone(),
-                        content: vec![ToolResultContent::text(&text)],
-                    })],
-                });
+                turn_results.push(UserContent::ToolResult(ToolResult {
+                    call: tool_call.id.clone(),
+                    provider: tool_call.provider.clone(),
+                    name: tool_name.clone(),
+                    content: vec![ToolResultContent::text(&text)],
+                }));
             }
         }
+    }
+    // Match persisted replay: one result message for this tool-call batch,
+    // followed by any saved tool instructions in execution order.
+    if !turn_results.is_empty() {
+        chat_history.push(RigMessage::User {
+            content: turn_results,
+        });
     }
 
     Ok(result)
@@ -505,7 +518,7 @@ pub async fn run_tool_loop(
     let rig_tools = to_rig_tool_definitions(tool_defs, tool_registry.mcp_bridge_mode());
 
     let mut all_attachments: Vec<crate::storage::Attachment> = Vec::new();
-    let mut current_system_prompt = system_prompt.to_string();
+    let current_system_prompt = system_prompt.to_string();
     let mut last_reasoning: Option<Reasoning> = None;
     let mut final_text = String::new();
 
@@ -647,8 +660,7 @@ pub async fn run_tool_loop(
         }
 
         for sp in exec_result.accumulated_system_prompts {
-            current_system_prompt.push_str("\n\n");
-            current_system_prompt.push_str(&sp);
+            chat_history.push(RigMessage::user(sp));
         }
 
         if turn == max_tool_turns - 1 {
@@ -701,6 +713,24 @@ mod tests {
                 .map(|tool| tool.name.as_str())
                 .collect::<Vec<_>>(),
             ["mcp__demo__echo", "read"]
+        );
+    }
+
+    #[test]
+    fn native_definitions_are_identical_after_catalog_and_nested_key_reordering() {
+        let a = ToolDefinition {
+            id: "z".into(), provider_id: String::new(), description: "test".into(),
+            parameters: serde_json::from_str(r#"{"type":"object","properties":{"b":{"type":"string","description":"B"},"a":{"type":"number"}}}"#).unwrap(),
+        };
+        let mut b = a.clone();
+        b.id = "a".into();
+        let first = to_rig_tool_definitions(&[a.clone(), b.clone()], false);
+        let mut reordered = a;
+        reordered.parameters = serde_json::from_str(r#"{"properties":{"a":{"type":"number"},"b":{"description":"B","type":"string"}},"type":"object"}"#).unwrap();
+        let second = to_rig_tool_definitions(&[b, reordered], false);
+        assert_eq!(
+            serde_json::to_string(&first).unwrap(),
+            serde_json::to_string(&second).unwrap()
         );
     }
 

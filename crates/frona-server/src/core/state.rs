@@ -583,6 +583,31 @@ impl AppState {
             config_arc.clone(),
         );
 
+        let agent_context_manager = crate::agent::context::AgentContextManager::new(
+            vec![
+                Arc::new(crate::agent::context::CatalogContextSource {
+                    agents: agent_service.clone(),
+                    skills: skill_service.clone(),
+                    mcp: mcp_service.clone(),
+                    policy: policy_service.clone(),
+                    prompts: prompt_loader.clone(),
+                    bridge_mode: config_arc.mcp.bridge_mode,
+                }),
+                Arc::new(crate::agent::context::TemporalContextSource {
+                    default_timezone: config.server.timezone.clone(),
+                }),
+                Arc::new(crate::agent::context::MemoryContextSource(
+                    memory_service.clone(),
+                )),
+            ],
+            crate::db::repo::agent_context_snapshots::SurrealAgentContextSnapshotRepo(db.clone()),
+        );
+        let agent_prompt_builder = crate::agent::prompt::AgentPromptBuilder::new(
+            prompt_loader.clone(),
+            storage.clone(),
+            memory_service.clone(),
+            skill_service.clone(),
+        );
         let chat_service = ChatService::new(
             chat_repo,
             message_repo,
@@ -595,6 +620,8 @@ impl AppState {
             broadcast_service.clone(),
             presign_service.clone(),
             usage_service.clone(),
+            agent_context_manager,
+            agent_prompt_builder,
         );
         let shutdown_token = CancellationToken::new();
         let active_sessions = ActiveSessions::default();
@@ -605,7 +632,6 @@ impl AppState {
             storage.clone(),
             agent_service.clone(),
             memory_service.clone(),
-            skill_service.clone(),
             TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
             mcp_service.clone(),
             tool_manager.clone(),

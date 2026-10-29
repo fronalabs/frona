@@ -55,6 +55,12 @@ async fn harness(
     let models =
         helpers::test_model_service((*group.providers).clone(), [("test".into(), group)].into())
             .await;
+    let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(
+        state.prompts.clone(),
+        state.storage_service.clone(),
+        helpers::empty_memory_service(),
+        state.skill_service.clone(),
+    );
     let chat_service = frona::chat::service::ChatService::new(
         SurrealRepo::new(state.db.clone()),
         SurrealRepo::new(state.db.clone()),
@@ -67,6 +73,8 @@ async fn harness(
         state.broadcast_service.clone(),
         state.presign_service.clone(),
         state.usage_service.clone(),
+        helpers::empty_agent_context_manager(&state.db),
+        agent_prompt_builder,
     );
     frona::agent::harness::Harness::new(
         chat_service,
@@ -74,7 +82,6 @@ async fn harness(
         state.storage_service.clone(),
         state.agent_service.clone(),
         helpers::test_memory_service(state, &state.db),
-        state.skill_service.clone(),
         state.task_service.clone(),
         state.mcp_service.clone(),
         state.tool_manager.clone(),
@@ -279,6 +286,15 @@ async fn reasoning_metadata_replays_through_native_anthropic_and_openai_requests
         let state = &fixture.state;
         let ctx = helpers::mock_context();
         let chat = ctx.chat.as_ref().unwrap();
+        SurrealRepo::new(db.clone())
+            .create(&ctx.user)
+            .await
+            .unwrap();
+        SurrealRepo::new(db.clone())
+            .create(&ctx.agent)
+            .await
+            .unwrap();
+        SurrealRepo::new(db.clone()).create(chat).await.unwrap();
         let response = state
             .chat_service
             .create_executing_agent_message(&chat.id, &ctx.agent.id)

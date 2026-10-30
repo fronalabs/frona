@@ -618,6 +618,7 @@ fn tool(message: &Message, result: &str, turn: u32) -> frona::inference::tool_ca
         chat_id: message.chat_id.clone(),
         message_id: message.id.clone(),
         turn,
+        provider_item_id: None,
         provider_call_id: format!("call-{}-{turn}", message.id),
         name: "read_file".into(),
         arguments: serde_json::json!({"path": "report.txt"}),

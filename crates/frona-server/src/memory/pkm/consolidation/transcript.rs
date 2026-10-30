@@ -51,6 +51,7 @@ mod tests {
             chat_id: "chat-1".into(),
             message_id: message_id.into(),
             turn,
+            provider_item_id: None,
             provider_call_id: format!("provider-{id}"),
             name: "web_search".into(),
             arguments: serde_json::json!({"query":"firmware"}),

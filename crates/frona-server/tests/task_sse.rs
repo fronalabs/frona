@@ -841,6 +841,7 @@ async fn paused_question(
         chat_id: chat_id.into(),
         message_id: message.id.clone(),
         turn: 0,
+        provider_item_id: None,
         provider_call_id: "question".into(),
         name: "ask_user_question".into(),
         arguments: serde_json::json!({"question": "Continue?"}),

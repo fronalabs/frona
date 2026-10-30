@@ -47,6 +47,10 @@ pub struct ToolCall {
     pub message_id: String,
     pub turn: u32,
     pub provider_call_id: String,
+    /// Separate output-item identity on dual-ID providers (OpenAI Responses).
+    #[serde(default)]
+    #[surreal(default)]
+    pub provider_item_id: Option<String>,
     /// Opaque provider metadata for replaying this call, separate from turn reasoning.
     /// Both defaults are required so older JSON and database records still load.
     #[serde(default)]

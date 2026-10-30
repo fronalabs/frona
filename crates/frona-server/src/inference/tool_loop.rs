@@ -352,7 +352,11 @@ async fn execute_tool_calls(
                 &active_chat(ctx)?.id,
                 message_id,
                 turn,
-                &tool_call.id,
+                tool_call.wire_call_id(),
+                tool_call
+                    .provider
+                    .as_ref()
+                    .and_then(|provider| provider.item_id.clone()),
                 tool_call.signature.clone(),
                 tool_name,
                 &arguments,

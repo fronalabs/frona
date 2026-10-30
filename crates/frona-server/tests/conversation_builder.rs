@@ -96,6 +96,7 @@ fn tool_call(chat_id: &str, message_id: &str, turn: u32, name: &str) -> ToolCall
         chat_id: chat_id.to_string(),
         message_id: message_id.to_string(),
         turn,
+        provider_item_id: None,
         provider_call_id: format!("call-{}", frona::core::repository::new_id()),
         name: name.to_string(),
         arguments: serde_json::json!({"query": "test"}),

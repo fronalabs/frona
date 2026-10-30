@@ -310,6 +310,7 @@ async fn reasoning_metadata_replays_through_native_anthropic_and_openai_requests
                 0,
                 "call_original",
                 None,
+                None,
                 "lookup",
                 &json!({}),
                 None,
@@ -404,6 +405,7 @@ async fn old_tool_calls_without_signature_load_from_json_and_database() {
             "message",
             0,
             "provider-call",
+            Some("fc_old".into()),
             Some("removed-to-match-an-old-row".into()),
             "lookup",
             &json!({}),
@@ -415,13 +417,11 @@ async fn old_tool_calls_without_signature_load_from_json_and_database() {
         .unwrap();
     let mut json = serde_json::to_value(&call).unwrap();
     json.as_object_mut().unwrap().remove("signature");
-    assert!(
-        serde_json::from_value::<ToolCall>(json)
-            .unwrap()
-            .signature
-            .is_none()
-    );
-    db.query("UPDATE type::record('tool_call', $id) UNSET signature")
+    json.as_object_mut().unwrap().remove("provider_item_id");
+    let legacy: ToolCall = serde_json::from_value(json).unwrap();
+    assert!(legacy.signature.is_none());
+    assert!(legacy.provider_item_id.is_none());
+    db.query("UPDATE type::record('tool_call', $id) UNSET signature, provider_item_id")
         .bind(("id", call.id.clone()))
         .await
         .unwrap()
@@ -430,6 +430,7 @@ async fn old_tool_calls_without_signature_load_from_json_and_database() {
     let repo: SurrealRepo<ToolCall> = SurrealRepo::new(db);
     let loaded = repo.find_by_id(&call.id).await.unwrap().unwrap();
     assert!(loaded.signature.is_none());
+    assert!(loaded.provider_item_id.is_none());
     assert_eq!(loaded.provider_call_id, "provider-call");
 }
 
@@ -447,4 +448,157 @@ fn separate_reasoning_items_currently_keep_only_the_first_item() {
     .unwrap();
     let retained: Reasoning = serde_json::from_value(stored.raw.unwrap()).unwrap();
     assert_eq!(retained, first);
+}
+
+async fn assert_tool_call_replay_matches_live_request(dual_id: bool) {
+    use rig_core::completion::message::{
+        ToolCall as NativeToolCall, ToolFunction, ToolResult, ToolResultContent, UserContent,
+    };
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(502))
+        .mount(&server)
+        .await;
+    let db = database().await;
+    let fixture = helpers::app_state::build(&db).await;
+    let state = &fixture.state;
+    let ctx = helpers::mock_context();
+    let chat = ctx.chat.as_ref().unwrap();
+    SurrealRepo::new(db.clone())
+        .create(&ctx.user)
+        .await
+        .unwrap();
+    SurrealRepo::new(db.clone())
+        .create(&ctx.agent)
+        .await
+        .unwrap();
+    SurrealRepo::new(db.clone()).create(chat).await.unwrap();
+    let message = state
+        .chat_service
+        .create_executing_agent_message(&chat.id, &ctx.agent.id)
+        .await
+        .unwrap();
+    // Nested objects and objects inside arrays must retain the same serialization
+    // after SurrealDB reorders their keys. Array element order must not change.
+    let arguments: Value = serde_json::from_str(if dual_id {
+        r#"{"memory":"Test memory","overrides":false}"#
+    } else {
+        r#"{"overrides":false,"memory":"Test memory","nested":{"z":1,"a":2},"items":[{"z":3,"a":4},2,1]}"#
+    }).unwrap();
+    let function = ToolFunction::new("lookup".into(), arguments.clone());
+    let call = if dual_id {
+        NativeToolCall::from_dual_wire("fc_original", "call_original", function)
+    } else {
+        NativeToolCall::from_wire("call_original", function)
+    };
+    state
+        .chat_service
+        .begin_tool_call(
+            "prefix-call",
+            &chat.id,
+            &message.id,
+            0,
+            call.wire_call_id(),
+            call.provider
+                .as_ref()
+                .and_then(|provider| provider.item_id.clone()),
+            call.signature.clone(),
+            &call.function.name,
+            &arguments,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    state
+        .chat_service
+        .finish_tool_call("prefix-call", "Result".into(), true, 1, None)
+        .await
+        .unwrap();
+    let calls = state
+        .chat_service
+        .get_tool_calls_by_message(&message.id)
+        .await
+        .unwrap();
+    let message = state
+        .chat_service
+        .find_message(&message.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let group = model_group(state, "openai", &server.uri());
+    let builder = DefaultConversationBuilder {
+        user_service: state.user_service.clone(),
+        storage_service: state.storage_service.clone(),
+        agent_service: state.agent_service.clone(),
+    };
+    let replay = builder
+        .build(
+            &[message],
+            &calls,
+            &ConversationContext {
+                user_id: ctx.user.id,
+                agent_id: ctx.agent.id,
+                model_config: group.main.clone(),
+            },
+            None,
+        )
+        .await
+        .history;
+    let live = vec![
+        RigMessage::Assistant {
+            id: None,
+            content: vec![AssistantContent::ToolCall(call.clone())],
+        },
+        RigMessage::User {
+            content: vec![UserContent::ToolResult(ToolResult {
+                call: call.id,
+                provider: call.provider,
+                name: call.function.name,
+                content: vec![ToolResultContent::text("Result")],
+            })],
+        },
+    ];
+    for history in [live, replay] {
+        let mut input = vec![RigMessage::user("Look up the value.")];
+        input.extend(history);
+        assert!(
+            group.providers["fixture"]
+                .inference(&group.main, "system", input, vec![], Some(4096), None,)
+                .await
+                .is_err()
+        );
+    }
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    let live: Value = requests[0].body_json().unwrap();
+    let replay: Value = requests[1].body_json().unwrap();
+    assert_eq!(
+        live, replay,
+        "persisted tool history must produce the same provider request"
+    );
+    assert_eq!(requests[0].body, requests[1].body);
+    let function_call = live["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "function_call")
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(function_call["arguments"].as_str().unwrap()).unwrap(),
+        arguments,
+        "normalization must preserve values and array order"
+    );
+}
+
+#[tokio::test]
+async fn responses_tool_item_id_survives_database_replay() {
+    assert_tool_call_replay_matches_live_request(true).await;
+}
+
+#[tokio::test]
+async fn tool_argument_serialization_survives_database_replay() {
+    assert_tool_call_replay_matches_live_request(false).await;
 }

@@ -166,11 +166,24 @@ impl<'a> CompletionRequestBuilder<'a> {
     }
 
     fn build(self) -> CompletionRequest {
-        let chat_history = if self.chat_history.is_empty() {
+        let mut chat_history = if self.chat_history.is_empty() {
             vec![RigMessage::user("")]
         } else {
             self.chat_history
         };
+
+        // SurrealDB reorders object keys. Normalize both live and replayed
+        // arguments before provider adapters turn them into JSON strings, so
+        // rebuilding history does not change an already-sent prompt prefix.
+        for message in &mut chat_history {
+            if let RigMessage::Assistant { content, .. } = message {
+                for item in content {
+                    if let AssistantContent::ToolCall(call) = item {
+                        call.function.arguments.sort_all_objects();
+                    }
+                }
+            }
+        }
 
         CompletionRequest {
             model: None,

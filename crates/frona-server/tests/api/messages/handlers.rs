@@ -290,6 +290,7 @@ async fn batched_resolve_resumes_agent_loop() {
             chat_id: chat_id.clone(),
             message_id: agent_msg_id.clone(),
             turn: i,
+            provider_item_id: None,
             provider_call_id: format!("call-{i}"),
             name: "ask_user_question".into(),
             arguments: serde_json::json!({"question": format!("Q{i}")}),

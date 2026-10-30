@@ -268,6 +268,7 @@ fn stored_call(id: &str, chat_id: &str, turn: u32) -> ToolCall {
         chat_id: chat_id.into(),
         message_id: format!("message-{id}"),
         turn,
+        provider_item_id: None,
         provider_call_id: format!("provider-{id}"),
         name: "web_fetch".into(),
         arguments: serde_json::json!({"url":format!("https://example.test/{id}")}),

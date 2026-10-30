@@ -583,7 +583,8 @@ fn convert_agent_with_tool_calls(
         }
         for te in tes {
             assistant_items.push(AssistantContent::ToolCall(
-                rig_core::completion::message::ToolCall::from_wire(
+                rig_core::completion::message::ToolCall::from_dual_wire(
+                    te.provider_item_id.as_deref().unwrap_or_default(),
                     &te.provider_call_id,
                     rig_core::completion::message::ToolFunction {
                         name: te.name.clone(),

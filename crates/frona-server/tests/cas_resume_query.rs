@@ -53,6 +53,7 @@ fn make_tool_call(id: &str, msg_id: &str, hitl_status: Option<ToolStatus>) -> To
         chat_id: "chat-1".into(),
         message_id: msg_id.to_string(),
         turn: 0,
+        provider_item_id: None,
         provider_call_id: format!("pc-{id}"),
         name: "ask_user_question".into(),
         arguments: serde_json::json!({"question": "?"}),

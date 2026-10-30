@@ -1106,6 +1106,7 @@ mod tests {
             chat_id: "chat-1".into(),
             message_id: "agent-1".into(),
             turn: 1,
+            provider_item_id: None,
             provider_call_id: "provider-1".into(),
             name: name.into(),
             arguments,

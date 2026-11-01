@@ -565,7 +565,7 @@ async fn read_directory_listing_bounds_are_deterministic() {
 }
 
 #[tokio::test]
-async fn read_unreadable_and_forbidden_directories_do_not_leak_entries() {
+async fn read_respects_filesystem_permissions_and_sandbox_denials() {
     use std::os::unix::fs::PermissionsExt;
 
     let (fixture, ctx) = fixture().await;
@@ -589,25 +589,46 @@ async fn read_unreadable_and_forbidden_directories_do_not_leak_entries() {
     tokio::fs::write(workspace.join("unreadable.txt"), "secret")
         .await
         .unwrap();
-    for path in ["unreadable", "unreadable.txt"] {
-        tokio::fs::set_permissions(workspace.join(path), std::fs::Permissions::from_mode(0))
+    for (path, is_directory) in [("unreadable", true), ("unreadable.txt", false)] {
+        let resolved = workspace.join(path);
+        let permissions = tokio::fs::metadata(&resolved).await.unwrap().permissions();
+        tokio::fs::set_permissions(&resolved, std::fs::Permissions::from_mode(0))
             .await
             .unwrap();
+        // Capabilities and filesystem semantics, not the user's identity, determine
+        // whether mode 000 denies access. Probe independently of the tool result.
+        let access = if is_directory {
+            tokio::fs::read_dir(&resolved).await.map(|_| ())
+        } else {
+            tokio::fs::read(&resolved).await.map(|_| ())
+        };
         let result = reader.execute("read", json!({"path": path}), &ctx).await;
         // Restore permissions before assertions so failed tests remain cleanable.
-        tokio::fs::set_permissions(workspace.join(path), std::fs::Permissions::from_mode(0o700))
+        tokio::fs::set_permissions(&resolved, permissions)
             .await
             .unwrap();
         let output = result.unwrap();
-        assert!(
-            !output.is_success(),
-            "permission fixture requires an unprivileged test user"
-        );
-        assert!(output.text_content().contains("Permission denied"));
-        assert!(!output.text_content().contains("empty"));
-        assert!(!output.text_content().contains("hidden-name.txt"));
-        if path == "unreadable" {
-            assert!(output.text_content().contains("could not list entries"));
+        match access {
+            Err(error) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                assert!(!output.is_success());
+                assert!(output.text_content().contains(&error.to_string()));
+                assert!(!output.text_content().contains("empty"));
+                assert!(!output.text_content().contains("hidden-name.txt"));
+                assert!(!output.text_content().contains("secret"));
+                if is_directory {
+                    assert!(output.text_content().contains("could not list entries"));
+                }
+            }
+            Ok(()) if is_directory => {
+                assert!(!output.is_success());
+                assert!(output.text_content().contains("Choose a file to read"));
+                assert!(output.text_content().contains("hidden-name.txt"));
+            }
+            Ok(()) => {
+                assert!(output.is_success());
+                assert_eq!(output.text_content(), "secret");
+            }
         }
     }
     state

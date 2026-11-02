@@ -14,7 +14,7 @@ unzip=6.0-28+deb12u1
 xz-utils=5.4.1-1+deb12u2
 zip=3.0-13+deb12u1
 
-imagemagick-6.q16=8:6.9.11.60+dfsg-1.6+deb12u14
+imagemagick-6.q16=8:6.9.11.60+dfsg-1.6+deb12u15
 libjpeg62-turbo=1:2.1.5-2
 libopenjp2-7=2.5.0-2+deb12u3
 librsvg2-bin=2.54.7+dfsg-1~deb12u1

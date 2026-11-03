@@ -38,7 +38,7 @@ AI agents are powerful. They can execute code, browse websites, and access your 
 - **Signals:** an agent can pause a conversation and wait for a matching inbound (a 2FA code, a reply, a class of message) and resume automatically when something arrives, or run continuous monitors with structured results
 - **MCP with bridge mode:** install [Model Context Protocol](https://modelcontextprotocol.io) servers from the public registry in a click. Bridge mode advertises a single `mcpctl` CLI to the LLM instead of every MCP tool individually, saving thousands of tokens per turn on agents with many servers connected
 - **Browser automation:** headless Chrome via Browserless for navigating websites, filling forms, and extracting data. Persistent browser profiles keep sessions across conversations
-- **Web search:** built-in search via SearXNG, Tavily, or Brave Search
+- **Web search:** built-in search via SearXNG, Tavily, Brave Search, or Keenable
 - **Code execution:** sandboxed shell, Python, and Node.js with per-principal filesystem, network, and resource restrictions
 - **App deployment:** agents build and deploy web applications and services on your behalf, with an approval workflow before anything goes live
 - **Skills:** instruction packages that teach agents new capabilities. Install shared skills or create agent-specific ones
@@ -136,7 +136,7 @@ Frona auto-discovers providers from your configuration and routes different task
 
 **LLM:** Anthropic, OpenAI, Google Gemini, DeepSeek, Mistral, Cohere, xAI (Grok), Groq, OpenRouter, Together, Perplexity, Hyperbolic, Moonshot, Hugging Face, Mira, Galadriel, Ollama (local).
 
-**Search:** SearXNG (self-hosted), Tavily, Brave Search.
+**Search:** SearXNG (self-hosted), Tavily, Brave Search, Keenable.
 
 **Voice:** Twilio.
 

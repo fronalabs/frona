@@ -13,6 +13,7 @@ const searchProviders = [
   { value: "searxng", label: "SearXNG" },
   { value: "tavily", label: "Tavily" },
   { value: "brave", label: "Brave" },
+  { value: "keenable", label: "Keenable" },
 ];
 
 function inferProvider(search: SearchConfig): string | null {

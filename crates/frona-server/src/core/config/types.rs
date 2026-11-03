@@ -363,7 +363,7 @@ impl BrowserConfig {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(default)]
 pub struct SearchConfig {
-    #[schemars(description = "Search provider (searxng, tavily, or brave).")]
+    #[schemars(description = "Search provider (searxng, tavily, brave, or keenable).")]
     pub provider: Option<String>,
     #[schemars(description = "Base URL for SearXNG instance.")]
     pub searxng_base_url: Option<String>,

@@ -47,7 +47,7 @@
 #   connection_timeout_ms: 30000
 
 # search:
-#   provider: searxng                        # or: tavily, brave
+#   provider: searxng                        # or: tavily, brave, keenable
 #   searxng_base_url: http://searxng:8080    # set automatically via docker-compose
 
 # storage:

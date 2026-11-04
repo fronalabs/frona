@@ -90,6 +90,103 @@ impl SearchProvider for TavilyProvider {
     }
 }
 
+pub const KEENABLE_APP_TITLE: &str = "Frona";
+
+/// Keenable web search. Without an API key it uses Keenable's key-free public endpoint.
+pub struct KeenableProvider {
+    client: reqwest::Client,
+    api_key: Option<String>,
+}
+
+impl KeenableProvider {
+    pub fn new(client: reqwest::Client, api_key: Option<String>) -> Self {
+        let api_key = api_key.filter(|k| !k.trim().is_empty());
+        Self { client, api_key }
+    }
+
+    fn request(&self, query: &str, max_results: usize) -> reqwest::RequestBuilder {
+        let body = serde_json::json!({
+            "query": query,
+            "max_results": max_results,
+        });
+        let req = match &self.api_key {
+            Some(key) => self
+                .client
+                .post("https://api.keenable.ai/v1/search")
+                .header("X-API-Key", key),
+            None => self
+                .client
+                .post("https://api.keenable.ai/v1/search/public")
+                .header("X-Keenable-Title", KEENABLE_APP_TITLE),
+        };
+        req.json(&body)
+    }
+}
+
+#[derive(Deserialize)]
+struct KeenableResponse {
+    #[serde(default)]
+    results: Vec<KeenableResult>,
+}
+
+#[derive(Deserialize)]
+struct KeenableResult {
+    #[serde(default)]
+    title: String,
+    url: String,
+    #[serde(default)]
+    snippet: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+impl From<KeenableResult> for SearchResult {
+    fn from(r: KeenableResult) -> Self {
+        let snippet = [r.snippet, r.description]
+            .into_iter()
+            .flatten()
+            .find(|s| !s.trim().is_empty())
+            .unwrap_or_default();
+        SearchResult {
+            title: r.title,
+            url: r.url,
+            snippet,
+        }
+    }
+}
+
+#[async_trait]
+impl SearchProvider for KeenableProvider {
+    async fn search(&self, query: &str, max_results: usize) -> Result<Vec<SearchResult>, AppError> {
+        let resp = self
+            .request(query, max_results)
+            .send()
+            .await
+            .map_err(|e| AppError::Tool(format!("Keenable request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::Http {
+                status: status.as_u16(),
+                message: text,
+            });
+        }
+
+        let data: KeenableResponse = resp
+            .json()
+            .await
+            .map_err(|e| AppError::Tool(format!("Keenable parse error: {e}")))?;
+
+        Ok(data
+            .results
+            .into_iter()
+            .take(max_results)
+            .map(SearchResult::from)
+            .collect())
+    }
+}
+
 pub struct BraveProvider {
     client: reqwest::Client,
     api_key: String,
@@ -265,8 +362,9 @@ impl WebSearchTool {
                 "No search provider configured. Set one of the following environment variables:\n\
                  - TAVILY_API_KEY (for Tavily search)\n\
                  - BRAVE_API_KEY (for Brave search)\n\
+                 - KEENABLE_API_KEY (for Keenable search; or set FRONA_SEARCH_PROVIDER=keenable to use it key-free)\n\
                  - FRONA_SEARCH_SEARXNG_BASE_URL (for SearXNG, e.g. http://localhost:3400)\n\
-                 You can also set FRONA_SEARCH_PROVIDER explicitly to: tavily, brave, or searxng"
+                 You can also set FRONA_SEARCH_PROVIDER explicitly to: tavily, brave, keenable, or searxng"
                     .into(),
             )
         })?;
@@ -313,6 +411,10 @@ pub fn create_search_provider(
                 let api_key = env::var("BRAVE_API_KEY").ok()?;
                 Some(Arc::new(BraveProvider::new(http, api_key)))
             }
+            "keenable" => {
+                let api_key = env::var("KEENABLE_API_KEY").ok();
+                Some(Arc::new(KeenableProvider::new(http, api_key)))
+            }
             "searxng" => {
                 let base_url = settings.searxng_base_url.clone()?;
                 Some(Arc::new(SearxngProvider::new(http, base_url)))
@@ -329,6 +431,9 @@ pub fn create_search_provider(
     }
     if let Ok(api_key) = env::var("BRAVE_API_KEY") {
         return Some(Arc::new(BraveProvider::new(http, api_key)));
+    }
+    if let Ok(api_key) = env::var("KEENABLE_API_KEY") {
+        return Some(Arc::new(KeenableProvider::new(http, Some(api_key))));
     }
     if let Some(base_url) = settings.searxng_base_url.clone() {
         return Some(Arc::new(SearxngProvider::new(http, base_url)));
@@ -519,6 +624,44 @@ mod tests {
             searxng_base_url: Some("http://localhost:3400".into()),
         };
         assert!(create_search_provider(crate::build_http_client(), &settings).is_some());
+    }
+
+    #[test]
+    fn create_search_provider_keenable_works_without_a_key() {
+        let settings = crate::core::config::SearchConfig {
+            provider: Some("keenable".into()),
+            searxng_base_url: None,
+        };
+        assert!(create_search_provider(crate::build_http_client(), &settings).is_some());
+    }
+
+    #[test]
+    fn keenable_request_uses_public_endpoint_without_key() {
+        let provider = KeenableProvider::new(reqwest::Client::new(), Some("  ".into()));
+        let req = provider.request("rust", 3).build().unwrap();
+        assert_eq!(
+            req.url().as_str(),
+            "https://api.keenable.ai/v1/search/public"
+        );
+        assert_eq!(req.headers()["X-Keenable-Title"], KEENABLE_APP_TITLE);
+        assert!(req.headers().get("X-API-Key").is_none());
+    }
+
+    #[test]
+    fn keenable_request_uses_keyed_endpoint_with_key() {
+        let provider = KeenableProvider::new(reqwest::Client::new(), Some("k".into()));
+        let req = provider.request("rust", 3).build().unwrap();
+        assert_eq!(req.url().as_str(), "https://api.keenable.ai/v1/search");
+        assert_eq!(req.headers()["X-API-Key"], "k");
+    }
+
+    #[test]
+    fn keenable_result_falls_back_to_description() {
+        let r: KeenableResult = serde_json::from_value(serde_json::json!({
+            "title": "T", "url": "https://a", "snippet": "", "description": "D"
+        }))
+        .unwrap();
+        assert_eq!(SearchResult::from(r).snippet, "D");
     }
 
     #[test]

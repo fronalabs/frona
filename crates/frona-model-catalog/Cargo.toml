@@ -1,4 +1,8 @@
 [package]
+description = "Provider-independent model catalog, validation, and cached snapshots"
+license-file = "LICENSE"
+readme = "README.md"
+repository = "https://git.mcx.ai/mina/frona"
 name = "frona-model-catalog"
 edition.workspace = true
 version.workspace = true

@@ -1,4 +1,8 @@
 [package]
+description = "Derive macros for Frona entities, tools, and inference parameter metadata"
+license-file = "LICENSE"
+readme = false
+repository = "https://git.mcx.ai/mina/frona"
 name = "frona-derive"
 edition.workspace = true
 version.workspace = true

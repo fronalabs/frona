@@ -1,4 +1,8 @@
 [package]
+description = "Unicode-aware text matching and workspace search primitives"
+license-file = "LICENSE"
+readme = false
+repository = "https://git.mcx.ai/mina/frona"
 name = "frona-text"
 edition.workspace = true
 version.workspace = true

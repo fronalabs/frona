@@ -1,3 +1,4 @@
+use frona::inference::streaming::ModelGroupStreaming;
 mod helpers;
 
 use std::sync::Arc;
@@ -49,13 +50,13 @@ async fn send(
 ) -> Result<(), InferenceError> {
     let usage = test_metrics_ctx();
     let context = test_usage_ctx();
+    let observer = usage.scoped(&context);
     let request = ModelRequest {
         input_token_estimate: None,
         system_prompt: SYSTEM,
         history: history.to_vec(),
         tools: vec![],
-        usage_service: &usage,
-        usage_context: &context,
+        observations: frona::inference::observation::Observations::new(&observer),
         overrides: Default::default(),
     };
     if structured {
@@ -394,8 +395,9 @@ async fn streaming_rejects_oversized_input_without_sending_a_truncated_request()
                 system_prompt: SYSTEM,
                 history,
                 tools: vec![],
-                usage_service: &test_metrics_ctx(),
-                usage_context: &test_usage_ctx(),
+                observations: frona::inference::observation::Observations::new(
+                    &test_metrics_ctx().scoped(&test_usage_ctx()),
+                ),
                 overrides: Default::default(),
             },
             &events,
@@ -462,7 +464,7 @@ async fn streaming_tool_result_retries_and_fallback_preserve_the_complete_active
     let mut group = group(primary.clone(), 20_000);
     Arc::make_mut(&mut group.providers).insert("backup".into(), fallback.clone());
     let mut candidate = group.main.clone();
-    candidate.provider_handle = frona::core::Handle::try_new("backup").unwrap();
+    candidate.provider_handle = frona::core::Handle::try_new("backup").unwrap().into();
     candidate.model_id = "backup-model".into();
     candidate.request_settings.max_tokens = Some(100);
     group.fallbacks.push(candidate);
@@ -532,7 +534,7 @@ async fn streaming_smaller_fallback_limits_fail_explicitly_without_losing_histor
         let mut group = group(primary.clone(), cost(&history));
         Arc::make_mut(&mut group.providers).insert("backup".into(), fallback.clone());
         let mut candidate = group.main.clone();
-        candidate.provider_handle = frona::core::Handle::try_new("backup").unwrap();
+        candidate.provider_handle = frona::core::Handle::try_new("backup").unwrap().into();
         candidate.model_id = "small-context-model".into();
         if local_limit {
             candidate.request_settings.max_tokens = Some((OUTPUT + 1) as u64);
@@ -546,8 +548,9 @@ async fn streaming_smaller_fallback_limits_fail_explicitly_without_losing_histor
                     system_prompt: SYSTEM,
                     history: history.clone(),
                     tools: vec![],
-                    usage_service: &test_metrics_ctx(),
-                    usage_context: &test_usage_ctx(),
+                    observations: frona::inference::observation::Observations::new(
+                        &test_metrics_ctx().scoped(&test_usage_ctx()),
+                    ),
                     overrides: Default::default(),
                 },
                 &events,
@@ -596,8 +599,9 @@ async fn streaming_in_flight_cancellation_keeps_the_original_request() {
                 system_prompt: SYSTEM,
                 history: history.clone(),
                 tools: vec![],
-                usage_service: &test_metrics_ctx(),
-                usage_context: &test_usage_ctx(),
+                observations: frona::inference::observation::Observations::new(
+                    &test_metrics_ctx().scoped(&test_usage_ctx()),
+                ),
                 overrides: Default::default(),
             },
             &events,
@@ -609,7 +613,7 @@ async fn streaming_in_flight_cancellation_keeps_the_original_request() {
     canceller.await.unwrap();
     assert!(matches!(
         result,
-        frona::inference::retry::StreamResult::Cancelled
+        frona::inference::streaming::StreamResult::Cancelled
     ));
     assert_eq!(provider.histories(), vec![history]);
 }

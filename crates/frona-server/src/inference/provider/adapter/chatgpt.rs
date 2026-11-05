@@ -584,8 +584,9 @@ mod tests {
                 system_prompt: "system",
                 history: vec![Message::user("hello")],
                 tools: vec![],
-                usage_service: &usage,
-                usage_context: &context,
+                observations: frona::inference::observation::Observations::new(
+                    &usage.scoped(&context),
+                ),
                 overrides: Default::default(),
             })
             .await

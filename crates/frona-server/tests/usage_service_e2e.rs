@@ -86,7 +86,7 @@ fn fast_retry_model_group(fallbacks: Vec<ModelConfig>) -> ModelGroup {
         main: ModelConfig {
             request_settings: Default::default(),
             catalog_provider: String::new(),
-            provider_handle: frona::core::Handle::const_validated("mock"),
+            provider_handle: frona::core::Handle::const_validated("mock").into(),
             provider: "mock".into(),
             model_id: "test-model".into(),
         },
@@ -311,7 +311,7 @@ async fn main_fails_fallback_succeeds_records_fallback_index_and_model_ref() {
     let group = fast_retry_model_group(vec![ModelConfig {
         request_settings: Default::default(),
         catalog_provider: String::new(),
-        provider_handle: frona::core::Handle::const_validated("fallback"),
+        provider_handle: frona::core::Handle::const_validated("fallback").into(),
         provider: "fallback".into(),
         model_id: "fallback-model".into(),
     }]);
@@ -365,14 +365,14 @@ async fn second_fallback_records_fallback_index_two() {
         ModelConfig {
             request_settings: Default::default(),
             catalog_provider: String::new(),
-            provider_handle: frona::core::Handle::const_validated("fb1"),
+            provider_handle: frona::core::Handle::const_validated("fb1").into(),
             provider: "fb1".into(),
             model_id: "fallback-1".into(),
         },
         ModelConfig {
             request_settings: Default::default(),
             catalog_provider: String::new(),
-            provider_handle: frona::core::Handle::const_validated("fb2"),
+            provider_handle: frona::core::Handle::const_validated("fb2").into(),
             provider: "fb2".into(),
             model_id: "fallback-2".into(),
         },
@@ -542,7 +542,7 @@ async fn aggregate_by_model_groups_by_model_ref() {
     let group = fast_retry_model_group(vec![ModelConfig {
         request_settings: Default::default(),
         catalog_provider: String::new(),
-        provider_handle: frona::core::Handle::const_validated("fallback"),
+        provider_handle: frona::core::Handle::const_validated("fallback").into(),
         provider: "fallback".into(),
         model_id: "fallback-model".into(),
     }]);
@@ -977,7 +977,7 @@ async fn normalized_prompt_usage_agrees_across_storage_rollups_sse_and_metrics()
         ),
     ] {
         let model = ModelConfig {
-            provider_handle: Handle::try_new(handle).unwrap(),
+            provider_handle: Handle::try_new(handle).unwrap().into(),
             provider: ProviderModel::from_name(provider),
             catalog_provider: "catalog".into(),
             model_id: "fixture".into(),
@@ -1123,7 +1123,9 @@ async fn usage_migration_recovers_supported_totals_without_repricing_or_guessing
     let (db, svc) = fresh_service().await;
     let mut model = fast_retry_model_group(vec![]).main;
     // The connection name cannot identify the historical wire protocol.
-    model.provider_handle = frona::core::Handle::try_new("company-account").unwrap();
+    model.provider_handle = frona::core::Handle::try_new("company-account")
+        .unwrap()
+        .into();
     for fixture in &fixtures {
         svc.record(
             &chat_usage_ctx("u", "a", fixture.message, fixture.message),

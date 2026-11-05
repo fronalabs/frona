@@ -1,3 +1,4 @@
+use crate::inference::streaming::ModelGroupStreaming;
 use std::time::Instant;
 
 use base64::Engine;
@@ -18,7 +19,7 @@ use crate::tool::registry::AgentToolRegistry;
 use crate::tool::{InferenceContext, ToolDefinition, active_chat};
 
 use crate::inference::ModelGroup;
-use crate::inference::retry::StreamResult;
+use crate::inference::streaming::StreamResult;
 
 pub struct InferenceEvent {
     pub kind: InferenceEventKind,
@@ -570,8 +571,9 @@ pub async fn run_tool_loop(
                     system_prompt: &current_system_prompt,
                     history: chat_history.to_vec(),
                     tools: rig_tools.to_vec(),
-                    usage_service,
-                    usage_context: &turn_usage_ctx,
+                    observations: crate::inference::observation::Observations::new(
+                        &usage_service.scoped(&turn_usage_ctx),
+                    ),
                     overrides: Default::default(),
                 },
                 &event_tx,

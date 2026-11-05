@@ -140,7 +140,7 @@ async fn inference_and_granted_commands_share_a_provider_without_implicit_secret
     };
     let model = ModelConfig {
         catalog_provider: String::new(),
-        provider_handle: handle.clone(),
+        provider_handle: handle.clone().into(),
         model_id: "fixture".into(),
         provider: frona::core::config::ProviderModel::OpenAI {
             api: Some(frona::core::config::OpenAiApi::ChatCompletions),
@@ -194,8 +194,9 @@ async fn inference_and_granted_commands_share_a_provider_without_implicit_secret
                 system_prompt: "fixture",
                 history: vec![],
                 tools: vec![],
-                usage_service: &state.usage_service,
-                usage_context: &usage_context,
+                observations: frona::inference::observation::Observations::new(
+                    &state.usage_service.scoped(&usage_context)
+                ),
                 overrides: Default::default(),
             })
             .await
@@ -230,8 +231,9 @@ async fn inference_and_granted_commands_share_a_provider_without_implicit_secret
                 system_prompt: "fixture",
                 history: vec![],
                 tools: vec![],
-                usage_service: &state.usage_service,
-                usage_context: &usage_context,
+                observations: frona::inference::observation::Observations::new(
+                    &state.usage_service.scoped(&usage_context),
+                ),
                 overrides: frona::inference::RequestOverrides {
                     max_tokens: Some(16),
                     temperature: None,

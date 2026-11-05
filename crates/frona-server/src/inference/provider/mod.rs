@@ -21,11 +21,11 @@ use rig_core::completion::{
 use rig_core::model::ModelList;
 use tokio::sync::mpsc;
 
-use crate::chat::broadcast::BroadcastService;
-use crate::core::Handle;
 use crate::core::config::{OpenAiApi, ProviderModel};
 use crate::core::metrics;
 use crate::inference::error::InferenceError;
+use crate::inference::handle::Handle;
+use crate::inference::observation::ActivityObserver;
 
 pub enum StreamToken {
     Text(String),
@@ -246,23 +246,25 @@ impl ModelConfig {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct InferenceCounter {
     count: Arc<AtomicUsize>,
-    broadcast: BroadcastService,
+    observer: Option<Arc<dyn ActivityObserver>>,
 }
 
 impl InferenceCounter {
-    pub fn new(broadcast: BroadcastService) -> Self {
+    pub fn new(observer: impl ActivityObserver + 'static) -> Self {
         Self {
             count: Arc::new(AtomicUsize::new(0)),
-            broadcast,
+            observer: Some(Arc::new(observer)),
         }
     }
 
     fn increment(&self) {
         let val = self.count.fetch_add(1, Ordering::Relaxed) + 1;
-        self.broadcast.broadcast_inference_count(val);
+        if let Some(observer) = &self.observer {
+            observer.active_requests(val);
+        }
         metrics::set_active_inference_requests(val);
     }
 
@@ -274,7 +276,9 @@ impl InferenceCounter {
             })
             .unwrap_or(0)
             .saturating_sub(1);
-        self.broadcast.broadcast_inference_count(val);
+        if let Some(observer) = &self.observer {
+            observer.active_requests(val);
+        }
         metrics::set_active_inference_requests(val);
     }
 

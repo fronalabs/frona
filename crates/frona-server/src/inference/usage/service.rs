@@ -38,15 +38,33 @@ fn record_catalog_size(snapshot: &frona_model_catalog::ModelCatalogSnapshot) {
         .set(snapshot.entries.len() as f64);
 }
 
-/// Latency reading captured by the retry layer for a single recorded call.
-/// `retry_overhead_ms` + `retry_count` describe retries within the recorded
-/// model only; cross-model fallback is captured by `fallback_index`.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct LatencyMetrics {
-    pub duration_ms: u64,
-    pub ttft_ms: Option<u64>,
-    pub retry_overhead_ms: u64,
-    pub retry_count: u32,
+pub use crate::inference::observation::LatencyMetrics;
+use crate::inference::observation::{InferenceObserver, ObservationError, UsageObservation};
+
+/// Persistent attribution bound outside the portable request/observation path.
+pub struct ScopedUsageObserver<'a> {
+    service: &'a UsageService,
+    context: &'a UsageContext,
+}
+
+#[async_trait::async_trait]
+impl InferenceObserver for ScopedUsageObserver<'_> {
+    async fn usage(&self, observation: UsageObservation<'_>) -> Result<(), ObservationError> {
+        // Preserve the existing row representation for providers that do not
+        // expose usage. The portable observation still distinguishes None from
+        // a measured zero; no estimation policy is imposed on future budgets.
+        let missing_usage = Usage::default();
+        self.service
+            .record(
+                self.context,
+                observation.model,
+                observation.usage.unwrap_or(&missing_usage),
+                observation.fallback_index,
+                observation.latency,
+            )
+            .await;
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -60,6 +78,13 @@ pub struct UsageService {
 }
 
 impl UsageService {
+    pub fn scoped<'a>(&'a self, context: &'a UsageContext) -> ScopedUsageObserver<'a> {
+        ScopedUsageObserver {
+            service: self,
+            context,
+        }
+    }
+
     pub fn new(
         catalog: ModelCatalogStore,
         repo: SurrealRepo<InferenceUsage>,

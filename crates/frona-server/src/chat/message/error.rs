@@ -218,18 +218,15 @@ fn inference_details(error: &InferenceError) -> InferenceFailureDetails {
 mod tests {
     use super::*;
     use crate::{
-        core::{
-            Handle,
-            config::{ProviderModel, RetryConfig},
-        },
-        inference::{provider::ModelConfig, retry::retry_with_backoff},
+        core::{Handle, config::ProviderModel},
+        inference::{config::RetryConfig, provider::ModelConfig, retry::retry_with_backoff},
     };
     use std::sync::atomic::{AtomicU32, Ordering};
 
     fn model(provider: &str, model: &str) -> ModelConfig {
         ModelConfig {
             catalog_provider: "openai".into(),
-            provider_handle: Handle::try_new(provider).unwrap(),
+            provider_handle: Handle::try_new(provider).unwrap().into(),
             model_id: model.into(),
             provider: ProviderModel::Custom {
                 name: "test".into(),

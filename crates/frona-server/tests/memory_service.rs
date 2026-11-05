@@ -174,13 +174,13 @@ async fn memory_tools_use_chat_model_unless_memory_group_is_configured() {
         if memory_group_name == "dedicated" {
             let mut memory_group = helpers::test_model_group();
             memory_group.name = "dedicated".into();
-            memory_group.main.provider_handle = frona::handle!("memory-provider");
+            memory_group.main.provider_handle = frona::handle!("memory-provider").into();
             groups.insert(memory_group.name.clone(), memory_group);
         }
         if with_primary {
             let mut primary = helpers::test_model_group();
             primary.name = "primary".into();
-            primary.main.provider_handle = frona::handle!("memory-provider");
+            primary.main.provider_handle = frona::handle!("memory-provider").into();
             groups.insert(primary.name.clone(), primary);
         }
         let providers = helpers::test_model_service(

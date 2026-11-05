@@ -54,7 +54,7 @@ mod tests {
         let model = ModelConfig {
             request_settings: Default::default(),
             catalog_provider: "catalog-account".into(),
-            provider_handle: crate::core::Handle::try_new("work-account").unwrap(),
+            provider_handle: crate::core::Handle::try_new("work-account").unwrap().into(),
             model_id: "fixture".into(),
             provider: crate::core::config::ProviderModel::from_name(provider),
         };
@@ -71,7 +71,7 @@ mod tests {
             let (snapshot, mut model) = fixture(provider);
             // These deliberately disagree with both the wire dialect and catalog identity.
             for handle in ["work-account", "anthropic", "openrouter"] {
-                model.provider_handle = crate::core::Handle::try_new(handle).unwrap();
+                model.provider_handle = crate::core::Handle::try_new(handle).unwrap().into();
                 let mut usage = Usage {
                     input_tokens,
                     cached_input_tokens: 600_000,
@@ -200,7 +200,7 @@ mod tests {
             model.catalog_provider = provider.into();
             model.model_id = model_id.into();
             for handle in ["work-account", "anthropic", "openrouter"] {
-                model.provider_handle = crate::core::Handle::try_new(handle).unwrap();
+                model.provider_handle = crate::core::Handle::try_new(handle).unwrap().into();
                 let (cost, version) = compute(&snapshot, &model, &usage);
                 match expected {
                     Some(expected) => assert!(
@@ -298,7 +298,7 @@ mod tests {
             let mut model = ModelConfig {
                 request_settings: Default::default(),
                 catalog_provider: provider.into(),
-                provider_handle: crate::core::Handle::try_new(provider).unwrap(),
+                provider_handle: crate::core::Handle::try_new(provider).unwrap().into(),
                 model_id: "fixture".into(),
                 provider: crate::core::config::ProviderModel::from_name(provider),
             };
@@ -308,7 +308,7 @@ mod tests {
                 ..Default::default()
             };
             for handle in [provider, "work-account", "other-account"] {
-                model.provider_handle = crate::core::Handle::try_new(handle).unwrap();
+                model.provider_handle = crate::core::Handle::try_new(handle).unwrap().into();
                 let (cost, version) = compute(&snapshot, &model, &usage);
                 assert!((cost.unwrap() - expected).abs() < 1e-9);
                 assert_eq!(version, snapshot.version);

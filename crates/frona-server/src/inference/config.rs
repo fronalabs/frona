@@ -1,3 +1,4 @@
+pub use super::retry_config::RetryConfig;
 use std::{collections::HashMap, sync::Arc};
 
 use serde::de::DeserializeOwned;
@@ -5,7 +6,7 @@ use serde::de::DeserializeOwned;
 use crate::core::Handle;
 pub use crate::core::config::{
     ApiSurface, CommonModelFields, InferenceConfig, ModelGroupConfig, ModelProviderConfig,
-    ProviderModel, RetryConfig,
+    ProviderModel,
 };
 
 use crate::inference::error::InferenceError;
@@ -361,7 +362,7 @@ impl ModelRegistryConfig {
                     max_tokens: config.common.max_tokens,
                     temperature: config.common.temperature,
                     context_window,
-                    retry: config.common.retry.clone(),
+                    retry: (&config.common.retry).into(),
                     inference: inference.clone(),
                 },
             );
@@ -391,7 +392,7 @@ impl ModelRegistryConfig {
                 temperature: config.common.temperature,
                 extra_params: config.common.extra_params.clone(),
             },
-            provider_handle: config.provider.clone(),
+            provider_handle: config.provider.clone().into(),
             model_id: config.common.model.clone(),
             provider: compile_request(path, config, connection)?,
         };

@@ -235,7 +235,7 @@ impl RuntimeCredentials {
     }
 
     pub fn prepare_model(&self, model: &mut ModelConfig) -> Result<(), InferenceError> {
-        let provider = self.provider(&model.provider_handle)?;
+        let provider = self.provider(&model.provider_handle.clone().into())?;
         let connection = provider
             .connection
             .as_ref()
@@ -276,7 +276,7 @@ impl RuntimeCredentials {
             .resolve_selected(
                 &ModelConfig {
                     catalog_provider: String::new(),
-                    provider_handle: handle.clone(),
+                    provider_handle: handle.clone().into(),
                     model_id: "model-list".into(),
                     provider: ProviderModel::Generic,
                     request_settings: Default::default(),
@@ -321,7 +321,7 @@ impl PreparedProvider {
             .connection
             .as_ref()
             .map_err(|error| InferenceError::ConfigError(error.clone()))?;
-        if resolved.handle != model.provider_handle {
+        if resolved.handle.as_str() != model.provider_handle.as_str() {
             return Err(unavailable(model, "provider handle mismatch"));
         }
         let mut effective = entry.config.clone();
@@ -532,7 +532,7 @@ impl ModelProvider for PreparedProvider {
             .map_err(|error| crate::inference::provider::ModelListError(error.clone()))?;
         let model = ModelConfig {
             catalog_provider: String::new(),
-            provider_handle: connection.handle.clone(),
+            provider_handle: connection.handle.clone().into(),
             model_id: "model-list".into(),
             provider: ProviderModel::Generic,
             request_settings: Default::default(),
@@ -870,14 +870,14 @@ mod tests {
         .with_method_driver(Arc::new(ResponsesOnly));
         let completions = ModelConfig {
             catalog_provider: String::new(),
-            provider_handle: crate::core::Handle::const_validated("openai"),
+            provider_handle: crate::core::Handle::const_validated("openai").into(),
             model_id: "test".into(),
             provider: crate::core::config::ProviderModel::from_name("openai"),
             request_settings: Default::default(),
         };
         assert!(
             resolver
-                .provider(&completions.provider_handle)
+                .provider(&completions.provider_handle.clone().into())
                 .unwrap()
                 .resolve_selected(&completions, true)
                 .await
@@ -885,7 +885,7 @@ mod tests {
         );
         store.promote(oauth.validation_id, Some(1)).await.unwrap();
         let error = resolver
-            .provider(&completions.provider_handle)
+            .provider(&completions.provider_handle.clone().into())
             .unwrap()
             .resolve_selected(&completions, true)
             .await
@@ -903,7 +903,7 @@ mod tests {
         };
         assert!(
             resolver
-                .provider(&responses.provider_handle)
+                .provider(&responses.provider_handle.clone().into())
                 .unwrap()
                 .resolve_selected(&responses, true)
                 .await
@@ -957,7 +957,7 @@ mod tests {
             models.push(ModelConfig {
                 request_settings: Default::default(),
                 catalog_provider: String::new(),
-                provider_handle: handle,
+                provider_handle: handle.into(),
                 model_id: "test".into(),
                 provider: ProviderModel::from_name("openai"),
             });
@@ -969,7 +969,9 @@ mod tests {
             InferenceCounter::new(BroadcastService::new()),
         );
         for model in models {
-            let provider = resolver.provider(&model.provider_handle).unwrap();
+            let provider = resolver
+                .provider(&model.provider_handle.clone().into())
+                .unwrap();
             let output = provider
                 .inference(&model, "test", vec![], vec![], Some(10), None)
                 .await
@@ -1025,12 +1027,12 @@ mod tests {
         let model = ModelConfig {
             request_settings: Default::default(),
             catalog_provider: String::new(),
-            provider_handle: handle,
+            provider_handle: handle.into(),
             model_id: "test".into(),
             provider: ProviderModel::from_name("openai"),
         };
         let error = resolver
-            .provider(&model.provider_handle)
+            .provider(&model.provider_handle.clone().into())
             .unwrap()
             .resolve_selected(&model, true)
             .await
@@ -1093,26 +1095,26 @@ mod tests {
         let model_a = ModelConfig {
             request_settings: Default::default(),
             catalog_provider: String::new(),
-            provider_handle: a.clone(),
+            provider_handle: a.clone().into(),
             model_id: "test".into(),
             provider: ProviderModel::from_name("openai"),
         };
         let model_b = ModelConfig {
             request_settings: Default::default(),
             catalog_provider: String::new(),
-            provider_handle: b,
+            provider_handle: b.into(),
             ..model_a.clone()
         };
         let prepared = resolver.provider(&a).unwrap();
         let client_a = resolver
-            .provider(&model_a.provider_handle)
+            .provider(&model_a.provider_handle.clone().into())
             .unwrap()
             .resolve_selected(&model_a, true)
             .await
             .unwrap()
             .client;
         let client_b = resolver
-            .provider(&model_b.provider_handle)
+            .provider(&model_b.provider_handle.clone().into())
             .unwrap()
             .resolve_selected(&model_b, true)
             .await
@@ -1134,7 +1136,7 @@ mod tests {
         assert!(Arc::ptr_eq(
             &client_a,
             &resolver
-                .provider(&model_a.provider_handle)
+                .provider(&model_a.provider_handle.clone().into())
                 .unwrap()
                 .resolve_selected(&model_a, true)
                 .await
@@ -1147,7 +1149,7 @@ mod tests {
         assert!(!Arc::ptr_eq(
             &client_a,
             &resolver
-                .provider(&model_a.provider_handle)
+                .provider(&model_a.provider_handle.clone().into())
                 .unwrap()
                 .resolve_selected(&model_a, true)
                 .await
@@ -1157,7 +1159,7 @@ mod tests {
         assert!(Arc::ptr_eq(
             &client_b,
             &resolver
-                .provider(&model_b.provider_handle)
+                .provider(&model_b.provider_handle.clone().into())
                 .unwrap()
                 .resolve_selected(&model_b, true)
                 .await
@@ -1179,7 +1181,7 @@ mod tests {
             .unwrap();
         assert!(
             resolver
-                .provider(&model_a.provider_handle)
+                .provider(&model_a.provider_handle.clone().into())
                 .unwrap()
                 .resolve_selected(&model_a, true)
                 .await
@@ -1289,7 +1291,7 @@ mod tests {
         assert!(provider.cache.lock().await.is_none());
         let model = ModelConfig {
             catalog_provider: String::new(),
-            provider_handle: crate::core::Handle::const_validated("openai"),
+            provider_handle: crate::core::Handle::const_validated("openai").into(),
             model_id: "test".into(),
             provider: crate::core::config::ProviderModel::from_name("openai"),
             request_settings: Default::default(),

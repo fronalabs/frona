@@ -111,8 +111,9 @@ impl ChatSummarizer for TextInferenceSummarizer {
                 system_prompt: request.system_prompt,
                 history: request.history,
                 tools: request.tools,
-                usage_service: &self.usage_service,
-                usage_context: &usage_ctx,
+                observations: crate::inference::observation::Observations::new(
+                    &self.usage_service.scoped(&usage_ctx),
+                ),
                 overrides: Default::default(),
             })
             .await

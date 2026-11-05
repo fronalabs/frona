@@ -256,7 +256,7 @@ mod tests {
     fn calibrated_input_is_bound_to_model_provider_system_history_and_tools() {
         let mut model = crate::inference::ModelConfig {
             catalog_provider: String::new(),
-            provider_handle: crate::handle!("fixture"),
+            provider_handle: crate::handle!("fixture").into(),
             model_id: "model".into(),
             provider: crate::core::config::ProviderModel::Generic,
             request_settings: Default::default(),

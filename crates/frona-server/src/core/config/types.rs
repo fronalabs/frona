@@ -456,21 +456,29 @@ pub struct RetryConfig {
 
 impl RetryConfig {
     pub fn to_backoff(&self) -> backon::ExponentialBuilder {
-        backon::ExponentialBuilder::default()
-            .with_max_times(self.max_retries as usize)
-            .with_min_delay(std::time::Duration::from_millis(self.initial_backoff_ms))
-            .with_factor(self.backoff_multiplier as f32)
-            .with_max_delay(std::time::Duration::from_millis(self.max_backoff_ms))
+        crate::inference::retry_config::RetryConfig::from(self).to_backoff()
     }
 }
 
 impl Default for RetryConfig {
     fn default() -> Self {
+        let policy = crate::inference::retry_config::RetryConfig::default();
         Self {
-            max_retries: 10,
-            initial_backoff_ms: 1_000,
-            backoff_multiplier: 2.0,
-            max_backoff_ms: 60_000,
+            max_retries: policy.max_retries,
+            initial_backoff_ms: policy.initial_backoff_ms,
+            backoff_multiplier: policy.backoff_multiplier,
+            max_backoff_ms: policy.max_backoff_ms,
+        }
+    }
+}
+
+impl From<&RetryConfig> for crate::inference::retry_config::RetryConfig {
+    fn from(stored: &RetryConfig) -> Self {
+        Self {
+            max_retries: stored.max_retries,
+            initial_backoff_ms: stored.initial_backoff_ms,
+            backoff_multiplier: stored.backoff_multiplier,
+            max_backoff_ms: stored.max_backoff_ms,
         }
     }
 }

@@ -3,15 +3,13 @@ use std::{collections::HashMap, sync::Arc};
 use rig_core::completion::request::ToolDefinition;
 use rig_core::completion::{AssistantContent, Message};
 
-use crate::chat::broadcast::EventSender;
-use crate::core::error::AppError;
 use crate::inference::{
     Usage,
     config::{InferenceConfig, RetryConfig},
     error::InferenceError,
+    observation::Observations,
     provider::{ModelConfig, ModelProvider},
-    retry::{self, StreamResult},
-    usage::{UsageContext, UsageService},
+    retry,
 };
 
 /// Immutable execution configuration bound to its prepared provider clients.
@@ -49,8 +47,7 @@ pub struct ModelRequest<'a> {
     pub system_prompt: &'a str,
     pub history: Vec<Message>,
     pub tools: Vec<ToolDefinition>,
-    pub usage_service: &'a UsageService,
-    pub usage_context: &'a UsageContext,
+    pub observations: Observations<'a>,
     pub overrides: RequestOverrides,
 }
 
@@ -94,17 +91,6 @@ impl ModelGroup {
     ) -> Result<serde_json::Value, InferenceError> {
         retry::structured_inference_with_retry_and_fallback(self, request, schema).await
     }
-
-    pub async fn stream_inference(
-        &self,
-        request: ModelRequest<'_>,
-        events: &EventSender,
-        cancellation: &tokio_util::sync::CancellationToken,
-        accumulated_text: &mut String,
-    ) -> Result<StreamResult, AppError> {
-        retry::stream_with_retry_and_fallback(self, request, events, cancellation, accumulated_text)
-            .await
-    }
 }
 
 #[cfg(test)]
@@ -112,15 +98,28 @@ mod tests {
     use super::*;
     use crate::core::{Handle, config::ProviderModel};
     use crate::inference::{
-        InferenceKind, ModelConfig, UsageContext,
+        ModelConfig,
         config::RetryConfig,
+        observation::{
+            AttemptObservation, AttemptOutcome, InferenceObserver, ObservationError,
+            UsageObservation,
+        },
         provider::{InferenceOutput, ModelRequestSettings, StreamToken},
     };
-    use std::sync::Mutex;
+    use crate::{
+        chat::broadcast::EventSender,
+        inference::streaming::{ModelGroupStreaming, StreamResult},
+    };
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
+    type RecordedCall = (String, Option<u64>, Option<f64>);
     #[derive(Default)]
     struct RecordingProvider {
-        calls: Mutex<Vec<(String, Option<u64>, Option<f64>)>>,
+        calls: Mutex<Vec<RecordedCall>>,
+        retry_failures: AtomicUsize,
     }
 
     impl RecordingProvider {
@@ -134,6 +133,15 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((model.model_id.clone(), max, temperature));
+            if self
+                .retry_failures
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+                .is_ok()
+            {
+                return Err(InferenceError::RateLimited {
+                    retry_after_secs: 0,
+                });
+            }
             if model.model_id == "main" {
                 Err(InferenceError::InferenceFailed("fixture failure".into()))
             } else {
@@ -195,7 +203,7 @@ mod tests {
     fn group(provider: Arc<RecordingProvider>) -> ModelGroup {
         let model = |id: &str, max, temperature| ModelConfig {
             catalog_provider: String::new(),
-            provider_handle: Handle::const_validated("fixture"),
+            provider_handle: Handle::const_validated("fixture").into(),
             model_id: id.into(),
             provider: ProviderModel::Generic,
             request_settings: ModelRequestSettings {
@@ -220,53 +228,88 @@ mod tests {
         }
     }
 
-    fn request<'a>(
-        usage: &'a UsageService,
-        context: &'a UsageContext,
-        overrides: RequestOverrides,
-    ) -> ModelRequest<'a> {
+    #[derive(Debug)]
+    struct RecordedUsage {
+        model: String,
+        tokens: Option<u64>,
+        fallback: u8,
+        retries: u32,
+        attribution: Vec<(String, String)>,
+    }
+
+    #[derive(Default)]
+    struct RecordingObserver {
+        usage: Mutex<Vec<RecordedUsage>>,
+        attempts: Mutex<Vec<(String, AttemptOutcome, Option<u64>)>>,
+        fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl InferenceObserver for RecordingObserver {
+        async fn usage(&self, observation: UsageObservation<'_>) -> Result<(), ObservationError> {
+            self.usage.lock().unwrap().push(RecordedUsage {
+                model: observation.model.model_id.clone(),
+                tokens: observation.usage.map(|usage| usage.total_tokens),
+                fallback: observation.fallback_index,
+                retries: observation.latency.retry_count,
+                attribution: observation
+                    .attribution
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            });
+            if self.fail {
+                Err(std::io::Error::other("telemetry unavailable").into())
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn attempt(
+            &self,
+            observation: AttemptObservation<'_>,
+        ) -> Result<(), ObservationError> {
+            self.attempts.lock().unwrap().push((
+                observation.model.model_id.clone(),
+                observation.outcome,
+                observation.usage.map(|usage| usage.total_tokens),
+            ));
+            if self.fail {
+                Err(std::io::Error::other("telemetry unavailable").into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn request(observations: Observations<'_>, overrides: RequestOverrides) -> ModelRequest<'_> {
         ModelRequest {
             input_token_estimate: None,
             system_prompt: "fixture",
             history: vec![Message::user("hello")],
             tools: vec![],
-            usage_service: usage,
-            usage_context: context,
+            observations,
             overrides,
         }
     }
 
     #[tokio::test]
     async fn all_execution_modes_share_fallbacks_and_per_request_overrides_are_isolated() {
-        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
-            .await
-            .unwrap();
-        crate::db::init::setup_schema(&db).await.unwrap();
-        let fixture = crate::app_state_fixture::build(&db).await;
-        let usage = &fixture.state.usage_service;
-        let context = UsageContext::new(
-            InferenceKind::Text {
-                agent_id: "agent".into(),
-                chat_id: "chat".into(),
-                message_id: "message".into(),
-            },
-            "user",
-            "primary",
-        );
+        let observer = RecordingObserver::default();
+        let tags = [("job", "standalone")];
+        let observations = Observations::new(&observer).with_attribution(&tags);
         let provider = Arc::new(RecordingProvider::default());
         let group = group(provider.clone());
         let (first, second) = tokio::join!(
             group.inference(request(
-                usage,
-                &context,
+                observations,
                 RequestOverrides {
                     max_tokens: Some(100),
                     temperature: None
                 }
             )),
             group.inference(request(
-                usage,
-                &context,
+                observations,
                 RequestOverrides {
                     max_tokens: Some(150),
                     temperature: Some(0.1)
@@ -277,7 +320,7 @@ mod tests {
         second.unwrap();
         group
             .structured_inference(
-                request(usage, &context, RequestOverrides::default()),
+                request(observations, RequestOverrides::default()),
                 serde_json::json!({"type":"object"}),
             )
             .await
@@ -285,7 +328,7 @@ mod tests {
         let mut accumulated = String::new();
         let result = group
             .stream_inference(
-                request(usage, &context, RequestOverrides::default()),
+                request(observations, RequestOverrides::default()),
                 &EventSender::noop(),
                 &tokio_util::sync::CancellationToken::new(),
                 &mut accumulated,
@@ -307,5 +350,109 @@ mod tests {
         );
         assert_eq!(group.main.request_settings.max_tokens, Some(400));
         assert_eq!(group.fallbacks[0].request_settings.temperature, Some(0.3));
+        let usages = observer.usage.lock().unwrap();
+        assert_eq!(usages.len(), 4);
+        assert_eq!(
+            usages
+                .iter()
+                .filter(|usage| usage.tokens == Some(0))
+                .count(),
+            3
+        );
+        assert_eq!(
+            usages.iter().filter(|usage| usage.tokens.is_none()).count(),
+            1
+        );
+        assert!(
+            usages
+                .iter()
+                .all(|usage| usage.model == "backup" && usage.fallback == 1 && usage.retries == 0)
+        );
+        assert!(
+            usages
+                .iter()
+                .all(|usage| usage.attribution == [("job".into(), "standalone".into())])
+        );
+        let attempts = observer.attempts.lock().unwrap();
+        assert_eq!(attempts.len(), 8);
+        assert_eq!(
+            attempts
+                .iter()
+                .filter(|(_, outcome, _)| *outcome == AttemptOutcome::Failed)
+                .count(),
+            4
+        );
+        assert_eq!(
+            attempts
+                .iter()
+                .filter(|(_, outcome, _)| *outcome == AttemptOutcome::Succeeded)
+                .count(),
+            4
+        );
+    }
+    #[tokio::test]
+    async fn local_observers_see_each_retry_and_failures_do_not_change_execution() {
+        let observer = RecordingObserver {
+            fail: true,
+            ..Default::default()
+        };
+        let provider = Arc::new(RecordingProvider::default());
+        provider.retry_failures.store(2, Ordering::Relaxed);
+        let mut group = group(provider.clone());
+        group.main.model_id = "backup".into();
+        group.fallbacks.clear();
+        group.retry = RetryConfig {
+            max_retries: 3,
+            initial_backoff_ms: 0,
+            max_backoff_ms: 0,
+            backoff_multiplier: 1.0,
+        };
+        group
+            .inference(request(
+                Observations::new(&observer),
+                RequestOverrides::default(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(provider.calls.lock().unwrap().len(), 3);
+        assert_eq!(
+            observer
+                .attempts
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, outcome, _)| *outcome)
+                .collect::<Vec<_>>(),
+            [
+                AttemptOutcome::Failed,
+                AttemptOutcome::Failed,
+                AttemptOutcome::Succeeded
+            ]
+        );
+        assert_eq!(observer.usage.lock().unwrap()[0].retries, 2);
+        // A completely absent observer also needs no service or records.
+        group
+            .inference(request(
+                Observations::default(),
+                RequestOverrides::default(),
+            ))
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn activity_counter_works_locally_and_broadcasting_is_optional() {
+        let counts = Arc::new(Mutex::new(Vec::new()));
+        let recorded = counts.clone();
+        let counter = crate::inference::provider::InferenceCounter::new(move |n| {
+            recorded.lock().unwrap().push(n)
+        });
+        let first = counter.guard();
+        let second = counter.clone().guard();
+        drop(first);
+        drop(second);
+        assert_eq!(*counts.lock().unwrap(), [1, 2, 1, 0]);
+        let unobserved = crate::inference::provider::InferenceCounter::default();
+        drop(unobserved.guard());
     }
 }

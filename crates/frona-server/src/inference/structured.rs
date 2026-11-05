@@ -41,8 +41,9 @@ where
                 system_prompt,
                 history,
                 tools: vec![],
-                usage_service,
-                usage_context: usage_ctx,
+                observations: crate::inference::observation::Observations::new(
+                    &usage_service.scoped(usage_ctx),
+                ),
                 overrides: Default::default(),
             },
             schema,
@@ -96,8 +97,9 @@ where
                 system_prompt,
                 history: chat_history.clone(),
                 tools: tool_defs.clone(),
-                usage_service,
-                usage_context: usage_ctx,
+                observations: crate::inference::observation::Observations::new(
+                    &usage_service.scoped(usage_ctx),
+                ),
                 overrides: Default::default(),
             })
             .await
@@ -175,8 +177,9 @@ pub async fn text_inference_with_tools(
                 system_prompt,
                 history: chat_history.clone(),
                 tools: tool_defs.clone(),
-                usage_service,
-                usage_context: usage_ctx,
+                observations: crate::inference::observation::Observations::new(
+                    &usage_service.scoped(usage_ctx),
+                ),
                 overrides: Default::default(),
             })
             .await
@@ -481,8 +484,9 @@ where
                     system_prompt: &self.system,
                     history: self.history.clone(),
                     tools: tool_defs,
-                    usage_service: self.usage_service,
-                    usage_context: &self.usage_ctx,
+                    observations: crate::inference::observation::Observations::new(
+                        &self.usage_service.scoped(&self.usage_ctx),
+                    ),
                     overrides: Default::default(),
                 })
                 .await

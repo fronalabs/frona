@@ -581,9 +581,27 @@ impl BroadcastService {
     }
 }
 
+impl crate::inference::observation::ActivityObserver for BroadcastService {
+    fn active_requests(&self, count: usize) {
+        self.broadcast_inference_count(count);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn inference_activity_adapter_retains_server_events() {
+        let service = BroadcastService::new();
+        let mut events = service.subscribe_raw();
+        let counter = crate::inference::provider::InferenceCounter::new(service);
+        drop(counter.guard());
+        for expected in [1, 0] {
+            assert!(matches!(events.try_recv().unwrap().kind,
+                BroadcastEventKind::InferenceCount { count } if count == expected));
+        }
+    }
 
     #[test]
     fn entity_action_serializes_lowercase() {

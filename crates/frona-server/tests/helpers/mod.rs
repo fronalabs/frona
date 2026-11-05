@@ -815,7 +815,7 @@ pub fn test_model_group() -> ModelGroup {
         main: ModelConfig {
             request_settings: Default::default(),
             catalog_provider: String::new(),
-            provider_handle: frona::core::Handle::const_validated("mock"),
+            provider_handle: frona::core::Handle::const_validated("mock").into(),
             provider: "mock".into(),
             model_id: "test-model".into(),
         },
@@ -838,7 +838,9 @@ pub fn test_model_group_with_fallback(fallback_provider: &str, fallback_model: &
     group.fallbacks.push(ModelConfig {
         request_settings: Default::default(),
         catalog_provider: String::new(),
-        provider_handle: frona::core::Handle::try_new(fallback_provider).unwrap(),
+        provider_handle: frona::core::Handle::try_new(fallback_provider)
+            .unwrap()
+            .into(),
         provider: fallback_provider.into(),
         model_id: fallback_model.into(),
     });

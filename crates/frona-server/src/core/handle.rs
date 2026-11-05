@@ -6,58 +6,33 @@
 //!   (typos fail `cargo check`).
 //!
 //! Grammar: 2..=32 bytes, starts with `a-z`, body is `a-z 0-9 - _`.
-//! Backed by [`SmolStr`] — every valid handle inlines (≤22 bytes).
+//! Wraps the portable identifier so native database encoding stays server-owned.
 
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use smol_str::SmolStr;
 use std::fmt;
 use surrealdb::types::{Error as SurrealError, Kind, SurrealValue, Value};
 
 use crate::core::error::AppError;
 
 pub const fn is_valid_handle_bytes(s: &[u8]) -> bool {
-    if s.len() < 2 || s.len() > 32 {
-        return false;
-    }
-    if !s[0].is_ascii_lowercase() {
-        return false;
-    }
-    let mut i = 0;
-    while i < s.len() {
-        let b = s[i];
-        let ok = b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_';
-        if !ok {
-            return false;
-        }
-        i += 1;
-    }
-    true
+    crate::inference::handle::is_valid_handle_bytes(s)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Handle(SmolStr);
+pub struct Handle(crate::inference::handle::Handle);
 
 impl Handle {
     /// Trims + lowercases ASCII before validating.
     pub fn try_new(raw: impl AsRef<str>) -> Result<Self, AppError> {
-        let cleaned = raw.as_ref().trim().to_ascii_lowercase();
-        if !is_valid_handle_bytes(cleaned.as_bytes()) {
-            return Err(AppError::Validation(format!(
-                "handle '{cleaned}' is invalid: must be 2-32 chars, start with a lowercase letter, and contain only a-z, 0-9, hyphens, underscores"
-            )));
-        }
-        Ok(Self(SmolStr::new(cleaned)))
+        crate::inference::handle::Handle::try_new(raw)
+            .map(Self)
+            .map_err(|error| AppError::Validation(error.to_string()))
     }
 
-    /// Panics at compile time on invalid input. No sanitization — literal
-    /// must already be lowercase and trimmed.
+    /// Construct a validated literal while preserving the native stored type.
     pub const fn const_validated(s: &'static str) -> Self {
-        assert!(
-            is_valid_handle_bytes(s.as_bytes()),
-            "invalid Handle literal: must be 2-32 ASCII lowercase chars, start with a letter, contain only a-z/0-9/-/_"
-        );
-        Self(SmolStr::new_inline(s))
+        Self(crate::inference::handle::Handle::const_validated(s))
     }
 
     pub fn as_str(&self) -> &str {
@@ -65,7 +40,7 @@ impl Handle {
     }
 
     pub fn into_string(self) -> String {
-        self.0.into()
+        self.0.into_string()
     }
 }
 
@@ -120,16 +95,23 @@ impl<'de> Deserialize<'de> for Handle {
 
 impl JsonSchema for Handle {
     fn schema_name() -> std::borrow::Cow<'static, str> {
-        "Handle".into()
+        crate::inference::handle::Handle::schema_name()
     }
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        let mut schema = generator.subschema_for::<String>();
-        let object = schema.ensure_object();
-        object.insert("minLength".to_string(), 2.into());
-        object.insert("maxLength".to_string(), 32.into());
-        object.insert("pattern".to_string(), "^[a-z][a-z0-9_-]{1,31}$".into());
-        schema
+        crate::inference::handle::Handle::json_schema(generator)
+    }
+}
+
+impl From<Handle> for crate::inference::handle::Handle {
+    fn from(value: Handle) -> Self {
+        value.0
+    }
+}
+
+impl From<crate::inference::handle::Handle> for Handle {
+    fn from(value: crate::inference::handle::Handle) -> Self {
+        Self(value)
     }
 }
 

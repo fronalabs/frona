@@ -273,7 +273,7 @@ impl App {
                 let provider = Arc::new(MockModelProvider::new(vec![]));
                 let mut group = helpers::test_model_group();
                 group.name = name.into();
-                group.main.provider_handle = frona::core::Handle::try_new(name).unwrap();
+                group.main.provider_handle = frona::core::Handle::try_new(name).unwrap().into();
                 group.main.provider = name.into();
                 group.main.model_id = format!("unused-{name}-model");
                 providers.insert(name.into(), provider.clone() as Arc<dyn ModelProvider>);

@@ -1,14 +1,19 @@
+use self::streaming::ModelGroupStreaming;
 pub mod config;
 pub mod context;
 pub mod conversation;
 pub mod credential;
 pub mod directory;
 pub mod error;
+pub mod handle;
 pub mod hitl;
+pub mod observation;
 pub mod protocol;
 pub mod provider;
 pub mod request;
 pub mod retry;
+pub mod retry_config;
+pub mod streaming;
 pub mod structured;
 pub mod tool_call;
 pub mod tool_loop;
@@ -73,8 +78,9 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
                     system_prompt: &request.system_prompt,
                     history: history.to_vec(),
                     tools: vec![],
-                    usage_service: &request.usage_service,
-                    usage_context: &chat_usage_ctx,
+                    observations: observation::Observations::new(
+                        &request.usage_service.scoped(&chat_usage_ctx),
+                    ),
                     overrides: Default::default(),
                 },
                 event_tx,
@@ -83,7 +89,7 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
             )
             .await?
         {
-            retry::StreamResult::Contents {
+            streaming::StreamResult::Contents {
                 content: contents,
                 usage: _,
             } => {
@@ -95,7 +101,7 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
                     reasoning,
                 })
             }
-            retry::StreamResult::Cancelled => Ok(InferenceResponse::Cancelled(response_text)),
+            streaming::StreamResult::Cancelled => Ok(InferenceResponse::Cancelled(response_text)),
         }
     } else {
         let event_tx = request.ctx.event_tx.clone();
@@ -155,8 +161,7 @@ pub async fn text_inference(
             system_prompt,
             history,
             tools: vec![],
-            usage_service,
-            usage_context: usage_ctx,
+            observations: observation::Observations::new(&usage_service.scoped(usage_ctx)),
             overrides: Default::default(),
         })
         .await?;

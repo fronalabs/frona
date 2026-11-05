@@ -648,8 +648,7 @@ async fn fallback_requests_use_their_own_settings() {
             system_prompt: "sys",
             history: vec![Message::user("hi")],
             tools: vec![],
-            usage_service: &usage,
-            usage_context: &ctx,
+            observations: crate::inference::observation::Observations::new(&usage.scoped(&ctx)),
             overrides: Default::default(),
         })
         .await;

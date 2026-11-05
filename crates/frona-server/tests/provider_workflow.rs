@@ -141,8 +141,7 @@ async fn infer(service: &ModelProviderService, expected: &str) {
             system_prompt: "fixture",
             history: vec![],
             tools: vec![],
-            usage_service: &usage,
-            usage_context: &context,
+            observations: frona::inference::observation::Observations::new(&usage.scoped(&context)),
             overrides: Default::default(),
         })
         .await

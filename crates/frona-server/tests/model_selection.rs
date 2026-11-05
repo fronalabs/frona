@@ -105,8 +105,9 @@ async fn title_override_and_fallback_defaults_reach_the_provider_transport() {
             system_prompt: "fixture",
             history: vec![rig_core::completion::Message::user("hi")],
             tools: vec![],
-            usage_service: &state.usage_service,
-            usage_context: &usage_ctx,
+            observations: frona::inference::observation::Observations::new(
+                &state.usage_service.scoped(&usage_ctx),
+            ),
             overrides: Default::default(),
         })
         .await
@@ -199,7 +200,7 @@ async fn title_selection_is_explicit_and_missing_title_alone_uses_primary() {
             .map(|name| {
                 let mut group = test_model_group();
                 group.name = (*name).into();
-                group.main.provider_handle = frona::core::Handle::try_new(name).unwrap();
+                group.main.provider_handle = frona::core::Handle::try_new(name).unwrap().into();
                 ((*name).to_string(), group)
             })
             .collect();

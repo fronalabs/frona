@@ -626,8 +626,9 @@ impl ChatService {
                 system_prompt: &system_prompt,
                 history: rig_history,
                 tools: vec![],
-                usage_service: &self.usage_service,
-                usage_context: &usage_ctx,
+                observations: crate::inference::observation::Observations::new(
+                    &self.usage_service.scoped(&usage_ctx),
+                ),
                 overrides: Default::default(),
             })
             .await?;
@@ -1851,8 +1852,9 @@ impl ChatService {
                 system_prompt: &parsed.template,
                 history: vec![RigMessage::user(user_content)],
                 tools: vec![],
-                usage_service: &self.usage_service,
-                usage_context: &usage_ctx,
+                observations: crate::inference::observation::Observations::new(
+                    &self.usage_service.scoped(&usage_ctx),
+                ),
                 overrides: crate::inference::RequestOverrides {
                     max_tokens: Some(TITLE_MAX_TOKENS),
                     temperature: None,

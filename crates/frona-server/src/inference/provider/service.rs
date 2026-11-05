@@ -1389,7 +1389,7 @@ mod tests {
         );
         let config = ModelConfig {
             catalog_provider: String::new(),
-            provider_handle: handle(),
+            provider_handle: handle().into(),
             model_id: "ad-hoc".into(),
             provider: ProviderModel::OpenAI {
                 api: Some(OpenAiApi::Responses),

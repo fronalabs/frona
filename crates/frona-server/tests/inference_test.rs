@@ -1,3 +1,4 @@
+use frona::inference::streaming::ModelGroupStreaming;
 mod helpers;
 
 #[tokio::test]
@@ -33,8 +34,9 @@ async fn streaming_failure_reports_retries_and_fallback_context() {
                 system_prompt: "system",
                 history: vec![RigMessage::user("hi")],
                 tools: vec![],
-                usage_service: &test_metrics_ctx(),
-                usage_context: &test_usage_ctx(),
+                observations: frona::inference::observation::Observations::new(
+                    &test_metrics_ctx().scoped(&test_usage_ctx()),
+                ),
                 overrides: Default::default(),
             },
             &events,
@@ -60,7 +62,7 @@ async fn streaming_failure_reports_retries_and_fallback_context() {
 
 #[tokio::test]
 async fn streaming_skips_unavailable_primary_and_uses_fallback_without_catalogs() {
-    use frona::inference::retry::StreamResult;
+    use frona::inference::streaming::StreamResult;
     let provider = Arc::new(MockModelProvider::new(vec![MockResponse::Text(
         "fallback stream".into(),
     )]));
@@ -78,8 +80,9 @@ async fn streaming_skips_unavailable_primary_and_uses_fallback_without_catalogs(
             system_prompt: "system",
             history: vec![RigMessage::user("hi")],
             tools: vec![],
-            usage_service: &test_metrics_ctx(),
-            usage_context: &test_usage_ctx(),
+            observations: frona::inference::observation::Observations::new(
+                &test_metrics_ctx().scoped(&test_usage_ctx()),
+            ),
             overrides: Default::default(),
         },
         &events,
@@ -959,14 +962,14 @@ async fn test_fallback_multiple_fallbacks_order() {
         frona::inference::ModelConfig {
             request_settings: Default::default(),
             catalog_provider: String::new(),
-            provider_handle: frona::core::Handle::const_validated("fb1"),
+            provider_handle: frona::core::Handle::const_validated("fb1").into(),
             provider: "fb1".into(),
             model_id: "fb1-model".into(),
         },
         frona::inference::ModelConfig {
             request_settings: Default::default(),
             catalog_provider: String::new(),
-            provider_handle: frona::core::Handle::const_validated("fb2"),
+            provider_handle: frona::core::Handle::const_validated("fb2").into(),
             provider: "fb2".into(),
             model_id: "fb2-model".into(),
         },

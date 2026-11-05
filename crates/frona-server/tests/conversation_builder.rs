@@ -70,7 +70,7 @@ fn test_ctx() -> ConversationContext {
         model_config: ModelConfig {
             request_settings: Default::default(),
             catalog_provider: String::new(),
-            provider_handle: frona::core::Handle::const_validated("mock"),
+            provider_handle: frona::core::Handle::const_validated("mock").into(),
             provider: "mock".into(),
             model_id: "test-model".into(),
         },

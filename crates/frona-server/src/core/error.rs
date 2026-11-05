@@ -102,3 +102,9 @@ impl AppError {
         }
     }
 }
+
+impl From<crate::inference::InferenceError> for crate::core::error::AppError {
+    fn from(err: crate::inference::InferenceError) -> Self {
+        crate::core::error::AppError::Inference(Box::new(err))
+    }
+}

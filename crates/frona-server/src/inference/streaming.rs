@@ -1,14 +1,15 @@
 //! Server event transport around portable model execution.
-use crate::chat::broadcast::EventSender;
-use crate::core::error::AppError;
-use crate::inference::{
+use crate::{
+    chat::broadcast::EventSender,
+    core::error::AppError,
+    inference::tool_loop::{InferenceEvent, InferenceEventKind},
+};
+use backon::Retryable;
+use frona_harness::inference::{
     InferenceError, ModelGroup, ModelRequest, RequestOverrides,
     observation::{AttemptOutcome, LatencyMetrics, Observations},
     provider::{InferenceOutput, ModelConfig, StreamToken},
-    retry::{HistoryOverflow, completion_history, provider_for},
-    tool_loop::{InferenceEvent, InferenceEventKind},
 };
-use backon::Retryable;
 use rig_core::completion::{
     AssistantContent, Message as RigMessage, message::UserContent,
     request::ToolDefinition as RigToolDefinition,
@@ -50,7 +51,7 @@ impl ModelGroupStreaming for ModelGroup {
 pub enum StreamResult {
     Contents {
         content: Vec<AssistantContent>,
-        usage: crate::inference::Usage,
+        usage: frona_harness::inference::Usage,
     },
     Cancelled,
 }
@@ -75,7 +76,7 @@ pub(crate) async fn stream_with_retry_and_fallback(
         .chain(&model_group.fallbacks)
         .enumerate()
     {
-        let provider = match provider_for(&model_group.providers, model) {
+        let provider = match model_group.provider(model) {
             Ok(provider) => provider,
             Err(error) => {
                 failures.push(error.for_model(model, 0));
@@ -84,22 +85,20 @@ pub(crate) async fn stream_with_retry_and_fallback(
         };
         let max_tokens = overrides.max_tokens.or(model.request_settings.max_tokens);
         let temperature = overrides.temperature.or(model.request_settings.temperature);
-        let history = match completion_history(
+        match model_group.validate_complete_input(
             &history,
             system_prompt,
             &tools,
-            model_group,
             max_tokens.unwrap_or(model_group.inference.default_max_tokens) as usize,
-            HistoryOverflow::Reject,
             if index == 0 {
                 input_token_estimate
             } else {
                 None
             },
         ) {
-            Ok(history) => history,
+            Ok(()) => {}
             Err(error) => {
-                failures.push(InferenceError::InferenceFailed(error).for_model(model, 0));
+                failures.push(error.for_model(model, 0));
                 continue;
             }
         };
@@ -138,7 +137,7 @@ pub(crate) async fn stream_with_retry_and_fallback(
 
 #[allow(clippy::too_many_arguments)]
 async fn stream_one_model(
-    provider: Arc<dyn crate::inference::provider::ModelProvider>,
+    provider: Arc<dyn frona_harness::inference::provider::ModelProvider>,
     emitted: Arc<AtomicBool>,
     model_group: &ModelGroup,
     model_config: &ModelConfig,

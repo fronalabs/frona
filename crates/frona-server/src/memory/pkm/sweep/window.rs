@@ -53,8 +53,8 @@ pub(super) fn consolidation_windows(
         let message_tokens = if speaker.is_empty() || text.is_empty() {
             0
         } else {
-            crate::inference::context::estimate_tokens(speaker)
-                + crate::inference::context::estimate_tokens(&text)
+            frona_harness::inference::context::estimate_tokens(speaker)
+                + frona_harness::inference::context::estimate_tokens(&text)
         };
         if !current.is_empty()
             && (current.len() >= max_messages || tokens + message_tokens > max_tokens)

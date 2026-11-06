@@ -8,10 +8,8 @@ use frona::{
     core::{Handle, error::AppError, repository::Repository},
     db::repo::generic::SurrealRepo,
     inference::{
-        ModelGroup,
         config::ModelRegistryConfig,
         credential::runtime::RuntimeCredentials,
-        provider::InferenceCounter,
         tool_call::ToolCall,
         tool_loop::{ToolLoopOutcome, run_tool_loop},
     },
@@ -21,6 +19,7 @@ use frona::{
         registry::AgentToolRegistry,
     },
 };
+use frona_harness::inference::{ModelGroup, provider::InferenceCounter};
 use rig_core::completion::Message as RigMessage;
 use rmcp::{
     ErrorData as McpError, ServerHandler, ServiceExt,

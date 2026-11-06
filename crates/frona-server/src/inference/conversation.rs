@@ -14,7 +14,7 @@ use crate::chat::message::models::{Message, MessageEvent, MessageRole, MessageSt
 use crate::inference::tool_call::ToolCall;
 use crate::storage::{Attachment, StorageService, VirtualPath, is_image_content_type};
 
-use crate::inference::ModelConfig;
+use frona_harness::inference::ModelConfig;
 
 pub struct ConversationContext {
     pub agent_id: String,

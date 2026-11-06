@@ -3,9 +3,8 @@ use frona::core::{Handle, config::ModelProviderConfig};
 use frona::credential::key_rotation::{KeyRotation, derive_key};
 use frona::credential::managed::Candidate;
 use frona::credential::vault::service::{decrypt_password, encrypt_password};
-use frona::db::init::setup_schema;
-use frona::inference::credential::store::CredentialMethod;
-use frona::inference::provider::{platform::ProviderPlatform, validation::binding};
+use frona::{db::init::setup_schema, inference::provider::validation::binding};
+use frona_harness::config::CredentialMethod;
 
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
 use chrono::Utc;
@@ -183,7 +182,7 @@ async fn provider_rotation_statement_failures_preserve_secret_and_allow_retry() 
             provider: Some("openai".into()),
             ..Default::default()
         };
-        let resolved = ProviderPlatform::resolve(&handle, &config).unwrap();
+        let resolved = frona::inference::provider::resolve_connection(&handle, &config).unwrap();
         let credential_binding = binding(&resolved, "database", &config);
         let active = store
             .stage(

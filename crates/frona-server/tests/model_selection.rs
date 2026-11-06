@@ -52,7 +52,7 @@ async fn title_override_and_fallback_defaults_reach_the_provider_transport() {
     let runtime = frona::inference::credential::runtime::RuntimeCredentials::new(
         config.providers.clone(),
         state.model_provider_service.store.clone(),
-        frona::inference::provider::InferenceCounter::new(state.broadcast_service.clone()),
+        frona_harness::inference::provider::InferenceCounter::new(state.broadcast_service.clone()),
     );
     let groups = frona::inference::config::ModelRegistryConfig {
         providers: config.providers,
@@ -96,16 +96,16 @@ async fn title_override_and_fallback_defaults_reach_the_provider_transport() {
         assert_eq!(body["max_completion_tokens"], 1024);
     }
     let group = service
-        .resolve(&frona::inference::ModelRef::PRIMARY)
+        .resolve(&frona_harness::inference::ModelRef::PRIMARY)
         .unwrap();
     let usage_ctx = helpers::test_usage_ctx();
     group
-        .inference(frona::inference::ModelRequest {
+        .inference(frona_harness::inference::ModelRequest {
             input_token_estimate: None,
             system_prompt: "fixture",
             history: vec![rig_core::completion::Message::user("hi")],
             tools: vec![],
-            observations: frona::inference::observation::Observations::new(
+            observations: frona_harness::inference::observation::Observations::new(
                 &state.usage_service.scoped(&usage_ctx),
             ),
             overrides: Default::default(),
@@ -181,7 +181,7 @@ async fn title_selection_is_explicit_and_missing_title_alone_uses_primary() {
             .map(|name| {
                 let response = if unavailable_title && *name == "title" {
                     MockResponse::Error(
-                        frona::inference::error::InferenceError::ProviderNotConfigured(
+                        frona_harness::inference::error::InferenceError::ProviderNotConfigured(
                             "title".into(),
                         ),
                     )
@@ -191,7 +191,7 @@ async fn title_selection_is_explicit_and_missing_title_alone_uses_primary() {
                 let provider = Arc::new(MockModelProvider::new(vec![response]));
                 (
                     (*name).to_string(),
-                    provider as Arc<dyn frona::inference::provider::ModelProvider>,
+                    provider as Arc<dyn frona_harness::inference::provider::ModelProvider>,
                 )
             })
             .collect();

@@ -147,8 +147,8 @@ async fn test_store_user_memory_tool_rejects_a_blank_memory() {
 
 #[tokio::test]
 async fn memory_tools_use_chat_model_unless_memory_group_is_configured() {
-    use frona::inference::provider::ModelProvider;
     use frona::memory::service::MemoryService;
+    use frona_harness::inference::provider::ModelProvider;
     use helpers::{MockModelProvider, MockResponse};
 
     for (memory_group_name, with_primary) in [

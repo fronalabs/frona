@@ -18,9 +18,10 @@ use rig_core::completion::{AssistantContent, Message as RigMessage};
 use crate::core::error::AppError;
 use crate::tool::registry::AgentToolRegistry;
 
-use crate::inference::ModelGroup;
+use crate::inference::InferenceContext;
+use crate::inference::tool_loop;
 use crate::inference::usage::{UsageContext, UsageService};
-use crate::inference::{InferenceContext, InferenceError, provider, tool_loop};
+use frona_harness::inference::{InferenceError, ModelGroup, provider};
 
 pub async fn structured_inference<T>(
     model_group: &ModelGroup,
@@ -36,12 +37,12 @@ where
         .map_err(|e| InferenceError::InferenceFailed(format!("schema_for failed: {e}")))?;
     let value = (model_group)
         .structured_inference(
-            crate::inference::ModelRequest {
+            frona_harness::inference::ModelRequest {
                 input_token_estimate: None,
                 system_prompt,
                 history,
                 tools: vec![],
-                observations: crate::inference::observation::Observations::new(
+                observations: frona_harness::inference::observation::Observations::new(
                     &usage_service.scoped(usage_ctx),
                 ),
                 overrides: Default::default(),
@@ -89,15 +90,15 @@ where
     tool_defs.push(submit);
 
     for _ in 0..max_turns.max(1) {
-        let crate::inference::ModelResponse {
+        let frona_harness::inference::ModelResponse {
             content: contents, ..
         } = (model_group)
-            .inference(crate::inference::ModelRequest {
+            .inference(frona_harness::inference::ModelRequest {
                 input_token_estimate: None,
                 system_prompt,
                 history: chat_history.clone(),
                 tools: tool_defs.clone(),
-                observations: crate::inference::observation::Observations::new(
+                observations: frona_harness::inference::observation::Observations::new(
                     &usage_service.scoped(usage_ctx),
                 ),
                 overrides: Default::default(),
@@ -169,15 +170,15 @@ pub async fn text_inference_with_tools(
         tool_registry.mcp_bridge_mode(),
     );
     for _ in 0..max_turns.max(1) {
-        let crate::inference::ModelResponse {
+        let frona_harness::inference::ModelResponse {
             content: contents, ..
         } = (model_group)
-            .inference(crate::inference::ModelRequest {
+            .inference(frona_harness::inference::ModelRequest {
                 input_token_estimate: None,
                 system_prompt,
                 history: chat_history.clone(),
                 tools: tool_defs.clone(),
-                observations: crate::inference::observation::Observations::new(
+                observations: frona_harness::inference::observation::Observations::new(
                     &usage_service.scoped(usage_ctx),
                 ),
                 overrides: Default::default(),
@@ -476,15 +477,15 @@ where
             tool_defs.push(self.submit_tool_def.clone());
 
             self.requests_used += 1;
-            let crate::inference::ModelResponse {
+            let frona_harness::inference::ModelResponse {
                 content: contents, ..
             } = (self.model_group)
-                .inference(crate::inference::ModelRequest {
+                .inference(frona_harness::inference::ModelRequest {
                     input_token_estimate: None,
                     system_prompt: &self.system,
                     history: self.history.clone(),
                     tools: tool_defs,
-                    observations: crate::inference::observation::Observations::new(
+                    observations: frona_harness::inference::observation::Observations::new(
                         &self.usage_service.scoped(&self.usage_ctx),
                     ),
                     overrides: Default::default(),

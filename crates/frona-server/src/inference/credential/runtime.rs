@@ -1,16 +1,15 @@
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
 
-use crate::core::{
-    Handle,
-    config::{ApiSurface, ModelProviderConfig, ProviderModel},
+use crate::{
+    core::{Handle, config::ModelProviderConfig},
+    inference::{credential::store::ProviderCredentials, provider::build_provider},
 };
-use crate::inference::credential::store::{CredentialMethod, ProviderCredentials};
-use crate::inference::{
-    error::InferenceError,
-    provider::{
-        InferenceCounter, ModelConfig, ModelProvider,
-        platform::{ProviderPlatform, build_provider},
+use frona_harness::{
+    config::{ApiSurface, CredentialMethod, ProviderModel},
+    inference::{
+        error::InferenceError,
+        provider::{InferenceCounter, ModelConfig, ModelProvider},
     },
 };
 
@@ -32,14 +31,14 @@ pub trait CredentialMethodDriver: Send + Sync {
 
     fn accepts(
         &self,
-        connection: &crate::inference::provider::platform::ResolvedConnection,
+        connection: &frona_harness::inference::provider::platform::ResolvedConnection,
     ) -> bool;
 
     fn protocols(&self) -> &[ApiSurface];
 
     fn build(
         &self,
-        connection: &crate::inference::provider::platform::ResolvedConnection,
+        connection: &frona_harness::inference::provider::platform::ResolvedConnection,
         config: &ModelProviderConfig,
         secret: &crate::credential::managed::integration::ErasedSecret,
         counter: &InferenceCounter,
@@ -48,7 +47,7 @@ pub trait CredentialMethodDriver: Send + Sync {
 
 pub struct PreparedProvider {
     config: ModelProviderConfig,
-    connection: Result<crate::inference::provider::platform::ResolvedConnection, String>,
+    connection: Result<frona_harness::inference::provider::platform::ResolvedConnection, String>,
     cache: Mutex<Option<CachedClient>>,
     drivers: Vec<Arc<dyn CredentialMethodDriver>>,
     store: ProviderCredentials,
@@ -189,8 +188,10 @@ impl RuntimeCredentials {
                     (
                         handle.clone(),
                         Arc::new(PreparedProvider {
-                            connection: ProviderPlatform::resolve(&handle, &config)
-                                .map_err(|error| error.to_string()),
+                            connection: crate::inference::provider::resolve_connection(
+                                &handle, &config,
+                            )
+                            .map_err(|error| error.to_string()),
                             config,
                             cache: Mutex::new(None),
                             drivers: vec![
@@ -258,10 +259,12 @@ impl RuntimeCredentials {
                 "model protocol is not supported by the configured provider".into(),
             ));
         }
-        if connection.factory == crate::inference::provider::platform::FactoryKind::Azure {
-            crate::inference::provider::adapter::azure::validate_deployment(&model.model_id)?;
+        if connection.factory == frona_harness::inference::provider::platform::FactoryKind::Azure {
+            frona_harness::inference::provider::adapter::azure::validate_deployment(
+                &model.model_id,
+            )?;
         }
-        crate::inference::protocol::parameters::WireParameters::prepare_named(
+        frona_harness::inference::protocol::parameters::WireParameters::prepare_named(
             model, None, None, false, "model",
         )?;
         model.catalog_provider = connection.brand.clone();
@@ -358,7 +361,7 @@ impl PreparedProvider {
                 }
                 "copilot" => {
                     if resolved.factory
-                        != crate::inference::provider::platform::FactoryKind::Copilot
+                        != frona_harness::inference::provider::platform::FactoryKind::Copilot
                     {
                         return Err(unavailable(
                             model,
@@ -483,13 +486,13 @@ impl PreparedProvider {
             });
         }
         let client = if let Some(secret) = managed_secret.as_ref().filter(|_| {
-            resolved.factory == crate::inference::provider::platform::FactoryKind::Copilot
+            resolved.factory == frona_harness::inference::provider::platform::FactoryKind::Copilot
         }) {
             crate::inference::provider::adapter::copilot::current_provider(
                 resolved
                     .effective_base_url
                     .as_deref()
-                    .unwrap_or(crate::inference::provider::adapter::copilot::ENDPOINT),
+                    .unwrap_or(frona_harness::inference::provider::adapter::copilot::ENDPOINT),
                 secret,
                 &self.counter,
             )?
@@ -523,23 +526,23 @@ impl ModelProvider for PreparedProvider {
     async fn list_models(
         &self,
     ) -> Result<
-        crate::inference::provider::ProviderModelList,
-        crate::inference::provider::ModelListError,
+        frona_harness::inference::provider::ProviderModelList,
+        frona_harness::inference::provider::ModelListError,
     > {
         let connection = self
             .connection
             .as_ref()
-            .map_err(|error| crate::inference::provider::ModelListError(error.clone()))?;
+            .map_err(|error| frona_harness::inference::provider::ModelListError(error.clone()))?;
         let model = ModelConfig {
             catalog_provider: String::new(),
-            provider_handle: connection.handle.clone().into(),
+            provider_handle: connection.handle.clone(),
             model_id: "model-list".into(),
             provider: ProviderModel::Generic,
             request_settings: Default::default(),
         };
         self.resolve_selected(&model, false)
             .await
-            .map_err(|error| crate::inference::provider::ModelListError(error.to_string()))?
+            .map_err(|error| frona_harness::inference::provider::ModelListError(error.to_string()))?
             .client
             .list_models()
             .await
@@ -553,7 +556,7 @@ impl ModelProvider for PreparedProvider {
         tools: Vec<rig_core::completion::request::ToolDefinition>,
         max_tokens: Option<u64>,
         temperature: Option<f64>,
-    ) -> Result<crate::inference::provider::InferenceOutput, InferenceError> {
+    ) -> Result<frona_harness::inference::provider::InferenceOutput, InferenceError> {
         self.resolve_selected(model, true)
             .await?
             .client
@@ -574,10 +577,10 @@ impl ModelProvider for PreparedProvider {
         system_prompt: &str,
         chat_history: Vec<rig_core::completion::Message>,
         tools: Vec<rig_core::completion::request::ToolDefinition>,
-        token_tx: tokio::sync::mpsc::Sender<crate::inference::provider::StreamToken>,
+        token_tx: tokio::sync::mpsc::Sender<frona_harness::inference::provider::StreamToken>,
         max_tokens: Option<u64>,
         temperature: Option<f64>,
-    ) -> Result<crate::inference::provider::InferenceOutput, InferenceError> {
+    ) -> Result<frona_harness::inference::provider::InferenceOutput, InferenceError> {
         self.resolve_selected(model, true)
             .await?
             .client
@@ -768,13 +771,20 @@ mod tests {
         );
         let mut conflict = config;
         conflict.api_key = Some("${KEY}".into());
-        assert!(ProviderPlatform::resolve(&Handle::const_validated("openai"), &conflict).is_err());
+        assert!(
+            crate::inference::provider::resolve_connection(
+                &Handle::const_validated("openai"),
+                &conflict
+            )
+            .is_err()
+        );
     }
     use super::*;
-    use crate::chat::broadcast::BroadcastService;
-    use crate::core::config::AdapterId;
-    use crate::credential::managed::Candidate;
-    use crate::inference::credential::store::CredentialBinding;
+    use crate::{
+        chat::broadcast::BroadcastService, credential::managed::Candidate,
+        inference::credential::store::CredentialBinding,
+    };
+    use frona_harness::config::AdapterId;
 
     struct ResponsesOnly;
 
@@ -786,7 +796,7 @@ mod tests {
 
         fn accepts(
             &self,
-            connection: &crate::inference::provider::platform::ResolvedConnection,
+            connection: &frona_harness::inference::provider::platform::ResolvedConnection,
         ) -> bool {
             connection.brand == "openai"
                 && connection.effective_base_url.as_deref() == Some("https://api.openai.com/v1")
@@ -798,7 +808,7 @@ mod tests {
 
         fn build(
             &self,
-            connection: &crate::inference::provider::platform::ResolvedConnection,
+            connection: &frona_harness::inference::provider::platform::ResolvedConnection,
             config: &ModelProviderConfig,
             secret: &crate::credential::managed::integration::ErasedSecret,
             counter: &InferenceCounter,
@@ -825,7 +835,7 @@ mod tests {
         let store = crate::credential::managed::test_support::credentials(db, "test-secret").await;
         let handle = Handle::const_validated("openai");
         let mut config = ModelProviderConfig::default();
-        let resolved = ProviderPlatform::resolve(&handle, &config).unwrap();
+        let resolved = crate::inference::provider::resolve_connection(&handle, &config).unwrap();
         let binding =
             crate::inference::provider::validation::binding(&resolved, "database", &config);
         let key = store
@@ -872,7 +882,7 @@ mod tests {
             catalog_provider: String::new(),
             provider_handle: crate::core::Handle::const_validated("openai").into(),
             model_id: "test".into(),
-            provider: crate::core::config::ProviderModel::from_name("openai"),
+            provider: frona_harness::config::ProviderModel::from_name("openai"),
             request_settings: Default::default(),
         };
         assert!(
@@ -898,7 +908,7 @@ mod tests {
         );
         let mut responses = completions.clone();
         responses.provider = ProviderModel::OpenAI {
-            api: Some(crate::core::config::OpenAiApi::Responses),
+            api: Some(frona_harness::config::OpenAiApi::Responses),
             params: Default::default(),
         };
         assert!(
@@ -995,7 +1005,7 @@ mod tests {
             provider: Some("openai".into()),
             ..Default::default()
         };
-        let resolved = ProviderPlatform::resolve(&handle, &config).unwrap();
+        let resolved = crate::inference::provider::resolve_connection(&handle, &config).unwrap();
         let binding =
             crate::inference::provider::validation::binding(&resolved, "database", &config);
         let proof = store
@@ -1083,7 +1093,7 @@ mod tests {
             configs.insert(handle.clone(), config);
         }
         let binding = crate::inference::provider::validation::binding(
-            &ProviderPlatform::resolve(&a, &configs[&a]).unwrap(),
+            &crate::inference::provider::resolve_connection(&a, &configs[&a]).unwrap(),
             "database",
             &configs[&a],
         );
@@ -1278,7 +1288,7 @@ mod tests {
         let handle = Handle::const_validated("openai");
         let config = ModelProviderConfig::default();
         let binding = crate::inference::provider::validation::binding(
-            &ProviderPlatform::resolve(&handle, &config).unwrap(),
+            &crate::inference::provider::resolve_connection(&handle, &config).unwrap(),
             "database",
             &config,
         );
@@ -1293,7 +1303,7 @@ mod tests {
             catalog_provider: String::new(),
             provider_handle: crate::core::Handle::const_validated("openai").into(),
             model_id: "test".into(),
-            provider: crate::core::config::ProviderModel::from_name("openai"),
+            provider: frona_harness::config::ProviderModel::from_name("openai"),
             request_settings: Default::default(),
         };
         assert!(provider.ensure_usable(&model).await.is_err());

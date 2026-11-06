@@ -194,10 +194,11 @@ use frona::chat::command::{Command, CommandContext, CommandOutcome};
 use frona::chat::repository::ChatSummaryRepository;
 use frona::chat::service::ChatService;
 use frona::chat::session::{CancellationToken, ChatSessionContext};
-use frona::db::repo::chat_summaries::SurrealChatSummaryRepo;
-use frona::inference::conversation::DefaultConversationBuilder;
-use frona::inference::provider::ModelProvider;
-use frona::storage::Attachment;
+use frona::{
+    db::repo::chat_summaries::SurrealChatSummaryRepo,
+    inference::conversation::DefaultConversationBuilder, storage::Attachment,
+};
+use frona_harness::inference::provider::ModelProvider;
 use helpers::{MockModelProvider, MockResponse};
 use rig_core::completion::message::{DocumentSourceKind, UserContent};
 use rig_core::completion::{AssistantContent, Message as RigMessage};
@@ -226,7 +227,7 @@ impl App {
         Self::with_provider(
             window,
             legacy_groups,
-            frona::core::config::ProviderModel::Generic,
+            frona_harness::config::ProviderModel::Generic,
         )
         .await
     }
@@ -234,7 +235,7 @@ impl App {
     async fn with_provider(
         window: usize,
         legacy_groups: bool,
-        provider: frona::core::config::ProviderModel,
+        provider: frona_harness::config::ProviderModel,
     ) -> Self {
         let db = Surreal::new::<Mem>(()).await.unwrap();
         frona::db::init::setup_schema(&db).await.unwrap();
@@ -819,7 +820,7 @@ async fn repeated_compaction_incorporates_previous_summary_and_advances_only_pas
 
 #[tokio::test]
 async fn exact_post_summary_budget_is_inclusive_and_overflow_does_not_publish() {
-    use frona::inference::context::{estimate_message_tokens, estimate_tokens};
+    use frona_harness::inference::context::{estimate_message_tokens, estimate_tokens};
     for extra in [0, 1] {
         let (db, compactor, messages, summary) = fixture().await;
         let request = row("request", 1, MessageRole::User, &"active ".repeat(45));
@@ -919,7 +920,7 @@ async fn manual_and_automatic_failures_never_report_success_or_lose_requests() {
                     .unwrap();
             } else {
                 app.model.enqueue(MockResponse::Error(
-                    frona::inference::error::InferenceError::InferenceFailed(
+                    frona_harness::inference::error::InferenceError::InferenceFailed(
                         "injected summarizer failure".into(),
                     ),
                 ));
@@ -1022,7 +1023,7 @@ async fn text_send_persists_attachments_and_sends_current_request_exactly_once()
 
 #[tokio::test]
 async fn session_rejects_initial_history_that_inference_would_truncate() {
-    use frona::inference::context::estimate_tokens;
+    use frona_harness::inference::context::estimate_tokens;
     let app = App::new().await;
     let session = app.session().await.unwrap();
     let budget =
@@ -1252,7 +1253,7 @@ async fn agent_model_fallback_covers_api_tasks_and_heartbeats() {
                     assert!(
                         matches!(&result, Err(AppError::Inference(error)) if matches!(
                             error.as_ref(),
-                            frona::inference::InferenceError::ModelGroupNotFound(name)
+                            frona_harness::inference::InferenceError::ModelGroupNotFound(name)
                                 if name == requested
                         )),
                         "{path}/{requested}: {result:?}"
@@ -2106,7 +2107,7 @@ async fn compaction_candidates_never_truncate_and_fallback_preserves_usage_scope
             parameters: serde_json::json!({"type":"object"}),
         }];
         let group = service
-            .resolve(&frona::inference::ModelRef("conversation".into()))
+            .resolve(&frona_harness::inference::ModelRef("conversation".into()))
             .unwrap();
         let result = TextInferenceSummarizer::new(helpers::test_usage_service(&db))
             .summarize(SummaryRequest {
@@ -2273,11 +2274,11 @@ async fn oversized_conversation_prefix_cannot_use_a_larger_legacy_compaction_mod
 }
 
 impl App {
-    async fn recorded_stats(&self, usage: frona::inference::Usage) {
+    async fn recorded_stats(&self, usage: frona_harness::inference::Usage) {
         let group = self
             .chat_service
             .model_providers()
-            .resolve(&frona::inference::ModelRef("conversation".into()))
+            .resolve(&frona_harness::inference::ModelRef("conversation".into()))
             .unwrap();
         self.fixture
             .state
@@ -2340,8 +2341,8 @@ impl App {
     }
 }
 
-fn provider_usage(total: u64) -> frona::inference::Usage {
-    frona::inference::Usage {
+fn provider_usage(total: u64) -> frona_harness::inference::Usage {
+    frona_harness::inference::Usage {
         input_tokens: total.saturating_sub(5),
         output_tokens: 5,
         total_tokens: total,
@@ -2417,7 +2418,7 @@ async fn nonstream_send_uses_provider_estimate_without_trimming_the_original_his
     assert!(outgoing.contains("NEW NONSTREAM REQUEST"));
 }
 
-async fn fallback_statistics_fixture(usage: Option<frona::inference::Usage>) -> App {
+async fn fallback_statistics_fixture(usage: Option<frona_harness::inference::Usage>) -> App {
     let app = App::new().await;
     app.history(MessageRole::User, false).await;
     if let Some(usage) = usage {
@@ -2463,15 +2464,15 @@ async fn invalid_token_counts_use_estimated_trigger_and_split() {
     // Zero usage, missing total, inconsistent total, incomplete output, and overflow.
     for usage in [
         Default::default(),
-        frona::inference::Usage {
+        frona_harness::inference::Usage {
             total_tokens: 0,
             ..provider_usage(6000)
         },
-        frona::inference::Usage {
+        frona_harness::inference::Usage {
             total_tokens: 100,
             ..provider_usage(6000)
         },
-        frona::inference::Usage {
+        frona_harness::inference::Usage {
             output_tokens: 0,
             ..provider_usage(6000)
         },
@@ -2616,7 +2617,7 @@ async fn statistics_older_than_summary_use_estimated_trigger_and_split() {
 
 #[tokio::test]
 async fn cached_provider_totals_are_normalized_without_adding_cache_tokens_twice() {
-    use frona::core::config::ProviderModel;
+    use frona_harness::config::ProviderModel;
     for (provider, input, cached, writes, total, expected_compaction) in [
         (ProviderModel::Generic, 5995, 5995, 0, 6000, false),
         (
@@ -2654,7 +2655,7 @@ async fn cached_provider_totals_are_normalized_without_adding_cache_tokens_twice
         for legacy in [false, true] {
             let app = App::with_provider(18_000, true, provider.clone()).await;
             app.history(MessageRole::User, false).await;
-            app.recorded_stats(frona::inference::Usage {
+            app.recorded_stats(frona_harness::inference::Usage {
                 input_tokens: input,
                 cached_input_tokens: cached,
                 cache_creation_input_tokens: writes,
@@ -2722,7 +2723,9 @@ async fn calibrated_summary_does_not_lend_its_estimate_to_a_fallback_model() {
     session.model_group.fallbacks.push(fallback);
     session.model_group.retry.max_retries = 0;
     app.model.enqueue(MockResponse::Error(
-        frona::inference::error::InferenceError::InferenceFailed("main provider failed".into()),
+        frona_harness::inference::error::InferenceError::InferenceFailed(
+            "main provider failed".into(),
+        ),
     ));
     let result = app.manual(&mut session).await;
     assert!(

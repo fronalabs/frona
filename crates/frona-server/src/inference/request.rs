@@ -9,9 +9,8 @@ use crate::chat::models::Chat;
 use crate::core::error::AppError;
 use crate::tool::registry::AgentToolRegistry;
 
-use crate::inference::ModelGroup;
-use crate::inference::tool_call::TaskEvent;
-use crate::inference::usage::UsageService;
+use crate::inference::{tool_call::TaskEvent, usage::UsageService};
+use frona_harness::inference::ModelGroup;
 
 use crate::chat::message::models::Reasoning;
 
@@ -100,7 +99,7 @@ pub fn active_chat(ctx: &InferenceContext) -> Result<&Chat, AppError> {
 }
 
 pub struct InferenceRequest {
-    pub input_token_estimate: Option<crate::inference::context::InputTokenEstimate>,
+    pub input_token_estimate: Option<frona_harness::inference::context::InputTokenEstimate>,
     pub model_group: ModelGroup,
     pub system_prompt: String,
     pub history: Vec<RigMessage>,

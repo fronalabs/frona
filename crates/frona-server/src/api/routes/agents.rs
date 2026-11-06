@@ -21,7 +21,7 @@ fn resolve_model(state: &AppState, model_group_name: &str) -> Option<Model> {
     let group = state
         .chat_service
         .model_providers()
-        .resolve(&crate::inference::ModelRef(
+        .resolve(&frona_harness::inference::ModelRef(
             model_group_name.to_owned().into(),
         ))
         .ok()?;
@@ -404,7 +404,7 @@ mod context_budget_tests {
             let group = state
                 .chat_service
                 .model_providers()
-                .resolve(&crate::inference::ModelRef::PRIMARY)
+                .resolve(&frona_harness::inference::ModelRef::PRIMARY)
                 .unwrap();
             assert_eq!(model.context_window, group.context_window);
             assert_eq!(

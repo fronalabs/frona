@@ -8,10 +8,8 @@ use rig_core::completion::request::Usage;
 
 use crate::chat::broadcast::BroadcastService;
 use crate::core::repository::{Repository, new_id};
-use crate::db::repo::generic::SurrealRepo;
-use crate::inference::protocol::parameters::WireDialect;
-use crate::inference::provider::ModelConfig;
-use crate::inference::usage::UsageContext;
+use crate::{db::repo::generic::SurrealRepo, inference::usage::UsageContext};
+use frona_harness::inference::{protocol::parameters::WireDialect, provider::ModelConfig};
 use frona_model_catalog::ModelCatalogStore;
 
 use super::models::InferenceUsage;
@@ -38,8 +36,9 @@ fn record_catalog_size(snapshot: &frona_model_catalog::ModelCatalogSnapshot) {
         .set(snapshot.entries.len() as f64);
 }
 
-pub use crate::inference::observation::LatencyMetrics;
-use crate::inference::observation::{InferenceObserver, ObservationError, UsageObservation};
+use frona_harness::inference::observation::{
+    InferenceObserver, LatencyMetrics, ObservationError, UsageObservation,
+};
 
 /// Persistent attribution bound outside the portable request/observation path.
 pub struct ScopedUsageObserver<'a> {

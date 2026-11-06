@@ -89,7 +89,7 @@ async fn test_app_state_with_mock(mock: Arc<MockModelProvider>) -> (AppState, te
         user_service.clone(),
     );
 
-    let mut providers: HashMap<String, Arc<dyn frona::inference::provider::ModelProvider>> =
+    let mut providers: HashMap<String, Arc<dyn frona_harness::inference::provider::ModelProvider>> =
         HashMap::new();
     providers.insert("mock".to_string(), mock);
 

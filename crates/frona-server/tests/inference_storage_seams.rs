@@ -1,7 +1,5 @@
 use frona::core::{Handle, config::RetryConfig};
-use frona::inference::{
-    handle::Handle as ProviderHandle, retry_config::RetryConfig as RetryPolicy,
-};
+use frona_harness::{handle::Handle as ProviderHandle, retry_config::RetryConfig as RetryPolicy};
 use serde_json::json;
 use surrealdb::types::{Kind, SurrealValue};
 

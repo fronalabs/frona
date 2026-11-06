@@ -75,7 +75,7 @@ async fn structured_inference_with_tools_loops_then_submits() {
     let usage_ctx = test_usage_ctx();
 
     let result: Resolution = frona::inference::structured_inference_with_tools(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(test_model_group()).clone()
         },

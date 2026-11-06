@@ -22,19 +22,19 @@ async fn streaming_failure_reports_retries_and_fallback_context() {
     )]));
     let mut providers = test_providers("mock", primary.clone());
     Arc::make_mut(&mut providers).insert("subscription".into(), fallback.clone());
-    let group = frona::inference::ModelGroup {
+    let group = frona_harness::inference::ModelGroup {
         providers,
         ..test_model_group_with_fallback("subscription", "gpt-5.3-codex")
     };
     let (events, _, _) = test_event_sender().await;
     let error = group
         .stream_inference(
-            frona::inference::ModelRequest {
+            frona_harness::inference::ModelRequest {
                 input_token_estimate: None,
                 system_prompt: "system",
                 history: vec![RigMessage::user("hi")],
                 tools: vec![],
-                observations: frona::inference::observation::Observations::new(
+                observations: frona_harness::inference::observation::Observations::new(
                     &test_metrics_ctx().scoped(&test_usage_ctx()),
                 ),
                 overrides: Default::default(),
@@ -70,17 +70,17 @@ async fn streaming_skips_unavailable_primary_and_uses_fallback_without_catalogs(
     let group = test_model_group_with_fallback("fallback", "test-model");
     let (events, _, _) = test_event_sender().await;
     let mut text = String::new();
-    let result = frona::inference::ModelGroup {
+    let result = frona_harness::inference::ModelGroup {
         providers: registry,
         ..group
     }
     .stream_inference(
-        frona::inference::ModelRequest {
+        frona_harness::inference::ModelRequest {
             input_token_estimate: None,
             system_prompt: "system",
             history: vec![RigMessage::user("hi")],
             tools: vec![],
-            observations: frona::inference::observation::Observations::new(
+            observations: frona_harness::inference::observation::Observations::new(
                 &test_metrics_ctx().scoped(&test_usage_ctx()),
             ),
             overrides: Default::default(),
@@ -99,10 +99,10 @@ async fn streaming_skips_unavailable_primary_and_uses_fallback_without_catalogs(
 use std::sync::Arc;
 
 use frona::core::error::AppError;
-use frona::inference::error::InferenceError;
 use frona::inference::text_inference;
 use frona::inference::tool_loop::{ToolLoopOutcome, run_tool_loop};
 use frona::tool::registry::AgentToolRegistry;
+use frona_harness::inference::error::InferenceError;
 use helpers::*;
 use rig_core::completion::Message as RigMessage;
 use tokio::sync::mpsc;
@@ -125,7 +125,7 @@ async fn test_tool_loop_simple_text_response() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -187,7 +187,7 @@ async fn test_tool_loop_single_tool_call() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -262,7 +262,7 @@ async fn test_tool_loop_multi_turn() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -306,7 +306,7 @@ async fn test_tool_loop_external_tool_returns_pending() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -356,7 +356,7 @@ async fn test_tool_loop_mixed_internal_external() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -405,7 +405,7 @@ async fn test_tool_loop_multiple_external_tools_in_same_turn() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -459,7 +459,7 @@ async fn test_tool_loop_mixed_internal_and_multiple_external() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -505,7 +505,7 @@ async fn test_tool_loop_cancellation_before_inference() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -551,7 +551,7 @@ async fn test_tool_loop_rate_limit_retry() {
     tokio::time::pause();
 
     let outcome = run_tool_loop(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -612,7 +612,7 @@ async fn test_tool_loop_rate_limit_exhausted() {
     tokio::time::pause();
 
     let result = run_tool_loop(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -661,7 +661,7 @@ async fn test_tool_loop_tool_call_failure() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -711,7 +711,7 @@ async fn test_tool_loop_provider_error() {
     let chat_service = test_chat_service().await;
 
     let result = run_tool_loop(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -749,7 +749,7 @@ async fn test_fallback_main_succeeds() {
     let metrics = test_metrics_ctx();
 
     let result = text_inference(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -779,11 +779,11 @@ async fn test_fallback_main_fails_fallback_succeeds() {
     let mut providers = std::collections::HashMap::new();
     providers.insert(
         "mock".to_string(),
-        main_provider.clone() as Arc<dyn frona::inference::provider::ModelProvider>,
+        main_provider.clone() as Arc<dyn frona_harness::inference::provider::ModelProvider>,
     );
     providers.insert(
         "fallback".to_string(),
-        fallback_provider.clone() as Arc<dyn frona::inference::provider::ModelProvider>,
+        fallback_provider.clone() as Arc<dyn frona_harness::inference::provider::ModelProvider>,
     );
     let registry = Arc::new(providers);
 
@@ -791,7 +791,7 @@ async fn test_fallback_main_fails_fallback_succeeds() {
     let metrics = test_metrics_ctx();
 
     let result = text_inference(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -824,11 +824,11 @@ async fn test_fallback_all_fail() {
     let mut providers = std::collections::HashMap::new();
     providers.insert(
         "mock".to_string(),
-        main_provider as Arc<dyn frona::inference::provider::ModelProvider>,
+        main_provider as Arc<dyn frona_harness::inference::provider::ModelProvider>,
     );
     providers.insert(
         "fallback".to_string(),
-        fallback_provider as Arc<dyn frona::inference::provider::ModelProvider>,
+        fallback_provider as Arc<dyn frona_harness::inference::provider::ModelProvider>,
     );
     let registry = Arc::new(providers);
 
@@ -836,7 +836,7 @@ async fn test_fallback_all_fail() {
     let metrics = test_metrics_ctx();
 
     let result = text_inference(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -869,7 +869,7 @@ async fn test_fallback_retryable_error_retried() {
     let metrics = test_metrics_ctx();
 
     let result = text_inference(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -899,11 +899,11 @@ async fn test_fallback_non_retryable_skips_retry() {
     let mut providers = std::collections::HashMap::new();
     providers.insert(
         "mock".to_string(),
-        main_provider.clone() as Arc<dyn frona::inference::provider::ModelProvider>,
+        main_provider.clone() as Arc<dyn frona_harness::inference::provider::ModelProvider>,
     );
     providers.insert(
         "fallback".to_string(),
-        fallback_provider.clone() as Arc<dyn frona::inference::provider::ModelProvider>,
+        fallback_provider.clone() as Arc<dyn frona_harness::inference::provider::ModelProvider>,
     );
     let registry = Arc::new(providers);
 
@@ -911,7 +911,7 @@ async fn test_fallback_non_retryable_skips_retry() {
     let metrics = test_metrics_ctx();
 
     let result = text_inference(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -945,28 +945,28 @@ async fn test_fallback_multiple_fallbacks_order() {
     let mut providers = std::collections::HashMap::new();
     providers.insert(
         "mock".to_string(),
-        main_provider as Arc<dyn frona::inference::provider::ModelProvider>,
+        main_provider as Arc<dyn frona_harness::inference::provider::ModelProvider>,
     );
     providers.insert(
         "fb1".to_string(),
-        fb1_provider as Arc<dyn frona::inference::provider::ModelProvider>,
+        fb1_provider as Arc<dyn frona_harness::inference::provider::ModelProvider>,
     );
     providers.insert(
         "fb2".to_string(),
-        fb2_provider as Arc<dyn frona::inference::provider::ModelProvider>,
+        fb2_provider as Arc<dyn frona_harness::inference::provider::ModelProvider>,
     );
     let registry = Arc::new(providers);
 
     let mut model_group = test_model_group();
     model_group.fallbacks = vec![
-        frona::inference::ModelConfig {
+        frona_harness::inference::ModelConfig {
             request_settings: Default::default(),
             catalog_provider: String::new(),
             provider_handle: frona::core::Handle::const_validated("fb1").into(),
             provider: "fb1".into(),
             model_id: "fb1-model".into(),
         },
-        frona::inference::ModelConfig {
+        frona_harness::inference::ModelConfig {
             request_settings: Default::default(),
             catalog_provider: String::new(),
             provider_handle: frona::core::Handle::const_validated("fb2").into(),
@@ -977,7 +977,7 @@ async fn test_fallback_multiple_fallbacks_order() {
     let metrics = test_metrics_ctx();
 
     let result = text_inference(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -1011,47 +1011,49 @@ impl StreamingMockProvider {
 }
 
 #[async_trait::async_trait]
-impl frona::inference::provider::ModelProvider for StreamingMockProvider {
+impl frona_harness::inference::provider::ModelProvider for StreamingMockProvider {
     async fn inference(
         &self,
-        _model: &frona::inference::ModelConfig,
+        _model: &frona_harness::inference::ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
-    ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
+    ) -> Result<frona_harness::inference::provider::InferenceOutput, InferenceError> {
         unreachable!("streaming test should not call non-streaming inference");
     }
 
     async fn stream_inference(
         &self,
-        _model: &frona::inference::ModelConfig,
+        _model: &frona_harness::inference::ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
-        token_tx: mpsc::Sender<frona::inference::provider::StreamToken>,
+        token_tx: mpsc::Sender<frona_harness::inference::provider::StreamToken>,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
-    ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
+    ) -> Result<frona_harness::inference::provider::InferenceOutput, InferenceError> {
         *self.call_count.lock().unwrap() += 1;
         let mut full_text = String::new();
         for token in &self.tokens {
             full_text.push_str(token);
             let _ = token_tx
-                .send(frona::inference::provider::StreamToken::Text(token.clone()))
+                .send(frona_harness::inference::provider::StreamToken::Text(
+                    token.clone(),
+                ))
                 .await;
             tokio::time::sleep(self.delay_between).await;
         }
-        Ok(frona::inference::provider::InferenceOutput::new(
+        Ok(frona_harness::inference::provider::InferenceOutput::new(
             vec![rig_core::completion::AssistantContent::text(full_text)],
-            frona::inference::Usage::default(),
+            frona_harness::inference::Usage::default(),
         ))
     }
 
     async fn structured_inference(
         &self,
-        _model: &frona::inference::ModelConfig,
+        _model: &frona_harness::inference::ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _schema: serde_json::Value,
@@ -1103,7 +1105,7 @@ async fn test_streaming_tokens_arrive_individually() {
 
     let handle = tokio::spawn(async move {
         run_tool_loop(
-            &frona::inference::ModelGroup {
+            &frona_harness::inference::ModelGroup {
                 providers: registry.clone(),
                 ..(model_group).clone()
             },
@@ -1203,7 +1205,7 @@ async fn test_tool_loop_reasoning_in_completed_outcome() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -1275,7 +1277,7 @@ async fn test_tool_loop_reasoning_with_tool_calls() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -1331,7 +1333,7 @@ async fn test_tool_loop_no_reasoning_when_absent() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -1387,7 +1389,7 @@ async fn test_tool_result_sse_includes_summary() {
     let chat_service = test_chat_service().await;
 
     let _outcome = run_tool_loop(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -1467,7 +1469,7 @@ async fn test_tool_loop_deduplicates_attachments_before_lifecycle_return() {
     let chat_service = test_chat_service().await;
 
     let outcome = run_tool_loop(
-        &frona::inference::ModelGroup {
+        &frona_harness::inference::ModelGroup {
             providers: registry.clone(),
             ..(model_group).clone()
         },
@@ -1560,7 +1562,7 @@ async fn tool_instructions_leave_system_stable_and_replay_the_exact_live_tail() 
     tools.register(Arc::new(Instructions("second")));
     let (events, _, _) = test_event_sender().await;
     let ctx = mock_context();
-    let group = frona::inference::ModelGroup {
+    let group = frona_harness::inference::ModelGroup {
         providers: test_providers("mock", provider.clone()),
         ..test_model_group()
     };

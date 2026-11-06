@@ -3417,6 +3417,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "frona-harness"
+version = "2026.11.0"
+dependencies = [
+ "approx",
+ "async-trait",
+ "aws-config",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-sdk-bedrock",
+ "aws-sdk-bedrockruntime",
+ "aws-smithy-async",
+ "aws-smithy-eventstream",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "backon",
+ "bytes 1.12.1",
+ "chrono",
+ "frona-derive",
+ "frona-model-catalog",
+ "frona-text",
+ "futures",
+ "http 1.5.0",
+ "hyper 1.12.0",
+ "hyper-util",
+ "json_partial",
+ "jsonschema 0.59.0",
+ "metrics",
+ "reqwest 0.13.5",
+ "rig-bedrock",
+ "rig-core",
+ "rustls 0.23.46",
+ "schemars 1.2.3",
+ "serde",
+ "serde-aux",
+ "serde_json",
+ "serde_with",
+ "serde_yaml",
+ "smol_str",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "frona-model-catalog"
 version = "2026.11.0"
 dependencies = [
@@ -3485,6 +3534,7 @@ dependencies = [
  "frona-browser",
  "frona-cli-mcp",
  "frona-derive",
+ "frona-harness",
  "frona-model-catalog",
  "frona-ontologies",
  "frona-text",
@@ -10920,6 +10970,7 @@ dependencies = [
  "futures-core",
  "futures-io",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",

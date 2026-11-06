@@ -1,6 +1,6 @@
 //! Convert Rig token counts to the catalog's fresh-input pricing convention.
 
-use crate::inference::{protocol::parameters::WireDialect, provider::ModelConfig};
+use frona_harness::inference::{protocol::parameters::WireDialect, provider::ModelConfig};
 use frona_model_catalog::{ModelCatalogSnapshot, catalog::TokenUsage};
 use rig_core::completion::request::Usage;
 
@@ -56,7 +56,7 @@ mod tests {
             catalog_provider: "catalog-account".into(),
             provider_handle: crate::core::Handle::try_new("work-account").unwrap().into(),
             model_id: "fixture".into(),
-            provider: crate::core::config::ProviderModel::from_name(provider),
+            provider: frona_harness::config::ProviderModel::from_name(provider),
         };
         (snapshot, model)
     }
@@ -300,7 +300,7 @@ mod tests {
                 catalog_provider: provider.into(),
                 provider_handle: crate::core::Handle::try_new(provider).unwrap().into(),
                 model_id: "fixture".into(),
-                provider: crate::core::config::ProviderModel::from_name(provider),
+                provider: frona_harness::config::ProviderModel::from_name(provider),
             };
             let usage = Usage {
                 input_tokens: input,

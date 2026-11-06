@@ -103,11 +103,10 @@ const SHOW_ENV: &str = "printf '%s|%s|%s' \"${LOGIN_ACCESS_TOKEN-unset}\" \"${LO
 
 #[tokio::test]
 async fn inference_and_granted_commands_share_a_provider_without_implicit_secret_access() {
-    use frona::core::config::ModelProviderConfig;
-    use frona::inference::{
-        credential::runtime::RuntimeCredentials,
-        provider::{InferenceCounter, ModelConfig},
+    use frona::{
+        core::config::ModelProviderConfig, inference::credential::runtime::RuntimeCredentials,
     };
+    use frona_harness::inference::provider::{InferenceCounter, ModelConfig};
     use wiremock::matchers::{header, method, path};
     let (state, _tmp, ctx, token) = setup().await;
     let server = MockServer::start().await;
@@ -142,8 +141,8 @@ async fn inference_and_granted_commands_share_a_provider_without_implicit_secret
         catalog_provider: String::new(),
         provider_handle: handle.clone().into(),
         model_id: "fixture".into(),
-        provider: frona::core::config::ProviderModel::OpenAI {
-            api: Some(frona::core::config::OpenAiApi::ChatCompletions),
+        provider: frona_harness::config::ProviderModel::OpenAI {
+            api: Some(frona_harness::config::OpenAiApi::ChatCompletions),
             params: Default::default(),
         },
         request_settings: Default::default(),
@@ -179,7 +178,7 @@ async fn inference_and_granted_commands_share_a_provider_without_implicit_secret
     let group = service
         .compile(
             model,
-            frona::inference::config::RetryConfig {
+            frona_harness::config::RetryConfig {
                 max_retries: 0,
                 ..Default::default()
             },
@@ -189,12 +188,12 @@ async fn inference_and_granted_commands_share_a_provider_without_implicit_secret
     let usage_context = crate::helpers::test_usage_ctx();
     assert!(
         group
-            .inference(frona::inference::ModelRequest {
+            .inference(frona_harness::inference::ModelRequest {
                 input_token_estimate: None,
                 system_prompt: "fixture",
                 history: vec![],
                 tools: vec![],
-                observations: frona::inference::observation::Observations::new(
+                observations: frona_harness::inference::observation::Observations::new(
                     &state.usage_service.scoped(&usage_context)
                 ),
                 overrides: Default::default(),
@@ -225,16 +224,16 @@ async fn inference_and_granted_commands_share_a_provider_without_implicit_secret
             &prepared,
             &runtime.provider(&handle).unwrap()
         ));
-        let frona::inference::ModelResponse { usage, .. } = group
-            .inference(frona::inference::ModelRequest {
+        let frona_harness::inference::ModelResponse { usage, .. } = group
+            .inference(frona_harness::inference::ModelRequest {
                 input_token_estimate: None,
                 system_prompt: "fixture",
                 history: vec![],
                 tools: vec![],
-                observations: frona::inference::observation::Observations::new(
+                observations: frona_harness::inference::observation::Observations::new(
                     &state.usage_service.scoped(&usage_context),
                 ),
-                overrides: frona::inference::RequestOverrides {
+                overrides: frona_harness::inference::RequestOverrides {
                     max_tokens: Some(16),
                     temperature: None,
                 },

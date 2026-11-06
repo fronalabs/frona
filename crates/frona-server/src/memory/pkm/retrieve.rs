@@ -7,7 +7,7 @@
 //! *index* is pushed, so the agent knows which procedures exist without a blind search.
 
 use crate::core::error::AppError;
-use crate::inference::context::estimate_tokens;
+use frona_harness::inference::context::estimate_tokens;
 
 use chrono::Utc;
 

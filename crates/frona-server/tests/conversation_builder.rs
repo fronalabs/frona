@@ -10,11 +10,11 @@ use frona::db::repo::generic::SurrealRepo;
 use frona::inference::conversation::{
     ConversationBuilder, ConversationContext, DefaultConversationBuilder,
 };
-use frona::inference::provider::ModelConfig;
-use frona::inference::tool_call::ToolCall;
-use frona::policy::service::PolicyService;
-use frona::storage::StorageService;
-use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
+use frona::{
+    inference::tool_call::ToolCall, policy::service::PolicyService, storage::StorageService,
+    tool::sandbox::driver::resource_monitor::SystemResourceManager,
+};
+use frona_harness::inference::provider::ModelConfig;
 use rig_core::completion::message::UserContent;
 use rig_core::completion::{AssistantContent, Message as RigMessage};
 use surrealdb::Surreal;

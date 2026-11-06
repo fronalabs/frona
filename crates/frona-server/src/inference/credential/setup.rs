@@ -3,9 +3,7 @@
 use crate::core::error::AppError;
 use crate::credential::managed::login::service::LoginAttempt as ManagedAttempt;
 pub use crate::credential::managed::login::service::LoginStatus;
-use crate::inference::{
-    credential::store::CredentialMethod, provider::platform::ResolvedConnection,
-};
+use frona_harness::{config::CredentialMethod, inference::provider::platform::ResolvedConnection};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

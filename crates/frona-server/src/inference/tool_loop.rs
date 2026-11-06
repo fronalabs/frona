@@ -18,8 +18,8 @@ use crate::core::metrics;
 use crate::tool::registry::AgentToolRegistry;
 use crate::tool::{InferenceContext, ToolDefinition, active_chat};
 
-use crate::inference::ModelGroup;
 use crate::inference::streaming::StreamResult;
+use frona_harness::inference::ModelGroup;
 
 pub struct InferenceEvent {
     pub kind: InferenceEventKind,
@@ -517,7 +517,7 @@ pub async fn run_tool_loop(
     usage_service: &crate::inference::usage::UsageService,
     chat_service: &crate::chat::service::ChatService,
     message_id: &str,
-    mut input_token_estimate: Option<crate::inference::context::InputTokenEstimate>,
+    mut input_token_estimate: Option<frona_harness::inference::context::InputTokenEstimate>,
 ) -> Result<ToolLoopOutcome, AppError> {
     let tool_defs = tool_registry.definitions();
     let rig_tools = to_rig_tool_definitions(tool_defs, tool_registry.mcp_bridge_mode());
@@ -566,12 +566,12 @@ pub async fn run_tool_loop(
         );
         let contents = match (model_group)
             .stream_inference(
-                crate::inference::ModelRequest {
+                frona_harness::inference::ModelRequest {
                     input_token_estimate: input_token_estimate.take(),
                     system_prompt: &current_system_prompt,
                     history: chat_history.to_vec(),
                     tools: rig_tools.to_vec(),
-                    observations: crate::inference::observation::Observations::new(
+                    observations: frona_harness::inference::observation::Observations::new(
                         &usage_service.scoped(&turn_usage_ctx),
                     ),
                     overrides: Default::default(),
@@ -673,7 +673,7 @@ pub async fn run_tool_loop(
             event_tx.send(InferenceEvent {
                 kind: InferenceEventKind::Failed {
                     error: crate::chat::message::error::MessageError::from(&AppError::from(
-                        crate::inference::error::InferenceError::InferenceFailed(
+                        frona_harness::inference::error::InferenceError::InferenceFailed(
                             "Max tool turns reached".into(),
                         ),
                     )),

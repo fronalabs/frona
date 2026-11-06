@@ -65,7 +65,7 @@ fn test_config(tmp: &tempfile::TempDir) -> Config {
 }
 
 async fn build_state(
-    provider: Arc<dyn frona::inference::provider::ModelProvider>,
+    provider: Arc<dyn frona_harness::inference::provider::ModelProvider>,
 ) -> (AppState, tempfile::TempDir) {
     let db: Surreal<Db> = Surreal::new::<Mem>(()).await.unwrap();
     db_init::setup_schema(&db).await.unwrap();
@@ -212,7 +212,7 @@ async fn new_agent_command_in_old_chat_preserves_history() {
 }
 
 async fn assert_switch_agent(with_old_history: bool) {
-    let provider: Arc<dyn frona::inference::provider::ModelProvider> = Arc::new(
+    let provider: Arc<dyn frona_harness::inference::provider::ModelProvider> = Arc::new(
         MockModelProvider::new(vec![MockResponse::Text("ack from target".into())]),
     );
     let (state, _tmp) = build_state(provider).await;

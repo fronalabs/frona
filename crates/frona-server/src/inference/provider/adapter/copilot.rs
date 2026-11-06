@@ -1,19 +1,21 @@
 //! Copilot inference transport. Managed credentials own token exchanges.
 
-use crate::core::config::{ApiSurface, ModelProviderConfig};
+use crate::core::config::ModelProviderConfig;
 use crate::credential::managed::integration::copilot::CopilotIntegration;
-use crate::inference::credential::store::CredentialMethod;
-use crate::inference::{
-    credential::runtime::CredentialMethodDriver,
-    error::InferenceError,
-    protocol::http::WireClient,
-    provider::{
-        CredentialValidation, CredentialValidationError, InferenceCounter, InferenceOutput,
-        ModelConfig, ModelListError, ModelProvider, ProviderModelList, RigProvider, StreamToken,
-        platform::ResolvedConnection,
+use crate::inference::credential::runtime::CredentialMethodDriver;
+use chrono::{DateTime, Utc};
+use frona_harness::{
+    config::{ApiSurface, CredentialMethod},
+    inference::{
+        error::InferenceError,
+        protocol::http::WireClient,
+        provider::{
+            CredentialValidation, CredentialValidationError, InferenceCounter, InferenceOutput,
+            ModelConfig, ModelListError, ModelProvider, ProviderModelList, RigProvider,
+            StreamToken, platform::ResolvedConnection,
+        },
     },
 };
-use chrono::{DateTime, Utc};
 use rig_core::{
     client::ModelListingClient,
     completion::{Message, ToolDefinition},
@@ -22,16 +24,10 @@ use rig_core::{
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 
-pub const ENDPOINT: &str = "https://api.githubcopilot.com";
+use frona_harness::inference::provider::adapter::copilot::ENDPOINT;
+#[cfg(test)]
+use frona_harness::inference::provider::adapter::copilot::protocol;
 const PROTOCOLS: &[ApiSurface] = &[ApiSurface::Completions, ApiSurface::Responses];
-
-pub fn protocol(model: &str) -> ApiSurface {
-    if model.to_ascii_lowercase().contains("codex") {
-        ApiSurface::Responses
-    } else {
-        ApiSurface::Completions
-    }
-}
 
 #[derive(Default, Clone)]
 pub struct Driver {
@@ -250,15 +246,11 @@ impl ModelProvider for SuppliedTokenProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credential::managed::Candidate;
-    use crate::inference::{config::ModelRegistryConfig, provider::platform::ProviderPlatform};
     use crate::{
-        chat::broadcast::BroadcastService,
-        core::{
-            Handle,
-            config::{InferenceConfig, ModelGroupConfig},
-        },
+        chat::broadcast::BroadcastService, core::Handle, credential::managed::Candidate,
+        inference::config::ModelRegistryConfig,
     };
+    use frona_harness::config::{InferenceConfig, ModelGroupConfig};
     use rig_core::completion::AssistantContent;
     use serde_json::{Value, json};
     use wiremock::{
@@ -294,7 +286,11 @@ mod tests {
     }
 
     fn connection() -> ResolvedConnection {
-        ProviderPlatform::resolve(&Handle::const_validated("account"), &config()).unwrap()
+        crate::inference::provider::resolve_connection(
+            &Handle::const_validated("account"),
+            &config(),
+        )
+        .unwrap()
     }
 
     fn token() -> Candidate {
@@ -635,8 +631,11 @@ mod tests {
         assert!(!connection.supports_model_protocol("gpt-4o", ApiSurface::Responses));
         let mut custom = config();
         custom.base_url = Some("https://untrusted.example".into());
-        let resolved =
-            ProviderPlatform::resolve(&Handle::const_validated("account"), &custom).unwrap();
+        let resolved = crate::inference::provider::resolve_connection(
+            &Handle::const_validated("account"),
+            &custom,
+        )
+        .unwrap();
         assert!(!driver.accepts(&resolved));
         assert!(
             resolved
@@ -664,8 +663,13 @@ mod tests {
         )
         .unwrap();
         assert!(
-            crate::inference::config::compile_request("models.primary", &invalid, &config())
-                .is_err()
+            crate::inference::config::ModelRegistryConfig {
+                providers: [(crate::core::Handle::const_validated("account"), config())].into(),
+                models: [("primary".into(), invalid)].into(),
+                skip_auto_discover: true,
+            }
+            .validate_model_groups()
+            .is_err()
         );
     }
 

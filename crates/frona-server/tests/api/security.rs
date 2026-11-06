@@ -71,9 +71,9 @@ async fn api_error_maps_all_variants_correctly() {
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         (
-            AppError::from(frona::inference::error::InferenceError::InferenceFailed(
-                "x".into(),
-            )),
+            AppError::from(
+                frona_harness::inference::error::InferenceError::InferenceFailed("x".into()),
+            ),
             StatusCode::BAD_GATEWAY,
         ),
         (AppError::Browser("x".into()), StatusCode::BAD_GATEWAY),

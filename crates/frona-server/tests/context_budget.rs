@@ -11,20 +11,22 @@ use frona::{
     },
     core::{
         Handle,
-        config::{ApiSurface, Config, ModelProviderConfig},
+        config::{Config, ModelProviderConfig},
         error::AppError,
         repository::Repository,
     },
     db::repo::{generic::SurrealRepo, messages::SurrealMessageRepo},
     inference::{
         config::ModelRegistryConfig,
-        context::DEFAULT_CONTEXT_WINDOW,
-        credential::store::CredentialMethod,
         directory::models::{inventory, normalize},
-        provider::{
-            ModelRef, ProviderModelList, ProviderModelListSource, platform::ProviderPlatform,
-            service::ModelProviderService,
-        },
+        provider::service::ModelProviderService,
+    },
+};
+use frona_harness::{
+    config::{ApiSurface, CredentialMethod},
+    inference::{
+        context::DEFAULT_CONTEXT_WINDOW,
+        provider::{ModelRef, ProviderModelList, ProviderModelListSource},
     },
 };
 use frona_model_catalog::{
@@ -222,7 +224,7 @@ async fn compaction_uses_catalog_budget_and_respects_configured_override() {
 #[test]
 fn live_model_limits_survive_inventory_and_override_stale_catalog_fields() {
     let handle = Handle::const_validated("openai-prod");
-    let connection = ProviderPlatform::resolve(
+    let connection = frona::inference::provider::resolve_connection(
         &handle,
         &ModelProviderConfig {
             provider: Some("openai".into()),

@@ -3,10 +3,10 @@ mod helpers;
 
 use std::sync::Arc;
 
-use frona::inference::{
+use frona::inference::conversation::summary_message;
+use frona_harness::inference::{
     ModelGroup, ModelRequest,
     context::{estimate_message_tokens, estimate_tokens},
-    conversation::summary_message,
     error::InferenceError,
 };
 use helpers::{
@@ -56,7 +56,7 @@ async fn send(
         system_prompt: SYSTEM,
         history: history.to_vec(),
         tools: vec![],
-        observations: frona::inference::observation::Observations::new(&observer),
+        observations: frona_harness::inference::observation::Observations::new(&observer),
         overrides: Default::default(),
     };
     if structured {
@@ -395,7 +395,7 @@ async fn streaming_rejects_oversized_input_without_sending_a_truncated_request()
                 system_prompt: SYSTEM,
                 history,
                 tools: vec![],
-                observations: frona::inference::observation::Observations::new(
+                observations: frona_harness::inference::observation::Observations::new(
                     &test_metrics_ctx().scoped(&test_usage_ctx()),
                 ),
                 overrides: Default::default(),
@@ -548,7 +548,7 @@ async fn streaming_smaller_fallback_limits_fail_explicitly_without_losing_histor
                     system_prompt: SYSTEM,
                     history: history.clone(),
                     tools: vec![],
-                    observations: frona::inference::observation::Observations::new(
+                    observations: frona_harness::inference::observation::Observations::new(
                         &test_metrics_ctx().scoped(&test_usage_ctx()),
                     ),
                     overrides: Default::default(),
@@ -599,7 +599,7 @@ async fn streaming_in_flight_cancellation_keeps_the_original_request() {
                 system_prompt: SYSTEM,
                 history: history.clone(),
                 tools: vec![],
-                observations: frona::inference::observation::Observations::new(
+                observations: frona_harness::inference::observation::Observations::new(
                     &test_metrics_ctx().scoped(&test_usage_ctx()),
                 ),
                 overrides: Default::default(),

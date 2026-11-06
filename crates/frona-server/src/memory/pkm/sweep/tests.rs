@@ -118,8 +118,8 @@ fn window_stops_before_token_limit_and_advances_to_last_selected() {
     first.content = "a".repeat(40);
     let mut second = msg(at(300), None);
     second.content = "b".repeat(40);
-    let one_message_tokens = crate::inference::context::estimate_tokens("Agent: ")
-        + crate::inference::context::estimate_tokens(&first.content);
+    let one_message_tokens = frona_harness::inference::context::estimate_tokens("Agent: ")
+        + frona_harness::inference::context::estimate_tokens(&first.content);
     let (new, advance) =
         consolidation_window(vec![first, second], at(150), one_message_tokens, 100).unwrap();
     assert_eq!(new.len(), 1);
@@ -164,8 +164,8 @@ fn windows_count_tool_turn_text_toward_the_token_limit() {
         &first.content,
         std::slice::from_ref(&call),
     );
-    let first_tokens = crate::inference::context::estimate_tokens("Agent: ")
-        + crate::inference::context::estimate_tokens(&first_text);
+    let first_tokens = frona_harness::inference::context::estimate_tokens("Agent: ")
+        + frona_harness::inference::context::estimate_tokens(&first_text);
 
     let windows =
         consolidation_windows(vec![first, second], at(150), first_tokens, 100, &[call]).unwrap();

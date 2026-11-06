@@ -9,15 +9,18 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use frona::core::metrics;
 use frona::db::repo::generic::SurrealRepo;
-use frona::inference::Usage;
-use frona::inference::error::InferenceError;
 use frona::inference::provider::service::ModelProviderService;
-use frona::inference::provider::{ModelConfig, ModelProvider, SUBMIT_TOOL_NAME};
-use frona::inference::{ModelGroup, config::RetryConfig};
 use frona::policy::service::PolicyService;
 use frona::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
-use surrealdb::Surreal;
-use surrealdb::engine::local::Db;
+use frona_harness::{
+    config::RetryConfig,
+    inference::{
+        ModelGroup, Usage,
+        error::InferenceError,
+        provider::{ModelConfig, ModelProvider, SUBMIT_TOOL_NAME},
+    },
+};
+use surrealdb::{Surreal, engine::local::Db};
 
 pub async fn seed_reconciled_entity(
     db: &Surreal<Db>,
@@ -362,7 +365,7 @@ impl ModelProvider for MockModelProvider {
         tools: Vec<RigToolDefinition>,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
-    ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
+    ) -> Result<frona_harness::inference::provider::InferenceOutput, InferenceError> {
         self.system_prompts
             .lock()
             .unwrap()
@@ -412,7 +415,7 @@ impl ModelProvider for MockModelProvider {
                 unreachable!("history-routed responses are unwrapped before execution")
             }
         };
-        Ok(frona::inference::provider::InferenceOutput::new(
+        Ok(frona_harness::inference::provider::InferenceOutput::new(
             content, usage,
         ))
     }
@@ -423,10 +426,10 @@ impl ModelProvider for MockModelProvider {
         _system_prompt: &str,
         _chat_history: Vec<RigMessage>,
         _tools: Vec<RigToolDefinition>,
-        token_tx: mpsc::Sender<frona::inference::provider::StreamToken>,
+        token_tx: mpsc::Sender<frona_harness::inference::provider::StreamToken>,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
-    ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
+    ) -> Result<frona_harness::inference::provider::InferenceOutput, InferenceError> {
         self.system_prompts
             .lock()
             .unwrap()
@@ -455,7 +458,7 @@ impl ModelProvider for MockModelProvider {
                 for item in &content {
                     if let AssistantContent::Text(text) = item {
                         let _ = token_tx
-                            .send(frona::inference::provider::StreamToken::Text(
+                            .send(frona_harness::inference::provider::StreamToken::Text(
                                 text.text.clone(),
                             ))
                             .await;
@@ -465,18 +468,22 @@ impl ModelProvider for MockModelProvider {
             }
             MockResponse::Text(t) => {
                 let _ = token_tx
-                    .send(frona::inference::provider::StreamToken::Text(t.clone()))
+                    .send(frona_harness::inference::provider::StreamToken::Text(
+                        t.clone(),
+                    ))
                     .await;
                 vec![AssistantContent::text(t)]
             }
             MockResponse::TextWithReasoning(text, reasoning) => {
                 let _ = token_tx
-                    .send(frona::inference::provider::StreamToken::Reasoning(
+                    .send(frona_harness::inference::provider::StreamToken::Reasoning(
                         reasoning.clone(),
                     ))
                     .await;
                 let _ = token_tx
-                    .send(frona::inference::provider::StreamToken::Text(text.clone()))
+                    .send(frona_harness::inference::provider::StreamToken::Text(
+                        text.clone(),
+                    ))
                     .await;
                 vec![
                     AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(
@@ -502,7 +509,7 @@ impl ModelProvider for MockModelProvider {
                 unreachable!("history-routed responses require non-streaming inference")
             }
         };
-        Ok(frona::inference::provider::InferenceOutput::new(
+        Ok(frona_harness::inference::provider::InferenceOutput::new(
             content, usage,
         ))
     }

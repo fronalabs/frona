@@ -63,7 +63,7 @@ pub enum AppError {
     Decryption(String),
 
     #[error("Inference error: {0}")]
-    Inference(#[source] Box<crate::inference::error::InferenceError>),
+    Inference(#[source] Box<frona_harness::inference::error::InferenceError>),
 
     #[error("Browser error: {0}")]
     Browser(String),
@@ -103,8 +103,8 @@ impl AppError {
     }
 }
 
-impl From<crate::inference::InferenceError> for crate::core::error::AppError {
-    fn from(err: crate::inference::InferenceError) -> Self {
+impl From<frona_harness::inference::InferenceError> for crate::core::error::AppError {
+    fn from(err: frona_harness::inference::InferenceError) -> Self {
         crate::core::error::AppError::Inference(Box::new(err))
     }
 }

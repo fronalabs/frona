@@ -12,12 +12,10 @@ const LIMIT: usize = 4096;
 
 #[test]
 fn failed_gates_leave_both_managed_auth_methods_unavailable() {
-    use frona::{
-        core::{Handle, config::ModelProviderConfig},
-        inference::{credential::store::CredentialMethod, provider::platform::ProviderPlatform},
-    };
+    use frona::core::{Handle, config::ModelProviderConfig};
+    use frona_harness::config::CredentialMethod;
     for brand in ["anthropic", "google"] {
-        let connection = ProviderPlatform::resolve(
+        let connection = frona::inference::provider::resolve_connection(
             &Handle::try_new(brand).unwrap(),
             &ModelProviderConfig::default(),
         )

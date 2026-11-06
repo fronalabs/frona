@@ -17,6 +17,7 @@ pub mod registry;
 pub mod report_signal;
 pub mod request_credentials;
 pub mod sandbox;
+pub mod sdk_adapter;
 pub mod send_message;
 pub mod task;
 pub mod task_control;

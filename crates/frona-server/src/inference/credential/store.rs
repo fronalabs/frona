@@ -1,8 +1,7 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use frona_harness::config::CredentialMethod;
+use std::{collections::HashMap, sync::Arc};
 
 use chrono::{DateTime, Utc};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use surrealdb::Surreal;
@@ -12,31 +11,9 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::core::Handle;
-use crate::core::config::AdapterId;
 use crate::core::error::AppError;
 use crate::credential::managed::{self, Candidate, ManagedVault};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum CredentialMethod {
-    ApiKey,
-    Oauth,
-    Aws,
-    AzureEntra,
-    Anonymous,
-}
-
-impl CredentialMethod {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ApiKey => "api_key",
-            Self::Oauth => "oauth",
-            Self::Aws => "aws",
-            Self::AzureEntra => "azure_entra",
-            Self::Anonymous => "anonymous",
-        }
-    }
-}
+use frona_harness::config::AdapterId;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CredentialBinding {

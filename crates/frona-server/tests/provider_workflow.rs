@@ -9,22 +9,23 @@ use frona::{
     chat::broadcast::BroadcastService,
     core::{
         Handle,
-        config::{ApiSurface, Config, ConfigService, ModelProviderConfig},
+        config::{Config, ConfigService, ModelProviderConfig},
     },
     credential::key_rotation::KeyRotation,
     inference::{
         config::ModelRegistryConfig,
-        credential::store::CredentialMethod,
         directory::models::ModelDirectoryService,
         provider::{
-            InferenceCounter,
-            platform::ProviderPlatform,
             service::{
                 CredentialInput, DraftRequest, LoginRequest, ModelProviderService, ValidateRequest,
             },
             validation::{ProviderValidationService, binding},
         },
     },
+};
+use frona_harness::{
+    config::{ApiSurface, CredentialMethod},
+    inference::provider::InferenceCounter,
 };
 use frona_model_catalog::CatalogSources;
 use serde_json::{Value, json};
@@ -131,24 +132,26 @@ fn connection(server: &MockServer) -> ModelProviderConfig {
 
 async fn infer(service: &ModelProviderService, expected: &str) {
     let group = service
-        .resolve(&frona::inference::ModelRef::PRIMARY)
+        .resolve(&frona_harness::inference::ModelRef::PRIMARY)
         .unwrap();
     let usage = helpers::test_metrics_ctx();
     let context = helpers::test_usage_ctx();
-    let frona::inference::ModelResponse { content, usage } = group
-        .inference(frona::inference::ModelRequest {
+    let frona_harness::inference::ModelResponse { content, usage } = group
+        .inference(frona_harness::inference::ModelRequest {
             input_token_estimate: None,
             system_prompt: "fixture",
             history: vec![],
             tools: vec![],
-            observations: frona::inference::observation::Observations::new(&usage.scoped(&context)),
+            observations: frona_harness::inference::observation::Observations::new(
+                &usage.scoped(&context),
+            ),
             overrides: Default::default(),
         })
         .await
         .unwrap();
     assert_eq!(usage.input_tokens, 2);
     assert_eq!(
-        frona::inference::provider::extract_text_from_choice(&content).unwrap(),
+        frona_harness::inference::provider::extract_text_from_choice(&content).unwrap(),
         expected
     );
 }
@@ -203,7 +206,7 @@ async fn ambient_aws_draft_proof_describes_manual_models_and_rejects_binding_cha
         aws_profile: Some("fixture-profile".into()),
         ..Default::default()
     };
-    let resolved = ProviderPlatform::resolve(&handle, &config).unwrap();
+    let resolved = frona::inference::provider::resolve_connection(&handle, &config).unwrap();
     // Seed the exact proof produced by successful ambient validation. This
     // exercises draft discovery without AWS credentials or a live account.
     let proof = service
@@ -415,7 +418,7 @@ async fn setup_duplicate_connections_failed_draft_restart_and_rotation_preserve_
     assert!(saved.restart_required);
     assert!(
         service
-            .resolve(&frona::inference::ModelRef::PRIMARY)
+            .resolve(&frona_harness::inference::ModelRef::PRIMARY)
             .is_err()
     );
     let active = administration(&db, directory.path(), "fixture-encryption-old").await;

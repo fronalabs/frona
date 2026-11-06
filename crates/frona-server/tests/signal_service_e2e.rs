@@ -88,7 +88,7 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
 
     // Replace the default chat_service with one wired to the mock model
     // provider so run_agent_loop doesn't try to reach a real LLM.
-    let mut providers: HashMap<String, Arc<dyn frona::inference::provider::ModelProvider>> =
+    let mut providers: HashMap<String, Arc<dyn frona_harness::inference::provider::ModelProvider>> =
         HashMap::new();
     providers.insert("mock".to_string(), provider);
     let mut groups = HashMap::new();
@@ -332,16 +332,19 @@ impl ForbidToolsProvider {
 }
 
 #[async_trait::async_trait]
-impl frona::inference::provider::ModelProvider for ForbidToolsProvider {
+impl frona_harness::inference::provider::ModelProvider for ForbidToolsProvider {
     async fn inference(
         &self,
-        _model: &frona::inference::ModelConfig,
+        _model: &frona_harness::inference::ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
-    ) -> Result<frona::inference::provider::InferenceOutput, frona::inference::InferenceError> {
+    ) -> Result<
+        frona_harness::inference::provider::InferenceOutput,
+        frona_harness::inference::InferenceError,
+    > {
         self.inference_calls.fetch_add(1, Ordering::SeqCst);
         panic!(
             "ForbidToolsProvider::inference invoked — Signal mode must not enter the agentic tool loop"
@@ -350,34 +353,37 @@ impl frona::inference::provider::ModelProvider for ForbidToolsProvider {
 
     async fn stream_inference(
         &self,
-        _model: &frona::inference::ModelConfig,
+        _model: &frona_harness::inference::ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _tools: Vec<rig_core::completion::request::ToolDefinition>,
-        _token_tx: tokio::sync::mpsc::Sender<frona::inference::provider::StreamToken>,
+        _token_tx: tokio::sync::mpsc::Sender<frona_harness::inference::provider::StreamToken>,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
-    ) -> Result<frona::inference::provider::InferenceOutput, frona::inference::InferenceError> {
+    ) -> Result<
+        frona_harness::inference::provider::InferenceOutput,
+        frona_harness::inference::InferenceError,
+    > {
         self.stream_calls.fetch_add(1, Ordering::SeqCst);
         panic!("ForbidToolsProvider::stream_inference invoked — Signal mode must not stream");
     }
 
     async fn structured_inference(
         &self,
-        _model: &frona::inference::ModelConfig,
+        _model: &frona_harness::inference::ModelConfig,
         _system_prompt: &str,
         _chat_history: Vec<rig_core::completion::Message>,
         _schema: serde_json::Value,
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
-    ) -> Result<serde_json::Value, frona::inference::InferenceError> {
+    ) -> Result<serde_json::Value, frona_harness::inference::InferenceError> {
         self.structured_calls.fetch_add(1, Ordering::SeqCst);
         Ok(self.canned_extract.clone())
     }
 }
 
 async fn build_state_with_dyn(
-    provider: Arc<dyn frona::inference::provider::ModelProvider>,
+    provider: Arc<dyn frona_harness::inference::provider::ModelProvider>,
 ) -> (AppState, tempfile::TempDir) {
     init_metrics();
     let db: Surreal<Db> = Surreal::new::<Mem>(()).await.unwrap();
@@ -410,7 +416,7 @@ async fn build_state_with_dyn(
         crate::helpers::app_state::catalogs(&config),
     );
 
-    let mut providers: HashMap<String, Arc<dyn frona::inference::provider::ModelProvider>> =
+    let mut providers: HashMap<String, Arc<dyn frona_harness::inference::provider::ModelProvider>> =
         HashMap::new();
     providers.insert("mock".to_string(), provider);
     let mut groups = HashMap::new();

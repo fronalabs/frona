@@ -1,4 +1,5 @@
 use super::*;
+use frona_harness::config::ModelGroupConfig;
 
 /// Paths to sensitive config fields. Used for both log redaction and API response masking.
 pub const SENSITIVE_PATHS: &[&[&str]] = &[

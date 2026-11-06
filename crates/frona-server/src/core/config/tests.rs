@@ -1,4 +1,8 @@
 use super::*;
+use frona_harness::config::ProviderModel;
+use frona_harness::config::{
+    AnthropicParams, GeminiParams, GeminiThinkingConfig, OllamaParams, OpenAICompatParams,
+};
 use std::path::PathBuf;
 
 #[test]

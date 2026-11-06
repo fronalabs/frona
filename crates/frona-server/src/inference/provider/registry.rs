@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use crate::inference::{
+use frona_harness::inference::{
     error::InferenceError,
     provider::{ModelProvider, ModelRef, group::ModelGroup},
 };

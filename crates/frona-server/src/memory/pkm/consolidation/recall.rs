@@ -180,7 +180,7 @@ fn sanitize(input: &str) -> String {
 }
 
 fn bounded_result_tokens(input: &str, cap: usize) -> String {
-    if crate::inference::context::estimate_tokens(input) <= cap {
+    if frona_harness::inference::context::estimate_tokens(input) <= cap {
         return input.to_string();
     }
     let mut out = String::new();
@@ -190,7 +190,7 @@ fn bounded_result_tokens(input: &str, cap: usize) -> String {
         } else {
             format!("{out}\n{line}")
         };
-        if crate::inference::context::estimate_tokens(&format!("{candidate}…")) > cap {
+        if frona_harness::inference::context::estimate_tokens(&format!("{candidate}…")) > cap {
             break;
         }
         out = candidate;
@@ -200,7 +200,7 @@ fn bounded_result_tokens(input: &str, cap: usize) -> String {
             let mut candidate = out.clone();
             candidate.push(character);
             candidate.push('…');
-            if crate::inference::context::estimate_tokens(&candidate) > cap {
+            if frona_harness::inference::context::estimate_tokens(&candidate) > cap {
                 break;
             }
             out.push(character);
@@ -357,8 +357,9 @@ mod tests {
         let projection = RecallProjection::new(&calls, |_| true);
 
         assert!(
-            crate::inference::context::estimate_tokens(&projection.read_result("T1").unwrap())
-                <= RECALL_RESULT_TOKEN_CAP
+            frona_harness::inference::context::estimate_tokens(
+                &projection.read_result("T1").unwrap()
+            ) <= RECALL_RESULT_TOKEN_CAP
         );
         assert!(projection.read_result("T999").is_none());
     }

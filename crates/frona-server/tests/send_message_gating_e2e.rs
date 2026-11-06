@@ -103,7 +103,7 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
     // model-group resolution succeeds. We don't run inference here - the tests
     // just inspect the tool registry the session builds - but `session.build`
     // resolves the agent's `model_group` against this registry.
-    let provider: Arc<dyn frona::inference::provider::ModelProvider> =
+    let provider: Arc<dyn frona_harness::inference::provider::ModelProvider> =
         Arc::new(MockModelProvider::new(vec![]));
     let mut providers = HashMap::new();
     providers.insert("mock".to_string(), provider);

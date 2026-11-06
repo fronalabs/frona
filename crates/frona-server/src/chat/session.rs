@@ -8,12 +8,12 @@ use crate::chat::broadcast::EventSender;
 use crate::chat::models::Chat;
 use crate::chat::service::AgentConfig;
 use crate::core::error::AppError;
-use crate::inference::ModelGroup;
 use crate::inference::conversation::{
     ConversationBuilder, ConversationContext, ModelConversationHistory, resolve_attachment_path,
 };
 use crate::tool::InferenceContext;
 use crate::tool::registry::{AgentToolRegistry, ToolFilter};
+use frona_harness::inference::ModelGroup;
 
 pub struct ChatSessionContext {
     pub chat: Chat,
@@ -22,7 +22,7 @@ pub struct ChatSessionContext {
     pub model_group: ModelGroup,
     pub rig_history: Vec<RigMessage>,
     pub(crate) model_history: ModelConversationHistory,
-    pub(crate) input_token_estimate: Option<crate::inference::context::InputTokenEstimate>,
+    pub(crate) input_token_estimate: Option<frona_harness::inference::context::InputTokenEstimate>,
     pub(crate) builder: Arc<dyn ConversationBuilder>,
     pub(crate) tool_filters: Vec<ToolFilter>,
 
@@ -145,8 +145,8 @@ impl ChatSessionContext {
             .chat_service
             .model_providers()
             .resolve_with_fallback(
-                &crate::inference::ModelRef(agent_config.model_group.clone().into()),
-                &crate::inference::ModelRef::PRIMARY,
+                &frona_harness::inference::ModelRef(agent_config.model_group.clone().into()),
+                &frona_harness::inference::ModelRef::PRIMARY,
             )?;
 
         let loaded = harness

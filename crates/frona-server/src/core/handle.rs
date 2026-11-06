@@ -16,23 +16,23 @@ use surrealdb::types::{Error as SurrealError, Kind, SurrealValue, Value};
 use crate::core::error::AppError;
 
 pub const fn is_valid_handle_bytes(s: &[u8]) -> bool {
-    crate::inference::handle::is_valid_handle_bytes(s)
+    frona_harness::handle::is_valid_handle_bytes(s)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Handle(crate::inference::handle::Handle);
+pub struct Handle(frona_harness::handle::Handle);
 
 impl Handle {
     /// Trims + lowercases ASCII before validating.
     pub fn try_new(raw: impl AsRef<str>) -> Result<Self, AppError> {
-        crate::inference::handle::Handle::try_new(raw)
+        frona_harness::handle::Handle::try_new(raw)
             .map(Self)
             .map_err(|error| AppError::Validation(error.to_string()))
     }
 
     /// Construct a validated literal while preserving the native stored type.
     pub const fn const_validated(s: &'static str) -> Self {
-        Self(crate::inference::handle::Handle::const_validated(s))
+        Self(frona_harness::handle::Handle::const_validated(s))
     }
 
     pub fn as_str(&self) -> &str {
@@ -95,22 +95,22 @@ impl<'de> Deserialize<'de> for Handle {
 
 impl JsonSchema for Handle {
     fn schema_name() -> std::borrow::Cow<'static, str> {
-        crate::inference::handle::Handle::schema_name()
+        frona_harness::handle::Handle::schema_name()
     }
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        crate::inference::handle::Handle::json_schema(generator)
+        frona_harness::handle::Handle::json_schema(generator)
     }
 }
 
-impl From<Handle> for crate::inference::handle::Handle {
+impl From<Handle> for frona_harness::handle::Handle {
     fn from(value: Handle) -> Self {
         value.0
     }
 }
 
-impl From<crate::inference::handle::Handle> for Handle {
-    fn from(value: crate::inference::handle::Handle) -> Self {
+impl From<frona_harness::handle::Handle> for Handle {
+    fn from(value: frona_harness::handle::Handle) -> Self {
         Self(value)
     }
 }

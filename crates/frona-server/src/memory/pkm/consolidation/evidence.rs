@@ -527,7 +527,7 @@ impl ToolEvidenceProjection {
                 let rendered =
                     serde_json::to_string_pretty(&serde_json::json!({ "results": with_candidate }))
                         .unwrap_or_default();
-                if crate::inference::context::estimate_tokens(&rendered) > token_cap {
+                if frona_harness::inference::context::estimate_tokens(&rendered) > token_cap {
                     break;
                 }
                 results.push(candidate);
@@ -968,14 +968,16 @@ fn evidence_chunks(result: &str) -> Vec<String> {
         } else {
             format!("{current}\n{part}")
         };
-        if !current.is_empty() && crate::inference::context::estimate_tokens(&candidate) > 500 {
+        if !current.is_empty()
+            && frona_harness::inference::context::estimate_tokens(&candidate) > 500
+        {
             chunks.push(std::mem::take(&mut current));
         }
         if !current.is_empty() {
             current.push('\n');
         }
         current.push_str(part);
-        if crate::inference::context::estimate_tokens(&current) >= 200 {
+        if frona_harness::inference::context::estimate_tokens(&current) >= 200 {
             chunks.push(std::mem::take(&mut current));
         }
     }

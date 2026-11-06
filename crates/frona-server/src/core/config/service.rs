@@ -13,7 +13,7 @@ use crate::core::{
     config::{Config, merge_config_patch},
     error::AppError,
 };
-use crate::inference::{config::ModelRegistryConfig, provider::platform::ProviderPlatform};
+use crate::inference::config::ModelRegistryConfig;
 
 #[derive(Clone)]
 pub struct ConfigService {
@@ -125,7 +125,7 @@ impl ConfigService {
         normalize_handles(&mut target)?;
         let config = validate_document(&target)?;
         for (handle, provider) in &config.providers {
-            ProviderPlatform::resolve(handle, provider).map_err(validation)?;
+            crate::inference::provider::resolve_connection(handle, provider).map_err(validation)?;
         }
         ModelRegistryConfig {
             providers: config.providers,

@@ -1,0 +1,13 @@
+pub mod config;
+pub mod context;
+pub mod error;
+mod metrics;
+pub mod observation;
+pub mod protocol;
+pub mod provider;
+pub mod retry;
+pub mod trace;
+pub use error::InferenceError;
+pub use provider::group::{ModelGroup, ModelRequest, ModelResponse, RequestOverrides};
+pub use provider::{ModelConfig, ModelRef};
+pub use rig_core::completion::request::Usage;

@@ -431,7 +431,7 @@ impl PlaybookAuthor {
                         &[],
                     )
                 );
-                let cost = crate::inference::context::estimate_tokens(&line);
+                let cost = frona_harness::inference::context::estimate_tokens(&line);
                 if transcript_tokens + cost <= 16_000 {
                     transcript_tokens += cost;
                     transcript.push_str(&line);
@@ -459,7 +459,7 @@ impl PlaybookAuthor {
                 }
                 let reference = invocation_projection(call);
                 let Some(reference) = reference else { continue };
-                let cost = crate::inference::context::estimate_tokens(&reference.reference);
+                let cost = frona_harness::inference::context::estimate_tokens(&reference.reference);
                 if cost > 2_000 || tokens + cost > 16_000 {
                     continue;
                 }

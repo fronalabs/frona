@@ -1,6 +1,6 @@
 //! Translate upstream catalog labels into protocols supported by Frona.
 
-use crate::core::config::OpenAiApi;
+use frona_harness::config::OpenAiApi;
 use frona_model_catalog::{
     ModelCatalogSnapshot,
     parameters::{ParameterCatalogSnapshot, ParameterModel},
@@ -34,8 +34,8 @@ pub fn protocol_default(
 }
 
 #[cfg(test)]
-pub fn parameter_protocol(record: &ParameterModel) -> Option<crate::core::config::ApiSurface> {
-    use crate::core::config::ApiSurface;
+pub fn parameter_protocol(record: &ParameterModel) -> Option<frona_harness::config::ApiSurface> {
+    use frona_harness::config::ApiSurface;
     match record.api_surface.as_str() {
         "openai-chat-completions" => Some(ApiSurface::Completions),
         "openai-responses" => Some(ApiSurface::Responses),
@@ -47,10 +47,10 @@ pub fn exact_parameters<'a>(
     catalog: &'a ParameterCatalogSnapshot,
     provider: &str,
     access: &str,
-    api: crate::core::config::ApiSurface,
+    api: frona_harness::config::ApiSurface,
     model: &str,
 ) -> Option<&'a ParameterModel> {
-    use crate::core::config::ApiSurface;
+    use frona_harness::config::ApiSurface;
     let serialized = serde_json::to_value(api).ok()?;
     let alias = serialized.as_str()?;
     let upstream = match api {
@@ -66,7 +66,7 @@ pub fn exact_parameters<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::config::ApiSurface;
+    use frona_harness::config::ApiSurface;
     use serde_json::json;
 
     #[test]

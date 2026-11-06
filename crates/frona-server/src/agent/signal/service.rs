@@ -303,7 +303,7 @@ impl SignalService {
             }
             return Ok(());
         };
-        let model_group = model_providers.resolve(&crate::inference::ModelRef(
+        let model_group = model_providers.resolve(&frona_harness::inference::ModelRef(
             agent.model_group.clone().into(),
         ))?;
 

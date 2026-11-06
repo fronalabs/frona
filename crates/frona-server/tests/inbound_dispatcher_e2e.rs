@@ -81,7 +81,7 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         crate::helpers::app_state::catalogs(&config),
     );
 
-    let mut providers: HashMap<String, Arc<dyn frona::inference::provider::ModelProvider>> =
+    let mut providers: HashMap<String, Arc<dyn frona_harness::inference::provider::ModelProvider>> =
         HashMap::new();
     providers.insert("mock".to_string(), provider);
     let mut groups = HashMap::new();

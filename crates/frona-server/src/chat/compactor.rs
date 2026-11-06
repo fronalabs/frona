@@ -25,11 +25,13 @@ use crate::core::repository::{Repository, new_id};
 use crate::db::repo::chat_summaries::SurrealChatSummaryRepo;
 use crate::db::repo::messages::SurrealMessageRepo;
 use crate::db::repo::tool_calls::ToolCallRepository;
-use crate::inference::ModelGroup;
-use crate::inference::context::{InputTokenEstimate, estimate_message_tokens, estimate_tokens};
 use crate::inference::conversation::{ModelConversationHistory, summary_message};
 use crate::inference::usage::repository::InferenceUsageRepository;
 use crate::inference::usage::{CompactionTarget, InferenceKind, UsageContext, UsageService};
+use frona_harness::inference::{
+    ModelGroup,
+    context::{InputTokenEstimate, estimate_message_tokens, estimate_tokens},
+};
 
 /// Trigger when the conversation exceeds this fraction of the available window.
 const COMPACT_TRIGGER_PCT: usize = 80;
@@ -106,12 +108,12 @@ impl ChatSummarizer for TextInferenceSummarizer {
             model_group.name.clone(),
         );
         let response = model_group
-            .inference_preserving_history(crate::inference::ModelRequest {
+            .inference_preserving_history(frona_harness::inference::ModelRequest {
                 input_token_estimate: request.input_token_estimate,
                 system_prompt: request.system_prompt,
                 history: request.history,
                 tools: request.tools,
-                observations: crate::inference::observation::Observations::new(
+                observations: frona_harness::inference::observation::Observations::new(
                     &self.usage_service.scoped(&usage_ctx),
                 ),
                 overrides: Default::default(),
@@ -615,7 +617,7 @@ impl ChatCompactor {
 pub(crate) fn validate_initial_context(
     history: &[RigMessage],
     system_prompt: &str,
-    model_group: &crate::inference::ModelGroup,
+    model_group: &frona_harness::inference::ModelGroup,
     tools: &[RigToolDefinition],
     input_token_estimate: Option<InputTokenEstimate>,
 ) -> Result<(), AppError> {

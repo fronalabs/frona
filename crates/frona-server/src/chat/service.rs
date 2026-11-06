@@ -535,8 +535,8 @@ impl ChatService {
         let model_group_name = agent_config.model_group;
 
         let model_group = self.model_providers.resolve_with_fallback(
-            &crate::inference::ModelRef(model_group_name.clone().into()),
-            &crate::inference::ModelRef::PRIMARY,
+            &frona_harness::inference::ModelRef(model_group_name.clone().into()),
+            &frona_harness::inference::ModelRef::PRIMARY,
         )?;
         let loaded = self.compactor.load_conversation(chat_id).await?;
         let agent_context = loaded.agent_context;
@@ -621,19 +621,19 @@ impl ChatService {
             model_group.name.clone(),
         );
         let response = model_group
-            .inference(crate::inference::ModelRequest {
+            .inference(frona_harness::inference::ModelRequest {
                 input_token_estimate,
                 system_prompt: &system_prompt,
                 history: rig_history,
                 tools: vec![],
-                observations: crate::inference::observation::Observations::new(
+                observations: frona_harness::inference::observation::Observations::new(
                     &self.usage_service.scoped(&usage_ctx),
                 ),
                 overrides: Default::default(),
             })
             .await?;
         let response_text =
-            crate::inference::provider::extract_text_from_choice(&response.content)?;
+            frona_harness::inference::provider::extract_text_from_choice(&response.content)?;
 
         let mut assistant_message = Message::builder(chat_id, MessageRole::Agent, response_text)
             .agent_id(chat.agent_id.clone())
@@ -1844,24 +1844,24 @@ impl ChatService {
             agent.user_id.clone(),
             model_group.name.clone(),
         );
-        let crate::inference::ModelResponse {
+        let frona_harness::inference::ModelResponse {
             content: contents, ..
         } = model_group
-            .inference(crate::inference::ModelRequest {
+            .inference(frona_harness::inference::ModelRequest {
                 input_token_estimate: None,
                 system_prompt: &parsed.template,
                 history: vec![RigMessage::user(user_content)],
                 tools: vec![],
-                observations: crate::inference::observation::Observations::new(
+                observations: frona_harness::inference::observation::Observations::new(
                     &self.usage_service.scoped(&usage_ctx),
                 ),
-                overrides: crate::inference::RequestOverrides {
+                overrides: frona_harness::inference::RequestOverrides {
                     max_tokens: Some(TITLE_MAX_TOKENS),
                     temperature: None,
                 },
             })
             .await?;
-        let result = crate::inference::provider::extract_text_from_choice(&contents)?;
+        let result = frona_harness::inference::provider::extract_text_from_choice(&contents)?;
 
         let title = parse_title_response(&result, user_content);
         self.update_chat_title(chat_id, &title).await?;
@@ -1871,15 +1871,15 @@ impl ChatService {
     fn build_title_model_group(
         &self,
         model_specifier: Option<&str>,
-    ) -> Result<crate::inference::ModelGroup, AppError> {
-        let primary = crate::inference::ModelRef::PRIMARY;
+    ) -> Result<frona_harness::inference::ModelGroup, AppError> {
+        let primary = frona_harness::inference::ModelRef::PRIMARY;
         Ok(match model_specifier {
             Some(name) if !name.is_empty() => self
                 .model_providers
-                .resolve(&crate::inference::ModelRef(name.to_owned().into()))?,
+                .resolve(&frona_harness::inference::ModelRef(name.to_owned().into()))?,
             _ => self
                 .model_providers
-                .resolve_with_fallback(&crate::inference::ModelRef::TITLE, &primary)?,
+                .resolve_with_fallback(&frona_harness::inference::ModelRef::TITLE, &primary)?,
         })
     }
 
@@ -2004,7 +2004,7 @@ mod tests {
         let error =
             "The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.";
         let failure = crate::chat::message::error::MessageError::from(&AppError::from(
-            crate::inference::error::InferenceError::InferenceFailed(error.into()),
+            frona_harness::inference::error::InferenceError::InferenceFailed(error.into()),
         ));
         let response = service
             .fail_agent_message(message.clone(), failure.clone())

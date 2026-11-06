@@ -180,7 +180,7 @@ impl<'a> ConsolidationProgress<'a> {
         self.banked_classifications.remove(item);
         self.pending_identity.remove(item);
         self.ctx.adopt_committed_record(checkpoint).await;
-        crate::inference::trace::record_stage_state(
+        frona_harness::inference::trace::record_stage_state(
             "consolidation-stage-state",
             stage,
             item,
@@ -533,7 +533,7 @@ impl<'a> ConsolidationProgress<'a> {
             .map(|row| (row.path.clone(), row))
             .collect();
         self.ctx.adopt_committed_record(checkpoint).await;
-        crate::inference::trace::record_stage_state(
+        frona_harness::inference::trace::record_stage_state(
             "consolidation-stage-state",
             "resolve-merge",
             path,
@@ -650,7 +650,7 @@ impl<'a> ConsolidationProgress<'a> {
             },
         );
         self.ctx.adopt_committed_record(checkpoint).await;
-        crate::inference::trace::record_stage_state(
+        frona_harness::inference::trace::record_stage_state(
             "consolidation-stage-state",
             "reconcile",
             path,

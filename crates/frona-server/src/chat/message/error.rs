@@ -2,7 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
-use crate::{core::error::AppError, inference::error::InferenceError};
+use crate::core::error::AppError;
+use frona_harness::inference::error::InferenceError;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SurrealValue)]
 #[surreal(crate = "surrealdb::types")]
@@ -217,9 +218,10 @@ fn inference_details(error: &InferenceError) -> InferenceFailureDetails {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        core::{Handle, config::ProviderModel},
-        inference::{config::RetryConfig, provider::ModelConfig, retry::retry_with_backoff},
+    use crate::core::Handle;
+    use frona_harness::{
+        config::{ProviderModel, RetryConfig},
+        inference::{provider::ModelConfig, retry::retry_with_backoff},
     };
     use std::sync::atomic::{AtomicU32, Ordering};
 

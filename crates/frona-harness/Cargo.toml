@@ -1,0 +1,55 @@
+[package]
+name = "frona-harness"
+version.workspace = true
+edition.workspace = true
+description = "Embeddable model and tool harness"
+license-file = "LICENSE"
+readme = false
+repository = "https://git.mcx.ai/mina/frona"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+serde_with.workspace = true
+serde-aux.workspace = true
+chrono.workspace = true
+uuid = { workspace = true, features = ["v7"] }
+thiserror.workspace = true
+rig-core.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+backon.workspace = true
+async-trait = "0.1"
+frona-derive = { path = "../frona-derive", version = "2026.11.0" }
+frona-model-catalog = { path = "../frona-model-catalog", version = "2026.11.0" }
+frona-text = { path = "../frona-text", version = "2026.11.0" }
+schemars = { version = "1", features = ["chrono04"] }
+smol_str = { version = "0.3.6", features = ["serde"] }
+bytes = "1"
+http = "1"
+tokio-util = { version = "0.7", features = ["rt"] }
+futures = "0.3"
+reqwest = { version = "0.13", features = ["form", "json", "query", "rustls"], default-features = false }
+metrics = "0.24"
+json_partial = "0.2"
+jsonschema = { version = "0.59", default-features = false }
+rig-bedrock = "=0.42.0"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-bedrockruntime = { version = "1.143", default-features = false, features = ["rt-tokio", "default-https-client"] }
+aws-sdk-bedrock = { version = "=1.162.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
+aws-smithy-runtime-api = { version = "1", features = ["client"] }
+aws-smithy-types = "1"
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+aws-smithy-eventstream = "0.61"
+aws-credential-types = "1"
+aws-smithy-async = "1"
+aws-runtime = "1"
+wiremock = "0.6"
+approx = "0.5"
+serde_yaml = "0.9"
+tempfile = "3"

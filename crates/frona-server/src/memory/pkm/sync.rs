@@ -19,9 +19,9 @@ use crate::core::user_config::{UserConfigPatch, UserMemoryConfig};
 use crate::db::repo::pkm::{
     PageEditBase, PageEditCommit, PageEditMemoryOp, PageEditWrite, PkmRepo,
 };
-use crate::inference::ModelGroup;
 use crate::inference::provider::service::ModelProviderService;
 use crate::inference::usage::{InferenceKind, UsageContext};
+use frona_harness::inference::ModelGroup;
 
 use super::consolidation::{
     ConsolidationContext, ConsolidationInference, ConsolidationScope, Ingest, PromptIds, PromptSpec,

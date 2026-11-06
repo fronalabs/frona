@@ -24,16 +24,15 @@ use crate::db::repo::basic_memory::SurrealMemoryEntryRepo;
 use crate::db::repo::basic_memory::SurrealMemoryRepo;
 use crate::db::repo::chats::SurrealChatRepo;
 use crate::db::repo::spaces::SurrealSpaceRepo;
-use crate::inference::ModelGroup;
-use crate::inference::context::estimate_tokens;
 use crate::inference::provider::service::ModelProviderService;
 use crate::inference::text_inference;
 use crate::memory::basic::models::{Memory, MemoryEntry, MemorySourceType};
 use crate::memory::basic::repository::{MemoryEntryRepository, MemoryRepository};
-use crate::memory::service::MemoryService;
-use crate::scheduler::Scheduler;
-use crate::space::repository::SpaceRepository;
-use crate::tool::AgentTool;
+use crate::{
+    memory::service::MemoryService, scheduler::Scheduler, space::repository::SpaceRepository,
+    tool::AgentTool,
+};
+use frona_harness::inference::{ModelGroup, context::estimate_tokens};
 
 /// The basic memory service: user/agent/space "blob" memory - stored entries
 /// rolled into a compacted summary, injected via `retrieve`. Implements the
@@ -79,15 +78,17 @@ impl BasicMemoryService {
 
     /// Prefer the memory group; otherwise use the model selected for the chat.
     fn compaction_model_group(&self, chat_model_group: &str) -> Result<ModelGroup, AppError> {
-        match self.model_providers.resolve(&crate::inference::ModelRef(
-            self.memory_config.model_group.clone().into(),
-        )) {
+        match self
+            .model_providers
+            .resolve(&frona_harness::inference::ModelRef(
+                self.memory_config.model_group.clone().into(),
+            )) {
             Ok(group) => Ok(group),
-            Err(crate::inference::InferenceError::ModelGroupNotFound(_)) => {
-                Ok(self.model_providers.resolve(&crate::inference::ModelRef(
+            Err(frona_harness::inference::InferenceError::ModelGroupNotFound(_)) => Ok(self
+                .model_providers
+                .resolve(&frona_harness::inference::ModelRef(
                     chat_model_group.to_owned().into(),
-                ))?)
-            }
+                ))?),
             Err(error) => Err(error.into()),
         }
     }
@@ -99,11 +100,13 @@ impl BasicMemoryService {
         agent_service: &crate::agent::service::AgentService,
         chats: &[crate::chat::models::Chat],
     ) -> Result<ModelGroup, AppError> {
-        match self.model_providers.resolve(&crate::inference::ModelRef(
-            self.memory_config.model_group.clone().into(),
-        )) {
+        match self
+            .model_providers
+            .resolve(&frona_harness::inference::ModelRef(
+                self.memory_config.model_group.clone().into(),
+            )) {
             Ok(group) => return Ok(group),
-            Err(crate::inference::InferenceError::ModelGroupNotFound(_)) => {}
+            Err(frona_harness::inference::InferenceError::ModelGroupNotFound(_)) => {}
             Err(error) => return Err(error.into()),
         }
         for chat in chats {

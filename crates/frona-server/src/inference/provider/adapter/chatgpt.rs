@@ -1,18 +1,20 @@
 //! Codex inference transport. Authentication lives in managed credentials.
 
-use crate::core::config::{ApiSurface, ModelProviderConfig};
-use crate::inference::credential::store::CredentialMethod;
-use crate::inference::{
-    credential::runtime::CredentialMethodDriver,
-    error::InferenceError,
-    protocol::http::WireClient,
-    provider::{
-        CredentialValidationError, InferenceCounter, ModelProvider, RigProvider,
-        platform::ResolvedConnection,
-    },
-};
+use crate::core::config::ModelProviderConfig;
+use crate::inference::credential::runtime::CredentialMethodDriver;
 #[cfg(test)]
 use chrono::{DateTime, Utc};
+use frona_harness::{
+    config::{ApiSurface, CredentialMethod},
+    inference::{
+        error::InferenceError,
+        protocol::http::WireClient,
+        provider::{
+            CredentialValidationError, InferenceCounter, ModelProvider, RigProvider,
+            platform::ResolvedConnection,
+        },
+    },
+};
 use rig_core::{
     model::{Model, ModelList},
     providers::chatgpt,
@@ -48,7 +50,8 @@ async fn list_models(
     if let Some(account_id) = account_id {
         request = request.header("ChatGPT-Account-Id", account_id);
     }
-    let response: ModelsResponse = super::discovery::get(request).await?;
+    let response: ModelsResponse =
+        frona_harness::inference::provider::adapter::discovery::get(request).await?;
     Ok(ModelList::new(
         response
             .models
@@ -109,7 +112,8 @@ fn current_provider(
             "ChatGPT discovery requires a managed access token".into(),
         ));
     };
-    let discovery_client = super::discovery::client(access_token)?;
+    let discovery_client =
+        frona_harness::inference::provider::adapter::discovery::client(access_token)?;
     let account_id = account_id.clone();
     let endpoint = endpoint.to_owned();
     Ok(Arc::new(
@@ -164,26 +168,22 @@ impl CredentialMethodDriver for Driver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::broadcast::BroadcastService;
+    use crate::core::Handle;
     use crate::credential::managed::Candidate;
     use crate::credential::managed::{
         integration::openai_codex::{Document, OpenAiCodexIntegration},
         login::{ManagedLoginService, openai_codex::OpenAiCodexLogin, service::LoginTarget},
     };
-    use crate::{
-        chat::broadcast::BroadcastService,
-        core::{
-            Handle,
-            config::{InferenceConfig, OpenAiApi, ProviderModel},
-        },
-        inference::{
-            config::ModelRegistryConfig,
-            credential::{
-                runtime::RuntimeCredentials, setup::LoginStatus, store::ProviderCredentials,
-            },
-            provider::{ModelConfig, platform::ProviderPlatform},
-        },
-    };
+    use crate::inference::config::ModelRegistryConfig;
+    use crate::inference::credential::runtime::RuntimeCredentials;
+    use crate::inference::credential::setup::LoginStatus;
+    use crate::inference::credential::store::ProviderCredentials;
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use frona_harness::{
+        config::{InferenceConfig, OpenAiApi, ProviderModel},
+        inference::provider::ModelConfig,
+    };
     use rig_core::completion::{
         AssistantContent, Message, ToolDefinition,
         message::{ToolResultContent, UserContent},
@@ -201,7 +201,7 @@ mod tests {
 
     #[tokio::test]
     async fn discovery_uses_subscription_credentials_and_fresh_visible_model_ids() {
-        use crate::inference::provider::{ProviderModelList, ProviderModelListSource};
+        use frona_harness::inference::provider::{ProviderModelList, ProviderModelListSource};
         use wiremock::matchers::{header, query_param};
         let server = MockServer::start().await;
         let document = Document {
@@ -279,7 +279,7 @@ mod tests {
     }
 
     fn connection() -> ResolvedConnection {
-        ProviderPlatform::resolve(&handle(), &config()).unwrap()
+        crate::inference::provider::resolve_connection(&handle(), &config()).unwrap()
     }
 
     fn jwt(expires: DateTime<Utc>, id: &str) -> String {
@@ -506,7 +506,7 @@ mod tests {
             crate::inference::credential::runtime::RuntimeCredentials::new(
                 configs.providers.clone(),
                 store.clone(),
-                crate::inference::provider::InferenceCounter::new(BroadcastService::new()),
+                frona_harness::inference::provider::InferenceCounter::new(BroadcastService::new()),
             ),
         );
         let registry = {
@@ -529,7 +529,7 @@ mod tests {
             )
         };
         let group = registry
-            .resolve(&crate::inference::ModelRef::PRIMARY)
+            .resolve(&frona_harness::inference::ModelRef::PRIMARY)
             .unwrap();
         assert!(
             registry
@@ -579,12 +579,12 @@ mod tests {
             "fixture",
         );
         let result = group
-            .inference(crate::inference::ModelRequest {
+            .inference(frona_harness::inference::ModelRequest {
                 input_token_estimate: None,
                 system_prompt: "system",
                 history: vec![Message::user("hello")],
                 tools: vec![],
-                observations: frona::inference::observation::Observations::new(
+                observations: frona_harness::inference::observation::Observations::new(
                     &usage.scoped(&context),
                 ),
                 overrides: Default::default(),
@@ -599,7 +599,7 @@ mod tests {
             let runtime = crate::inference::credential::runtime::RuntimeCredentials::new(
                 registry_config.providers.clone(),
                 store,
-                crate::inference::provider::InferenceCounter::new(BroadcastService::new()),
+                frona_harness::inference::provider::InferenceCounter::new(BroadcastService::new()),
             );
             let groups = registry_config
                 .parse_model_groups_with_catalog(
@@ -667,7 +667,8 @@ mod tests {
         let driver = driver(&server);
         let mut config = config();
         config.base_url = Some(server.uri());
-        let connection = ProviderPlatform::resolve(&handle(), &config).unwrap();
+        let connection =
+            crate::inference::provider::resolve_connection(&handle(), &config).unwrap();
         assert!(!driver.accepts(&connection));
         assert!(
             crate::inference::credential::setup::provider(&connection, CredentialMethod::Oauth)

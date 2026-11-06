@@ -8,16 +8,15 @@ use frona::{
     core::repository::Repository,
     db::repo::generic::SurrealRepo,
     inference::{
-        ModelGroup,
         config::ModelRegistryConfig,
         conversation::{ConversationBuilder, ConversationContext, DefaultConversationBuilder},
         credential::runtime::RuntimeCredentials,
         hitl::{HitlResponse, ResolveOutcome},
-        provider::InferenceCounter,
         tool_call::{ToolCall, ToolCallResponse},
         tool_loop::extract_reasoning,
     },
 };
+use frona_harness::inference::{ModelGroup, provider::InferenceCounter};
 use rig_core::completion::{AssistantContent, Message as RigMessage, message::Reasoning};
 use serde_json::{Value, json};
 use surrealdb::{

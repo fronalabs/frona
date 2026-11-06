@@ -8,28 +8,34 @@ use std::{
 };
 use uuid::Uuid;
 
-use crate::core::{
-    Handle,
-    config::{
-        AdapterId, ApiSurface, Config, ConfigService, ModelGroupConfig, ModelProviderConfig,
-        SaveResult, redact_config_for_api, validate_document,
+use crate::{
+    core::{
+        Handle,
+        config::{
+            Config, ConfigService, ModelProviderConfig, SaveResult, redact_config_for_api,
+            validate_document,
+        },
+        error::AppError,
     },
-    error::AppError,
-};
-use crate::inference::credential::store::{
-    CredentialMethod, CredentialState, CredentialStatus, PendingCredentialStatus,
-    ProviderCredentials,
-};
-use crate::inference::{
-    credential::runtime::EffectiveAuthentication,
-    provider::{
-        platform::ProviderPlatform,
-        registry::ModelProviderRegistry,
-        validation::{
-            CandidateCredential, ProviderValidationError, ProviderValidationService,
-            ValidationCandidate,
+    inference::{
+        credential::{
+            runtime::EffectiveAuthentication,
+            store::{
+                CredentialState, CredentialStatus, PendingCredentialStatus, ProviderCredentials,
+            },
+        },
+        provider::{
+            registry::ModelProviderRegistry,
+            validation::{
+                CandidateCredential, ProviderValidationError, ProviderValidationService,
+                ValidationCandidate,
+            },
         },
     },
+};
+use frona_harness::{
+    config::{AdapterId, ApiSurface, CredentialMethod, ModelGroupConfig},
+    inference::provider::platform::ProviderPlatform,
 };
 
 #[derive(Clone)]
@@ -197,7 +203,7 @@ pub struct MutationResult {
 
 pub fn referenced_groups(config: &Config, handle: &Handle) -> Vec<String> {
     fn references(model: &ModelGroupConfig, handle: &Handle) -> bool {
-        model.provider == *handle
+        model.provider.as_str() == handle.as_str()
             || model
                 .common
                 .fallbacks
@@ -223,8 +229,8 @@ impl ModelProviderService {
         validator: ProviderValidationService,
         runtime: Arc<crate::inference::credential::runtime::RuntimeCredentials>,
         active: Arc<Config>,
-        groups: HashMap<String, crate::inference::ModelGroup>,
-        providers: HashMap<String, Arc<dyn crate::inference::provider::ModelProvider>>,
+        groups: HashMap<String, frona_harness::inference::ModelGroup>,
+        providers: HashMap<String, Arc<dyn frona_harness::inference::provider::ModelProvider>>,
     ) -> Self {
         let registry = ModelProviderRegistry::new(providers, groups);
         Self {
@@ -240,32 +246,35 @@ impl ModelProviderService {
 
     pub fn resolve(
         &self,
-        reference: &crate::inference::ModelRef,
-    ) -> Result<crate::inference::ModelGroup, crate::inference::InferenceError> {
+        reference: &frona_harness::inference::ModelRef,
+    ) -> Result<frona_harness::inference::ModelGroup, frona_harness::inference::InferenceError>
+    {
         self.registry.resolve(reference)
     }
 
     pub fn resolve_with_fallback(
         &self,
-        reference: &crate::inference::ModelRef,
-        fallback: &crate::inference::ModelRef,
-    ) -> Result<crate::inference::ModelGroup, crate::inference::InferenceError> {
+        reference: &frona_harness::inference::ModelRef,
+        fallback: &frona_harness::inference::ModelRef,
+    ) -> Result<frona_harness::inference::ModelGroup, frona_harness::inference::InferenceError>
+    {
         self.registry.resolve_with_fallback(reference, fallback)
     }
 
     pub fn compile(
         &self,
-        mut model: crate::inference::ModelConfig,
-        retry: crate::inference::config::RetryConfig,
+        mut model: frona_harness::inference::ModelConfig,
+        retry: frona_harness::config::RetryConfig,
         context_budget: usize,
-    ) -> Result<crate::inference::ModelGroup, crate::inference::InferenceError> {
+    ) -> Result<frona_harness::inference::ModelGroup, frona_harness::inference::InferenceError>
+    {
         if context_budget == 0 || model.model_id.is_empty() {
-            return Err(crate::inference::InferenceError::ConfigError(
+            return Err(frona_harness::inference::InferenceError::ConfigError(
                 "model ID and positive context budget are required".into(),
             ));
         }
         self.runtime.prepare_model(&mut model)?;
-        Ok(crate::inference::ModelGroup {
+        Ok(frona_harness::inference::ModelGroup {
             providers: self.registry.providers().clone(),
             name: model.as_str(),
             max_tokens: model.request_settings.max_tokens,
@@ -294,7 +303,8 @@ impl ModelProviderService {
             .or_else(|| saved.cloned())
             .or_else(|| active.cloned())
             .ok_or_else(|| AppError::NotFound("provider not found".into()))?;
-        let resolved = ProviderPlatform::resolve(handle, &config).map_err(invalid)?;
+        let resolved =
+            crate::inference::provider::resolve_connection(handle, &config).map_err(invalid)?;
         let effective = if active.is_some() {
             Some(
                 self.runtime
@@ -386,10 +396,11 @@ impl ModelProviderService {
                 "draft validation requires a user".into(),
             ));
         }
-        let connection = ProviderPlatform::resolve(handle, &request.config).map_err(invalid)?;
+        let connection = crate::inference::provider::resolve_connection(handle, &request.config)
+            .map_err(invalid)?;
         let credential = match request.credential {
             CredentialInput::ApiKey { api_key } => CandidateCredential::New {
-                method: crate::inference::credential::store::CredentialMethod::ApiKey,
+                method: frona_harness::config::CredentialMethod::ApiKey,
                 document: if connection.brand == "github-copilot" {
                     serde_json::to_value(
                         crate::credential::managed::integration::copilot::Document {
@@ -460,7 +471,8 @@ impl ModelProviderService {
         self.store
             .authorize_draft(request.validation_id, user_id)
             .await?;
-        let connection = ProviderPlatform::resolve(handle, &request.config).map_err(invalid)?;
+        let connection = crate::inference::provider::resolve_connection(handle, &request.config)
+            .map_err(invalid)?;
         let expected = super::validation::binding(&connection, &request.source, &request.config);
         self.validator
             .resolve_proof(request.validation_id, handle, request.method, &expected)
@@ -501,7 +513,8 @@ impl ModelProviderService {
             .authorize_draft(draft.validation_id, user_id)
             .await?;
         validate_manual_models(&draft.manual_models)?;
-        let connection = ProviderPlatform::resolve(handle, &draft.config).map_err(invalid)?;
+        let connection = crate::inference::provider::resolve_connection(handle, &draft.config)
+            .map_err(invalid)?;
         let provider = self
             .validator
             .draft_provider(
@@ -541,7 +554,8 @@ impl ModelProviderService {
             ));
         }
         validate_manual_models(&request.manual_models)?;
-        let connection = ProviderPlatform::resolve(handle, &request.config).map_err(invalid)?;
+        let connection = crate::inference::provider::resolve_connection(handle, &request.config)
+            .map_err(invalid)?;
         let resolved = self
             .runtime
             .resolve_config_for_listing(handle, request.config)
@@ -578,7 +592,8 @@ impl ModelProviderService {
             .get(handle)
             .or_else(|| persisted.providers.get(handle))
             .ok_or_else(|| AppError::NotFound("provider not found".into()))?;
-        let connection = ProviderPlatform::resolve(handle, config).map_err(invalid)?;
+        let connection =
+            crate::inference::provider::resolve_connection(handle, config).map_err(invalid)?;
         let runtime = &self.runtime;
         let (inventory, method, eligible) = match runtime.resolve_for_listing(handle).await {
             Ok(resolved) => (
@@ -659,7 +674,8 @@ impl ModelProviderService {
             return Err(AppError::Conflict("credential changed".into()));
         }
         self.store.vault().delete_by_id(id, current.version).await?;
-        let connection = ProviderPlatform::resolve(handle, config).map_err(invalid)?;
+        let connection =
+            crate::inference::provider::resolve_connection(handle, config).map_err(invalid)?;
         let status = CredentialStatus {
             handle: handle.clone(),
             method,
@@ -784,7 +800,8 @@ impl ModelProviderService {
         ),
         AppError,
     > {
-        let connection = ProviderPlatform::resolve(handle, &request.config).map_err(invalid)?;
+        let connection = crate::inference::provider::resolve_connection(handle, &request.config)
+            .map_err(invalid)?;
         if !crate::inference::credential::setup::provider(&connection, request.method).is_some() {
             return Err(unsupported_login());
         }
@@ -862,11 +879,9 @@ mod tests {
     use super::*;
     use crate::{
         chat::broadcast::BroadcastService,
-        inference::{
-            config::ModelRegistryConfig,
-            provider::{InferenceCounter, validation::binding},
-        },
+        inference::{config::ModelRegistryConfig, provider::validation::binding},
     };
+    use frona_harness::inference::provider::InferenceCounter;
 
     #[test]
     fn provider_failures_are_not_reported_as_rejected_credentials() {
@@ -1059,7 +1074,7 @@ mod tests {
 
     async fn stage(service: &ModelProviderService, payload: Candidate) -> Uuid {
         let config = service.active.providers.get(&handle()).unwrap();
-        let resolved = ProviderPlatform::resolve(&handle(), config).unwrap();
+        let resolved = crate::inference::provider::resolve_connection(&handle(), config).unwrap();
         let method = match payload {
             Candidate::Secret(ref doc) if doc.get("access_token").is_some() => {
                 CredentialMethod::Oauth
@@ -1319,9 +1334,9 @@ mod tests {
 
     #[tokio::test]
     async fn named_lookup_is_exact_and_ad_hoc_compilation_requires_explicit_controls() {
-        use crate::core::config::{OpenAiApi, ProviderModel};
-        use crate::inference::{
-            ModelConfig, ModelRef, config::RetryConfig, provider::ModelRequestSettings,
+        use frona_harness::{
+            config::{OpenAiApi, ProviderModel, RetryConfig},
+            inference::{ModelConfig, ModelRef, provider::ModelRequestSettings},
         };
         let (mut service, _directory) = fixture().await;
         let model: ModelGroupConfig = serde_json::from_value(json!({

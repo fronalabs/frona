@@ -19,6 +19,7 @@ const DIALECTS: &[(&str, &str)] = &[
 
 #[derive(Default)]
 struct Options {
+    crate_path: Option<syn::Path>,
     prefix: Option<LitStr>,
     path: Option<LitStr>,
     skip: bool,
@@ -44,6 +45,9 @@ fn options(attrs: &[Attribute], container: bool) -> syn::Result<Options> {
                 return Err(meta.error("duplicate parameter option"));
             }
             match key.as_str() {
+                "crate" if container => {
+                    result.crate_path = Some(meta.value()?.parse::<LitStr>()?.parse()?);
+                }
                 "prefix" if container => {
                     result.prefix = Some(path_literal(meta.value()?.parse()?)?)
                 }
@@ -192,6 +196,10 @@ pub fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
         ));
     };
     let container = options(&input.attrs, true)?;
+    let crate_path = container
+        .crate_path
+        .clone()
+        .unwrap_or_else(|| syn::parse_quote!(frona));
     let rename_all = serde_name(&input.attrs, "rename_all")?;
     let mut statements = Vec::new();
     let mut names = HashSet::new();
@@ -216,8 +224,8 @@ pub fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
             .map(LitStr::value)
             .unwrap_or_else(|| config.clone());
         let arms = opts.dialects.iter().map(|(dialect, path)| match path {
-            Some(path) => quote! { frona::inference::protocol::parameters::WireDialect::#dialect => Some(#path), },
-            None => quote! { frona::inference::protocol::parameters::WireDialect::#dialect => None, },
+            Some(path) => quote! { #crate_path::inference::protocol::parameters::WireDialect::#dialect => Some(#path), },
+            None => quote! { #crate_path::inference::protocol::parameters::WireDialect::#dialect => None, },
         });
         let prefix = if opts.root {
             String::new()
@@ -231,17 +239,17 @@ pub fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
         let emit = if opts.nested {
             let ty = nested_type(&field.ty);
             quote! {
-                for child in <#ty as frona::inference::protocol::parameters::ParameterMetadata>::parameter_bindings(dialect) {
+                for child in <#ty as #crate_path::inference::protocol::parameters::ParameterMetadata>::parameter_bindings(dialect) {
                     let mut child_path = wire_path.clone();
                     child_path.extend(child.wire_path);
-                    result.push(frona::inference::protocol::parameters::ParameterBinding {
+                    result.push(#crate_path::inference::protocol::parameters::ParameterBinding {
                         config_path: format!("{}.{}", #config, child.config_path),
                         wire_path: child_path,
                     });
                 }
             }
         } else {
-            quote! { result.push(frona::inference::protocol::parameters::ParameterBinding {
+            quote! { result.push(#crate_path::inference::protocol::parameters::ParameterBinding {
                 config_path: #config.to_owned(), wire_path,
             }); }
         };
@@ -268,9 +276,9 @@ pub fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
     };
     Ok(quote! {
         #[automatically_derived]
-        impl #impl_generics frona::inference::protocol::parameters::ParameterMetadata for #name #ty_generics #where_clause {
-            fn parameter_bindings(dialect: frona::inference::protocol::parameters::WireDialect)
-                -> Vec<frona::inference::protocol::parameters::ParameterBinding>
+        impl #impl_generics #crate_path::inference::protocol::parameters::ParameterMetadata for #name #ty_generics #where_clause {
+            fn parameter_bindings(dialect: #crate_path::inference::protocol::parameters::WireDialect)
+                -> Vec<#crate_path::inference::protocol::parameters::ParameterBinding>
             {
                 #body
             }

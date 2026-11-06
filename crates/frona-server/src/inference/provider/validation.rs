@@ -4,14 +4,16 @@ use std::time::Duration;
 
 use uuid::Uuid;
 
-use crate::core::Handle;
-use crate::core::config::ModelProviderConfig;
-use crate::inference::credential::store::{
-    CredentialBinding, CredentialMethod, PendingCredentialStatus, ProviderCredentials,
+use crate::{
+    core::{Handle, config::ModelProviderConfig},
+    inference::credential::store::{
+        CredentialBinding, PendingCredentialStatus, ProviderCredentials,
+    },
 };
+use frona_harness::config::CredentialMethod;
 
-use crate::inference::provider::platform::{ProviderPlatform, build_provider};
-use crate::inference::provider::{
+use crate::inference::provider::build_provider;
+use frona_harness::inference::provider::{
     CredentialValidationError, InferenceCounter, ModelProvider, ProviderModelList,
 };
 
@@ -122,7 +124,7 @@ impl ProviderValidationService {
 
     async fn session_provider(
         &self,
-        connection: &crate::inference::provider::platform::ResolvedConnection,
+        connection: &frona_harness::inference::provider::platform::ResolvedConnection,
         config: &ModelProviderConfig,
         method: CredentialMethod,
         document: &serde_json::Value,
@@ -172,7 +174,7 @@ impl ProviderValidationService {
         // without treating that key as a second configured credential source.
         let mut effective = prepared.config.clone();
         effective.credential_id = None;
-        let resolved = ProviderPlatform::resolve(&prepared.handle, &effective)
+        let resolved = crate::inference::provider::resolve_connection(&prepared.handle, &effective)
             .map_err(|error| ProviderValidationError::InvalidCandidate(error.to_string()))?;
         if !resolved
             .auth_methods
@@ -208,8 +210,9 @@ impl ProviderValidationService {
         &self,
         mut candidate: ValidationCandidate,
     ) -> Result<PreparedCandidate, ProviderValidationError> {
-        let connection = ProviderPlatform::resolve(&candidate.handle, &candidate.config)
-            .map_err(|error| ProviderValidationError::InvalidCandidate(error.to_string()))?;
+        let connection =
+            crate::inference::provider::resolve_connection(&candidate.handle, &candidate.config)
+                .map_err(|error| ProviderValidationError::InvalidCandidate(error.to_string()))?;
         let (method, source, proof_payload) = match candidate.credential {
             CandidateCredential::New { method, document } => {
                 apply_document(&mut candidate.config, &connection.brand, method, &document)?;
@@ -376,7 +379,7 @@ impl ProviderValidationService {
         method: CredentialMethod,
         source: &str,
     ) -> Result<Arc<dyn ModelProvider>, ProviderValidationError> {
-        let resolved = ProviderPlatform::resolve(handle, config)
+        let resolved = crate::inference::provider::resolve_connection(handle, config)
             .map_err(|error| ProviderValidationError::InvalidCandidate(error.to_string()))?;
         let expected = binding(&resolved, source, config);
         let (_, payload) = self
@@ -472,7 +475,7 @@ fn apply_document(
 }
 
 pub fn binding(
-    connection: &crate::inference::provider::platform::ResolvedConnection,
+    connection: &frona_harness::inference::provider::platform::ResolvedConnection,
     source: &str,
     config: &ModelProviderConfig,
 ) -> CredentialBinding {
@@ -516,9 +519,9 @@ mod tests {
 
     use super::*;
     use crate::chat::broadcast::BroadcastService;
-    use crate::inference::error::InferenceError;
-    use crate::inference::provider::{
-        CredentialValidation, InferenceOutput, ModelConfig, StreamToken,
+    use frona_harness::inference::{
+        error::InferenceError,
+        provider::{CredentialValidation, InferenceOutput, ModelConfig, StreamToken},
     };
 
     #[derive(Clone)]
@@ -605,7 +608,7 @@ mod tests {
                 ..Default::default()
             },
             credential: CandidateCredential::New {
-                method: crate::inference::credential::store::CredentialMethod::ApiKey,
+                method: frona_harness::config::CredentialMethod::ApiKey,
                 document: crate::credential::managed::integration::static_secret::document(
                     key.into(),
                 ),
@@ -628,7 +631,7 @@ mod tests {
     fn test_binding(endpoint: &str) -> CredentialBinding {
         CredentialBinding {
             provider: "openai".into(),
-            adapter: crate::core::config::AdapterId::Openai,
+            adapter: frona_harness::config::AdapterId::Openai,
             effective_endpoint: Some(endpoint.into()),
             source: "database".into(),
             authentication_attributes: Default::default(),
@@ -770,7 +773,7 @@ mod tests {
         changed.provider = "other".into();
         changed_bindings.push(changed);
         let mut changed = a_binding.clone();
-        changed.adapter = crate::core::config::AdapterId::Anthropic;
+        changed.adapter = frona_harness::config::AdapterId::Anthropic;
         changed_bindings.push(changed);
         let mut changed = a_binding.clone();
         changed.source = "environment:OPENAI_API_KEY".into();
@@ -947,7 +950,7 @@ mod tests {
             .await
             .unwrap();
         let Some(ProviderModelList::Listed {
-            source: crate::inference::provider::ProviderModelListSource::Account,
+            source: frona_harness::inference::provider::ProviderModelListSource::Account,
             models,
         }) = proof.models
         else {

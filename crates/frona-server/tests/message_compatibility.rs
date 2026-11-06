@@ -247,7 +247,7 @@ async fn memory_maintenance_consumes_a_chat_with_legacy_message_rows() {
     let providers = helpers::test_model_service(
         [(
             "mock".into(),
-            provider.clone() as Arc<dyn frona::inference::provider::ModelProvider>,
+            provider.clone() as Arc<dyn frona_harness::inference::provider::ModelProvider>,
         )]
         .into(),
         [(group.name.clone(), group)].into(),

@@ -821,11 +821,12 @@ async fn compaction_prepends_summary_and_live_context_and_preserves_retained_mes
     );
     // Budget trimming must retain the fresh context with the summary.
     let native = &result.model_history.history;
-    let budget = frona::inference::context::estimate_tokens("")
-        + frona::inference::context::estimate_message_tokens(&native[0])
-        + frona::inference::context::estimate_message_tokens(native.last().unwrap());
+    let budget = frona_harness::inference::context::estimate_tokens("")
+        + frona_harness::inference::context::estimate_message_tokens(&native[0])
+        + frona_harness::inference::context::estimate_message_tokens(native.last().unwrap());
     let trimmed =
-        frona::inference::context::truncate_history(native.clone(), "", budget, 0, 100).unwrap();
+        frona_harness::inference::context::truncate_history(native.clone(), "", budget, 0, 100)
+            .unwrap();
     assert!(trimmed.len() < native.len());
     assert_eq!(trimmed.first(), native.first());
     let saved = app

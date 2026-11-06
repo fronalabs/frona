@@ -1,40 +1,29 @@
 use self::streaming::ModelGroupStreaming;
+use frona_harness::inference::{InferenceError, ModelGroup};
 pub mod config;
-pub mod context;
 pub mod conversation;
 pub mod credential;
 pub mod directory;
-pub mod error;
-pub mod handle;
 pub mod hitl;
-pub mod observation;
-pub mod protocol;
 pub mod provider;
 pub mod request;
-pub mod retry;
-pub mod retry_config;
 pub mod streaming;
 pub mod structured;
 pub mod tool_call;
 pub mod tool_loop;
-pub mod trace;
 pub mod usage;
 
 pub use self::usage::{CompactionTarget, InferenceKind, UsageContext};
 
-pub use self::error::InferenceError;
 pub use self::hitl::{
     Hitl, HitlDelivery, HitlOutcome, HitlRequest, HitlResponse, ResolveOutcome, VaultGrant,
 };
-pub use self::provider::group::{ModelGroup, ModelRequest, ModelResponse, RequestOverrides};
-pub use self::provider::{ModelConfig, ModelRef};
 pub use self::request::{InferenceContext, InferenceRequest, InferenceResponse, active_chat};
 pub use self::structured::{
     AnswerAttempt, StructuredConversation, structured_inference, structured_inference_with_tools,
 };
 pub use self::tool_loop::{InferenceEvent, InferenceEventKind};
 pub use crate::chat::broadcast::EventSender;
-pub use rig_core::completion::request::Usage;
 
 use rig_core::completion::Message as RigMessage;
 
@@ -73,12 +62,12 @@ pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, A
         let event_tx = &request.ctx.event_tx;
         match (request.model_group)
             .stream_inference(
-                crate::inference::ModelRequest {
+                frona_harness::inference::ModelRequest {
                     input_token_estimate: request.input_token_estimate,
                     system_prompt: &request.system_prompt,
                     history: history.to_vec(),
                     tools: vec![],
-                    observations: observation::Observations::new(
+                    observations: frona_harness::inference::observation::Observations::new(
                         &request.usage_service.scoped(&chat_usage_ctx),
                     ),
                     overrides: Default::default(),
@@ -153,17 +142,22 @@ pub async fn text_inference(
     usage_service: &UsageService,
     usage_ctx: &UsageContext,
 ) -> Result<String, InferenceError> {
-    let crate::inference::ModelResponse {
+    let frona_harness::inference::ModelResponse {
         content: contents, ..
     } = (model_group)
-        .inference(crate::inference::ModelRequest {
+        .inference(frona_harness::inference::ModelRequest {
             input_token_estimate: None,
             system_prompt,
             history,
             tools: vec![],
-            observations: observation::Observations::new(&usage_service.scoped(usage_ctx)),
+            observations: frona_harness::inference::observation::Observations::new(
+                &usage_service.scoped(usage_ctx),
+            ),
             overrides: Default::default(),
         })
         .await?;
-    provider::extract_text_from_choice(&contents)
+    frona_harness::inference::provider::extract_text_from_choice(&contents)
 }
+
+#[cfg(test)]
+mod streaming_tests;

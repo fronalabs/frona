@@ -1,12 +1,11 @@
 //! Authoring-only setting schemas. Runtime serialization remains catalog-free.
 
-use crate::inference::{
-    protocol::{parameters as wire_params, parameters::WireDialect},
-    provider::platform::ResolvedConnection,
-};
-use crate::{
-    core::config::{ApiSurface, ModelGroupConfig, OpenAiApi, ProviderModel},
-    inference::credential::store::CredentialMethod,
+use frona_harness::{
+    config::{ApiSurface, CredentialMethod, ModelGroupConfig, OpenAiApi, ProviderModel},
+    inference::{
+        protocol::{parameters as wire_params, parameters::WireDialect},
+        provider::platform::ResolvedConnection,
+    },
 };
 use frona_model_catalog::{
     ModelCatalogSnapshot,
@@ -699,10 +698,9 @@ pub fn configured_settings(
 mod tests {
     use super::*;
     use crate::core::{Handle, config::ModelProviderConfig};
-    use crate::inference::provider::platform::ProviderPlatform;
 
     fn connection(brand: &str) -> ResolvedConnection {
-        ProviderPlatform::resolve(
+        crate::inference::provider::resolve_connection(
             &Handle::const_validated("account"),
             &ModelProviderConfig {
                 provider: Some(brand.into()),
@@ -1215,9 +1213,10 @@ mod tests {
                 provider: Some(record.provider.clone()),
                 ..Default::default()
             };
-            let Ok(connection) =
-                ProviderPlatform::resolve(&Handle::const_validated("account"), &config)
-            else {
+            let Ok(connection) = crate::inference::provider::resolve_connection(
+                &Handle::const_validated("account"),
+                &config,
+            ) else {
                 continue;
             };
             let Some(api) = crate::inference::directory::protocols::parameter_protocol(record)

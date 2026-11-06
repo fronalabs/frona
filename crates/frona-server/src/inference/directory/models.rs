@@ -1,19 +1,14 @@
+use crate::core::Handle;
 #[cfg(test)]
 use crate::credential::managed::Candidate;
-use crate::inference::{
-    credential::runtime::ResolvedProvider,
-    provider::{
+use crate::inference::credential::runtime::ResolvedProvider;
+use chrono::Utc;
+use frona_harness::{
+    config::{ApiSurface, CredentialMethod, ModelGroupConfig},
+    inference::provider::{
         ModelProvider, ProviderModelList, ProviderModelListSource, platform::ResolvedConnection,
     },
 };
-use crate::{
-    core::{
-        Handle,
-        config::{ApiSurface, ModelGroupConfig},
-    },
-    inference::credential::store::CredentialMethod,
-};
-use chrono::Utc;
 use frona_model_catalog::{
     ModelCatalogSnapshot,
     catalog::ModelEntry,
@@ -272,7 +267,7 @@ pub fn configured_models(
         model: &ModelGroupConfig,
         result: &mut BTreeMap<String, Vec<String>>,
     ) {
-        if &model.provider == handle {
+        if model.provider.as_str() == handle.as_str() {
             let groups = result.entry(model.common.model.clone()).or_default();
             if !groups.iter().any(|group| group == name) {
                 groups.push(name.into());
@@ -297,7 +292,7 @@ pub fn retain_saved_protocols(
     groups: &HashMap<String, ModelGroupConfig>,
 ) {
     fn visit(listing: &mut ModelListing, group: &ModelGroupConfig) {
-        if group.provider == listing.connection {
+        if group.provider.as_str() == listing.connection.as_str() {
             if let Some(api) = group.api
                 && let Some(model) = listing
                     .models
@@ -504,26 +499,23 @@ pub fn normalize(
             }
         })
         .collect();
-    ModelListing {connection:connection.handle.clone(),credential_method:method,access_mode:connection.access_mode(method),source,directory_status:status,source_status:[("configured".into(),serde_json::json!({"status":"ok"})),("live".into(),serde_json::json!({"status":match source {"account"=>"ok","recipe"=>"recipe","catalog_fallback"=>"unsupported",_=>"error"}}))].into(),manual_entry:true,models}
+    ModelListing {connection:connection.handle.clone().into(),credential_method:method,access_mode:connection.access_mode(method),source,directory_status:status,source_status:[("configured".into(),serde_json::json!({"status":"ok"})),("live".into(),serde_json::json!({"status":match source {"account"=>"ok","recipe"=>"recipe","catalog_fallback"=>"unsupported",_=>"error"}}))].into(),manual_entry:true,models}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::config::ModelProviderConfig;
-    use crate::inference::provider::platform::ProviderPlatform;
     use crate::{
         chat::broadcast::BroadcastService,
+        core::config::ModelProviderConfig,
         inference::{
             credential::{runtime::RuntimeCredentials, store::ProviderCredentials},
-            provider::{
-                InferenceCounter,
-                validation::{
-                    CandidateCredential, ProviderValidationService, ValidationCandidate, binding,
-                },
+            provider::validation::{
+                CandidateCredential, ProviderValidationService, ValidationCandidate, binding,
             },
         },
     };
+    use frona_harness::inference::provider::InferenceCounter;
     use frona_model_catalog::catalog::Limit;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
@@ -592,14 +584,14 @@ mod tests {
                 .mount(&server)
                 .await;
             let config = account(server.uri(), Some("fixture"));
-            let connection =
-                ProviderPlatform::resolve(&Handle::const_validated("account"), &config).unwrap();
-            let provider = crate::inference::provider::platform::build_provider(
-                &connection,
+            let connection = crate::inference::provider::resolve_connection(
+                &Handle::const_validated("account"),
                 &config,
-                &counter(),
             )
             .unwrap();
+            let provider =
+                crate::inference::provider::build_provider(&connection, &config, &counter())
+                    .unwrap();
             let inventory = directory.draft_inventory(provider.as_ref()).await;
             if response.0 == 0 {
                 assert!(account_ids(inventory).is_empty());
@@ -611,11 +603,13 @@ mod tests {
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         drop(listener);
         let config = account(endpoint, Some("fixture"));
-        let connection =
-            ProviderPlatform::resolve(&Handle::const_validated("account"), &config).unwrap();
+        let connection = crate::inference::provider::resolve_connection(
+            &Handle::const_validated("account"),
+            &config,
+        )
+        .unwrap();
         let provider =
-            crate::inference::provider::platform::build_provider(&connection, &config, &counter())
-                .unwrap();
+            crate::inference::provider::build_provider(&connection, &config, &counter()).unwrap();
         assert!(matches!(
             directory.draft_inventory(provider.as_ref()).await,
             Inventory::Error
@@ -665,7 +659,7 @@ mod tests {
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
         // Selecting either returned protocol and refreshing authoring metadata
         // must not refetch an otherwise fresh account list.
-        let connection = ProviderPlatform::resolve(&a, &config_a).unwrap();
+        let connection = crate::inference::provider::resolve_connection(&a, &config_a).unwrap();
         for version in ["catalog-v1", "catalog-v2"] {
             let mut parameters = frona_model_catalog::parameters::ParameterCatalogSnapshot::empty();
             parameters.version = version.into();
@@ -688,7 +682,7 @@ mod tests {
             );
             assert_eq!(server.received_requests().await.unwrap().len(), 2);
         }
-        let connection = ProviderPlatform::resolve(&a, &config_a).unwrap();
+        let connection = crate::inference::provider::resolve_connection(&a, &config_a).unwrap();
         let pending = store
             .stage(
                 &a,
@@ -759,7 +753,7 @@ mod tests {
                         handle: handle.clone(),
                         config: config.clone(),
                         credential: CandidateCredential::New {
-                            method: crate::inference::credential::store::CredentialMethod::ApiKey,
+                            method: frona_harness::config::CredentialMethod::ApiKey,
                             document:
                                 crate::credential::managed::integration::static_secret::document(
                                     key.into(),
@@ -795,7 +789,7 @@ mod tests {
     }
 
     fn connection() -> ResolvedConnection {
-        ProviderPlatform::resolve(
+        crate::inference::provider::resolve_connection(
             &Handle::const_validated("account"),
             &ModelProviderConfig {
                 provider: Some("openai".into()),

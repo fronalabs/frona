@@ -1,18 +1,14 @@
 //! Authoring-only provider identity and setup descriptors. Catalog hints never
 //! register executable authentication or participate in runtime routing.
 
-use crate::inference::provider::{
-    platform::{ProviderPlatform, ResolvedConnection},
-    service::ProviderInspection,
-};
-use crate::{
-    core::{
-        Handle,
-        config::{AdapterId, ApiSurface, ModelProviderConfig},
-    },
-    inference::credential::store::CredentialMethod,
-};
+use crate::core::Handle;
+use crate::core::config::ModelProviderConfig;
+use crate::inference::provider::service::ProviderInspection;
 use chrono::{DateTime, Utc};
+use frona_harness::{
+    config::{AdapterId, ApiSurface, CredentialMethod},
+    inference::provider::platform::{ProviderPlatform, ResolvedConnection},
+};
 use frona_model_catalog::{
     ModelCatalogSnapshot,
     catalog::ProviderEntry,
@@ -123,7 +119,8 @@ pub fn available(snapshot: &ModelCatalogSnapshot) -> Vec<ProviderCatalogEntry> {
                 ..Default::default()
             };
             let handle = Handle::const_validated("catalog-draft");
-            let resolved = ProviderPlatform::resolve(&handle, &connection).ok()?;
+            let resolved =
+                crate::inference::provider::resolve_connection(&handle, &connection).ok()?;
             // A per-model route using a different protocol/host is not silently
             // converted into a generic provider-wide recipe.
             if !built_in
@@ -182,7 +179,7 @@ fn describe(
         defaults["base_url"] = json!(config.base_url);
     }
     let endpoint_required = (!built_in && resolved.adapter != AdapterId::Ollama)
-        || resolved.factory == crate::inference::provider::platform::FactoryKind::Azure;
+        || resolved.factory == frona_harness::inference::provider::platform::FactoryKind::Azure;
     let mut fields = vec![
         ProviderFieldInfo {
             id: "base_url".into(),
@@ -207,14 +204,14 @@ fn describe(
             suggested_env: vec![],
         },
     ];
-    if resolved.factory == crate::inference::provider::platform::FactoryKind::Azure {
+    if resolved.factory == frona_harness::inference::provider::platform::FactoryKind::Azure {
         fields.push(ProviderFieldInfo {
             id: "azure_api_version".into(),
             target: ProviderFieldTarget::Configuration { path: "/azure_api_version".into() },
             label: "Azure API version".into(),
             required: false,
             sensitive: false,
-            schema: json!({"type":"string","pattern":"^[A-Za-z0-9-]+$","default":crate::inference::provider::adapter::azure::DEFAULT_API_VERSION}),
+            schema: json!({"type":"string","pattern":"^[A-Za-z0-9-]+$","default":frona_harness::inference::provider::adapter::azure::DEFAULT_API_VERSION}),
             suggested_env: vec![],
         });
     }
@@ -270,7 +267,7 @@ fn describe(
                             field: "api_key".into(),
                         },
                         label: if resolved.factory
-                            == crate::inference::provider::platform::FactoryKind::Copilot
+                            == frona_harness::inference::provider::platform::FactoryKind::Copilot
                         {
                             "GitHub access token".into()
                         } else {
@@ -280,7 +277,7 @@ fn describe(
                         sensitive: true,
                         schema: json!({"type":"string","minLength":1}),
                         suggested_env: if resolved.factory
-                            == crate::inference::provider::platform::FactoryKind::Copilot
+                            == frona_harness::inference::provider::platform::FactoryKind::Copilot
                         {
                             vec!["GITHUB_COPILOT_TOKEN".into(), "GITHUB_TOKEN".into()]
                         } else if resolved.adapter == AdapterId::Bedrock {
@@ -295,7 +292,7 @@ fn describe(
             }
         })
         .collect();
-    if crate::inference::provider::platform::accepts_openrouter(resolved) {
+    if frona_harness::inference::provider::platform::accepts_openrouter(resolved) {
         methods.push(AuthMethodInfo {
             id: "openrouter_connect".into(),
             credential_method: CredentialMethod::ApiKey,
@@ -380,7 +377,8 @@ pub fn decorate(inspection: &mut ProviderInspection, snapshot: &ModelCatalogSnap
     };
     config.provider = Some(inspection.provider.clone());
     config.adapter = Some(inspection.adapter);
-    let Ok(resolved) = ProviderPlatform::resolve(&inspection.handle, &config) else {
+    let Ok(resolved) = crate::inference::provider::resolve_connection(&inspection.handle, &config)
+    else {
         return;
     };
     let mut entry = describe(
@@ -420,8 +418,11 @@ mod tests {
                 base_url: endpoint.clone(),
                 ..Default::default()
             };
-            let resolved =
-                ProviderPlatform::resolve(&Handle::const_validated("router"), &config).unwrap();
+            let resolved = crate::inference::provider::resolve_connection(
+                &Handle::const_validated("router"),
+                &config,
+            )
+            .unwrap();
             let entry = describe(&resolved, &config, None, true);
             let connect = entry
                 .auth_methods
@@ -488,7 +489,11 @@ mod tests {
         let defaults: ModelProviderConfig =
             serde_json::from_value(brand.configuration_defaults.clone()).unwrap();
         assert!(
-            ProviderPlatform::resolve(&Handle::const_validated("new-account"), &defaults).is_ok()
+            crate::inference::provider::resolve_connection(
+                &Handle::const_validated("new-account"),
+                &defaults
+            )
+            .is_ok()
         );
     }
 
@@ -647,11 +652,13 @@ mod tests {
 
     #[tokio::test]
     async fn newly_cataloged_brand_validates_through_the_real_compiled_path() {
-        use crate::chat::broadcast::BroadcastService;
-        use crate::inference::provider::{
-            InferenceCounter,
-            validation::{CandidateCredential, ProviderValidationService, ValidationCandidate},
+        use crate::{
+            chat::broadcast::BroadcastService,
+            inference::provider::validation::{
+                CandidateCredential, ProviderValidationService, ValidationCandidate,
+            },
         };
+        use frona_harness::inference::provider::InferenceCounter;
         use wiremock::{
             Mock, MockServer, ResponseTemplate,
             matchers::{header, method, path},
@@ -693,7 +700,7 @@ mod tests {
                 handle: handle.clone(),
                 config: serde_json::from_value(descriptor.configuration_defaults).unwrap(),
                 credential: CandidateCredential::New {
-                    method: crate::inference::credential::store::CredentialMethod::ApiKey,
+                    method: frona_harness::config::CredentialMethod::ApiKey,
                     document: crate::credential::managed::integration::static_secret::document(
                         "fixture-secret".into(),
                     ),

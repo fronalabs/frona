@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use metrics::{counter, gauge, histogram};
+use metrics::{counter, histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use rig_core::completion::request::Usage;
 
@@ -12,7 +12,6 @@ pub const INFERENCE_REQUEST_DURATION_SECONDS: &str = "frona_inference_request_du
 pub const INFERENCE_INPUT_TOKENS_TOTAL: &str = "frona_inference_input_tokens_total";
 pub const INFERENCE_OUTPUT_TOKENS_TOTAL: &str = "frona_inference_output_tokens_total";
 pub const INFERENCE_CACHED_INPUT_TOKENS_TOTAL: &str = "frona_inference_cached_input_tokens_total";
-pub const INFERENCE_ACTIVE_REQUESTS: &str = "frona_inference_active_requests";
 pub const TOOL_CALLS_TOTAL: &str = "frona_tool_calls_total";
 pub const TOOL_CALL_DURATION_SECONDS: &str = "frona_tool_call_duration_seconds";
 pub const POLICY_EVALUATIONS_TOTAL: &str = "frona_policy_evaluations_total";
@@ -98,8 +97,4 @@ pub fn record_policy_evaluation(action: &str, decision: &str, duration: Duration
 
     counter!(POLICY_EVALUATIONS_TOTAL, &labels).increment(1);
     histogram!(POLICY_EVALUATION_DURATION_SECONDS, &labels).record(duration.as_secs_f64());
-}
-
-pub fn set_active_inference_requests(count: usize) {
-    gauge!(INFERENCE_ACTIVE_REQUESTS).set(count as f64);
 }

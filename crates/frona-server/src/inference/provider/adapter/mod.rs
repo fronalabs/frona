@@ -1,12 +1,10 @@
-pub(crate) mod azure;
-pub(crate) mod bedrock;
+#[cfg(test)]
+mod azure_tests;
+#[cfg(test)]
+mod bedrock_tests;
 pub(crate) mod chatgpt;
-pub(crate) mod cohere;
 pub(crate) mod copilot;
-pub(crate) mod discovery;
-pub(crate) mod gemini;
-pub(crate) mod huggingface;
-pub(crate) mod hyperbolic;
-pub(crate) mod openrouter;
-pub(crate) mod perplexity;
-pub(crate) mod together;
+#[cfg(test)]
+mod gemini_tests;
+#[cfg(test)]
+mod openrouter_tests;

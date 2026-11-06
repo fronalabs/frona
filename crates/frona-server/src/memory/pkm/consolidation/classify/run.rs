@@ -108,7 +108,7 @@ impl Consolidator {
         let evidence_text =
             serde_json::to_string_pretty(&evidence).unwrap_or_else(|_| "(unavailable)".into());
         progress.persist().await?;
-        crate::inference::trace::record_stage_state(
+        frona_harness::inference::trace::record_stage_state(
             "consolidation-stage-state",
             "classify-evidence",
             &entity.path,
@@ -427,7 +427,7 @@ impl Consolidator {
         progress
             .bank_classify_diagnostic(&entity.path, diagnostic.clone())
             .await?;
-        crate::inference::trace::record_stage_state(
+        frona_harness::inference::trace::record_stage_state(
             "consolidation-stage-state",
             "classify-diagnostic",
             &entity.path,

@@ -16,19 +16,17 @@ use crate::core::execution::{
     ExecutionKind, ExecutionRegistry, ExecutionSource, ExecutionSourceKind, NewExecution,
 };
 use crate::core::state::ActiveSessions;
-use crate::inference::ModelGroup;
 use crate::inference::conversation::{ConversationBuilder, DefaultConversationBuilder};
 use crate::inference::hitl::{HitlOutcome, HitlResponse, ResolveOutcome};
 use crate::inference::request::{InferenceContext, InferenceRequest, InferenceResponse};
-use crate::inference::tool_call::ToolStatus;
-use crate::inference::usage::UsageContext;
-use crate::memory::service::MemoryService;
-use crate::policy::service::PolicyService;
-use crate::storage::StorageService;
-use crate::tool::AgentTool;
-use crate::tool::manager::ToolManager;
-use crate::tool::mcp::McpServerService;
-use crate::tool::registry::ToolFilter;
+use crate::{
+    inference::{tool_call::ToolStatus, usage::UsageContext},
+    memory::service::MemoryService,
+    policy::service::PolicyService,
+    storage::StorageService,
+    tool::{AgentTool, manager::ToolManager, mcp::McpServerService, registry::ToolFilter},
+};
+use frona_harness::inference::ModelGroup;
 use rig_core::completion::Message as RigMessage;
 
 struct CommandPromptOverride {

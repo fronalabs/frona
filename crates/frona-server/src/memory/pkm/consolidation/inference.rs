@@ -10,11 +10,10 @@ use rig_core::completion::Message as RigMessage;
 use crate::agent::harness::Harness;
 use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
-use crate::inference::ModelGroup;
 use crate::inference::usage::{InferenceKind, UsageContext};
 use crate::inference::{AnswerAttempt, StructuredConversation};
-use crate::tool::AgentTool;
-use crate::tool::registry::ToolFilter;
+use crate::tool::{AgentTool, registry::ToolFilter};
+use frona_harness::inference::ModelGroup;
 use tokio_util::sync::CancellationToken;
 
 use super::prompt::{PromptSpec, RenderedPrompt};

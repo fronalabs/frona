@@ -581,7 +581,7 @@ impl BroadcastService {
     }
 }
 
-impl crate::inference::observation::ActivityObserver for BroadcastService {
+impl frona_harness::inference::observation::ActivityObserver for BroadcastService {
     fn active_requests(&self, count: usize) {
         self.broadcast_inference_count(count);
     }
@@ -595,7 +595,7 @@ mod tests {
     async fn inference_activity_adapter_retains_server_events() {
         let service = BroadcastService::new();
         let mut events = service.subscribe_raw();
-        let counter = crate::inference::provider::InferenceCounter::new(service);
+        let counter = frona_harness::inference::provider::InferenceCounter::new(service);
         drop(counter.guard());
         for expected in [1, 0] {
             assert!(matches!(events.try_recv().unwrap().kind,

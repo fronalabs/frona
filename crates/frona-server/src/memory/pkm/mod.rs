@@ -102,11 +102,11 @@ pub struct PkmService {
 pub(crate) fn resolve_model_group(
     model_providers: &ModelProviderService,
     configured: &str,
-) -> Option<crate::inference::ModelGroup> {
+) -> Option<frona_harness::inference::ModelGroup> {
     model_providers
         .resolve_with_fallback(
-            &crate::inference::ModelRef(configured.to_owned().into()),
-            &crate::inference::ModelRef::PRIMARY,
+            &frona_harness::inference::ModelRef(configured.to_owned().into()),
+            &frona_harness::inference::ModelRef::PRIMARY,
         )
         .ok()
 }

@@ -203,14 +203,18 @@ impl AppState {
         let provider_validation =
             crate::inference::provider::validation::ProviderValidationService::new(
                 provider_credentials.clone(),
-                crate::inference::provider::InferenceCounter::new(broadcast_service.clone()),
+                frona_harness::inference::provider::InferenceCounter::new(
+                    broadcast_service.clone(),
+                ),
             );
         let login_service = crate::credential::managed::login::ManagedLoginService::registered();
         let runtime_credentials = Arc::new(
             crate::inference::credential::runtime::RuntimeCredentials::new(
                 llm_config.providers.clone(),
                 provider_credentials.clone(),
-                crate::inference::provider::InferenceCounter::new(broadcast_service.clone()),
+                frona_harness::inference::provider::InferenceCounter::new(
+                    broadcast_service.clone(),
+                ),
             ),
         );
         let model_groups = llm_config

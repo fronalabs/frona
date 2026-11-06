@@ -166,7 +166,7 @@ async fn typed_control_stops_are_not_converted_to_ordinary_failure() {
     .unwrap();
     assert!(
         matches!(stopped.call(json!({"count":1}), &ToolContext::default()).await,
-        Err(ToolError::Stop(ExecutionStop::BudgetExhausted(reason))) if reason == "shared tokens")
+        Err(ToolError::Stop(ExecutionStop::BudgetExhausted(reason))) if reason == frona_harness::BudgetRefusal::Denied("shared tokens".into()))
     );
     let mut failed = tool("fail", "Fail", |_: Arguments| async {
         Err::<Value, _>(ToolError::failed("cancelled is ordinary error text"))
@@ -184,7 +184,7 @@ async fn typed_control_stops_are_not_converted_to_ordinary_failure() {
     );
     let nested = ToolError::from(ExecutionStop::BudgetExhausted("nested".into()));
     assert!(
-        matches!(ToolError::failed(nested), ToolError::Stop(ExecutionStop::BudgetExhausted(reason)) if reason == "nested")
+        matches!(ToolError::failed(nested), ToolError::Stop(ExecutionStop::BudgetExhausted(reason)) if reason == frona_harness::BudgetRefusal::Denied("nested".into()))
     );
 }
 

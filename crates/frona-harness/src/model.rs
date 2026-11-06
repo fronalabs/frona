@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use rig_core::completion::{AssistantContent, Message, request::ToolDefinition};
@@ -6,13 +6,15 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use tokio::sync::mpsc;
 
+use super::{DefaultBudget, ExecutionControl};
+
 use crate::{
     Handle,
     config::{ApiSurface, CommonModelFields, ModelGroupConfig, ModelProviderConfig, ProviderModel},
     inference::{
         Usage,
         error::InferenceError,
-        observation::{AttemptOutcome, LatencyMetrics, Observations},
+        observation::{LatencyMetrics, Observations},
         provider::{
             InferenceCounter, ModelConfig, ModelProvider, ModelRequestSettings, StreamToken,
             platform::{ProviderPlatform, build_provider},
@@ -77,7 +79,7 @@ pub enum UsageReport {
 }
 
 impl UsageReport {
-    fn observed(&self) -> Option<&Usage> {
+    pub(super) fn observed(&self) -> Option<&Usage> {
         match self {
             Self::Reported(usage) | Self::LegacyNormalized(usage) => Some(usage),
             Self::Unavailable => None,
@@ -255,12 +257,31 @@ impl<'a> Model<'a> {
     }
 
     /// One provider invocation with optional HSDK-03 telemetry. Shared retry and
-    /// budget orchestration must wrap this operation, not duplicate its transport.
+    /// retry orchestration uses `invoke_controlled` to retain its shared budget.
     pub async fn invoke(
         &self,
         request: ModelRequest,
         tokens: Option<mpsc::Sender<StreamToken>>,
         observations: Observations<'_>,
+    ) -> Result<ModelOutput, ModelError> {
+        let budget = DefaultBudget::default();
+        self.invoke_controlled(
+            request,
+            tokens,
+            observations,
+            ExecutionControl::new(&budget),
+        )
+        .await
+    }
+
+    /// One invocation using the caller's shared allowance and cancellation.
+    /// Retry drivers must call this entry for every actual attempt.
+    pub async fn invoke_controlled(
+        &self,
+        request: ModelRequest,
+        tokens: Option<mpsc::Sender<StreamToken>>,
+        observations: Observations<'_>,
+        execution: ExecutionControl<'_>,
     ) -> Result<ModelOutput, ModelError> {
         let capabilities = self.capabilities();
         let mut required = vec![if request.schema.is_some() {
@@ -288,17 +309,16 @@ impl<'a> Model<'a> {
                 });
             }
         }
-        let start = Instant::now();
-        let result = self.adapter.generate(request, tokens).await;
-        let duration_ms = start.elapsed().as_millis() as u64;
-        observations
-            .attempt(
+        let start = std::time::Instant::now();
+        let result = execution
+            .model_attempt(
                 &self.config,
-                AttemptOutcome::from_result(&result),
-                result.as_ref().ok().and_then(|r| r.usage.observed()),
-                duration_ms,
+                observations,
+                || self.adapter.generate(request, tokens),
+                |output| output.usage.clone(),
             )
             .await;
+        let duration_ms = start.elapsed().as_millis() as u64;
         if let Ok(output) = &result {
             observations
                 .usage(
@@ -313,6 +333,7 @@ impl<'a> Model<'a> {
                 )
                 .await;
         }
+        execution.check_cancellation()?;
         result.map_err(ModelError::Provider)
     }
 }

@@ -2,6 +2,9 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum InferenceError {
+    #[error(transparent)]
+    Stop(#[from] crate::ExecutionStop),
+
     #[error("Provider not configured: {0}")]
     ProviderNotConfigured(String),
 
@@ -54,6 +57,45 @@ fn has_non_retryable_status(msg: &str) -> bool {
 }
 
 impl InferenceError {
+    /// Terminal controls must leave the whole retry/fallback orchestration.
+    pub fn is_terminal(&self) -> bool {
+        match self {
+            Self::Stop(_) | Self::Cancelled(_) => true,
+            Self::ModelFailed { source, .. } => source.is_terminal(),
+            Self::AllFallbacksFailed(errors) => errors.iter().any(Self::is_terminal),
+            _ => false,
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        match self {
+            Self::Stop(crate::ExecutionStop::Cancelled(_)) | Self::Cancelled(_) => true,
+            Self::ModelFailed { source, .. } => source.is_cancelled(),
+            Self::AllFallbacksFailed(errors) => errors.iter().any(Self::is_cancelled),
+            _ => false,
+        }
+    }
+
+    /// Extract a control without string matching, retaining ordinary failures.
+    pub fn into_execution_stop(self) -> Result<crate::ExecutionStop, Self> {
+        if !self.is_terminal() {
+            return Err(self);
+        }
+        match self {
+            Self::Stop(stop) => Ok(stop),
+            Self::Cancelled(reason) => Ok(crate::ExecutionStop::Cancelled(reason)),
+            Self::ModelFailed { source, .. } => source.into_execution_stop(),
+            Self::AllFallbacksFailed(mut errors) => {
+                let index = errors
+                    .iter()
+                    .position(Self::is_terminal)
+                    .expect("terminal error exists");
+                errors.remove(index).into_execution_stop()
+            }
+            _ => unreachable!("terminal classification is exhaustive"),
+        }
+    }
+
     pub fn for_model(
         self,
         model: &crate::inference::provider::ModelConfig,
@@ -68,6 +110,9 @@ impl InferenceError {
     }
 
     pub fn is_retryable(&self) -> bool {
+        if self.is_terminal() {
+            return false;
+        }
         match self {
             Self::ModelFailed { source, .. } => source.is_retryable(),
             InferenceError::RateLimited { .. } | InferenceError::EmptyResponse => true,

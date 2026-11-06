@@ -10,24 +10,11 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
+use super::ExecutionStop;
+
 pub use rig_core::completion::message::ToolResultContent as ToolContent;
 
 pub type ToolFailure = Box<dyn std::error::Error + Send + Sync>;
-
-/// Control stops must escape tool-error feedback and retry/fallback handling.
-/// A storage stop refers to required execution persistence, not an ordinary
-/// file operation performed by an application tool.
-#[derive(Debug, thiserror::Error)]
-pub enum ExecutionStop {
-    #[error("execution cancelled: {0}")]
-    Cancelled(String),
-    #[error("execution budget exhausted: {0}")]
-    BudgetExhausted(String),
-    #[error("execution storage failed: {0}")]
-    Storage(#[source] ToolFailure),
-    #[error("execution stopped: {0}")]
-    Stopped(String),
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {

@@ -7,9 +7,10 @@ use crate::{
 use backon::Retryable;
 use frona_harness::inference::{
     InferenceError, ModelGroup, ModelRequest, RequestOverrides,
-    observation::{AttemptOutcome, LatencyMetrics, Observations},
+    observation::{LatencyMetrics, Observations},
     provider::{InferenceOutput, ModelConfig, StreamToken},
 };
+use frona_harness::{DefaultBudget, ExecutionControl, UsageReport};
 use rig_core::completion::{
     AssistantContent, Message as RigMessage, message::UserContent,
     request::ToolDefinition as RigToolDefinition,
@@ -34,6 +35,14 @@ pub trait ModelGroupStreaming {
         cancellation: &tokio_util::sync::CancellationToken,
         accumulated_text: &mut String,
     ) -> Result<StreamResult, AppError>;
+
+    async fn stream_inference_controlled(
+        &self,
+        request: ModelRequest<'_>,
+        events: &EventSender,
+        execution: ExecutionControl<'_>,
+        accumulated_text: &mut String,
+    ) -> Result<StreamResult, AppError>;
 }
 #[async_trait::async_trait]
 impl ModelGroupStreaming for ModelGroup {
@@ -44,7 +53,24 @@ impl ModelGroupStreaming for ModelGroup {
         cancellation: &tokio_util::sync::CancellationToken,
         accumulated_text: &mut String,
     ) -> Result<StreamResult, AppError> {
-        stream_with_retry_and_fallback(self, request, events, cancellation, accumulated_text).await
+        let budget = DefaultBudget::default();
+        self.stream_inference_controlled(
+            request,
+            events,
+            ExecutionControl::new(&budget).with_cancellation(cancellation),
+            accumulated_text,
+        )
+        .await
+    }
+
+    async fn stream_inference_controlled(
+        &self,
+        request: ModelRequest<'_>,
+        events: &EventSender,
+        execution: ExecutionControl<'_>,
+        accumulated_text: &mut String,
+    ) -> Result<StreamResult, AppError> {
+        stream_with_retry_and_fallback(self, request, events, execution, accumulated_text).await
     }
 }
 
@@ -60,7 +86,7 @@ pub(crate) async fn stream_with_retry_and_fallback(
     model_group: &ModelGroup,
     request: ModelRequest<'_>,
     event_tx: &EventSender,
-    cancel_token: &tokio_util::sync::CancellationToken,
+    execution: ExecutionControl<'_>,
     accumulated_text: &mut String,
 ) -> Result<StreamResult, crate::core::error::AppError> {
     let ModelRequest {
@@ -117,7 +143,7 @@ pub(crate) async fn stream_with_retry_and_fallback(
             &history,
             &tools,
             event_tx,
-            cancel_token,
+            execution,
             accumulated_text,
             observations,
         )
@@ -125,6 +151,9 @@ pub(crate) async fn stream_with_retry_and_fallback(
         {
             Ok(result) => return Ok(result),
             Err(error) => {
+                if error.is_terminal() {
+                    return Err(error.into());
+                }
                 failures.push(error);
                 if emitted.load(Ordering::Relaxed) {
                     return Err(InferenceError::AllFallbacksFailed(failures).into());
@@ -147,7 +176,7 @@ async fn stream_one_model(
     chat_history: &[RigMessage],
     tools: &[RigToolDefinition],
     event_tx: &EventSender,
-    cancel_token: &tokio_util::sync::CancellationToken,
+    execution: ExecutionControl<'_>,
     accumulated_text: &mut String,
     observations: Observations<'_>,
 ) -> Result<StreamResult, InferenceError> {
@@ -162,6 +191,7 @@ async fn stream_one_model(
     let lams_notify = last_attempt_start_ms.clone();
     let retries_notify = retries.clone();
 
+    let cancellation = execution.cancellation_token();
     let result = (|| async {
         last_attempt_start_ms.store(outer_start.elapsed().as_millis() as u64, Ordering::Relaxed);
         let (text_tx, text_rx) = mpsc::channel::<StreamToken>(64);
@@ -191,31 +221,17 @@ async fn stream_one_model(
         });
 
         let attempt_start = Instant::now();
-        let contents_result = tokio::select! {
-            result = provider.stream_inference(
-                model_config,
-                system_prompt,
-                chat_history.to_vec(),
-                tools.to_vec(),
-                text_tx,
-                overrides.max_tokens,
-                overrides.temperature,
-            ) => Some(result),
-            _ = cancel_token.cancelled() => None,
-        };
+        let contents_result = execution.model_attempt(model_config, observations, || provider.stream_inference(
+            model_config, system_prompt, chat_history.to_vec(), tools.to_vec(), text_tx,
+            overrides.max_tokens, overrides.temperature,
+        ), |output| UsageReport::LegacyNormalized(output.usage)).await;
         let duration_ms = attempt_start.elapsed().as_millis() as u64;
-        observations.attempt(
-            model_config,
-            contents_result.as_ref().map_or(AttemptOutcome::Cancelled, AttemptOutcome::from_result),
-            contents_result.as_ref().and_then(|result| result.as_ref().ok()).map(|output| &output.usage),
-            duration_ms,
-        ).await;
 
         let turn_text = forward_handle.await.unwrap_or_default();
 
         match contents_result {
-            None => Err(InferenceError::Cancelled(turn_text)),
-            Some(Ok(output)) if output.content.is_empty() => {
+            Err(error) if error.is_cancelled() => Err(InferenceError::Cancelled(turn_text)),
+            Ok(output) if output.content.is_empty() => {
                 let last_is_tool_result = matches!(
                     chat_history.last(),
                     Some(RigMessage::User { content }) if content.iter().any(|c| matches!(c, UserContent::ToolResult(_)))
@@ -240,7 +256,7 @@ async fn stream_one_model(
                     Err(InferenceError::EmptyResponse)
                 }
             }
-            Some(Ok(output)) => {
+            Ok(output) => {
                 let retry_overhead_ms = outer_start.elapsed().as_millis() as u64 - duration_ms;
                 let latency = LatencyMetrics {
                     duration_ms,
@@ -253,11 +269,22 @@ async fn stream_one_model(
                     .await;
                 Ok((output, turn_text))
             }
-            Some(Err(e)) => Err(e),
+            Err(e) => Err(e),
         }
     })
     .retry(model_group.retry.to_backoff())
-    .sleep(tokio::time::sleep)
+    .sleep(move |duration| {
+        let cancellation = cancellation.clone();
+        async move {
+            match cancellation {
+                Some(token) => tokio::select! {
+                    _ = tokio::time::sleep(duration) => {},
+                    _ = token.cancelled() => {},
+                },
+                None => tokio::time::sleep(duration).await,
+            }
+        }
+    })
     .when(|e| e.is_retryable() && !emitted.load(Ordering::Relaxed))
     .notify(|e, dur| {
         retries_notify.fetch_add(1, Ordering::Relaxed);
@@ -275,6 +302,9 @@ async fn stream_one_model(
     match result {
         Ok((InferenceOutput { content, usage, .. }, text)) => {
             accumulated_text.push_str(&text);
+            if execution.is_cancelled() {
+                return Ok(StreamResult::Cancelled);
+            }
             Ok(StreamResult::Contents { content, usage })
         }
         Err(InferenceError::Cancelled(text)) => {

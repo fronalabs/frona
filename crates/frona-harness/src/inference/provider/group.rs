@@ -1,3 +1,4 @@
+use crate::{DefaultBudget, ExecutionControl};
 use std::{collections::HashMap, sync::Arc};
 
 use rig_core::completion::request::ToolDefinition;
@@ -90,10 +91,21 @@ impl ModelGroup {
         &self,
         request: ModelRequest<'_>,
     ) -> Result<ModelResponse, InferenceError> {
+        let budget = DefaultBudget::default();
+        self.inference_controlled(request, ExecutionControl::new(&budget))
+            .await
+    }
+
+    pub async fn inference_controlled(
+        &self,
+        request: ModelRequest<'_>,
+        execution: ExecutionControl<'_>,
+    ) -> Result<ModelResponse, InferenceError> {
         let (content, usage) = retry::inference_with_retry_and_fallback(
             self,
             request,
             retry::HistoryOverflow::TruncateOldest,
+            execution,
         )
         .await?;
         Ok(ModelResponse { content, usage })
@@ -106,9 +118,14 @@ impl ModelGroup {
         &self,
         request: ModelRequest<'_>,
     ) -> Result<ModelResponse, InferenceError> {
-        let (content, usage) =
-            retry::inference_with_retry_and_fallback(self, request, retry::HistoryOverflow::Reject)
-                .await?;
+        let budget = DefaultBudget::default();
+        let (content, usage) = retry::inference_with_retry_and_fallback(
+            self,
+            request,
+            retry::HistoryOverflow::Reject,
+            ExecutionControl::new(&budget),
+        )
+        .await?;
         Ok(ModelResponse { content, usage })
     }
 
@@ -117,6 +134,17 @@ impl ModelGroup {
         request: ModelRequest<'_>,
         schema: serde_json::Value,
     ) -> Result<serde_json::Value, InferenceError> {
-        retry::structured_inference_with_retry_and_fallback(self, request, schema).await
+        let budget = DefaultBudget::default();
+        self.structured_inference_controlled(request, schema, ExecutionControl::new(&budget))
+            .await
+    }
+
+    pub async fn structured_inference_controlled(
+        &self,
+        request: ModelRequest<'_>,
+        schema: serde_json::Value,
+        execution: ExecutionControl<'_>,
+    ) -> Result<serde_json::Value, InferenceError> {
+        retry::structured_inference_with_retry_and_fallback(self, request, schema, execution).await
     }
 }

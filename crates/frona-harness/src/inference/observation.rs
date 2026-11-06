@@ -51,7 +51,7 @@ impl AttemptOutcome {
     pub fn from_result<T>(result: &Result<T, InferenceError>) -> Self {
         match result {
             Ok(_) => Self::Succeeded,
-            Err(InferenceError::Cancelled(_)) => Self::Cancelled,
+            Err(error) if error.is_cancelled() => Self::Cancelled,
             Err(_) => Self::Failed,
         }
     }

@@ -9,10 +9,11 @@ use rig_core::completion::{AssistantContent, Message as RigMessage};
 
 use crate::inference::context::{estimate_message_tokens, estimate_tokens, truncate_history};
 use crate::inference::error::InferenceError;
-use crate::inference::observation::{AttemptOutcome, LatencyMetrics};
+use crate::inference::observation::LatencyMetrics;
 use crate::inference::provider::ModelProvider;
 use crate::inference::provider::{InferenceOutput, ModelConfig};
 use crate::inference::{ModelGroup, ModelRequest, config::RetryConfig};
+use crate::{ExecutionControl, UsageReport};
 use std::collections::HashMap;
 
 /// Result of a retried operation with retry instrumentation. `retry_count` is
@@ -34,6 +35,19 @@ where
     F: Fn() -> Fut,
     Fut: Future<Output = Result<T, InferenceError>>,
 {
+    retry_controlled(retry_config, model_ref, None, op).await
+}
+
+async fn retry_controlled<T, F, Fut>(
+    retry_config: &RetryConfig,
+    model_ref: &ModelConfig,
+    execution: Option<ExecutionControl<'_>>,
+    op: F,
+) -> Result<RetryOutcome<T>, InferenceError>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<T, InferenceError>>,
+{
     let model_str = model_ref.as_str();
     let outer_start = Instant::now();
     // ms-from-outer-start at which the LAST attempt began. After backon
@@ -46,6 +60,7 @@ where
     let lams_notify = last_attempt_start_ms.clone();
     let retries_notify = retries.clone();
 
+    let cancellation = execution.and_then(ExecutionControl::cancellation_token);
     let value = (|| {
         let lams = lams_op.clone();
         let fut = op();
@@ -55,7 +70,7 @@ where
         }
     })
     .retry(retry_config.to_backoff())
-    .sleep(tokio::time::sleep)
+    .sleep(move |duration| sleep_or_cancel(cancellation.clone(), duration))
     .when(|e| e.is_retryable())
     .notify(move |e, dur| {
         retries_notify.fetch_add(1, Ordering::Relaxed);
@@ -73,6 +88,19 @@ where
         retry_count: retries.load(Ordering::Relaxed),
         retry_overhead_ms: last_attempt_start_ms.load(Ordering::Relaxed),
     })
+}
+
+async fn sleep_or_cancel(
+    cancellation: Option<tokio_util::sync::CancellationToken>,
+    duration: std::time::Duration,
+) {
+    match cancellation {
+        Some(token) => tokio::select! {
+            _ = tokio::time::sleep(duration) => {},
+            _ = token.cancelled() => {},
+        },
+        None => tokio::time::sleep(duration).await,
+    }
 }
 
 /// How a completion handles input that exceeds its configured context budget.
@@ -134,6 +162,7 @@ pub(crate) async fn inference_with_retry_and_fallback(
     model_group: &ModelGroup,
     request: ModelRequest<'_>,
     overflow: HistoryOverflow,
+    execution: ExecutionControl<'_>,
 ) -> Result<(Vec<AssistantContent>, crate::inference::Usage), InferenceError> {
     let ModelRequest {
         overrides,
@@ -143,6 +172,7 @@ pub(crate) async fn inference_with_retry_and_fallback(
         tools,
         observations,
     } = request;
+    execution.check_cancellation()?;
     ensure_usable(&model_group.providers, model_group).await?;
     let mut errors = Vec::new();
     let max_tokens = overrides
@@ -165,32 +195,34 @@ pub(crate) async fn inference_with_retry_and_fallback(
 
     let ref_str = model_group.main.as_str();
     let start = Instant::now();
-    match retry_with_backoff(&model_group.retry, &model_group.main, || async {
-        let request_history = candidate_history
-            .as_ref()
-            .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
-        let provider = provider_for(&model_group.providers, &model_group.main)?;
-        let attempt_start = Instant::now();
-        let result = provider
-            .inference(
-                &model_group.main,
-                system_prompt,
-                request_history.clone(),
-                tools.clone(),
-                max_tokens,
-                temperature,
-            )
-            .await;
-        observations
-            .attempt(
-                &model_group.main,
-                AttemptOutcome::from_result(&result),
-                result.as_ref().ok().map(|output| &output.usage),
-                attempt_start.elapsed().as_millis() as u64,
-            )
-            .await;
-        result
-    })
+    match retry_controlled(
+        &model_group.retry,
+        &model_group.main,
+        Some(execution),
+        || async {
+            let request_history = candidate_history
+                .as_ref()
+                .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
+            let provider = provider_for(&model_group.providers, &model_group.main)?;
+            execution
+                .model_attempt(
+                    &model_group.main,
+                    observations,
+                    || {
+                        provider.inference(
+                            &model_group.main,
+                            system_prompt,
+                            request_history.clone(),
+                            tools.clone(),
+                            max_tokens,
+                            temperature,
+                        )
+                    },
+                    |output| UsageReport::LegacyNormalized(output.usage),
+                )
+                .await
+        },
+    )
     .await
     {
         Ok(RetryOutcome {
@@ -215,9 +247,13 @@ pub(crate) async fn inference_with_retry_and_fallback(
             observations
                 .usage(&model_group.main, Some(&usage), 0, latency)
                 .await;
+            execution.check_cancellation()?;
             return Ok((content, usage));
         }
         Err(e) => {
+            if e.is_terminal() {
+                return Err(e);
+            }
             tracing::warn!(model = %ref_str, error = %e, "Main model failed, trying fallbacks");
             errors.push(e);
         }
@@ -242,31 +278,28 @@ pub(crate) async fn inference_with_retry_and_fallback(
             None,
         );
         let start = Instant::now();
-        match retry_with_backoff(&model_group.retry, fallback, || async {
+        match retry_controlled(&model_group.retry, fallback, Some(execution), || async {
             let request_history = candidate_history
                 .as_ref()
                 .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
             let provider = provider_for(&model_group.providers, fallback)?;
-            let attempt_start = Instant::now();
-            let result = provider
-                .inference(
+            execution
+                .model_attempt(
                     fallback,
-                    system_prompt,
-                    request_history.clone(),
-                    tools.clone(),
-                    max_tokens,
-                    temperature,
+                    observations,
+                    || {
+                        provider.inference(
+                            fallback,
+                            system_prompt,
+                            request_history.clone(),
+                            tools.clone(),
+                            max_tokens,
+                            temperature,
+                        )
+                    },
+                    |output| UsageReport::LegacyNormalized(output.usage),
                 )
-                .await;
-            observations
-                .attempt(
-                    fallback,
-                    AttemptOutcome::from_result(&result),
-                    result.as_ref().ok().map(|output| &output.usage),
-                    attempt_start.elapsed().as_millis() as u64,
-                )
-                .await;
-            result
+                .await
         })
         .await
         {
@@ -292,9 +325,13 @@ pub(crate) async fn inference_with_retry_and_fallback(
                 observations
                     .usage(fallback, Some(&usage), (idx + 1) as u8, latency)
                     .await;
+                execution.check_cancellation()?;
                 return Ok((content, usage));
             }
             Err(e) => {
+                if e.is_terminal() {
+                    return Err(e);
+                }
                 tracing::warn!(model = %ref_str, error = %e, "Fallback failed");
                 errors.push(e);
             }
@@ -308,6 +345,7 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
     model_group: &ModelGroup,
     request: ModelRequest<'_>,
     schema: serde_json::Value,
+    execution: ExecutionControl<'_>,
 ) -> Result<serde_json::Value, InferenceError> {
     let ModelRequest {
         overrides,
@@ -316,6 +354,7 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
         observations,
         ..
     } = request;
+    execution.check_cancellation()?;
     ensure_usable(&model_group.providers, model_group).await?;
     let mut errors = Vec::new();
     let max_tokens = overrides
@@ -337,32 +376,41 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
 
     let ref_str = model_group.main.as_str();
     let start = Instant::now();
-    match retry_with_backoff(&model_group.retry, &model_group.main, || async {
-        let request_history = truncated
-            .as_ref()
-            .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
-        let provider = provider_for(&model_group.providers, &model_group.main)?;
-        let attempt_start = Instant::now();
-        let result = provider
-            .structured_inference(
-                &model_group.main,
-                system_prompt,
-                request_history.clone(),
-                schema.clone(),
-                max_tokens,
-                temperature,
-            )
-            .await;
-        observations
-            .attempt(
-                &model_group.main,
-                AttemptOutcome::from_result(&result),
-                None,
-                attempt_start.elapsed().as_millis() as u64,
-            )
-            .await;
-        result
-    })
+    match retry_controlled(
+        &model_group.retry,
+        &model_group.main,
+        Some(execution),
+        || async {
+            let request_history = truncated
+                .as_ref()
+                .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
+            let provider = provider_for(&model_group.providers, &model_group.main)?;
+            execution
+                .model_attempt(
+                    &model_group.main,
+                    observations,
+                    || {
+                        provider.structured_output(
+                            &model_group.main,
+                            system_prompt,
+                            request_history.clone(),
+                            schema.clone(),
+                            max_tokens,
+                            temperature,
+                        )
+                    },
+                    |output| {
+                        output
+                            .response
+                            .as_ref()
+                            .map_or(UsageReport::Unavailable, |response| {
+                                UsageReport::LegacyNormalized(response.usage)
+                            })
+                    },
+                )
+                .await
+        },
+    )
     .await
     {
         Ok(RetryOutcome {
@@ -372,9 +420,8 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
         }) => {
             let duration_ms = start.elapsed().as_millis() as u64;
             tracing::info!(model = %ref_str, "Structured extraction succeeded");
-            // Structured providers do not expose usage on this path. Preserve
-            // that absence for observers; the persistent adapter keeps its
-            // existing row representation. No token estimate is invented.
+            // Rich adapters retain actual normalized usage; legacy JSON-only
+            // adapters explicitly leave it unavailable.
             let latency = LatencyMetrics {
                 duration_ms,
                 ttft_ms: None,
@@ -382,11 +429,20 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
                 retry_count,
             };
             observations
-                .usage(&model_group.main, None, 0, latency)
+                .usage(
+                    &model_group.main,
+                    value.response.as_ref().map(|r| &r.usage),
+                    0,
+                    latency,
+                )
                 .await;
-            return Ok(value);
+            execution.check_cancellation()?;
+            return Ok(value.value);
         }
         Err(e) => {
+            if e.is_terminal() {
+                return Err(e);
+            }
             tracing::warn!(model = %ref_str, error = %e, "Structured extraction failed on main, trying fallbacks");
             errors.push(e);
         }
@@ -409,31 +465,35 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
             truncation_pct,
         );
         let start = Instant::now();
-        match retry_with_backoff(&model_group.retry, fallback, || async {
+        match retry_controlled(&model_group.retry, fallback, Some(execution), || async {
             let request_history = truncated_fb
                 .as_ref()
                 .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
             let provider = provider_for(&model_group.providers, fallback)?;
-            let attempt_start = Instant::now();
-            let result = provider
-                .structured_inference(
+            execution
+                .model_attempt(
                     fallback,
-                    system_prompt,
-                    request_history.clone(),
-                    schema.clone(),
-                    max_tokens,
-                    temperature,
+                    observations,
+                    || {
+                        provider.structured_output(
+                            fallback,
+                            system_prompt,
+                            request_history.clone(),
+                            schema.clone(),
+                            max_tokens,
+                            temperature,
+                        )
+                    },
+                    |output| {
+                        output
+                            .response
+                            .as_ref()
+                            .map_or(UsageReport::Unavailable, |response| {
+                                UsageReport::LegacyNormalized(response.usage)
+                            })
+                    },
                 )
-                .await;
-            observations
-                .attempt(
-                    fallback,
-                    AttemptOutcome::from_result(&result),
-                    None,
-                    attempt_start.elapsed().as_millis() as u64,
-                )
-                .await;
-            result
+                .await
         })
         .await
         {
@@ -451,11 +511,20 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
                     retry_count,
                 };
                 observations
-                    .usage(fallback, None, (idx + 1) as u8, latency)
+                    .usage(
+                        fallback,
+                        value.response.as_ref().map(|r| &r.usage),
+                        (idx + 1) as u8,
+                        latency,
+                    )
                     .await;
-                return Ok(value);
+                execution.check_cancellation()?;
+                return Ok(value.value);
             }
             Err(e) => {
+                if e.is_terminal() {
+                    return Err(e);
+                }
                 tracing::warn!(model = %ref_str, error = %e, "Structured extraction fallback failed");
                 errors.push(e);
             }
@@ -487,6 +556,7 @@ async fn ensure_usable(
         };
         match result {
             Ok(()) => return Ok(()),
+            Err(error) if error.is_terminal() => return Err(error),
             Err(error) => reasons.push(error.for_model(model, 0)),
         }
     }

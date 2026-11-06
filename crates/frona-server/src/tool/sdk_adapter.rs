@@ -2,12 +2,11 @@
 //! identity dependency; the portable SDK tool module does not import it.
 
 use async_trait::async_trait;
-use frona_harness::{ExecutionStop, Tool, ToolContext, ToolError, ToolResult};
+use frona_harness::{Tool, ToolContext, ToolError, ToolResult};
 use rig_core::completion::request::ToolDefinition;
 use serde_json::Value;
 
 use crate::{core::error::AppError, inference::request::InferenceContext};
-use frona_harness::inference::error::InferenceError;
 
 use super::{AgentTool, ToolOutput};
 
@@ -68,32 +67,30 @@ impl<F: FnMut(ToolOutput) -> ToolResult + Send> Tool for AgentToolAdapter<'_, F>
 }
 
 fn legacy_error(error: AppError) -> ToolError {
-    fn cancellation(error: &AppError) -> Option<&str> {
+    fn terminal(error: &AppError) -> bool {
         match error {
-            AppError::Inference(error) => inference_cancellation(error),
-            AppError::ToolExecution { source, .. } => cancellation(source),
-            _ => None,
+            AppError::Inference(error) => error.is_terminal(),
+            AppError::ToolExecution { source, .. } => terminal(source),
+            _ => false,
         }
     }
-    fn inference_cancellation(error: &InferenceError) -> Option<&str> {
-        match error {
-            InferenceError::Cancelled(reason) => Some(reason),
-            InferenceError::ModelFailed { source, .. } => inference_cancellation(source),
-            InferenceError::AllFallbacksFailed(errors) => {
-                errors.iter().find_map(inference_cancellation)
-            }
-            _ => None,
-        }
+    if !terminal(&error) {
+        return ToolError::failed(error);
     }
-    match cancellation(&error) {
-        Some(reason) => ExecutionStop::Cancelled(reason.into()).into(),
-        None => ToolError::failed(error),
+    match error {
+        AppError::Inference(error) => match error.into_execution_stop() {
+            Ok(stop) => stop.into(),
+            Err(error) => ToolError::failed(AppError::Inference(Box::new(error))),
+        },
+        AppError::ToolExecution { source, .. } => legacy_error(*source),
+        error => ToolError::failed(error),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use frona_harness::{ExecutionStop, inference::InferenceError};
 
     #[test]
     fn wrapped_cancellation_keeps_control_semantics_without_string_matching() {
@@ -110,6 +107,21 @@ mod tests {
             legacy_error(AppError::Tool("cancelled is just text".into())),
             ToolError::Failed(_)
         ));
+        for stop in [
+            ExecutionStop::BudgetExhausted(frona_harness::BudgetRefusal::Denied("nested".into())),
+            ExecutionStop::Storage("required history failed".into()),
+        ] {
+            let error = InferenceError::AllFallbacksFailed(vec![InferenceError::ModelFailed {
+                provider: "test".into(),
+                model: "test".into(),
+                retry_count: 0,
+                source: Box::new(InferenceError::Stop(stop)),
+            }]);
+            assert!(matches!(
+                legacy_error(AppError::Inference(Box::new(error))),
+                ToolError::Stop(_)
+            ));
+        }
         let wrapped = InferenceError::AllFallbacksFailed(vec![InferenceError::ModelFailed {
             provider: "test".into(),
             model: "test".into(),

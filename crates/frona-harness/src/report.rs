@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use uuid::Uuid;
 
-use super::{ActionKind, ActionResolution, BudgetOutcome, ExecutionStop, ManualError, UsageReport};
+use super::{ActionKind, ActionResolution, BudgetOutcome, ManualError, UsageReport};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RequestId(pub usize);
@@ -134,21 +134,22 @@ pub enum RunOutcome {
 
 impl RunOutcome {
     fn incomplete(error: &ManualError) -> Self {
-        let kind = match error {
-            ManualError::Stop(ExecutionStop::BudgetExhausted(_)) => FailureKind::Budget,
-            ManualError::Stop(ExecutionStop::Cancelled(_)) => FailureKind::Cancelled,
-            ManualError::Stop(ExecutionStop::Storage(_)) => FailureKind::Storage,
-            ManualError::Stop(ExecutionStop::Stopped(_)) => FailureKind::ApplicationStop,
-            ManualError::Inspector(_) => FailureKind::Inspector,
-            ManualError::ToolHook(_) => FailureKind::ToolHook,
-            ManualError::Model(_) => FailureKind::Model,
-            ManualError::Setup(_) => FailureKind::Setup,
-            _ => FailureKind::Protocol,
-        };
+        let kind = failure_kind(error);
         Self::Incomplete {
             kind,
             message: error.to_string(),
         }
+    }
+}
+
+pub(super) fn failure_kind(error: &ManualError) -> FailureKind {
+    match error {
+        ManualError::Stop(stop) => stop.failure_kind(),
+        ManualError::Inspector(_) => FailureKind::Inspector,
+        ManualError::ToolHook(_) => FailureKind::ToolHook,
+        ManualError::Model(_) => FailureKind::Model,
+        ManualError::Setup(_) => FailureKind::Setup,
+        _ => FailureKind::Protocol,
     }
 }
 

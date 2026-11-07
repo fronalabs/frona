@@ -96,6 +96,15 @@ impl Conversation {
         handle: &PendingAction,
         accepted: A,
     ) -> Result<A, SubmissionError> {
+        self.accept_submission_with_kind(handle, accepted, super::SubmissionCompletion::Application)
+    }
+
+    pub(super) fn accept_submission_with_kind<A>(
+        &mut self,
+        handle: &PendingAction,
+        accepted: A,
+        kind: super::SubmissionCompletion,
+    ) -> Result<A, SubmissionError> {
         self.require_submission(handle)?;
         if !self.action(handle)?.submission_validated {
             return Err(SubmissionError::NotValidated);
@@ -103,11 +112,7 @@ impl Conversation {
         if self.pending_count() != 1 {
             return Err(ConversationError::PendingActions(self.pending_count() - 1).into());
         }
-        self.resolve(
-            handle,
-            ActionResolution::Result(ToolOutput::text("Submission accepted.")),
-        )?;
-        self.finish()?;
+        self.complete_submission(handle, kind)?;
         Ok(accepted)
     }
 

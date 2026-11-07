@@ -88,7 +88,7 @@ async fn drive_structured<T: DeserializeOwned + JsonSchema>(
 ) -> Result<T, ManualError> {
     let (action, value) = next_submission(session).await?;
     // Direct generation acknowledges schema completion, not domain acceptance.
-    session.accept(action, value)
+    session.complete_submission(action, value, super::SubmissionCompletion::Schema)
 }
 
 /// Shared exploration/repair policy for direct output and application inspection.

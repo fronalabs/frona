@@ -57,7 +57,6 @@ impl<'a> Harness<'a> {
                 submission: None,
                 setup_error: None,
                 tool_hook: None,
-                origins: Vec::new(),
             },
             mode: PhantomData,
         }
@@ -179,11 +178,11 @@ pub enum ManualError {
     #[error(transparent)]
     Setup(#[from] ToolRegistrationError),
     #[error(transparent)]
-    Conversation(#[from] ConversationError),
+    Conversation(ConversationError),
     #[error(transparent)]
-    Submission(#[from] SubmissionError),
+    Submission(SubmissionError),
     #[error(transparent)]
-    Dispatch(#[from] ToolDispatchError),
+    Dispatch(ToolDispatchError),
     #[error(transparent)]
     Model(#[from] ModelError),
     #[error(transparent)]
@@ -196,6 +195,34 @@ pub enum ManualError {
     ToolHook(String),
     #[error("the current response has no final text")]
     NoText,
+}
+
+impl From<ConversationError> for ManualError {
+    fn from(error: ConversationError) -> Self {
+        match error {
+            ConversationError::Storage(failure) => {
+                Self::Stop(ExecutionStop::Storage(Box::new((*failure).clone())))
+            }
+            error => Self::Conversation(error),
+        }
+    }
+}
+impl From<SubmissionError> for ManualError {
+    fn from(error: SubmissionError) -> Self {
+        match error {
+            SubmissionError::Conversation(error @ ConversationError::Storage(_)) => error.into(),
+            error => Self::Submission(error),
+        }
+    }
+}
+impl From<ToolDispatchError> for ManualError {
+    fn from(error: ToolDispatchError) -> Self {
+        match error {
+            ToolDispatchError::Conversation(error @ ConversationError::Storage(_)) => error.into(),
+            ToolDispatchError::Stop(stop @ ExecutionStop::Storage(_)) => Self::Stop(stop),
+            error => Self::Dispatch(error),
+        }
+    }
 }
 
 /// Call selection changes the next request only, never history or allowance.
@@ -231,9 +258,7 @@ impl<'a, Mode> ManualSession<'a, Mode> {
         reason: ManualError,
         retained: Option<A>,
     ) -> Incomplete<A> {
-        self.core.conversation.stop();
-        self.core.recorder.incomplete(&reason);
-        self.core.progress.close();
+        let reason = self.core.fail(reason);
         let report = Box::new(self.core.recorder.0.snapshot());
         Incomplete {
             reason,
@@ -241,6 +266,29 @@ impl<'a, Mode> ManualSession<'a, Mode> {
             report,
             conversation: Box::new(self.core.conversation),
         }
+    }
+
+    /// Detach a storage-stopped session explicitly, preserving live borrowed
+    /// dependencies. The old report remains final; this creates a fresh scope.
+    pub fn into_memory(mut self) -> Result<Self, ManualError> {
+        self.core.conversation = self.core.conversation.into_memory()?;
+        self.core.recorder = RunRecorder::new();
+        self.core.progress = ProgressOwner::default();
+        self.core.conversation = self
+            .core
+            .conversation
+            .with_report(self.core.recorder.0.clone())
+            .with_progress(self.core.progress.publisher());
+        Ok(self)
+    }
+
+    pub fn adopt_pending_write(&mut self) -> Result<(), ManualError> {
+        let result = self.core.conversation.adopt_pending_write();
+        self.core.result(result)
+    }
+
+    pub fn discard_pending_write(&mut self) -> Result<(), ManualError> {
+        Ok(self.core.conversation.discard_pending_write()?)
     }
 
     pub fn report(&self) -> ReportHandle {
@@ -301,24 +349,28 @@ impl<'a, Mode> ManualSession<'a, Mode> {
         if self.core.conversation.action(&action)?.kind == super::ActionKind::Submission {
             // A text-only run can still receive an unoffered submit call. It
             // must remain explicitly rejectable without enabling acceptance.
-            self.core
-                .conversation
-                .revise_submission(&action, feedback.clone())?;
-            Ok(ActionResolution::Rejected(ToolOutput::text(feedback)))
-        } else {
-            Ok(self
+            let result = self
                 .core
                 .conversation
-                .reject_tool(&action, ToolOutput::text(feedback))?)
+                .revise_submission(&action, feedback.clone());
+            self.core.result(result)?;
+            Ok(ActionResolution::Rejected(ToolOutput::text(feedback)))
+        } else {
+            let result = self
+                .core
+                .conversation
+                .reject_tool(&action, ToolOutput::text(feedback));
+            self.core.result(result)
         }
     }
     /// Add caller feedback only when no proposal requires a paired result.
     pub fn feedback(&mut self, feedback: impl Into<String>) -> Result<(), ManualError> {
         self.core.check_active()?;
-        Ok(self
+        let result = self
             .core
             .conversation
-            .push_user(vec![UserContent::text(feedback)])?)
+            .push_user(vec![UserContent::text(feedback)]);
+        self.core.result(result)
     }
     pub fn stop(&mut self, reason: impl Into<String>) -> ManualError {
         self.core.fail(ExecutionStop::Stopped(reason.into()).into())
@@ -332,7 +384,7 @@ impl<T: DeserializeOwned + JsonSchema> ManualSession<'_, Structured<T>> {
         match self.core.conversation.submission(action) {
             Err(error @ SubmissionError::Schema(_)) => Err(self.core.fail(error.into())),
             result => {
-                let submission = result?;
+                let submission = self.core.result(result)?;
                 self.refinement_progress(match &submission {
                     Submission::Ready(_) => RefinementStage::Ready,
                     Submission::Repaired { .. } => RefinementStage::Repaired,
@@ -347,18 +399,28 @@ impl<T: DeserializeOwned + JsonSchema> ManualSession<'_, Structured<T>> {
         feedback: impl Into<String>,
     ) -> Result<(), ManualError> {
         self.core.check_active()?;
-        self.core
-            .conversation
-            .revise_submission(&action, feedback)?;
+        let result = self.core.conversation.revise_submission(&action, feedback);
+        self.core.result(result)?;
         self.refinement_progress(RefinementStage::Revised);
         Ok(())
     }
     pub fn accept<A>(&mut self, action: PendingAction, accepted: A) -> Result<A, ManualError> {
+        self.complete_submission(action, accepted, super::SubmissionCompletion::Application)
+    }
+
+    pub(super) fn complete_submission<A>(
+        &mut self,
+        action: PendingAction,
+        accepted: A,
+        kind: super::SubmissionCompletion,
+    ) -> Result<A, ManualError> {
         self.core.check_active()?;
-        let accepted = self
+        let result = self
             .core
             .conversation
-            .accept_submission(&action, accepted)?;
+            .accept_submission_with_kind(&action, accepted, kind);
+        let accepted = self.core.result(result)?;
+        self.core.check_completion()?;
         self.core.recorder.0.finish(RunOutcome::Completed);
         self.refinement_progress(RefinementStage::Accepted);
         self.core.progress.close();
@@ -366,7 +428,8 @@ impl<T: DeserializeOwned + JsonSchema> ManualSession<'_, Structured<T>> {
     }
     pub fn repair_missing_submission(&mut self) -> Result<(), ManualError> {
         self.core.check_active()?;
-        self.core.conversation.repair_missing_submission()?;
+        let result = self.core.conversation.repair_missing_submission();
+        self.core.result(result)?;
         self.refinement_progress(RefinementStage::MissingSubmission);
         Ok(())
     }
@@ -398,7 +461,14 @@ impl ManualSession<'_, Text> {
         if text.is_empty() {
             return Err(ManualError::NoText);
         }
-        self.core.conversation.finish()?;
+        let result = self
+            .core
+            .conversation
+            .finish_with_kind(super::HistoryCompletion::Text {
+                response: self.core.conversation.responses().len() - 1,
+            });
+        self.core.result(result)?;
+        self.core.check_completion()?;
         self.core.recorder.0.finish(RunOutcome::Completed);
         self.core.progress.close();
         Ok(text)
@@ -444,19 +514,56 @@ pub(super) struct SessionCore<'a> {
     submission: Option<ToolDefinition>,
     setup_error: Option<ToolRegistrationError>,
     tool_hook: Option<Box<dyn ToolCallHook + 'a>>,
-    // One origin for each immutable response; never inferred from mutable selection.
-    origins: Vec<String>,
 }
 
 impl SessionCore<'_> {
+    fn result<T, E: Into<ManualError>>(&mut self, result: Result<T, E>) -> Result<T, ManualError> {
+        result.map_err(|error| {
+            let error = error.into();
+            if matches!(error, ManualError::Stop(ExecutionStop::Storage(_))) {
+                self.fail(error)
+            } else {
+                error
+            }
+        })
+    }
+
     fn fail(&mut self, error: ManualError) -> ManualError {
-        self.conversation.stop();
+        self.conversation
+            .configure_history(&self.instructions, self.submission.as_ref());
+        let error = match self
+            .conversation
+            .stop_with_reason(super::report::failure_kind(&error), error.to_string())
+        {
+            Err(ConversationError::Storage(failure)) => {
+                ManualError::Stop(ExecutionStop::Storage(Box::new((*failure).clone())))
+            }
+            _ => error,
+        };
+        self.conversation.mark_stopped();
         self.recorder.incomplete(&error);
         self.progress.close();
         error
     }
 
+    fn check_completion(&mut self) -> Result<(), ManualError> {
+        // A synchronous writer can observe/cause cancellation while committing.
+        // Keep the completed durable evidence, but never return live success
+        // after cancellation. Failed writes have already returned as storage stops.
+        if self.cancellation.is_cancelled() {
+            return Err(self.fail(
+                ExecutionStop::Cancelled("execution cancelled during completion".into()).into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn check_active(&mut self) -> Result<(), ManualError> {
+        self.conversation
+            .configure_history(&self.instructions, self.submission.as_ref());
+        if let Some(failure) = self.conversation.history_failure() {
+            return Err(ExecutionStop::Storage(Box::new(failure.clone())).into());
+        }
         if let Some(error) = self.setup_error.take() {
             return Err(self.fail(error.into()));
         }
@@ -466,7 +573,8 @@ impl SessionCore<'_> {
         if self.conversation.status() != super::ConversationStatus::Active {
             return Err(ConversationError::Terminal.into());
         }
-        Ok(())
+        let result = self.conversation.ensure_history();
+        self.result(result)
     }
 
     async fn call_model(
@@ -558,9 +666,10 @@ impl SessionCore<'_> {
                 return Err(self.fail(error.into()));
             }
         };
-        let actions = self.conversation.record_response(output, tools)?;
-        self.origins.push(model.config().as_str());
-        Ok(actions)
+        let result =
+            self.conversation
+                .record_response_from(output, tools, Some(model.config().as_str()));
+        self.result(result)
     }
 
     async fn execute(&mut self, action: PendingAction) -> Result<ActionResolution, ManualError> {
@@ -588,9 +697,10 @@ impl SessionCore<'_> {
             match result {
                 Ok(ToolDecision::Execute) => {}
                 Ok(ToolDecision::Reject(feedback)) => {
-                    return Ok(self
+                    let result = self
                         .conversation
-                        .reject_tool(&action, ToolOutput::text(feedback))?);
+                        .reject_tool(&action, ToolOutput::text(feedback));
+                    return self.result(result);
                 }
                 Ok(ToolDecision::Stop(reason)) => {
                     return Err(self.fail(ExecutionStop::Stopped(reason).into()));
@@ -610,7 +720,7 @@ impl SessionCore<'_> {
             .await
         {
             Err(ToolDispatchError::Stop(stop)) => Err(self.fail(stop.into())),
-            result => Ok(result?),
+            result => self.result(result),
         }
     }
 
@@ -628,8 +738,8 @@ impl SessionCore<'_> {
         if has_tool_history && !model.capabilities().tools {
             return Err(incompatible("destination does not support tool exchanges"));
         }
-        for (record, origin) in self.conversation.responses().iter().zip(&self.origins) {
-            if origin == &target {
+        for record in self.conversation.responses() {
+            if record.origin() == Some(target.as_str()) {
                 continue;
             }
             for content in &record.output().content {
@@ -663,3 +773,6 @@ impl SessionCore<'_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod history_tests;

@@ -283,7 +283,7 @@ fn terminal_states_invalidate_handles_without_resolving_or_accepting_work() {
             vec![],
         )
         .unwrap();
-    stopped.stop();
+    stopped.stop().unwrap();
     assert_eq!(stopped.status(), ConversationStatus::Stopped);
     assert_eq!(stopped.pending_count(), 1);
     assert_eq!(
@@ -323,7 +323,7 @@ fn terminal_states_invalidate_handles_without_resolving_or_accepting_work() {
             .unwrap_err(),
         ConversationError::Terminal
     );
-    finished.stop();
+    finished.stop().unwrap();
     assert_eq!(finished.status(), ConversationStatus::Finished);
 }
 

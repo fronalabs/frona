@@ -8,11 +8,22 @@ use super::{
 #[derive(Debug, thiserror::Error)]
 pub enum ToolDispatchError {
     #[error(transparent)]
-    Conversation(#[from] ConversationError),
+    Conversation(ConversationError),
     #[error("submission actions require submission resolution, not tool dispatch")]
     Submission,
     #[error(transparent)]
     Stop(#[from] ExecutionStop),
+}
+
+impl From<ConversationError> for ToolDispatchError {
+    fn from(error: ConversationError) -> Self {
+        match error {
+            ConversationError::Storage(failure) => {
+                Self::Stop(ExecutionStop::Storage(Box::new((*failure).clone())))
+            }
+            error => Self::Conversation(error),
+        }
+    }
 }
 
 impl Conversation {
@@ -28,11 +39,11 @@ impl Conversation {
     ) -> Result<ActionResolution, ToolDispatchError> {
         self.require_tool_proposal(handle)?;
         if let Err(error) = execution.check_cancellation() {
-            self.stop();
-            return Err(error
-                .into_execution_stop()
-                .expect("cancellation is terminal")
-                .into());
+            return Err(self.stop_dispatch(
+                error
+                    .into_execution_stop()
+                    .expect("cancellation is terminal"),
+            ));
         }
         let view = self.action(handle)?;
         let call = view.call.clone();
@@ -60,23 +71,40 @@ impl Conversation {
             .tool_attempt(&name, || async {
                 // The exclusive conversation borrow has remained held since
                 // validation; no other transition can invalidate this proposal.
-                self.start(handle)
-                    .expect("validated proposal remains startable");
+                self.start(handle).map_err(|error| match error {
+                    ConversationError::Storage(failure) => {
+                        ToolError::Stop(ExecutionStop::Storage(Box::new((*failure).clone())))
+                    }
+                    error => ToolError::failed(error),
+                })?;
+                execution.check_cancellation()?;
                 tool.call(call.function.arguments, &context).await
             })
             .await;
+        // Cancellation may arrive from the required write or budget callback.
+        // Preserve its failed-write diagnostic rather than replacing it with a
+        // secondary cancellation stop.
+        if let Some(failure) = self.history_failure() {
+            return Err(ExecutionStop::Storage(Box::new(failure.clone())).into());
+        }
         let resolution = match result {
             Ok(output) => ActionResolution::Result(output),
             Err(ToolError::Failed(error)) => {
                 ActionResolution::Failed(ToolOutput::text(error.to_string()))
             }
             Err(ToolError::Stop(stop)) => {
-                self.stop();
-                return Err(stop.into());
+                return Err(self.stop_dispatch(stop));
             }
         };
         self.resolve(handle, resolution.clone())?;
         Ok(resolution)
+    }
+
+    fn stop_dispatch(&mut self, stop: ExecutionStop) -> ToolDispatchError {
+        match self.stop_with_reason(stop.failure_kind(), stop.to_string()) {
+            Err(error) => error.into(),
+            Ok(()) => stop.into(),
+        }
     }
 
     /// Pair rejection feedback without invoking a tool or charging its allowance.

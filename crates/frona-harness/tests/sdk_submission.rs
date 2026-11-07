@@ -274,7 +274,7 @@ fn revision_allows_another_request_but_old_or_foreign_handles_cannot_accept() {
             ConversationError::ForeignAction
         ))
     ));
-    conversation.stop();
+    conversation.stop().unwrap();
     assert!(matches!(
         conversation.submission::<Answer>(&next[0]),
         Err(SubmissionError::Conversation(ConversationError::Terminal))

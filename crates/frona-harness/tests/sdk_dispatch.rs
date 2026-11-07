@@ -398,7 +398,7 @@ async fn invalid_handles_and_submission_never_reach_effects_or_admission() {
             ConversationError::StaleAction
         ))
     ));
-    conversation.stop();
+    conversation.stop().unwrap();
     assert!(matches!(
         conversation
             .execute_tool(&handles[0], &mut tools, control)

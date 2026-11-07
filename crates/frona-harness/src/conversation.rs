@@ -1,10 +1,18 @@
 //! In-memory conversation and action state shared by manual and automatic drivers.
 
+use super::history::History;
+#[cfg(test)]
+use super::history::HistoryWriter;
+use super::{
+    EffectState, HistoryCompletion, HistoryEvent, HistoryFailure, HistoryMode, HistoryRecord,
+    SubmissionCompletion,
+};
 use rig_core::completion::{
     AssistantContent, Message,
     message::{ToolCall, ToolResult, UserContent},
     request::ToolDefinition,
 };
+use std::sync::Arc;
 use uuid::Uuid;
 
 use super::{
@@ -111,11 +119,15 @@ impl ActionRecord {
 #[derive(Debug)]
 pub struct ResponseRecord {
     output: ModelOutput,
+    origin: Option<String>,
     offered_tools: Vec<ToolDefinition>,
     actions: Vec<ActionRecord>,
 }
 
 impl ResponseRecord {
+    pub fn origin(&self) -> Option<&str> {
+        self.origin.as_deref()
+    }
     pub fn output(&self) -> &ModelOutput {
         &self.output
     }
@@ -136,6 +148,16 @@ pub enum ConversationStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConversationError {
+    #[error(transparent)]
+    Storage(#[from] Arc<HistoryFailure>),
+    #[error("conversation is not stopped by a history write failure")]
+    NotStorageStopped,
+    #[error("choose whether to adopt the pending history write before continuing")]
+    PendingWrite,
+    #[error("this pending write cannot be adopted as a completed transition")]
+    CannotAdoptWrite,
+    #[error("a known response or result must be adopted, not discarded")]
+    CannotDiscardWrite,
     #[error("conversation is terminal")]
     Terminal,
     #[error("{0} actions still require a result")]
@@ -148,6 +170,8 @@ pub enum ConversationError {
     StaleAction,
     #[error("action has already been started")]
     AlreadyStarted,
+    #[error("submission actions cannot be started as tool invocations")]
+    SubmissionStart,
     #[error("action has already been resolved")]
     AlreadyResolved,
 }
@@ -164,6 +188,9 @@ pub struct Conversation {
     status: ConversationStatus,
     report: Option<ReportHandle>,
     progress: ProgressPublisher,
+    history: History,
+    instructions: String,
+    mode: HistoryMode,
 }
 
 impl Default for Conversation {
@@ -176,17 +203,231 @@ impl Default for Conversation {
             status: ConversationStatus::Active,
             report: None,
             progress: ProgressPublisher::default(),
+            history: History::default(),
+            instructions: String::new(),
+            mode: HistoryMode::Text,
         }
     }
 }
 
 impl Conversation {
+    pub fn history(&self) -> &[HistoryRecord] {
+        self.history.records()
+    }
+    pub fn history_failure(&self) -> Option<&HistoryFailure> {
+        self.history.failure().map(Arc::as_ref)
+    }
+    pub fn pending_write(&self) -> Option<&HistoryRecord> {
+        self.history.candidate()
+    }
+    pub fn detached_failures(&self) -> &[Arc<HistoryFailure>] {
+        self.history.detached_failures()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn attach_history(&mut self, writer: Box<dyn HistoryWriter>) {
+        self.history.attach(writer);
+    }
+
+    pub(super) fn configure_history(
+        &mut self,
+        instructions: &str,
+        submission: Option<&ToolDefinition>,
+    ) {
+        if self.history.records().is_empty() && self.history.failure().is_none() {
+            self.instructions = instructions.into();
+            self.mode = submission
+                .map(|s| HistoryMode::Structured(s.parameters.clone()))
+                .unwrap_or(HistoryMode::Text);
+        }
+    }
+
+    pub(super) fn ensure_history(&mut self) -> Result<(), ConversationError> {
+        if let Some(failure) = self.history.failure() {
+            return Err(failure.clone().into());
+        }
+        if self.history.candidate().is_some() {
+            return Err(ConversationError::PendingWrite);
+        }
+        if self.history.records().is_empty() {
+            let initial = match self.messages.first() {
+                Some(Message::User { content }) => Some(content.clone()),
+                _ => None,
+            };
+            self.commit(
+                HistoryEvent::Opened {
+                    initial,
+                    instructions: self.instructions.clone(),
+                    mode: self.mode.clone(),
+                },
+                EffectState::Prevented,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn commit(
+        &mut self,
+        event: HistoryEvent,
+        effect: EffectState,
+    ) -> Result<(), ConversationError> {
+        if let Err(failure) = self.history.commit(self.id, event, effect) {
+            self.mark_stopped();
+            return Err(failure.into());
+        }
+        Ok(())
+    }
+
+    /// Explicitly abandon an uncertain writer. No file is changed, and failure
+    /// provenance stays attached. This does not adopt its pending transition.
+    pub fn into_memory(mut self) -> Result<Self, ConversationError> {
+        if !self.history.detach() {
+            return Err(ConversationError::NotStorageStopped);
+        }
+        self.status = ConversationStatus::Active;
+        self.report = None;
+        self.progress = ProgressPublisher::default();
+        for response in &mut self.responses {
+            for action in &mut response.actions {
+                action.submission_validated = false;
+            }
+        }
+        Ok(self)
+    }
+
+    /// Adopt a known response/result/feedback after explicit memory detachment.
+    /// Completion candidates are never adopted: validate and complete anew.
+    pub fn adopt_pending_write(&mut self) -> Result<(), ConversationError> {
+        if self.history.failure().is_some() || self.status != ConversationStatus::Active {
+            return Err(ConversationError::Terminal);
+        }
+        let Some(candidate) = self.history.candidate() else {
+            return Ok(());
+        };
+        if matches!(
+            candidate.event,
+            HistoryEvent::SubmissionCompleted { .. }
+                | HistoryEvent::Finished { .. }
+                | HistoryEvent::ToolStarted { .. }
+                | HistoryEvent::Stopped { .. }
+        ) {
+            return Err(ConversationError::CannotAdoptWrite);
+        }
+        let candidate = self.history.take_candidate().expect("checked candidate");
+        match candidate.event {
+            HistoryEvent::Opened {
+                initial,
+                instructions,
+                mode,
+            } => {
+                self.commit(
+                    HistoryEvent::Opened {
+                        initial,
+                        instructions,
+                        mode,
+                    },
+                    EffectState::NoEffect,
+                )?;
+            }
+            HistoryEvent::Response {
+                origin,
+                output,
+                offered_tools,
+                ..
+            } => {
+                self.record_response_from(output, offered_tools, origin)?;
+            }
+            HistoryEvent::User { content, .. } => self.push_user(content)?,
+            HistoryEvent::ActionResolved { action, resolution } => {
+                self.resolve(
+                    &PendingAction {
+                        conversation: action.conversation,
+                        response: action.response,
+                        slot: action.action,
+                    },
+                    resolution,
+                )?;
+            }
+            _ => unreachable!("non-adoptable events checked above"),
+        }
+        Ok(())
+    }
+
+    /// Discard an unacknowledged intent. A returned model/tool result must be
+    /// adopted explicitly instead, so forgetting it cannot silently repeat work.
+    pub fn discard_pending_write(&mut self) -> Result<(), ConversationError> {
+        if self.history.failure().is_some() || self.status != ConversationStatus::Active {
+            return Err(ConversationError::Terminal);
+        }
+        if self.history.candidate().is_some_and(|r| {
+            matches!(
+                r.event,
+                HistoryEvent::Response { .. } | HistoryEvent::ActionResolved { .. }
+            )
+        }) {
+            return Err(ConversationError::CannotDiscardWrite);
+        }
+        self.history.take_candidate();
+        Ok(())
+    }
+
+    pub(super) fn stop_with_reason(
+        &mut self,
+        category: super::FailureKind,
+        message: String,
+    ) -> Result<(), ConversationError> {
+        if let Some(failure) = self.history.failure() {
+            return Err(failure.clone().into());
+        }
+        if self.status == ConversationStatus::Finished {
+            return Ok(());
+        }
+        // A stopped state can arise at the lower dispatch boundary before its
+        // diagnostic is recorded. The first session failure writes it once.
+        if !matches!(
+            self.history.records().last().map(|r| &r.event),
+            Some(HistoryEvent::Stopped { .. })
+        ) {
+            self.ensure_history()?;
+            let effect = if self.responses.last().is_some_and(|response| {
+                response
+                    .actions
+                    .iter()
+                    .any(|a| a.status == ActionStatus::Started)
+            }) {
+                EffectState::InProgress
+            } else {
+                EffectState::NoEffect
+            };
+            self.commit(HistoryEvent::Stopped { category, message }, effect)?;
+        }
+        self.mark_stopped();
+        Ok(())
+    }
+
     pub(super) fn with_progress(mut self, progress: ProgressPublisher) -> Self {
         self.progress = progress;
         self
     }
 
     pub(super) fn with_report(mut self, report: ReportHandle) -> Self {
+        // Restored unresolved proposals belong to the new execution's action
+        // scope, but no old invocation, usage or delivery is fabricated.
+        for (response_index, response) in self.responses.iter().enumerate() {
+            for (slot, action) in response.actions.iter().enumerate() {
+                if action.resolution.is_none() {
+                    report.proposed(
+                        ActionPosition {
+                            conversation: self.id,
+                            response: response_index,
+                            action: slot,
+                        },
+                        &action.call,
+                        action.kind,
+                    );
+                }
+            }
+        }
         self.report = Some(report);
         self
     }
@@ -277,6 +518,14 @@ impl Conversation {
         {
             return Err(ConversationError::UnpairedToolResult);
         }
+        self.ensure_history()?;
+        self.commit(
+            HistoryEvent::User {
+                message: self.messages.len(),
+                content: content.clone(),
+            },
+            EffectState::NoEffect,
+        )?;
         if let Some(report) = &self.report {
             report.message(self.id, self.messages.len(), None);
         }
@@ -292,7 +541,27 @@ impl Conversation {
         output: ModelOutput,
         offered_tools: Vec<ToolDefinition>,
     ) -> Result<ResponseActions, ConversationError> {
+        self.record_response_from(output, offered_tools, None)
+    }
+
+    pub(super) fn record_response_from(
+        &mut self,
+        output: ModelOutput,
+        offered_tools: Vec<ToolDefinition>,
+        origin: Option<String>,
+    ) -> Result<ResponseActions, ConversationError> {
         self.require_ready()?;
+        self.ensure_history()?;
+        self.commit(
+            HistoryEvent::Response {
+                response: self.responses.len(),
+                message: self.messages.len(),
+                origin: origin.clone(),
+                offered_tools: offered_tools.clone(),
+                output: output.clone(),
+            },
+            EffectState::Returned,
+        )?;
         let response_index = self.responses.len();
         let actions: Vec<_> = output
             .content
@@ -351,6 +620,7 @@ impl Conversation {
         });
         self.responses.push(ResponseRecord {
             output,
+            origin,
             offered_tools,
             actions,
         });
@@ -386,9 +656,21 @@ impl Conversation {
     /// Reserve a proposal before an external effect. A second start is rejected.
     /// This state transition itself performs no effect or budget admission.
     pub fn start(&mut self, handle: &PendingAction) -> Result<(), ConversationError> {
-        if self.validate(handle)?.status == ActionStatus::Started {
+        let action = self.validate(handle)?;
+        if action.kind == ActionKind::Submission {
+            return Err(ConversationError::SubmissionStart);
+        }
+        if action.status == ActionStatus::Started {
             return Err(ConversationError::AlreadyStarted);
         }
+        self.ensure_history()?;
+        self.commit(
+            HistoryEvent::ToolStarted {
+                action: self.action_position(handle)?,
+                ordinal: 1,
+            },
+            EffectState::Prevented,
+        )?;
         self.responses[handle.response].actions[handle.slot].status = ActionStatus::Started;
         if let Some(report) = &self.report {
             report.started(self.action_position(handle)?);
@@ -411,7 +693,29 @@ impl Conversation {
         {
             return Err(ConversationError::AlreadyStarted);
         }
-        let position = self.action_position(handle)?;
+        self.ensure_history()?;
+        let effect = if self.validate(handle)?.status == ActionStatus::Started {
+            EffectState::Returned
+        } else {
+            EffectState::NoEffect
+        };
+        self.commit(
+            HistoryEvent::ActionResolved {
+                action: self.action_position(handle)?,
+                resolution: resolution.clone(),
+            },
+            effect,
+        )?;
+        self.apply_resolution(handle, resolution);
+        Ok(())
+    }
+
+    fn apply_resolution(&mut self, handle: &PendingAction, resolution: ActionResolution) {
+        let position = ActionPosition {
+            conversation: self.id,
+            response: handle.response,
+            action: handle.slot,
+        };
         if let Some(report) = &self.report {
             report.resolved(position, &resolution);
         }
@@ -448,6 +752,25 @@ impl Conversation {
             self.messages.push(Message::User { content });
         }
         self.emit_action(handle);
+    }
+
+    pub(super) fn complete_submission(
+        &mut self,
+        handle: &PendingAction,
+        kind: SubmissionCompletion,
+    ) -> Result<(), ConversationError> {
+        self.ensure_history()?;
+        let acknowledgement = ToolOutput::text("Submission accepted.");
+        self.commit(
+            HistoryEvent::SubmissionCompleted {
+                action: self.action_position(handle)?,
+                acknowledgement: acknowledgement.clone(),
+                kind,
+            },
+            EffectState::NoEffect,
+        )?;
+        self.apply_resolution(handle, ActionResolution::Result(acknowledgement));
+        self.status = ConversationStatus::Finished;
         Ok(())
     }
 
@@ -470,13 +793,29 @@ impl Conversation {
     /// End a protocol-complete exchange. This is not inspector acceptance and
     /// does not create an accepted refinement value.
     pub fn finish(&mut self) -> Result<(), ConversationError> {
+        self.finish_with_kind(HistoryCompletion::Protocol)
+    }
+
+    pub(super) fn finish_with_kind(
+        &mut self,
+        kind: HistoryCompletion,
+    ) -> Result<(), ConversationError> {
         self.require_ready()?;
+        self.ensure_history()?;
+        self.commit(HistoryEvent::Finished { kind }, EffectState::NoEffect)?;
         self.status = ConversationStatus::Finished;
         Ok(())
     }
 
     /// End unfinished work while retaining unresolved proposals and raw history.
-    pub fn stop(&mut self) {
+    pub fn stop(&mut self) -> Result<(), ConversationError> {
+        self.stop_with_reason(
+            super::FailureKind::ApplicationStop,
+            "conversation stopped".into(),
+        )
+    }
+
+    pub(super) fn mark_stopped(&mut self) {
         if self.status == ConversationStatus::Active {
             self.status = ConversationStatus::Stopped;
             if let Some(report) = &self.report {
@@ -486,6 +825,9 @@ impl Conversation {
     }
 
     fn require_ready(&self) -> Result<(), ConversationError> {
+        if self.history.candidate().is_some() && self.history.failure().is_none() {
+            return Err(ConversationError::PendingWrite);
+        }
         if self.status != ConversationStatus::Active {
             return Err(ConversationError::Terminal);
         }

@@ -14,6 +14,7 @@ mod budget;
 mod conversation;
 mod dispatch;
 mod execution;
+mod history;
 mod hook;
 mod model;
 mod progress;
@@ -64,3 +65,8 @@ pub use workspace_tools::workspace_read_tools;
 pub fn initialize_tls() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
+
+pub use history::{
+    EffectState, HistoryCompletion, HistoryEvent, HistoryFailure, HistoryMode, HistoryOperation,
+    HistoryRecord, HistoryWritePhase, PersistenceOutcome, SubmissionCompletion,
+};

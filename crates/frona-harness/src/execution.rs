@@ -30,6 +30,17 @@ pub enum ExecutionStop {
     Stopped(String),
 }
 
+impl ExecutionStop {
+    pub(super) fn failure_kind(&self) -> super::FailureKind {
+        match self {
+            Self::Cancelled(_) => super::FailureKind::Cancelled,
+            Self::BudgetExhausted(_) => super::FailureKind::Budget,
+            Self::Storage(_) => super::FailureKind::Storage,
+            Self::Stopped(_) => super::FailureKind::ApplicationStop,
+        }
+    }
+}
+
 /// Borrowed controls shared by model operations, retries, and nested work.
 /// Construction never creates or resets an allowance. Convenience model/group
 /// methods create one default budget per logical invocation; loops should pass

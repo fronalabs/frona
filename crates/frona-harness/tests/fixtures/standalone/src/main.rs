@@ -22,6 +22,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(output.content.len(), 1);
 
     let harness = Harness::new(model);
+    // Default memory transitions need no history/checkpoint configuration.
+    let mut memory = harness.run("history without storage setup").manual();
+    memory.call_model().await?;
+    assert_eq!(memory.finish()?, "application response");
+    assert!(matches!(
+        memory.conversation().history().last().map(|r| &r.event),
+        Some(frona_harness::HistoryEvent::Finished { .. })
+    ));
+    assert!(memory.conversation().history_failure().is_none());
+
     let run = harness.run("observed standalone call");
     let report = run.report();
     let mut progress = run.subscribe();

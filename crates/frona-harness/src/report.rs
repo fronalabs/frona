@@ -13,7 +13,7 @@ pub struct RequestId(pub usize);
 pub struct AttemptId(pub usize);
 
 /// Internal action identity, independent of possibly duplicated provider call IDs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActionPosition {
     pub conversation: Uuid,
     pub response: usize,
@@ -107,7 +107,7 @@ pub struct FeedbackReport {
     pub issued_in: Vec<AttemptId>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FailureKind {
     Compaction,
     Budget,

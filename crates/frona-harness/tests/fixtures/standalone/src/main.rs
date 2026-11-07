@@ -55,6 +55,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     assert!(memory.conversation().history_failure().is_none());
 
+    // Pure JSONL reconstruction works in this separate application with no
+    // SurrealDB feature, credentials, storage backend, or runtime restoration.
+    let encoded = frona_harness::encode_jsonl(memory.conversation().history())?;
+    let replayed = frona_harness::decode_jsonl(&encoded)?;
+    assert_eq!(
+        replayed.replay.conversation.messages(),
+        memory.conversation().messages()
+    );
+    assert_eq!(
+        replayed.replay.conversation.status(),
+        frona_harness::ConversationStatus::Finished
+    );
+    assert!(replayed.incomplete_tail.is_none());
+    assert_eq!(
+        frona_harness::encode_jsonl(replayed.replay.conversation.history())?,
+        encoded
+    );
+
     let run = harness.run("observed standalone call");
     let report = run.report();
     let mut progress = run.subscribe();
@@ -164,5 +182,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .call(json!({"value": "hello"}), &ToolContext::default())
         .await?;
     assert!(!result.content.is_empty());
+    #[cfg(feature = "jsonl")]
+    {
+        use frona_harness::{Conversation, Jsonl};
+        use rig_core::completion::message::UserContent;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("history.jsonl");
+        let mut conversation = Conversation::new("save this");
+        conversation.attach_jsonl(Jsonl::create(&path)?)?;
+        conversation.push_user(vec![UserContent::text("explicit feedback")])?;
+        drop(conversation);
+        let loaded = Jsonl::open(&path)?;
+        assert_eq!(loaded.conversation().messages().len(), 2);
+        let mut writable = loaded.into_writable()?;
+        writable.finish()?;
+        drop(writable);
+        assert_eq!(Jsonl::open(&path)?.conversation().history().len(), 3);
+    }
     Ok(())
 }

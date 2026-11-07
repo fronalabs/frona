@@ -7,6 +7,10 @@ license-file = "LICENSE"
 readme = false
 repository = "https://git.mcx.ai/mina/frona"
 
+[features]
+default = []
+jsonl = []
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

@@ -16,6 +16,14 @@ mod conversation;
 mod dispatch;
 mod execution;
 mod history;
+mod history_codec;
+#[cfg(feature = "jsonl")]
+mod jsonl;
+pub use history_codec::{
+    DecodedHistory, HistoryDecodeError, HistoryDecodeErrorKind, decode_jsonl, encode_jsonl,
+};
+#[cfg(feature = "jsonl")]
+pub use jsonl::{Jsonl, JsonlError, JsonlOperation, JsonlWriter};
 mod hook;
 mod model;
 mod progress;
@@ -40,7 +48,8 @@ pub use budget::{
 };
 pub use conversation::{
     ActionKind, ActionRecord, ActionResolution, ActionStatus, Conversation, ConversationError,
-    ConversationStatus, PendingAction, PendingActionView, ResponseActions, ResponseRecord,
+    ConversationStatus, HistoryReplay, PendingAction, PendingActionView, ResponseActions,
+    ResponseRecord, replay_history,
 };
 pub use dispatch::ToolDispatchError;
 pub use execution::{ExecutionControl, ExecutionStop};
@@ -68,8 +77,8 @@ pub fn initialize_tls() {
 }
 
 pub use history::{
-    EffectState, HistoryCompletion, HistoryEvent, HistoryFailure, HistoryMode, HistoryOperation,
-    HistoryRecord, HistoryWritePhase, PersistenceOutcome, SubmissionCompletion,
+    EffectState, HistoryCheckpoint, HistoryCompletion, HistoryEvent, HistoryFailure, HistoryMode,
+    HistoryOperation, HistoryRecord, HistoryWritePhase, PersistenceOutcome, SubmissionCompletion,
 };
 
 pub use compaction::{

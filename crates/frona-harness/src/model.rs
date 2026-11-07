@@ -71,7 +71,7 @@ impl Capabilities {
 
 /// Usage provenance is explicit. LegacyNormalized is neither a verified report
 /// nor an estimate: old adapters may substitute zero for missing wire fields.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum UsageReport {
     Reported(Usage),
     Unavailable,
@@ -111,14 +111,17 @@ impl ModelRequest {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModelOutput {
     pub content: Vec<AssistantContent>,
     /// Native structured output, with the original content retained separately.
+    #[serde(deserialize_with = "crate::history::required")]
     pub structured: Option<serde_json::Value>,
     pub usage: UsageReport,
     /// Original metadata from the adapter; null explicitly means unavailable.
+    #[serde(deserialize_with = "crate::history::required")]
     pub metadata: serde_json::Value,
+    #[serde(deserialize_with = "crate::history::required")]
     pub ttft_ms: Option<u64>,
 }
 

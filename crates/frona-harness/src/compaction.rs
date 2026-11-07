@@ -65,7 +65,7 @@ pub struct CompactionLimits {
 
 /// An exact request-view entry. Summary coverage is provenance, never evidence
 /// that the original messages were sent verbatim to a model.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum HistoryViewEntry {
     Original(usize),
     Summary {
@@ -77,7 +77,7 @@ pub enum HistoryViewEntry {
 /// An owned description of a leading summary and retained original positions.
 /// Retention can be noncontiguous to protect the active input during long loops.
 /// It contains no model client, identity, database handle or application callback.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CompactedView {
     pub(super) source_message_count: usize,
     pub(super) entries: Vec<HistoryViewEntry>,

@@ -452,28 +452,11 @@ impl ManualSession<'_, Text> {
     pub fn finish(&mut self) -> Result<String, ManualError> {
         self.core.check_active()?;
         self.core.conversation.require_ready()?;
-        let response = self
+        let text = self
             .core
             .conversation
-            .responses()
-            .last()
+            .final_text()
             .ok_or(ManualError::NoText)?;
-        // A tool-only response is not a final answer even after its tools resolve.
-        if !response.actions().is_empty() {
-            return Err(ManualError::NoText);
-        }
-        let text: String = response
-            .output()
-            .content
-            .iter()
-            .filter_map(|content| match content {
-                AssistantContent::Text(text) => Some(text.text.as_str()),
-                _ => None,
-            })
-            .collect();
-        if text.is_empty() {
-            return Err(ManualError::NoText);
-        }
         let result = self
             .core
             .conversation

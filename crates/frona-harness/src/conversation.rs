@@ -1,5 +1,8 @@
 //! In-memory conversation and action state shared by manual and automatic drivers.
 
+mod replay;
+pub use replay::{HistoryReplay, replay_history};
+
 use super::history::History;
 #[cfg(test)]
 use super::history::HistoryWriter;
@@ -36,12 +39,12 @@ pub enum ActionStatus {
 
 /// A paired protocol result. Rejection records feedback without claiming an
 /// invocation occurred. Neither variant accepts an application refinement result.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ActionResolution {
-    Result(ToolOutput),
+    Result(#[serde(with = "super::history::tool_output")] ToolOutput),
     /// An invoked tool failed ordinarily; the paired output is model feedback.
-    Failed(ToolOutput),
-    Rejected(ToolOutput),
+    Failed(#[serde(with = "super::history::tool_output")] ToolOutput),
+    Rejected(#[serde(with = "super::history::tool_output")] ToolOutput),
 }
 
 impl ActionResolution {
@@ -94,9 +97,14 @@ pub struct ActionRecord {
     status: ActionStatus,
     resolution: Option<ActionResolution>,
     submission_validated: bool,
+    invocation_ordinal: u64,
 }
 
 impl ActionRecord {
+    /// Number of durably recorded invocation starts, including interrupted attempts.
+    pub fn invocation_ordinal(&self) -> u64 {
+        self.invocation_ordinal
+    }
     pub fn call(&self) -> &ToolCall {
         &self.call
     }
@@ -203,8 +211,14 @@ pub struct Conversation {
 
 impl Default for Conversation {
     fn default() -> Self {
+        Self::empty_with_id(Uuid::now_v7())
+    }
+}
+
+impl Conversation {
+    fn empty_with_id(id: Uuid) -> Self {
         Self {
-            id: Uuid::now_v7(),
+            id,
             messages: Vec::new(),
             responses: Vec::new(),
             pending: 0,
@@ -262,6 +276,22 @@ impl Conversation {
     }
     pub fn detached_failures(&self) -> &[Arc<HistoryFailure>] {
         self.history.detached_failures()
+    }
+
+    /// Attach a newly created JSONL writer before the first recorded transition.
+    /// Configuration remains mutable until that transition commits `Opened`.
+    #[cfg(feature = "jsonl")]
+    pub fn attach_jsonl(&mut self, writer: super::JsonlWriter) -> Result<(), super::JsonlError> {
+        if !self.history.can_attach_new() {
+            return Err(super::JsonlError::AlreadyAttached);
+        }
+        self.history.attach(Box::new(writer));
+        Ok(())
+    }
+
+    #[cfg(feature = "jsonl")]
+    pub(super) fn attach_restored_jsonl(&mut self, writer: super::JsonlWriter) {
+        self.history.attach_restored(Box::new(writer));
     }
 
     #[cfg(test)]
@@ -351,6 +381,7 @@ impl Conversation {
                 | HistoryEvent::ToolStarted { .. }
                 | HistoryEvent::Stopped { .. }
                 | HistoryEvent::Compacted { .. }
+                | HistoryEvent::Checkpoint { .. }
         ) {
             return Err(ConversationError::CannotAdoptWrite);
         }
@@ -622,6 +653,7 @@ impl Conversation {
                     status: ActionStatus::Proposed,
                     resolution: None,
                     submission_validated: false,
+                    invocation_ordinal: 0,
                 }),
                 _ => None,
             })
@@ -718,6 +750,7 @@ impl Conversation {
             EffectState::Prevented,
         )?;
         self.responses[handle.response].actions[handle.slot].status = ActionStatus::Started;
+        self.responses[handle.response].actions[handle.slot].invocation_ordinal = 1;
         if let Some(report) = &self.report {
             report.started(self.action_position(handle)?);
         }
@@ -834,6 +867,25 @@ impl Conversation {
                 status: action.status,
             }
         });
+    }
+
+    /// Extract the same final answer for live text completion and pure replay.
+    /// A response containing tool proposals is not final, even after resolution.
+    pub(super) fn final_text(&self) -> Option<String> {
+        let response = self.responses.last()?;
+        if !response.actions.is_empty() {
+            return None;
+        }
+        let text: String = response
+            .output
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                AssistantContent::Text(text) => Some(text.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        (!text.is_empty()).then_some(text)
     }
 
     /// End a protocol-complete exchange. This is not inspector acceptance and

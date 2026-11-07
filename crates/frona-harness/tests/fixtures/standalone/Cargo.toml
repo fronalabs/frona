@@ -7,6 +7,9 @@ publish = false
 # Isolate feature resolution from the server and harness dev-dependencies.
 [workspace]
 
+[features]
+jsonl = ["frona-harness/jsonl"]
+
 [dependencies]
 frona-harness = { path = "../../.." }
 async-trait = "0.1"

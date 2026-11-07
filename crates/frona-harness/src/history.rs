@@ -8,29 +8,29 @@ use uuid::Uuid;
 
 use super::{ActionPosition, ActionResolution, ModelOutput, ToolOutput};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum HistoryMode {
     Text,
     Structured(serde_json::Value),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SubmissionCompletion {
     Schema,
     Application,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HistoryCompletion {
     Text { response: usize },
     Protocol,
 }
 
-/// Owned, unencoded transition data. Compaction/checkpoint events are added by
-/// their implementation tasks; no serialization is required by memory history.
-#[derive(Debug, Clone)]
+/// Owned transition data shared by memory history and the versioned codec.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum HistoryEvent {
     Opened {
+        #[serde(deserialize_with = "crate::history::required")]
         initial: Option<Vec<UserContent>>,
         instructions: String,
         mode: HistoryMode,
@@ -42,6 +42,7 @@ pub enum HistoryEvent {
     Response {
         response: usize,
         message: usize,
+        #[serde(deserialize_with = "crate::history::required")]
         origin: Option<String>,
         offered_tools: Vec<ToolDefinition>,
         output: ModelOutput,
@@ -56,6 +57,7 @@ pub enum HistoryEvent {
     },
     SubmissionCompleted {
         action: ActionPosition,
+        #[serde(with = "tool_output")]
         acknowledgement: ToolOutput,
         kind: SubmissionCompletion,
     },
@@ -66,6 +68,9 @@ pub enum HistoryEvent {
     },
     Finished {
         kind: HistoryCompletion,
+    },
+    Checkpoint {
+        checkpoint: HistoryCheckpoint,
     },
     Stopped {
         category: super::FailureKind,
@@ -84,6 +89,7 @@ pub enum HistoryOperation {
     Compact,
     Finish,
     Stop,
+    Checkpoint,
 }
 
 impl HistoryEvent {
@@ -98,11 +104,12 @@ impl HistoryEvent {
             Self::Compacted { .. } => HistoryOperation::Compact,
             Self::Finished { .. } => HistoryOperation::Finish,
             Self::Stopped { .. } => HistoryOperation::Stop,
+            Self::Checkpoint { .. } => HistoryOperation::Checkpoint,
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HistoryRecord {
     pub version: u32,
     pub conversation: Uuid,
@@ -179,6 +186,13 @@ pub(crate) struct History {
 }
 
 impl History {
+    pub(crate) fn from_records(records: Vec<HistoryRecord>) -> Self {
+        Self {
+            memory: MemoryHistory { records },
+            ..Self::default()
+        }
+    }
+
     pub fn records(&self) -> &[HistoryRecord] {
         &self.memory.records
     }
@@ -192,12 +206,24 @@ impl History {
         &self.detached_failures
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "jsonl"))]
     pub(crate) fn attach(&mut self, writer: Box<dyn HistoryWriter>) {
-        assert!(
-            self.memory.records.is_empty() && self.failure.is_none(),
-            "attach history before execution"
-        );
+        assert!(self.can_attach_new(), "attach history before execution");
+        self.writer = Some(writer);
+    }
+
+    #[cfg(any(test, feature = "jsonl"))]
+    pub(crate) fn can_attach_new(&self) -> bool {
+        self.memory.records.is_empty()
+            && self.writer.is_none()
+            && self.failure.is_none()
+            && self.candidate.is_none()
+            && self.detached_failures.is_empty()
+    }
+
+    #[cfg(feature = "jsonl")]
+    pub(crate) fn attach_restored(&mut self, writer: Box<dyn HistoryWriter>) {
+        assert!(self.writer.is_none() && self.failure.is_none() && self.candidate.is_none());
         self.writer = Some(writer);
     }
 
@@ -254,4 +280,51 @@ impl History {
     pub fn take_candidate(&mut self) -> Option<HistoryRecord> {
         self.candidate.take()
     }
+}
+
+/// Opaque application checkpoint associated with the immediately preceding prefix.
+/// Application schema compatibility and typed decoding belong to the caller.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct HistoryCheckpoint {
+    pub schema: String,
+    pub version: u64,
+    #[serde(deserialize_with = "crate::history::required")]
+    pub payload: serde_json::Value,
+    pub through_seq: u64,
+}
+
+// ToolOutput deliberately does not implement Serialize: its IntoToolOutput impl
+// must remain distinct from the blanket serializable-result convenience impl.
+pub(super) mod tool_output {
+    use super::ToolOutput;
+    use serde::{Deserialize, Deserializer, Serializer, ser::SerializeStruct};
+    #[derive(Deserialize)]
+    struct Wire {
+        content: Vec<super::super::ToolContent>,
+        #[serde(deserialize_with = "crate::history::required")]
+        metadata: serde_json::Value,
+    }
+    pub fn serialize<S: Serializer>(output: &ToolOutput, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut wire = serializer.serialize_struct("ToolOutput", 2)?;
+        wire.serialize_field("content", &output.content)?;
+        wire.serialize_field("metadata", &output.metadata)?;
+        wire.end()
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<ToolOutput, D::Error> {
+        let wire = Wire::deserialize(deserializer)?;
+        Ok(ToolOutput {
+            content: wire.content,
+            metadata: wire.metadata,
+        })
+    }
+}
+
+// Require the field to exist even when its value may explicitly be null. Serde's
+// default Option/Value missing-field behavior would hide truncated payloads.
+pub(super) fn required<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    T::deserialize(deserializer)
 }

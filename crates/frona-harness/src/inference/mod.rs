@@ -6,6 +6,7 @@ pub mod observation;
 pub mod protocol;
 pub mod provider;
 pub mod retry;
+pub mod submission;
 pub mod trace;
 pub use error::InferenceError;
 pub use provider::group::{ModelGroup, ModelRequest, ModelResponse, RequestOverrides};

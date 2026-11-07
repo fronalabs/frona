@@ -56,7 +56,7 @@ impl Tool for LendingTool<'_> {
         &self.definition
     }
 
-    async fn call(&mut self, arguments: Value, _: &ToolContext) -> ToolResult {
+    async fn call(&mut self, arguments: Value, _: &ToolContext<'_>) -> ToolResult {
         let observations = &mut self.observations;
         std::future::ready(()).await;
         observations.push(arguments.to_string());

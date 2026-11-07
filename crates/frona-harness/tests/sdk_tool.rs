@@ -82,7 +82,7 @@ impl Tool for MutableTool<'_> {
         &self.definition
     }
 
-    async fn call(&mut self, arguments: Value, context: &ToolContext) -> ToolResult {
+    async fn call(&mut self, arguments: Value, context: &ToolContext<'_>) -> ToolResult {
         let state = &mut self.observations;
         ready(()).await;
         state.push(format!(
@@ -139,13 +139,13 @@ async fn rich_content_and_context_are_not_flattened_or_discarded() {
     let mut typed = tool_with_context(
         "inspect",
         "Inspect",
-        move |_: Arguments, context: ToolContext| {
+        move |_: Arguments, context: ToolContext<'_>| {
             let output = output.clone();
-            async move {
+            Box::pin(async move {
                 assert_eq!(context.call_id.as_deref(), Some("opaque-call"));
                 assert!(context.cancellation.is_cancelled());
                 Ok(output)
-            }
+            })
         },
     )
     .unwrap();

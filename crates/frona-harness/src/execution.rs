@@ -10,7 +10,9 @@ use crate::inference::{
     provider::ModelConfig,
 };
 
-use super::{Budget, BudgetCompletion, BudgetOperation, BudgetOutcome, UsageReport};
+use super::{
+    Budget, BudgetCompletion, BudgetOperation, BudgetOutcome, ToolError, ToolResult, UsageReport,
+};
 
 /// Control stops must escape tool-error feedback and retry/fallback handling.
 /// A storage stop refers to required execution persistence, not an ordinary
@@ -77,6 +79,47 @@ impl<'a> ExecutionControl<'a> {
             Some(token) => token.cancelled().await,
             None => std::future::pending().await,
         }
+    }
+
+    /// Shared per-tool admission. Call counts settle once; nested model usage
+    /// is charged by its own model permits, never again by the enclosing tool.
+    pub(crate) async fn tool_attempt<F, Fut>(self, name: &str, call: F) -> ToolResult
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = ToolResult>,
+    {
+        self.check_cancellation()?;
+        let permit = self
+            .budget
+            .admit(BudgetOperation::Tool { name })
+            .map_err(ExecutionStop::BudgetExhausted)?;
+        let result = tokio::select! {
+            biased;
+            _ = self.cancelled() => Err(ExecutionStop::Cancelled("execution cancelled".into()).into()),
+            result = async { call().await } => result,
+        };
+        let result = if self.is_cancelled() {
+            Err(ExecutionStop::Cancelled("execution cancelled".into()).into())
+        } else {
+            // Even callers constructing Failed directly cannot demote known
+            // SDK control errors at the dispatch boundary.
+            result.map_err(|error| match error {
+                ToolError::Failed(error) => ToolError::failed(error),
+                error => error,
+            })
+        };
+        permit.complete(BudgetCompletion {
+            outcome: match &result {
+                Ok(_) => BudgetOutcome::Succeeded,
+                Err(ToolError::Stop(ExecutionStop::Cancelled(_))) => BudgetOutcome::Cancelled,
+                Err(_) => BudgetOutcome::Failed,
+            },
+            usage: UsageReport::Unavailable,
+        });
+        // Completion is application policy and may cancel the shared scope.
+        // Keep its accounting, but never pair success after that cancellation.
+        self.check_cancellation()?;
+        result
     }
 
     /// The closure is not called on refusal. Accounting completes before

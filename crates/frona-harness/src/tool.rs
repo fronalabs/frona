@@ -1,7 +1,7 @@
 //! Portable tool registration and invocation contracts. Dispatch policy lives
 //! in the shared execution layer, not in the registry or typed helper.
 
-use std::{collections::BTreeMap, future::Future, marker::PhantomData};
+use std::{collections::BTreeMap, future::Future, marker::PhantomData, pin::Pin};
 
 use async_trait::async_trait;
 use rig_core::completion::request::ToolDefinition;
@@ -10,7 +10,9 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use super::ExecutionStop;
+use super::{ExecutionControl, ExecutionStop, Model, ModelError, ModelOutput, ModelRequest};
+use crate::inference::{InferenceError, observation::Observations, provider::StreamToken};
+use tokio::sync::mpsc;
 
 pub use rig_core::completion::message::ToolResultContent as ToolContent;
 
@@ -31,25 +33,61 @@ impl ToolError {
             Ok(error) => *error,
             Err(error) => match error.downcast::<ExecutionStop>() {
                 Ok(stop) => Self::Stop(*stop),
-                Err(error) => Self::Failed(error),
+                Err(error) => match error.downcast::<ModelError>() {
+                    Ok(error) => Self::from(*error),
+                    Err(error) => match error.downcast::<InferenceError>() {
+                        Ok(error) => Self::from(*error),
+                        Err(error) => Self::Failed(error),
+                    },
+                },
             },
+        }
+    }
+}
+
+impl From<InferenceError> for ToolError {
+    fn from(error: InferenceError) -> Self {
+        match error.into_execution_stop() {
+            Ok(stop) => Self::Stop(stop),
+            Err(error) => Self::Failed(Box::new(error)),
+        }
+    }
+}
+
+impl From<ModelError> for ToolError {
+    fn from(error: ModelError) -> Self {
+        match error {
+            ModelError::Provider(error) => error.into(),
+            error => Self::Failed(Box::new(error)),
         }
     }
 }
 
 pub type ToolResult = Result<ToolOutput, ToolError>;
 
-/// Call-local information with no persistent identity or services. The shared
-/// execution layer will attach its budget/nested executor here in HSDK-07/10;
-/// tools must not construct a new budget for nested work.
-#[derive(Clone, Debug, Default)]
+/// Call-local information with no persistent identity or services. Dispatch
+/// attaches the caller's budget; nested model work never creates a new allowance.
+/// A default context supports direct low-level tools, but nested work requires
+/// a dispatcher-supplied execution control.
+#[derive(Clone, Default)]
 #[non_exhaustive]
-pub struct ToolContext {
+pub struct ToolContext<'a> {
     pub call_id: Option<String>,
     pub cancellation: CancellationToken,
+    execution: Option<ExecutionControl<'a>>,
 }
 
-impl ToolContext {
+impl std::fmt::Debug for ToolContext<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolContext")
+            .field("call_id", &self.call_id)
+            .field("cancellation", &self.cancellation)
+            .field("has_execution", &self.execution.is_some())
+            .finish()
+    }
+}
+
+impl<'a> ToolContext<'a> {
     pub fn with_call_id(mut self, call_id: impl Into<String>) -> Self {
         self.call_id = Some(call_id.into());
         self
@@ -58,6 +96,48 @@ impl ToolContext {
     pub fn with_cancellation(mut self, cancellation: CancellationToken) -> Self {
         self.cancellation = cancellation;
         self
+    }
+
+    pub(crate) fn for_execution(call_id: String, execution: ExecutionControl<'a>) -> Self {
+        Self {
+            call_id: Some(call_id),
+            cancellation: execution.cancellation_token().unwrap_or_default(),
+            execution: Some(execution),
+        }
+    }
+
+    /// Reuse this tool's exact allowance and cancellation for a nested model.
+    /// Errors retain typed control stops and can be propagated with `?`.
+    pub async fn complete(
+        &self,
+        model: &Model<'_>,
+        request: ModelRequest,
+    ) -> Result<ModelOutput, ToolError> {
+        self.invoke(model, request, None, Observations::default())
+            .await
+    }
+
+    pub async fn invoke(
+        &self,
+        model: &Model<'_>,
+        request: ModelRequest,
+        tokens: Option<mpsc::Sender<StreamToken>>,
+        observations: Observations<'_>,
+    ) -> Result<ModelOutput, ToolError> {
+        model
+            .invoke_controlled(request, tokens, observations, self.execution()?)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Borrow the same controls for other budget-aware SDK operations.
+    pub fn execution(&self) -> Result<ExecutionControl<'_>, ToolError> {
+        let execution = self.execution.ok_or_else(|| {
+            ExecutionStop::Stopped(
+                "nested model work requires a dispatcher execution context".into(),
+            )
+        })?;
+        Ok(execution.with_cancellation(&self.cancellation))
     }
 }
 
@@ -115,7 +195,7 @@ impl IntoToolOutput for ToolOutput {
 #[async_trait]
 pub trait Tool: Send {
     fn definition(&self) -> &ToolDefinition;
-    async fn call(&mut self, arguments: Value, context: &ToolContext) -> ToolResult;
+    async fn call(&mut self, arguments: Value, context: &ToolContext<'_>) -> ToolResult;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -154,26 +234,32 @@ where
     F: FnMut(A) -> Fut + Send,
     Fut: Future<Output = Result<O, ToolError>> + Send,
 {
-    let mut handler = handler;
-    tool_with_context(name, description, move |arguments, _context| {
-        handler(arguments)
-    })
+    typed_tool(name.into(), description.into(), PlainHandler(handler))
 }
 
-/// The context-aware form uses an owned, cheaply cloned call context, so the
-/// callback can use it across await without boxing a lending closure.
-pub fn tool_with_context<A, O, F, Fut>(
-    name: impl Into<String>,
-    description: impl Into<String>,
+/// A context-aware callback may keep borrowed execution controls across await.
+/// Box only this future (`Box::pin(async move { ... })`); ordinary `tool` callbacks
+/// remain unboxed. Implement `Tool` for callbacks lending mutable captured state.
+pub fn tool_with_context<A, O, F>(
+    name: &str,
+    description: &str,
     handler: F,
-) -> Result<TypedTool<A, F>, ToolRegistrationError>
+) -> Result<impl Tool + use<A, O, F>, ToolRegistrationError>
 where
     A: DeserializeOwned + JsonSchema + Send,
     O: IntoToolOutput,
-    F: FnMut(A, ToolContext) -> Fut + Send,
-    Fut: Future<Output = Result<O, ToolError>> + Send,
+    F: for<'ctx> FnMut(A, ToolContext<'ctx>) -> ToolFuture<'ctx, O> + Send,
 {
-    let name = name.into();
+    typed_tool(name.into(), description.into(), ContextHandler(handler))
+}
+
+pub type ToolFuture<'a, O> = Pin<Box<dyn Future<Output = Result<O, ToolError>> + Send + 'a>>;
+
+fn typed_tool<A: JsonSchema, H>(
+    name: String,
+    description: String,
+    handler: H,
+) -> Result<TypedTool<A, H>, ToolRegistrationError> {
     validate_name(&name)?;
     let parameters = schemars::schema_for!(A).to_value();
     let validator = jsonschema::validator_for(&parameters)
@@ -181,7 +267,7 @@ where
     Ok(TypedTool {
         definition: ToolDefinition {
             name,
-            description: description.into(),
+            description,
             parameters,
         },
         validator,
@@ -190,33 +276,65 @@ where
     })
 }
 
-pub struct TypedTool<A, F> {
+pub struct TypedTool<A, H> {
     definition: ToolDefinition,
     validator: jsonschema::Validator,
-    handler: F,
+    handler: H,
     arguments: PhantomData<fn(A)>,
 }
 
+trait TypedHandler<A>: Send {
+    fn call(
+        &mut self,
+        arguments: A,
+        context: &ToolContext<'_>,
+    ) -> impl Future<Output = ToolResult> + Send;
+}
+
+struct PlainHandler<F>(F);
+struct ContextHandler<F>(F);
+
+impl<A, O, F, Fut> TypedHandler<A> for PlainHandler<F>
+where
+    A: Send,
+    O: IntoToolOutput,
+    F: FnMut(A) -> Fut + Send,
+    Fut: Future<Output = Result<O, ToolError>> + Send,
+{
+    async fn call(&mut self, arguments: A, _context: &ToolContext<'_>) -> ToolResult {
+        (self.0)(arguments).await?.into_tool_output()
+    }
+}
+
+impl<A, O, F> TypedHandler<A> for ContextHandler<F>
+where
+    A: Send,
+    O: IntoToolOutput,
+    F: for<'ctx> FnMut(A, ToolContext<'ctx>) -> ToolFuture<'ctx, O> + Send,
+{
+    async fn call(&mut self, arguments: A, context: &ToolContext<'_>) -> ToolResult {
+        (self.0)(arguments, context.clone())
+            .await?
+            .into_tool_output()
+    }
+}
+
 #[async_trait]
-impl<A, O, F, Fut> Tool for TypedTool<A, F>
+impl<A, H> Tool for TypedTool<A, H>
 where
     A: DeserializeOwned + Send,
-    O: IntoToolOutput,
-    F: FnMut(A, ToolContext) -> Fut + Send,
-    Fut: Future<Output = Result<O, ToolError>> + Send,
+    H: TypedHandler<A>,
 {
     fn definition(&self) -> &ToolDefinition {
         &self.definition
     }
 
-    async fn call(&mut self, arguments: Value, context: &ToolContext) -> ToolResult {
+    async fn call(&mut self, arguments: Value, context: &ToolContext<'_>) -> ToolResult {
         self.validator
             .validate(&arguments)
             .map_err(|error| ToolError::failed(error.to_string()))?;
         let input = serde_json::from_value(arguments).map_err(ToolError::failed)?;
-        (self.handler)(input, context.clone())
-            .await?
-            .into_tool_output()
+        self.handler.call(input, context).await
     }
 }
 

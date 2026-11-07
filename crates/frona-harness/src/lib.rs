@@ -9,21 +9,30 @@ pub mod inference;
 pub mod retry_config;
 pub use handle::{Handle, InvalidHandle};
 mod budget;
+mod conversation;
+mod dispatch;
 mod execution;
 mod model;
+mod submission;
 mod tool;
 
 pub use budget::{
     Budget, BudgetCompletion, BudgetLimit, BudgetLimits, BudgetOperation, BudgetOutcome,
     BudgetPermit, BudgetRefusal, BudgetSnapshot, DefaultBudget, UncertainUsagePolicy,
 };
+pub use conversation::{
+    ActionKind, ActionRecord, ActionResolution, ActionStatus, Conversation, ConversationError,
+    ConversationStatus, PendingAction, PendingActionView, ResponseActions, ResponseRecord,
+};
+pub use dispatch::ToolDispatchError;
 pub use execution::{ExecutionControl, ExecutionStop};
 pub use model::{
     Capabilities, Capability, Model, ModelAdapter, ModelBuilder, ModelError, ModelOutput,
     ModelRequest, TypedOutput, UsageReport,
 };
+pub use submission::{Submission, SubmissionError, submission_tool};
 pub use tool::{
-    IntoToolOutput, Tool, ToolContent, ToolContext, ToolError, ToolFailure, ToolOutput,
+    IntoToolOutput, Tool, ToolContent, ToolContext, ToolError, ToolFailure, ToolFuture, ToolOutput,
     ToolRegistrationError, ToolRegistry, ToolResult, TypedTool, tool, tool_with_context,
 };
 

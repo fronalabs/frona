@@ -56,7 +56,7 @@ impl<F: FnMut(ToolOutput) -> ToolResult + Send> Tool for AgentToolAdapter<'_, F>
         &self.definition
     }
 
-    async fn call(&mut self, arguments: Value, _context: &ToolContext) -> ToolResult {
+    async fn call(&mut self, arguments: Value, _context: &ToolContext<'_>) -> ToolResult {
         let output = self
             .tool
             .execute(&self.definition.name, arguments, self.context)

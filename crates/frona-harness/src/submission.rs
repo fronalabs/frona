@@ -120,7 +120,7 @@ impl Conversation {
     /// appends ordinary user feedback, never an invented tool call/result. Pending
     /// tools must first be resolved; responses containing submit use their handles.
     pub fn repair_missing_submission(&mut self) -> Result<(), SubmissionError> {
-        self.request_messages()?;
+        self.require_ready()?;
         let response = self.responses().last().ok_or(SubmissionError::NoResponse)?;
         if response
             .actions()

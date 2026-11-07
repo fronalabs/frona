@@ -3,7 +3,7 @@ mod helpers;
 
 use std::sync::Arc;
 
-use frona::inference::conversation::summary_message;
+use frona_harness::inference::compaction::summary_message;
 use frona_harness::inference::{
     ModelGroup, ModelRequest,
     context::{estimate_message_tokens, estimate_tokens},
@@ -100,7 +100,7 @@ fn calls(ids: &[&str]) -> Message {
 
 fn mixed_history() -> Vec<Message> {
     vec![
-        summary_message("Stable rolling summary"),
+        summary_message("Stable rolling summary", None),
         Message::user("Old question"),
         Message::assistant("Old answer"),
         Message::user("Look at two files"),
@@ -165,7 +165,7 @@ async fn nonstreaming_removes_invalid_openers_even_when_within_budget() {
             ];
             let mut expected = vec![history[2].clone()];
             if summary {
-                history.insert(0, summary_message("baseline"));
+                history.insert(0, summary_message("baseline", None));
                 expected.insert(0, history[0].clone());
             }
             let provider = provider(vec![]);
@@ -186,7 +186,7 @@ async fn nonstreaming_rejects_all_invalid_tails_and_unfit_summaries_without_prov
             (vec![result(&["orphan"])], 1000),
             (
                 vec![
-                    summary_message("baseline"),
+                    summary_message("baseline", None),
                     Message::assistant("no live user"),
                     result(&["orphan"]),
                 ],
@@ -194,14 +194,14 @@ async fn nonstreaming_rejects_all_invalid_tails_and_unfit_summaries_without_prov
             ),
             (
                 vec![
-                    summary_message(&"large".repeat(100)),
+                    summary_message(&"large".repeat(100), None),
                     Message::user("small"),
                 ],
                 50,
             ),
             (
-                vec![summary_message("baseline")],
-                cost(&[summary_message("baseline")]) - 1,
+                vec![summary_message("baseline", None)],
+                cost(&[summary_message("baseline", None)]) - 1,
             ),
         ] {
             let provider = provider(vec![]);
@@ -218,7 +218,7 @@ async fn nonstreaming_rejects_all_invalid_tails_and_unfit_summaries_without_prov
 #[tokio::test]
 async fn nonstreaming_supports_empty_history_and_an_exactly_fitting_summary() {
     for structured in [false, true] {
-        for history in [vec![], vec![summary_message("baseline")]] {
+        for history in [vec![], vec![summary_message("baseline", None)]] {
             let provider = provider(vec![]);
             send(
                 &group(provider.clone(), cost(&history).max(4)),
@@ -272,7 +272,7 @@ async fn nonstreaming_retries_and_fallbacks_rebuild_from_the_unchanged_source() 
 #[tokio::test]
 async fn nonstreaming_local_budget_failure_still_allows_a_larger_fallback_budget() {
     for structured in [false, true] {
-        let history = vec![summary_message("baseline"), Message::user("request")];
+        let history = vec![summary_message("baseline", None), Message::user("request")];
         let provider = provider(vec![]);
         let mut group = group(provider.clone(), cost(&history) - 1);
         let mut fallback = group.main.clone();
@@ -318,7 +318,7 @@ async fn nonstreaming_retains_mixed_tool_results_only_with_their_calls() {
         content.insert(0, UserContent::text("Additional context"));
     }
     let history = vec![
-        summary_message("baseline"),
+        summary_message("baseline", None),
         Message::user("request"),
         calls(&["a", "b"]),
         mixed,
@@ -626,7 +626,7 @@ async fn nonstreaming_cannot_use_text_mixed_with_orphan_results_as_an_opening() 
     }
     for structured in [false, true] {
         for valid_followup in [false, true] {
-            let mut history = vec![summary_message("baseline"), mixed.clone()];
+            let mut history = vec![summary_message("baseline", None), mixed.clone()];
             if valid_followup {
                 history.push(Message::user("valid followup"));
             }

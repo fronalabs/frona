@@ -14,7 +14,7 @@ use crate::chat::message::models::{Message, MessageEvent, MessageRole, MessageSt
 use crate::inference::tool_call::ToolCall;
 use crate::storage::{Attachment, StorageService, VirtualPath, is_image_content_type};
 
-use frona_harness::inference::ModelConfig;
+use frona_harness::inference::{ModelConfig, compaction::summary_message};
 
 pub struct ConversationContext {
     pub agent_id: String,
@@ -73,7 +73,7 @@ impl ModelConversationHistory {
     pub(crate) fn replace_prefix(&mut self, rows: usize, summary: &str) {
         let prefix_end = self.row_range(rows - 1).end;
         self.history
-            .splice(..prefix_end, [summary_message(summary)]);
+            .splice(..prefix_end, [summary_message(summary, None)]);
         self.row_ids.drain(..rows);
         self.row_ends.drain(..rows);
         for end in &mut self.row_ends {
@@ -87,17 +87,14 @@ impl ModelConversationHistory {
     /// remain directly after the system prompt, including during history trimming.
     pub fn set_summary_context(&mut self, context: Option<&str>) {
         if let Some(summary) = self.summary.as_deref().filter(|s| !s.trim().is_empty()) {
-            self.history[0] = match context.filter(|s| !s.is_empty()) {
-                Some(context) => summary_message(&format!("{summary}\n\n{context}")),
-                None => summary_message(summary),
-            };
+            self.history[0] = summary_message(summary, context);
         }
     }
 
     fn new(messages: &[Message], summary: Option<&str>) -> Self {
         let mut history = Vec::new();
         if let Some(summary) = summary.filter(|s| !s.trim().is_empty()) {
-            history.push(summary_message(summary));
+            history.push(summary_message(summary, None));
         }
         Self {
             summary_end: history.len(),
@@ -107,12 +104,6 @@ impl ModelConversationHistory {
             summary: summary.map(str::to_owned),
         }
     }
-}
-
-pub fn summary_message(summary: &str) -> RigMessage {
-    RigMessage::user(format!(
-        "<conversation_summary>\n{summary}\n</conversation_summary>"
-    ))
 }
 
 #[async_trait]

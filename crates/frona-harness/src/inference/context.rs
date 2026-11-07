@@ -201,9 +201,22 @@ pub fn truncate_history(
 /// assistant response. Results may span several User messages, or share one
 /// message with text, so User roles alone are not sufficient to check pairing.
 fn validate_tool_groups(history: &[RigMessage]) -> Result<(), String> {
+    tool_group_boundaries(history, false).map(|_| ())
+}
+
+/// SDK actions distinguish duplicate provider IDs by proposal position. Their
+/// paired results also retain provider/item ID and name; consume matching calls
+/// in order rather than collapsing duplicate IDs. Legacy truncation retains its
+/// stricter duplicate-ID rejection and historical ID-only matching.
+pub(crate) fn compaction_group_boundaries(history: &[RigMessage]) -> Result<Vec<usize>, String> {
+    tool_group_boundaries(history, true)
+}
+
+fn tool_group_boundaries(history: &[RigMessage], exact: bool) -> Result<Vec<usize>, String> {
     use rig_core::completion::{AssistantContent, message::UserContent};
-    let mut pending = std::collections::HashSet::new();
-    for message in history {
+    let mut pending = Vec::new();
+    let mut boundaries = vec![0];
+    for (index, message) in history.iter().enumerate() {
         match message {
             RigMessage::Assistant { content, .. } => {
                 if !pending.is_empty() {
@@ -212,19 +225,33 @@ fn validate_tool_groups(history: &[RigMessage]) -> Result<(), String> {
                     );
                 }
                 for item in content {
-                    if let AssistantContent::ToolCall(call) = item
-                        && !pending.insert(&call.id)
-                    {
-                        return Err("Tool-call group contains a duplicate call ID".into());
+                    if let AssistantContent::ToolCall(call) = item {
+                        if !exact
+                            && pending.iter().any(
+                                |prior: &&rig_core::completion::message::ToolCall| {
+                                    prior.id == call.id
+                                },
+                            )
+                        {
+                            return Err("Tool-call group contains a duplicate call ID".into());
+                        }
+                        pending.push(call);
                     }
                 }
             }
             RigMessage::User { content } => {
                 for item in content {
-                    if let UserContent::ToolResult(result) = item
-                        && !pending.remove(&result.call)
-                    {
-                        return Err("Tool result has no matching pending call".into());
+                    if let UserContent::ToolResult(result) = item {
+                        let matching = pending.iter().position(|call| {
+                            call.id == result.call
+                                && (!exact
+                                    || (call.provider == result.provider
+                                        && call.function.name == result.name))
+                        });
+                        let Some(matching) = matching else {
+                            return Err("Tool result has no matching pending call".into());
+                        };
+                        pending.remove(matching);
                     }
                 }
                 if !pending.is_empty()
@@ -240,9 +267,12 @@ fn validate_tool_groups(history: &[RigMessage]) -> Result<(), String> {
             }
             RigMessage::System { .. } => {}
         }
+        if pending.is_empty() {
+            boundaries.push(index + 1);
+        }
     }
     if pending.is_empty() {
-        Ok(())
+        Ok(boundaries)
     } else {
         Err("History ends with an incomplete tool-result group".into())
     }

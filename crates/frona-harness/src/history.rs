@@ -59,6 +59,11 @@ pub enum HistoryEvent {
         acknowledgement: ToolOutput,
         kind: SubmissionCompletion,
     },
+    Compacted {
+        view: super::CompactedView,
+        summarizer: String,
+        output: ModelOutput,
+    },
     Finished {
         kind: HistoryCompletion,
     },
@@ -76,6 +81,7 @@ pub enum HistoryOperation {
     ToolStart,
     ActionResolution,
     SubmissionCompletion,
+    Compact,
     Finish,
     Stop,
 }
@@ -89,6 +95,7 @@ impl HistoryEvent {
             Self::ToolStarted { .. } => HistoryOperation::ToolStart,
             Self::ActionResolved { .. } => HistoryOperation::ActionResolution,
             Self::SubmissionCompleted { .. } => HistoryOperation::SubmissionCompletion,
+            Self::Compacted { .. } => HistoryOperation::Compact,
             Self::Finished { .. } => HistoryOperation::Finish,
             Self::Stopped { .. } => HistoryOperation::Stop,
         }

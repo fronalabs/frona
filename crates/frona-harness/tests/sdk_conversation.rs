@@ -173,7 +173,7 @@ fn resolves_out_of_order_into_one_original_order_result_batch_with_rich_content(
         rich.metadata
     );
     let history = conversation.request_messages().unwrap();
-    let encoded = serde_json::to_value(history).unwrap();
+    let encoded = serde_json::to_value(&history).unwrap();
     let decoded: Vec<Message> = serde_json::from_value(encoded).unwrap();
     assert_eq!(decoded, history);
 }

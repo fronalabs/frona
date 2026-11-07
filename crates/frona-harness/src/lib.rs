@@ -11,6 +11,7 @@ pub mod retry_config;
 pub use handle::{Handle, InvalidHandle};
 mod automatic;
 mod budget;
+mod compaction;
 mod conversation;
 mod dispatch;
 mod execution;
@@ -69,4 +70,9 @@ pub fn initialize_tls() {
 pub use history::{
     EffectState, HistoryCompletion, HistoryEvent, HistoryFailure, HistoryMode, HistoryOperation,
     HistoryRecord, HistoryWritePhase, PersistenceOutcome, SubmissionCompletion,
+};
+
+pub use compaction::{
+    CompactedView, CompactionConfig, CompactionError, CompactionLimits, CompactionPlan,
+    HistoryView, HistoryViewEntry,
 };

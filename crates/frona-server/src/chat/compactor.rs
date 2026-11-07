@@ -25,9 +25,10 @@ use crate::core::repository::{Repository, new_id};
 use crate::db::repo::chat_summaries::SurrealChatSummaryRepo;
 use crate::db::repo::messages::SurrealMessageRepo;
 use crate::db::repo::tool_calls::ToolCallRepository;
-use crate::inference::conversation::{ModelConversationHistory, summary_message};
+use crate::inference::conversation::ModelConversationHistory;
 use crate::inference::usage::repository::InferenceUsageRepository;
 use crate::inference::usage::{CompactionTarget, InferenceKind, UsageContext, UsageService};
+use frona_harness::inference::compaction::summary_message;
 use frona_harness::inference::{
     ModelGroup,
     context::{InputTokenEstimate, estimate_message_tokens, estimate_tokens},
@@ -461,15 +462,13 @@ impl ChatCompactor {
         ensure_fits(system_tokens + protected_tokens, available)?;
 
         let target = available * COMPACT_TARGET_PCT / 100;
-        let mut keep_from_idx = protected;
-        let mut running = protected_tokens;
-        for i in (0..protected).rev() {
-            if running + costs[i] + system_tokens + summary_tokens > target {
-                break;
-            }
-            running += costs[i];
-            keep_from_idx = i;
-        }
+        let mut keep_from_idx = frona_harness::inference::compaction::retained_suffix_start(
+            &costs,
+            protected,
+            system_tokens,
+            summary_tokens,
+            target,
+        );
         // The existing persisted cutoff is timestamp-only and exclusive when
         // loading. Keep the entire boundary timestamp group so reload cannot
         // silently discard a retained row with the same timestamp as the prefix.
@@ -652,7 +651,7 @@ pub(crate) fn validate_initial_context(
 }
 
 fn summary_tokens_for(content: &str) -> usize {
-    estimate_message_tokens(&summary_message(content))
+    estimate_message_tokens(&summary_message(content, None))
 }
 
 fn ensure_fits(tokens: usize, available: usize) -> Result<(), AppError> {

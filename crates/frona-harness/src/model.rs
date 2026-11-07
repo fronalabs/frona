@@ -283,32 +283,7 @@ impl<'a> Model<'a> {
         observations: Observations<'_>,
         execution: ExecutionControl<'_>,
     ) -> Result<ModelOutput, ModelError> {
-        let capabilities = self.capabilities();
-        let mut required = vec![if request.schema.is_some() {
-            Capability::Structured
-        } else {
-            Capability::Text
-        }];
-        if !request.tools.is_empty() {
-            required.push(Capability::Tools);
-        }
-        if tokens.is_some() {
-            required.push(Capability::Streaming);
-        }
-        if !request.tools.is_empty() && request.schema.is_some() {
-            required.push(Capability::StructuredTools);
-        }
-        if tokens.is_some() && request.schema.is_some() {
-            required.push(Capability::StructuredStreaming);
-        }
-        for capability in required {
-            if !capabilities.supports(capability) {
-                return Err(ModelError::Unsupported {
-                    model: self.config.as_str(),
-                    capability,
-                });
-            }
-        }
+        self.validate_request(&request, tokens.is_some())?;
         let (execution, report) = execution.begin_model_call(&self.config);
         let start = std::time::Instant::now();
         let result = execution
@@ -339,6 +314,41 @@ impl<'a> Model<'a> {
             report.finish(super::report::inference_outcome(&result));
         }
         result.map_err(ModelError::Provider)
+    }
+
+    /// Preflight the request shape without admitting an attempt or recording usage.
+    pub(super) fn validate_request(
+        &self,
+        request: &ModelRequest,
+        streaming: bool,
+    ) -> Result<(), ModelError> {
+        let capabilities = self.capabilities();
+        let mut required = vec![if request.schema.is_some() {
+            Capability::Structured
+        } else {
+            Capability::Text
+        }];
+        if !request.tools.is_empty() {
+            required.push(Capability::Tools);
+        }
+        if streaming {
+            required.push(Capability::Streaming);
+        }
+        if !request.tools.is_empty() && request.schema.is_some() {
+            required.push(Capability::StructuredTools);
+        }
+        if streaming && request.schema.is_some() {
+            required.push(Capability::StructuredStreaming);
+        }
+        for capability in required {
+            if !capabilities.supports(capability) {
+                return Err(ModelError::Unsupported {
+                    model: self.config.as_str(),
+                    capability,
+                });
+            }
+        }
+        Ok(())
     }
 }
 

@@ -21,6 +21,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(matches!(output.usage, UsageReport::Unavailable));
     assert_eq!(output.content.len(), 1);
 
+    // Pure compaction planning and view construction need no database or identity.
+    let history = vec![
+        rig_core::completion::Message::user("old request ".repeat(100)),
+        rig_core::completion::Message::assistant("old answer ".repeat(100)),
+        rig_core::completion::Message::user("active request"),
+    ];
+    let view = frona_harness::HistoryView::new(&history);
+    let plan = view
+        .plan(
+            "",
+            &[],
+            frona_harness::CompactionLimits {
+                available_input_tokens: 200,
+                target_input_tokens: 50,
+            },
+        )?
+        .expect("older history can be summarized");
+    let compacted = plan.finish("old facts", Some("frozen context"))?;
+    let view = frona_harness::HistoryView::from_compacted(&history, &compacted)?;
+    assert_eq!(view.original_positions(), [2]);
+    assert_eq!(view.messages().last(), history.last());
+    assert_eq!(view.originals(), history.as_slice());
+
     let harness = Harness::new(model);
     // Default memory transitions need no history/checkpoint configuration.
     let mut memory = harness.run("history without storage setup").manual();
@@ -102,6 +125,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bundle_report = bundle_run.report();
     assert_eq!(bundle_run.await?, application_state);
     assert_eq!(bundle_report.snapshot().actions.len(), 2);
+
+    // An actual borrowed adapter runs summaries under the same fluent refinement
+    // loop; no durable backend or identity setup is needed.
+    let run = harness
+        .run("Refine the evidence")
+        .structured::<Arguments>()
+        .compaction(frona_harness::CompactionConfig {
+            context_window: 1200,
+            max_output_tokens: Some(32),
+            ..Default::default()
+        });
+    let report = run.report();
+    let mut rounds = 0;
+    let result = run
+        .inspect(async |answer| {
+            rounds += 1;
+            Ok::<_, ()>(if rounds < 4 {
+                Decision::revise("more evidence ".repeat(150))
+            } else {
+                Decision::accept(answer.value)
+            })
+        })
+        .await?;
+    assert_eq!(result, application_state);
+    assert_eq!(rounds, 4);
+    assert!(report.snapshot().provider_attempts() > rounds);
 
     let mut tools = ToolRegistry::default();
     tools.register(tool(

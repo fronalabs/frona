@@ -109,6 +109,7 @@ pub struct FeedbackReport {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureKind {
+    Compaction,
     Budget,
     Cancelled,
     Storage,
@@ -144,6 +145,7 @@ impl RunOutcome {
 
 pub(super) fn failure_kind(error: &ManualError) -> FailureKind {
     match error {
+        ManualError::Compaction(_) => FailureKind::Compaction,
         ManualError::Stop(stop) => stop.failure_kind(),
         ManualError::Inspector(_) => FailureKind::Inspector,
         ManualError::ToolHook(_) => FailureKind::ToolHook,

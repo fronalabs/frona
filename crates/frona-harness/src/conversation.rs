@@ -118,6 +118,7 @@ impl ActionRecord {
 /// is never normalized or rewritten when actions are resolved.
 #[derive(Debug)]
 pub struct ResponseRecord {
+    message_position: usize,
     output: ModelOutput,
     origin: Option<String>,
     offered_tools: Vec<ToolDefinition>,
@@ -125,6 +126,10 @@ pub struct ResponseRecord {
 }
 
 impl ResponseRecord {
+    /// Original assistant-message position, unaffected by compaction.
+    pub fn message_position(&self) -> usize {
+        self.message_position
+    }
     pub fn origin(&self) -> Option<&str> {
         self.origin.as_deref()
     }
@@ -148,6 +153,8 @@ pub enum ConversationStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConversationError {
+    #[error("invalid selected model view: {0}")]
+    InvalidView(String),
     #[error(transparent)]
     Storage(#[from] Arc<HistoryFailure>),
     #[error("conversation is not stopped by a history write failure")]
@@ -191,6 +198,7 @@ pub struct Conversation {
     history: History,
     instructions: String,
     mode: HistoryMode,
+    compacted: Option<super::CompactedView>,
 }
 
 impl Default for Conversation {
@@ -206,11 +214,43 @@ impl Default for Conversation {
             history: History::default(),
             instructions: String::new(),
             mode: HistoryMode::Text,
+            compacted: None,
         }
     }
 }
 
 impl Conversation {
+    /// The selected model-facing view, separate from immutable original messages.
+    pub fn model_view(&self) -> Result<super::HistoryView<'_>, super::CompactionError> {
+        match &self.compacted {
+            Some(view) => super::HistoryView::from_compacted(&self.messages, view),
+            None => Ok(super::HistoryView::new(&self.messages)),
+        }
+    }
+
+    pub fn compacted_view(&self) -> Option<&super::CompactedView> {
+        self.compacted.as_ref()
+    }
+
+    pub(super) fn commit_compaction(
+        &mut self,
+        view: super::CompactedView,
+        summarizer: String,
+        output: ModelOutput,
+    ) -> Result<(), ConversationError> {
+        self.require_ready()?;
+        self.ensure_history()?;
+        self.commit(
+            HistoryEvent::Compacted {
+                view: view.clone(),
+                summarizer,
+                output,
+            },
+            EffectState::Returned,
+        )?;
+        self.compacted = Some(view);
+        Ok(())
+    }
     pub fn history(&self) -> &[HistoryRecord] {
         self.history.records()
     }
@@ -310,6 +350,7 @@ impl Conversation {
                 | HistoryEvent::Finished { .. }
                 | HistoryEvent::ToolStarted { .. }
                 | HistoryEvent::Stopped { .. }
+                | HistoryEvent::Compacted { .. }
         ) {
             return Err(ConversationError::CannotAdoptWrite);
         }
@@ -432,10 +473,10 @@ impl Conversation {
         self
     }
 
-    pub(super) fn request_input(&self) -> RequestInput {
+    pub(super) fn request_input(&self, messages: Vec<usize>) -> RequestInput {
         RequestInput {
             conversation: self.id,
-            messages: (0..self.messages.len()).collect(),
+            messages,
         }
     }
 
@@ -459,7 +500,7 @@ impl Conversation {
     }
 
     /// Original history, including an outstanding assistant proposal. Use
-    /// `request_messages` when preparing another model call.
+    /// `model_view` for the selected request content.
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }
@@ -504,9 +545,13 @@ impl Conversation {
         })
     }
 
-    pub fn request_messages(&self) -> Result<&[Message], ConversationError> {
+    /// Ready-to-send messages from the selected view. Original history remains
+    /// available through `messages`; compaction never rewrites those originals.
+    pub fn request_messages(&self) -> Result<Vec<Message>, ConversationError> {
         self.require_ready()?;
-        Ok(&self.messages)
+        self.model_view()
+            .map(|view| view.messages())
+            .map_err(|error| ConversationError::InvalidView(error.to_string()))
     }
 
     /// Add caller input or conversational feedback, without inventing call IDs.
@@ -619,6 +664,7 @@ impl Conversation {
             content: output.content.clone(),
         });
         self.responses.push(ResponseRecord {
+            message_position: self.messages.len() - 1,
             output,
             origin,
             offered_tools,
@@ -824,7 +870,7 @@ impl Conversation {
         }
     }
 
-    fn require_ready(&self) -> Result<(), ConversationError> {
+    pub(super) fn require_ready(&self) -> Result<(), ConversationError> {
         if self.history.candidate().is_some() && self.history.failure().is_none() {
             return Err(ConversationError::PendingWrite);
         }

@@ -57,6 +57,7 @@ impl<'a> Harness<'a> {
                 submission: None,
                 setup_error: None,
                 tool_hook: None,
+                compaction: super::CompactionConfig::default(),
             },
             mode: PhantomData,
         }
@@ -98,6 +99,16 @@ pub struct Run<'a, Mode = Text> {
 }
 
 impl<'a, Mode> Run<'a, Mode> {
+    pub fn compaction(mut self, config: super::CompactionConfig) -> Self {
+        self.core.compaction = config;
+        self
+    }
+    /// Disable summary calls while retaining context-overflow checks.
+    pub fn disable_compaction(mut self) -> Self {
+        self.core.compaction.enabled = false;
+        self
+    }
+
     /// Subscribe without starting work. Each receiver buffers 64 notifications.
     pub fn subscribe(&self) -> ProgressReceiver {
         self.subscribe_with_capacity(NonZeroUsize::new(64).unwrap())
@@ -175,6 +186,8 @@ impl<'a, Mode> Run<'a, Mode> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ManualError {
+    #[error(transparent)]
+    Compaction(#[from] super::CompactionError),
     #[error(transparent)]
     Setup(#[from] ToolRegistrationError),
     #[error(transparent)]
@@ -438,7 +451,7 @@ impl<T: DeserializeOwned + JsonSchema> ManualSession<'_, Structured<T>> {
 impl ManualSession<'_, Text> {
     pub fn finish(&mut self) -> Result<String, ManualError> {
         self.core.check_active()?;
-        self.core.conversation.request_messages()?;
+        self.core.conversation.require_ready()?;
         let response = self
             .core
             .conversation
@@ -514,6 +527,7 @@ pub(super) struct SessionCore<'a> {
     submission: Option<ToolDefinition>,
     setup_error: Option<ToolRegistrationError>,
     tool_hook: Option<Box<dyn ToolCallHook + 'a>>,
+    compaction: super::CompactionConfig,
 }
 
 impl SessionCore<'_> {
@@ -583,8 +597,9 @@ impl SessionCore<'_> {
         selection: ToolSelection,
     ) -> Result<ResponseActions, ManualError> {
         self.check_active()?;
-        self.conversation.request_messages()?;
-        self.check_compatibility(model)?;
+        self.conversation.require_ready()?;
+        let positions = self.conversation.model_view()?.original_positions();
+        self.check_compatibility(model, &positions)?;
         let mut tools: Vec<_> = match selection {
             ToolSelection::All => self.tools.definitions().cloned().collect(),
             ToolSelection::None => Vec::new(),
@@ -592,21 +607,72 @@ impl SessionCore<'_> {
         if let Some(submission) = &self.submission {
             tools.push(submission.clone());
         }
-        let request = ModelRequest {
+        let mut request = ModelRequest {
             system: self.instructions.clone(),
-            messages: self.conversation.request_messages()?.to_vec(),
+            messages: Vec::new(),
             tools: tools.clone(),
             schema: None,
             max_tokens: None,
             temperature: None,
         };
-        let input = self.conversation.request_input();
-        let execution = ExecutionControl::new(&*self.budget)
+        // Reject unsupported main requests before a summary can consume budget
+        // or commit a different view. Invocation repeats the same preflight.
+        let publisher = self.progress.publisher();
+        model.validate_request(&request, Self::streams_tokens(model, &publisher, true))?;
+        let (messages, input, max_tokens) = self.prepare_model_view(model, &tools).await?;
+        request.messages = messages;
+        request.max_tokens = Some(max_tokens);
+        let result = Self::invoke(
+            model,
+            request,
+            self.execution(&input),
+            self.progress.publisher(),
+            true,
+        )
+        .await;
+        let output = match result {
+            Ok(output) => output,
+            Err(error @ ModelError::Unsupported { .. }) => return Err(error.into()),
+            Err(ModelError::Provider(error)) => {
+                let error = match error.into_execution_stop() {
+                    Ok(stop) => stop.into(),
+                    Err(error) => ModelError::Provider(error).into(),
+                };
+                return Err(self.fail(error));
+            }
+            Err(error) => {
+                return Err(self.fail(error.into()));
+            }
+        };
+        let result =
+            self.conversation
+                .record_response_from(output, tools, Some(model.config().as_str()));
+        self.result(result)
+    }
+
+    fn execution<'s>(&'s self, input: &'s super::RequestInput) -> ExecutionControl<'s> {
+        ExecutionControl::new(&*self.budget)
             .with_cancellation(&self.cancellation)
             .with_report(&self.recorder.0)
-            .with_input(&input);
-        let publisher = self.progress.publisher();
-        let result = if publisher.has_subscribers() && model.capabilities().streaming {
+            .with_input(input)
+    }
+
+    fn streams_tokens(
+        model: &Model<'_>,
+        publisher: &super::progress::ProgressPublisher,
+        stream: bool,
+    ) -> bool {
+        stream && publisher.has_subscribers() && model.capabilities().streaming
+    }
+
+    async fn invoke(
+        model: &Model<'_>,
+        request: ModelRequest,
+        execution: ExecutionControl<'_>,
+        publisher: super::progress::ProgressPublisher,
+        stream: bool,
+    ) -> Result<super::ModelOutput, ModelError> {
+        if Self::streams_tokens(model, &publisher, stream) {
             // Drive both futures here: borrowed adapters need no spawned task,
             // and an undrained public receiver cannot backpressure this channel.
             const TOKEN_BUFFER: usize = 16;
@@ -651,25 +717,7 @@ impl SessionCore<'_> {
             model
                 .invoke_controlled(request, None, Observations::default(), execution)
                 .await
-        };
-        let output = match result {
-            Ok(output) => output,
-            Err(error @ ModelError::Unsupported { .. }) => return Err(error.into()),
-            Err(ModelError::Provider(error)) => {
-                let error = match error.into_execution_stop() {
-                    Ok(stop) => stop.into(),
-                    Err(error) => ModelError::Provider(error).into(),
-                };
-                return Err(self.fail(error));
-            }
-            Err(error) => {
-                return Err(self.fail(error.into()));
-            }
-        };
-        let result =
-            self.conversation
-                .record_response_from(output, tools, Some(model.config().as_str()));
-        self.result(result)
+        }
     }
 
     async fn execute(&mut self, action: PendingAction) -> Result<ActionResolution, ManualError> {
@@ -724,7 +772,11 @@ impl SessionCore<'_> {
         }
     }
 
-    fn check_compatibility(&self, model: &Model<'_>) -> Result<(), ManualError> {
+    fn check_compatibility(
+        &self,
+        model: &Model<'_>,
+        positions: &[usize],
+    ) -> Result<(), ManualError> {
         let target = model.config().as_str();
         let incompatible = |reason| ManualError::Incompatible {
             model: target.clone(),
@@ -734,11 +786,16 @@ impl SessionCore<'_> {
             .conversation
             .responses()
             .iter()
-            .any(|r| !r.actions().is_empty());
+            .any(|r| positions.contains(&r.message_position()) && !r.actions().is_empty());
         if has_tool_history && !model.capabilities().tools {
             return Err(incompatible("destination does not support tool exchanges"));
         }
-        for record in self.conversation.responses() {
+        for record in self
+            .conversation
+            .responses()
+            .iter()
+            .filter(|r| positions.contains(&r.message_position()))
+        {
             if record.origin() == Some(target.as_str()) {
                 continue;
             }
@@ -776,3 +833,8 @@ impl SessionCore<'_> {
 
 #[cfg(test)]
 mod history_tests;
+
+mod compaction;
+
+#[cfg(test)]
+mod compaction_tests;

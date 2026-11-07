@@ -1944,7 +1944,7 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
             assert_eq!(&compact[..compact.len() - 1], &normal[..compact.len() - 1]);
             assert_eq!(
                 compact[0],
-                frona::inference::conversation::summary_message("default response")
+                frona_harness::inference::compaction::summary_message("default response", None)
             );
             assert!(
                 !serde_json::to_string(&compact)

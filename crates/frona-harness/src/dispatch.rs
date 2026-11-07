@@ -92,7 +92,10 @@ impl Conversation {
         Ok(resolution)
     }
 
-    fn require_tool_proposal(&self, handle: &PendingAction) -> Result<(), ToolDispatchError> {
+    pub(super) fn require_tool_proposal(
+        &self,
+        handle: &PendingAction,
+    ) -> Result<(), ToolDispatchError> {
         let view = self.action(handle)?;
         if view.status == ActionStatus::Started {
             return Err(ConversationError::AlreadyStarted.into());

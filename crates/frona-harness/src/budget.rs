@@ -75,6 +75,12 @@ pub trait Budget: Send + Sync {
     fn admit(&self, operation: BudgetOperation<'_>) -> Result<BudgetPermit<'_>, BudgetRefusal>;
 }
 
+impl<B: Budget + ?Sized> Budget for &B {
+    fn admit(&self, operation: BudgetOperation<'_>) -> Result<BudgetPermit<'_>, BudgetRefusal> {
+        (**self).admit(operation)
+    }
+}
+
 impl<B: Budget + ?Sized> Budget for Arc<B> {
     fn admit(&self, operation: BudgetOperation<'_>) -> Result<BudgetPermit<'_>, BudgetRefusal> {
         (**self).admit(operation)

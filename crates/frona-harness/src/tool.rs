@@ -369,6 +369,16 @@ impl<'a> ToolRegistry<'a> {
         Ok(())
     }
 
+    pub(super) fn extend(&mut self, other: Self) -> Result<(), ToolRegistrationError> {
+        for (name, entry) in other.tools {
+            if self.tools.contains_key(&name) {
+                return Err(ToolRegistrationError::Duplicate(name));
+            }
+            self.tools.insert(name, entry);
+        }
+        Ok(())
+    }
+
     pub fn definitions(&self) -> impl Iterator<Item = &ToolDefinition> {
         self.tools.values().map(|entry| &entry.definition)
     }

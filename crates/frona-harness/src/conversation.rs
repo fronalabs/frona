@@ -196,6 +196,37 @@ impl Conversation {
         self.pending
     }
 
+    /// Reissue handles for the latest unresolved proposals. This recovers a
+    /// dropped/consumed handle, not execution rights: every use still validates
+    /// current state, and started actions cannot execute a second time.
+    pub fn pending_actions(&self) -> Result<ResponseActions, ConversationError> {
+        if self.status != ConversationStatus::Active {
+            return Err(ConversationError::Terminal);
+        }
+        let response_index = self.responses.len().saturating_sub(1);
+        let actions = self
+            .responses
+            .last()
+            .map(|response| {
+                response
+                    .actions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, action)| action.resolution.is_none())
+                    .map(|(slot, _)| PendingAction {
+                        conversation: self.id,
+                        response: response_index,
+                        slot,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(ResponseActions {
+            response_index,
+            actions,
+        })
+    }
+
     pub fn request_messages(&self) -> Result<&[Message], ConversationError> {
         self.require_ready()?;
         Ok(&self.messages)

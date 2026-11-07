@@ -4,16 +4,19 @@ use std::io::Cursor;
 
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
 
-use super::ImageData;
+pub struct ImageData {
+    pub bytes: Vec<u8>,
+    pub media_type: String,
+}
 
 // Bound encoded input/output, decoder allocations and raw pixel storage before
 // decoding. Larger accepted images retain the native Read tool's 2000px resize.
-pub(super) const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+pub const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 const MAX_SOURCE_DIMENSION: u32 = 8192;
 const MAX_DECODED_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_OUTPUT_DIMENSION: u32 = 2000;
 
-pub(super) fn is_supported_image(mime: &str) -> bool {
+pub fn is_supported_image(mime: &str) -> bool {
     matches!(
         mime,
         "image/png" | "image/jpeg" | "image/gif" | "image/webp"
@@ -28,7 +31,7 @@ fn decode_error(error: image::ImageError) -> &'static str {
     }
 }
 
-pub(super) fn prepare_image(bytes: &[u8], mime: &str) -> Result<ImageData, &'static str> {
+pub fn prepare_image(bytes: &[u8], mime: &str) -> Result<ImageData, &'static str> {
     if !is_supported_image(mime) {
         return Err("unsupported image type; expected PNG, JPEG, GIF or WebP");
     }

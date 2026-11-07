@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::error::AppError;
 
-use super::path::resolve_workspace_path;
+use frona_harness::file_tools::path::resolve_workspace_path;
 
 /// Relative reads prefer earlier layers, then shared defaults. Absolute paths
 /// select their actual layer; writes are confined to the first layer.

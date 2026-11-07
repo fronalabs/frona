@@ -5,7 +5,8 @@ use support::*;
 use async_trait::async_trait;
 use frona_harness::{
     Budget, BudgetCompletion, BudgetLimits, BudgetOperation, BudgetPermit, BudgetRefusal,
-    DefaultBudget, ExecutionControl, ExecutionStop, Model, ModelError, ModelRequest, UsageReport,
+    CallOutcome, DefaultBudget, ExecutionControl, ExecutionStop, Model, ModelError, ModelRequest,
+    ReportHandle, UsageReport,
     inference::{
         InferenceError,
         observation::{
@@ -30,10 +31,11 @@ async fn refusal_between_retry_attempts_or_before_fallback_stops_all_providers()
             let group = group(fake.clone());
             let budget = limited(1);
             let observer = Observer::default();
+            let report = ReportHandle::default();
             let error = run(
                 &group,
                 structured,
-                ExecutionControl::new(&budget),
+                ExecutionControl::new(&budget).with_report(&report),
                 &observer,
             )
             .await
@@ -48,6 +50,10 @@ async fn refusal_between_retry_attempts_or_before_fallback_stops_all_providers()
             assert_eq!(observer.0.lock().unwrap().len(), 1);
             assert_eq!(budget.snapshot().model_attempts, 1);
             assert_eq!(budget.snapshot().in_flight, 0);
+            let report = report.snapshot();
+            assert_eq!(report.logical_calls(), 1);
+            assert_eq!(report.provider_attempts(), 1);
+            assert_eq!(report.requests[0].outcome, Some(CallOutcome::Failed));
         }
     }
 }
@@ -67,10 +73,11 @@ async fn ordinary_retry_and_fallback_keep_accounting_and_rich_structured_usage()
             let group = group(fake.clone());
             let budget = limited(3);
             let observer = Observer::default();
+            let report = ReportHandle::default();
             run(
                 &group,
                 structured,
-                ExecutionControl::new(&budget),
+                ExecutionControl::new(&budget).with_report(&report),
                 &observer,
             )
             .await
@@ -82,6 +89,23 @@ async fn ordinary_retry_and_fallback_keep_accounting_and_rich_structured_usage()
             assert_eq!(budget.snapshot().model_attempts, 2);
             assert_eq!(budget.snapshot().tokens, 7);
             assert_eq!(observer.0.lock().unwrap().len(), 2);
+            let report = report.snapshot();
+            assert_eq!(report.logical_calls(), 1);
+            assert_eq!(report.provider_attempts(), 2);
+            assert_eq!(report.requests[0].outcome, Some(CallOutcome::Succeeded));
+            assert!(report.requests[0].input.is_none());
+            assert_eq!(report.attempts[0].request, report.attempts[1].request);
+            assert_eq!(report.attempts[0].usage, Some(UsageReport::Unavailable));
+            assert_eq!(
+                report.attempts[1].usage,
+                Some(UsageReport::LegacyNormalized(usage(7)))
+            );
+            assert!(report.attempts[1].model.contains(if retryable {
+                "primary"
+            } else {
+                "fallback"
+            }));
+            assert!(report.outcome.is_none()); // Detached controls do not own a run.
         }
     }
 }
@@ -363,4 +387,51 @@ async fn cancellation_interrupts_retry_backoff_without_another_attempt() {
     .expect("cancellation should interrupt a 60s backoff");
     assert!(result.unwrap_err().is_cancelled());
     assert_eq!(fake.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn reliable_attempt_settles_before_a_blocked_observer_without_holding_its_lock() {
+    struct BlockingObserver {
+        report: ReportHandle,
+        entered: tokio::sync::Notify,
+    }
+    #[async_trait]
+    impl InferenceObserver for BlockingObserver {
+        async fn attempt(&self, _: AttemptObservation<'_>) -> Result<(), ObservationError> {
+            let snapshot = self.report.snapshot();
+            assert_eq!(snapshot.attempts[0].outcome, Some(CallOutcome::Succeeded));
+            assert_eq!(
+                snapshot.attempts[0].usage,
+                Some(UsageReport::Reported(usage(7)))
+            );
+            self.entered.notify_one();
+            std::future::pending().await
+        }
+    }
+    let report = ReportHandle::default();
+    let observer = BlockingObserver {
+        report: report.clone(),
+        entered: tokio::sync::Notify::new(),
+    };
+    let fake = Arc::new(Fake::new([Step::Ok(7)]));
+    let model = Model::from_adapter("fake", "model", FakeAdapter(fake)).unwrap();
+    let budget = limited(1);
+    let mut call = Box::pin(model.invoke_controlled(
+        ModelRequest::new("hi"),
+        None,
+        Observations::new(&observer),
+        ExecutionControl::new(&budget).with_report(&report),
+    ));
+    tokio::select! {
+        result = &mut call => panic!("observer should block completion: {result:?}"),
+        _ = observer.entered.notified() => {}
+    }
+    drop(call);
+    let snapshot = report.snapshot();
+    assert_eq!(snapshot.requests[0].outcome, Some(CallOutcome::Abandoned));
+    assert_eq!(snapshot.attempts[0].outcome, Some(CallOutcome::Succeeded));
+    assert_eq!(
+        snapshot.attempts[0].usage,
+        Some(UsageReport::Reported(usage(7)))
+    );
 }

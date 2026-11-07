@@ -5,8 +5,8 @@ use base64::Engine;
 use serde_json::Value;
 
 use crate::core::error::AppError;
-use crate::tool::image::{MAX_IMAGE_BYTES, is_supported_image, prepare_image};
 use crate::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
+use frona_harness::file_tools::image::{MAX_IMAGE_BYTES, is_supported_image, prepare_image};
 
 use super::manager::McpManager;
 

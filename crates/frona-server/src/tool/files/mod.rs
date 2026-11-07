@@ -23,24 +23,10 @@ pub fn resolve_path(
     agent_handle: &crate::core::Handle,
     storage: &crate::storage::service::StorageService,
 ) -> Result<std::path::PathBuf, crate::core::error::AppError> {
-    if input.is_empty() {
-        return Err(crate::core::error::AppError::Validation(
-            "path must not be empty".into(),
-        ));
-    }
-    if input.starts_with("agent://") || input.starts_with("user://") {
-        return Err(crate::core::error::AppError::Validation(format!(
-            "virtual-path URIs are not supported here: {input}",
-        )));
-    }
-    // Use the same absolute destination for the existing sandbox-policy check
-    // and subsequent I/O. The policy, including explicit sibling grants, owns
-    // authorization; resolving a native path does not imply workspace-only access.
-    crate::storage::path::resolve_filesystem_path(
-        &storage
-            .agent_workspace_path(user_handle, agent_handle)
-            .join(input),
-    )
+    Ok(frona_harness::file_tools::resolve_path(
+        &storage.agent_workspace_path(user_handle, agent_handle),
+        input,
+    )?)
 }
 
 /// Atomically writes `content` to `target` via a tempfile in the same parent.
@@ -180,5 +166,29 @@ mod resolve_path_tests {
         assert!(s.contains("/users/alice/"), "missing user: {s}");
         assert!(s.contains("/agents/researcher/"), "missing agent: {s}");
         assert!(!s.contains("/users/researcher/"), "user-as-agent: {s}");
+    }
+}
+
+/// Convert portable read results into server-native content after authorization.
+fn file_output(output: frona_harness::file_tools::FileOutput) -> crate::tool::ToolOutput {
+    use frona_harness::file_tools::FileOutput;
+    match output {
+        FileOutput::Content {
+            text,
+            images,
+            success: true,
+        } => crate::tool::ToolOutput::mixed(text, images),
+        FileOutput::Content {
+            text,
+            success: false,
+            ..
+        } => crate::tool::ToolOutput::error(text),
+        FileOutput::Binary {
+            media_type,
+            size,
+            path,
+        } => crate::tool::ToolOutput::error(format!(
+            "Read got a binary file ({media_type}, {size} bytes) at {path}. Use produce_file to surface it to the user, or pass through CliTool if you need raw bytes."
+        )),
     }
 }

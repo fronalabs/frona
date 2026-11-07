@@ -43,6 +43,11 @@ hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 
+base64.workspace = true
+globset = "0.4"
+infer = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+
 [dev-dependencies]
 tracing-subscriber.workspace = true
 aws-smithy-eventstream = "0.61"

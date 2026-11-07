@@ -5,7 +5,6 @@ pub mod cli;
 pub mod create_agent;
 pub mod files;
 pub mod heartbeat;
-mod image;
 pub mod manage_app;
 pub mod manage_policy;
 pub mod manager;
@@ -27,6 +26,7 @@ pub mod web_fetch;
 pub mod web_search;
 
 use async_trait::async_trait;
+use frona_harness::file_tools::image::ImageData;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -168,11 +168,6 @@ pub struct ToolDefinition {
     pub provider_id: String,
     pub description: String,
     pub parameters: Value,
-}
-
-pub struct ImageData {
-    pub bytes: Vec<u8>,
-    pub media_type: String,
 }
 
 pub struct ToolOutput {

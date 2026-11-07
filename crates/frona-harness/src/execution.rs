@@ -11,7 +11,8 @@ use crate::inference::{
 };
 
 use super::{
-    Budget, BudgetCompletion, BudgetOperation, BudgetOutcome, ToolError, ToolResult, UsageReport,
+    ActionPosition, Budget, BudgetCompletion, BudgetOperation, BudgetOutcome, ReportHandle,
+    RequestId, RequestInput, ToolError, ToolResult, UsageReport,
 };
 
 /// Control stops must escape tool-error feedback and retry/fallback handling.
@@ -37,6 +38,10 @@ pub enum ExecutionStop {
 pub struct ExecutionControl<'a> {
     budget: &'a dyn Budget,
     cancellation: Option<&'a CancellationToken>,
+    report: Option<&'a ReportHandle>,
+    request: Option<RequestId>,
+    input: Option<&'a RequestInput>,
+    action: Option<ActionPosition>,
 }
 
 impl<'a> ExecutionControl<'a> {
@@ -44,6 +49,10 @@ impl<'a> ExecutionControl<'a> {
         Self {
             budget,
             cancellation: None,
+            report: None,
+            request: None,
+            input: None,
+            action: None,
         }
     }
 
@@ -54,6 +63,66 @@ impl<'a> ExecutionControl<'a> {
 
     pub fn budget(self) -> &'a dyn Budget {
         self.budget
+    }
+
+    /// Attach reliable activity recording to low-level operations. ModelGroup
+    /// retries share one logical request; nested calls create their own request.
+    /// This does not finalize a run; configured SDK sessions own that lifecycle.
+    pub fn with_report(mut self, report: &'a ReportHandle) -> Self {
+        self.report = Some(report);
+        self.request = None;
+        self.input = None;
+        self.action = None;
+        self
+    }
+
+    pub(super) fn with_input(mut self, input: &'a RequestInput) -> Self {
+        self.input = Some(input);
+        self
+    }
+
+    pub(super) fn with_action(mut self, action: ActionPosition) -> Self {
+        self.action = Some(action);
+        self
+    }
+
+    pub(crate) fn begin_model_call(
+        self,
+        model: &ModelConfig,
+    ) -> (Self, Option<super::report::RequestGuard>) {
+        if self.request.is_some() {
+            return (self, None);
+        }
+        let guard = self
+            .report
+            .map(|report| report.request(model.as_str(), self.input.cloned(), self.action));
+        (
+            Self {
+                request: guard.as_ref().map(|guard| guard.id),
+                ..self
+            },
+            guard,
+        )
+    }
+
+    /// Record one logical model call while its controlled attempts run. The
+    /// private request guard records completion or abandonment; this operation
+    /// does not admit work itself. Invoke each provider through `model_attempt`.
+    pub async fn model_call<T, F, Fut>(
+        self,
+        model: &ModelConfig,
+        call: F,
+    ) -> Result<T, InferenceError>
+    where
+        F: FnOnce(Self) -> Fut,
+        Fut: Future<Output = Result<T, InferenceError>>,
+    {
+        let (execution, report) = self.begin_model_call(model);
+        let result = call(execution).await;
+        if let Some(report) = report {
+            report.finish_inference(&result);
+        }
+        result
     }
 
     pub fn is_cancelled(self) -> bool {
@@ -93,10 +162,14 @@ impl<'a> ExecutionControl<'a> {
             .budget
             .admit(BudgetOperation::Tool { name })
             .map_err(ExecutionStop::BudgetExhausted)?;
+        let mut action = None;
         let result = tokio::select! {
             biased;
             _ = self.cancelled() => Err(ExecutionStop::Cancelled("execution cancelled".into()).into()),
-            result = async { call().await } => result,
+            result = async {
+                action = self.report.zip(self.action).map(|(report, position)| report.action_guard(position));
+                call().await
+            } => result,
         };
         let result = if self.is_cancelled() {
             Err(ExecutionStop::Cancelled("execution cancelled".into()).into())
@@ -116,6 +189,9 @@ impl<'a> ExecutionControl<'a> {
             },
             usage: UsageReport::Unavailable,
         });
+        if let Some(action) = action {
+            action.finish();
+        }
         // Completion is application policy and may cancel the shared scope.
         // Keep its accounting, but never pair success after that cancellation.
         self.check_cancellation()?;
@@ -147,10 +223,15 @@ impl<'a> ExecutionControl<'a> {
             .map_err(ExecutionStop::BudgetExhausted)?;
         let start = Instant::now();
         let mut issued = false;
+        let mut attempt = None;
         let result = tokio::select! {
             biased;
             _ = self.cancelled() => Err(cancelled()),
-            result = async { issued = true; call().await } => result,
+            result = async {
+                issued = true;
+                attempt = self.report.zip(self.request).map(|(report, request)| report.attempt(request, model.as_str()));
+                call().await
+            } => result,
         };
         let report = result
             .as_ref()
@@ -172,6 +253,10 @@ impl<'a> ExecutionControl<'a> {
             outcome,
             usage: report.clone(),
         });
+        let result = self.check_cancellation().and(result);
+        if let Some(attempt) = attempt {
+            attempt.finish(super::report::inference_outcome(&result), report.clone());
+        }
         if issued {
             observations
                 .attempt(

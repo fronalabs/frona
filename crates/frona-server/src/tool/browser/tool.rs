@@ -1,3 +1,4 @@
+use frona_harness::file_tools::image::ImageData;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,7 +9,7 @@ use serde_json::Value;
 
 use crate::core::error::AppError;
 use crate::credential::vault::service::VaultService;
-use crate::tool::{AgentTool, ImageData, InferenceContext, ToolDefinition, ToolOutput};
+use crate::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
 
 use super::session::{BrowserSessionManager, run_with_reconnect};
 use frona_browser::{ElementTarget, ExtractFormat};

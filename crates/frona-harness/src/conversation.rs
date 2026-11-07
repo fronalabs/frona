@@ -7,7 +7,10 @@ use rig_core::completion::{
 };
 use uuid::Uuid;
 
-use super::{ModelOutput, ToolOutput};
+use super::{
+    ActionPosition, ModelOutput, Progress, ReportHandle, RequestInput, ToolOutput,
+    progress::ProgressPublisher,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
@@ -159,6 +162,8 @@ pub struct Conversation {
     responses: Vec<ResponseRecord>,
     pending: usize,
     status: ConversationStatus,
+    report: Option<ReportHandle>,
+    progress: ProgressPublisher,
 }
 
 impl Default for Conversation {
@@ -169,11 +174,42 @@ impl Default for Conversation {
             responses: Vec::new(),
             pending: 0,
             status: ConversationStatus::Active,
+            report: None,
+            progress: ProgressPublisher::default(),
         }
     }
 }
 
 impl Conversation {
+    pub(super) fn with_progress(mut self, progress: ProgressPublisher) -> Self {
+        self.progress = progress;
+        self
+    }
+
+    pub(super) fn with_report(mut self, report: ReportHandle) -> Self {
+        self.report = Some(report);
+        self
+    }
+
+    pub(super) fn request_input(&self) -> RequestInput {
+        RequestInput {
+            conversation: self.id,
+            messages: (0..self.messages.len()).collect(),
+        }
+    }
+
+    pub(super) fn action_position(
+        &self,
+        handle: &PendingAction,
+    ) -> Result<ActionPosition, ConversationError> {
+        self.validate(handle)?;
+        Ok(ActionPosition {
+            conversation: self.id,
+            response: handle.response,
+            action: handle.slot,
+        })
+    }
+
     pub fn new(input: impl Into<String>) -> Self {
         Self {
             messages: vec![Message::user(input)],
@@ -241,6 +277,9 @@ impl Conversation {
         {
             return Err(ConversationError::UnpairedToolResult);
         }
+        if let Some(report) = &self.report {
+            report.message(self.id, self.messages.len(), None);
+        }
         self.messages.push(Message::User { content });
         Ok(())
     }
@@ -281,6 +320,31 @@ impl Conversation {
             })
             .collect();
         self.pending = actions.len();
+        for (index, action) in actions.iter().enumerate() {
+            self.progress.emit(|| Progress::Action {
+                position: ActionPosition {
+                    conversation: self.id,
+                    response: response_index,
+                    action: index,
+                },
+                name: action.call.function.name.clone(),
+                kind: action.kind,
+                status: action.status,
+            });
+        }
+        if let Some(report) = &self.report {
+            for (index, action) in actions.iter().enumerate() {
+                report.proposed(
+                    ActionPosition {
+                        conversation: self.id,
+                        response: response_index,
+                        action: index,
+                    },
+                    &action.call,
+                    action.kind,
+                );
+            }
+        }
         self.messages.push(Message::Assistant {
             id: None,
             content: output.content.clone(),
@@ -326,6 +390,10 @@ impl Conversation {
             return Err(ConversationError::AlreadyStarted);
         }
         self.responses[handle.response].actions[handle.slot].status = ActionStatus::Started;
+        if let Some(report) = &self.report {
+            report.started(self.action_position(handle)?);
+        }
+        self.emit_action(handle);
         Ok(())
     }
 
@@ -342,6 +410,10 @@ impl Conversation {
             && matches!(resolution, ActionResolution::Rejected(_))
         {
             return Err(ConversationError::AlreadyStarted);
+        }
+        let position = self.action_position(handle)?;
+        if let Some(report) = &self.report {
+            report.resolved(position, &resolution);
         }
         let response = &mut self.responses[handle.response];
         let action = &mut response.actions[handle.slot];
@@ -370,9 +442,29 @@ impl Conversation {
                     })
                 })
                 .collect();
+            if let Some(report) = &self.report {
+                report.message(self.id, self.messages.len(), Some(handle.response));
+            }
             self.messages.push(Message::User { content });
         }
+        self.emit_action(handle);
         Ok(())
+    }
+
+    fn emit_action(&self, handle: &PendingAction) {
+        self.progress.emit(|| {
+            let action = &self.responses[handle.response].actions[handle.slot];
+            Progress::Action {
+                position: ActionPosition {
+                    conversation: self.id,
+                    response: handle.response,
+                    action: handle.slot,
+                },
+                name: action.call.function.name.clone(),
+                kind: action.kind,
+                status: action.status,
+            }
+        });
     }
 
     /// End a protocol-complete exchange. This is not inspector acceptance and
@@ -387,6 +479,9 @@ impl Conversation {
     pub fn stop(&mut self) {
         if self.status == ConversationStatus::Active {
             self.status = ConversationStatus::Stopped;
+            if let Some(report) = &self.report {
+                report.stopped_actions(self.id);
+            }
         }
     }
 

@@ -108,3 +108,14 @@ impl From<frona_harness::inference::InferenceError> for crate::core::error::AppE
         crate::core::error::AppError::Inference(Box::new(err))
     }
 }
+
+impl From<frona_harness::file_tools::FileError> for AppError {
+    fn from(error: frona_harness::file_tools::FileError) -> Self {
+        use frona_harness::file_tools::FileError;
+        match error {
+            FileError::NotFound(message) => Self::NotFound(message),
+            FileError::Validation(message) => Self::Validation(message),
+            FileError::Io(message) => Self::Internal(message),
+        }
+    }
+}

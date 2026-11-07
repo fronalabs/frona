@@ -370,6 +370,18 @@ async fn native_image_reads_share_validation_and_resize_behavior() {
         state.sandbox_manager.clone(),
         state.prompts.clone(),
     );
+    tokio::fs::write(workspace.join("binary"), [0xff, 0xfe])
+        .await
+        .unwrap();
+    let binary = reader
+        .execute("read", json!({"path": "binary"}), &ctx)
+        .await
+        .unwrap();
+    assert!(!binary.is_success());
+    assert_eq!(
+        binary.text_content(),
+        "Read got a binary file (application/octet-stream, 2 bytes) at binary. Use produce_file to surface it to the user, or pass through CliTool if you need raw bytes."
+    );
     for width in [1, 2001, 8193] {
         let mut encoded = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(width, 1)

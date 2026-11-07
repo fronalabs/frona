@@ -70,7 +70,28 @@ impl ModelGroupStreaming for ModelGroup {
         execution: ExecutionControl<'_>,
         accumulated_text: &mut String,
     ) -> Result<StreamResult, AppError> {
-        stream_with_retry_and_fallback(self, request, events, execution, accumulated_text).await
+        let result = execution
+            .model_call(&self.main, |execution| async move {
+                match stream_with_retry_and_fallback(
+                    self,
+                    request,
+                    events,
+                    execution,
+                    accumulated_text,
+                )
+                .await
+                {
+                    // Keep the application cancellation result while recording the
+                    // logical request as cancelled rather than completed.
+                    Ok(StreamResult::Cancelled) => Err(InferenceError::Cancelled(String::new())),
+                    result => result,
+                }
+            })
+            .await;
+        match result {
+            Err(InferenceError::Cancelled(_)) => Ok(StreamResult::Cancelled),
+            result => result.map_err(Into::into),
+        }
     }
 }
 
@@ -88,7 +109,7 @@ pub(crate) async fn stream_with_retry_and_fallback(
     event_tx: &EventSender,
     execution: ExecutionControl<'_>,
     accumulated_text: &mut String,
-) -> Result<StreamResult, crate::core::error::AppError> {
+) -> Result<StreamResult, InferenceError> {
     let ModelRequest {
         overrides,
         input_token_estimate,
@@ -152,16 +173,16 @@ pub(crate) async fn stream_with_retry_and_fallback(
             Ok(result) => return Ok(result),
             Err(error) => {
                 if error.is_terminal() {
-                    return Err(error.into());
+                    return Err(error);
                 }
                 failures.push(error);
                 if emitted.load(Ordering::Relaxed) {
-                    return Err(InferenceError::AllFallbacksFailed(failures).into());
+                    return Err(InferenceError::AllFallbacksFailed(failures));
                 }
             }
         }
     }
-    Err(InferenceError::AllFallbacksFailed(failures).into())
+    Err(InferenceError::AllFallbacksFailed(failures))
 }
 
 #[allow(clippy::too_many_arguments)]

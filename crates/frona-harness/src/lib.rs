@@ -4,6 +4,7 @@
 //! for manual execution. Both drivers share admission, conversation and dispatch.
 
 pub mod config;
+pub mod file_tools;
 pub mod handle;
 pub mod inference;
 pub mod retry_config;
@@ -15,13 +16,21 @@ mod dispatch;
 mod execution;
 mod hook;
 mod model;
+mod progress;
 mod refinement;
+mod report;
 mod session;
 mod submission;
 mod tool;
 
 pub use automatic::Incomplete;
+pub use progress::{Progress, ProgressReceiver, RefinementStage};
 pub use refinement::Decision;
+pub use report::{
+    ActionOutcome, ActionPosition, ActionReport, AttemptId, AttemptReport, CallOutcome,
+    ExecutionReport, FailureKind, FeedbackReport, ReportHandle, RequestId, RequestInput,
+    RequestReport, RunOutcome,
+};
 
 pub use budget::{
     Budget, BudgetCompletion, BudgetLimit, BudgetLimits, BudgetOperation, BudgetOutcome,
@@ -47,6 +56,9 @@ pub use tool::{
 pub use session::{
     Harness, ManualError, ManualSession, ModelCall, Run, Structured, Text, ToolSelection,
 };
+
+mod workspace_tools;
+pub use workspace_tools::workspace_read_tools;
 
 /// Initialize the TLS provider for built-in clients. Safe to call more than once.
 pub fn initialize_tls() {

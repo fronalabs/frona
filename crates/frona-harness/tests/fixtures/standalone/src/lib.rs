@@ -24,6 +24,7 @@ impl ModelAdapter for ApplicationClient<'_> {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             tools: true,
+            streaming: true,
             ..Capabilities::default()
         }
     }
@@ -31,8 +32,11 @@ impl ModelAdapter for ApplicationClient<'_> {
     async fn generate(
         &self,
         request: ModelRequest,
-        _: Option<mpsc::Sender<StreamToken>>,
+        tokens: Option<mpsc::Sender<StreamToken>>,
     ) -> Result<ModelOutput, InferenceError> {
+        if let Some(tokens) = tokens {
+            tokens.send(StreamToken::Text(self.0.into())).await.unwrap();
+        }
         let content = if request.messages.len() == 1
             && request.tools.iter().any(|tool| tool.name == "observe")
         {
@@ -51,6 +55,20 @@ impl ModelAdapter for ApplicationClient<'_> {
             AssistantContent::ToolCall(ToolCall::from_wire(
                 "echo-call",
                 ToolFunction::new("echo".into(), json!({"value": self.0})),
+            ))
+        } else if request.tools.iter().any(|tool| tool.name == "read")
+            && request.messages.len() == 1
+        {
+            AssistantContent::ToolCall(ToolCall::from_wire(
+                "discover",
+                ToolFunction::new("glob".into(), json!({"pattern":"*.txt"})),
+            ))
+        } else if request.tools.iter().any(|tool| tool.name == "read")
+            && request.messages.len() == 3
+        {
+            AssistantContent::ToolCall(ToolCall::from_wire(
+                "inspect",
+                ToolFunction::new("read".into(), json!({"path":"notes.txt"})),
             ))
         } else {
             AssistantContent::text(self.0)

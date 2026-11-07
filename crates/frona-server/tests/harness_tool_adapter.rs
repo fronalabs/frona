@@ -32,7 +32,7 @@ async fn runtime_adapter_requires_explicit_context_and_preserves_output_for_mapp
             assert_eq!(context.user.id, "runtime-user");
             Ok(frona::tool::ToolOutput::mixed(
                 "legacy text",
-                vec![frona::tool::ImageData {
+                vec![frona_harness::file_tools::image::ImageData {
                     bytes: vec![1, 2],
                     media_type: "image/png".into(),
                 }],

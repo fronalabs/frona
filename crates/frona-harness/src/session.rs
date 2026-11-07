@@ -1,6 +1,6 @@
 //! Configured runs and caller-driven execution over the shared SDK core.
 
-use std::{future::IntoFuture, marker::PhantomData, pin::Pin};
+use std::{future::IntoFuture, marker::PhantomData, num::NonZeroUsize, pin::Pin};
 
 use rig_core::completion::{
     AssistantContent,
@@ -11,14 +11,15 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use tokio_util::sync::CancellationToken;
 
-use crate::inference::observation::Observations;
+use crate::inference::{observation::Observations, provider::StreamToken};
 
 use super::{
     ActionResolution, Budget, Conversation, ConversationError, DefaultBudget, ExecutionControl,
-    ExecutionStop, Model, ModelError, ModelRequest, PendingAction, PendingActionView,
-    ResponseActions, Submission, SubmissionError, Tool, ToolCallHook, ToolDecision,
-    ToolDispatchError, ToolOutput, ToolRegistrationError, ToolRegistry, hook::CallbackHook,
-    submission_tool,
+    ExecutionStop, Incomplete, Model, ModelError, ModelRequest, PendingAction, PendingActionView,
+    Progress, ProgressReceiver, RefinementStage, ReportHandle, ResponseActions, RunOutcome,
+    Submission, SubmissionError, Tool, ToolCallHook, ToolDecision, ToolDispatchError, ToolOutput,
+    ToolRegistrationError, ToolRegistry, hook::CallbackHook, progress::ProgressOwner,
+    report::RunRecorder, submission_tool,
 };
 
 /// Reusable model configuration. Each run starts fresh conversation and budget
@@ -38,10 +39,17 @@ impl<'a> Harness<'a> {
     where
         'a: 'run,
     {
+        let recorder = RunRecorder::new();
+        let progress = ProgressOwner::default();
+        let conversation = Conversation::new(input)
+            .with_report(recorder.0.clone())
+            .with_progress(progress.publisher());
         Run {
             core: SessionCore {
                 model: self.model.clone(),
-                conversation: Conversation::new(input),
+                conversation,
+                recorder,
+                progress,
                 tools: ToolRegistry::default(),
                 budget: Box::new(DefaultBudget::default()),
                 cancellation: CancellationToken::new(),
@@ -91,6 +99,22 @@ pub struct Run<'a, Mode = Text> {
 }
 
 impl<'a, Mode> Run<'a, Mode> {
+    /// Subscribe without starting work. Each receiver buffers 64 notifications.
+    pub fn subscribe(&self) -> ProgressReceiver {
+        self.subscribe_with_capacity(NonZeroUsize::new(64).unwrap())
+    }
+
+    /// An independent bounded buffer. Tokio rounds capacity up to a power of two.
+    /// A lagging receiver observes `Progress::Missed`; it never blocks execution.
+    pub fn subscribe_with_capacity(&self, capacity: NonZeroUsize) -> ProgressReceiver {
+        self.core.progress.subscribe(capacity)
+    }
+
+    /// An independent read-only handle; this neither borrows nor starts the run.
+    pub fn report(&self) -> ReportHandle {
+        self.core.recorder.0.clone()
+    }
+
     pub fn instructions(mut self, instructions: impl Into<String>) -> Self {
         self.core.instructions = instructions.into();
         self
@@ -202,9 +226,44 @@ impl<'a, Mode> ManualSession<'a, Mode> {
         self.core.cancellation.clone()
     }
 
-    pub(super) fn into_stopped_conversation(mut self) -> Conversation {
+    pub(super) fn incomplete<A>(
+        mut self,
+        reason: ManualError,
+        retained: Option<A>,
+    ) -> Incomplete<A> {
         self.core.conversation.stop();
-        self.core.conversation
+        self.core.recorder.incomplete(&reason);
+        self.core.progress.close();
+        let report = Box::new(self.core.recorder.0.snapshot());
+        Incomplete {
+            reason,
+            retained,
+            report,
+            conversation: Box::new(self.core.conversation),
+        }
+    }
+
+    pub fn report(&self) -> ReportHandle {
+        self.core.recorder.0.clone()
+    }
+
+    /// Observe this session without driving it. Subscribing after termination
+    /// returns a closed receiver; earlier notifications are not replayed.
+    pub fn subscribe(&self) -> ProgressReceiver {
+        self.subscribe_with_capacity(NonZeroUsize::new(64).unwrap())
+    }
+
+    pub fn subscribe_with_capacity(&self, capacity: NonZeroUsize) -> ProgressReceiver {
+        self.core.progress.subscribe(capacity)
+    }
+
+    pub(super) fn refinement_progress(&self, stage: RefinementStage) {
+        if let Some(response) = self.core.conversation.responses().len().checked_sub(1) {
+            self.core
+                .progress
+                .publisher()
+                .emit(|| Progress::Refinement { response, stage });
+        }
     }
 
     pub fn conversation(&self) -> &Conversation {
@@ -262,8 +321,7 @@ impl<'a, Mode> ManualSession<'a, Mode> {
             .push_user(vec![UserContent::text(feedback)])?)
     }
     pub fn stop(&mut self, reason: impl Into<String>) -> ManualError {
-        self.core.conversation.stop();
-        ExecutionStop::Stopped(reason.into()).into()
+        self.core.fail(ExecutionStop::Stopped(reason.into()).into())
     }
 }
 
@@ -272,11 +330,15 @@ impl<T: DeserializeOwned + JsonSchema> ManualSession<'_, Structured<T>> {
     pub fn submission(&mut self, action: &PendingAction) -> Result<Submission<T>, ManualError> {
         self.core.check_active()?;
         match self.core.conversation.submission(action) {
-            Err(error @ SubmissionError::Schema(_)) => {
-                self.core.conversation.stop();
-                Err(error.into())
+            Err(error @ SubmissionError::Schema(_)) => Err(self.core.fail(error.into())),
+            result => {
+                let submission = result?;
+                self.refinement_progress(match &submission {
+                    Submission::Ready(_) => RefinementStage::Ready,
+                    Submission::Repaired { .. } => RefinementStage::Repaired,
+                });
+                Ok(submission)
             }
-            result => Ok(result?),
         }
     }
     pub fn revise(
@@ -285,21 +347,28 @@ impl<T: DeserializeOwned + JsonSchema> ManualSession<'_, Structured<T>> {
         feedback: impl Into<String>,
     ) -> Result<(), ManualError> {
         self.core.check_active()?;
-        Ok(self
-            .core
+        self.core
             .conversation
-            .revise_submission(&action, feedback)?)
+            .revise_submission(&action, feedback)?;
+        self.refinement_progress(RefinementStage::Revised);
+        Ok(())
     }
     pub fn accept<A>(&mut self, action: PendingAction, accepted: A) -> Result<A, ManualError> {
         self.core.check_active()?;
-        Ok(self
+        let accepted = self
             .core
             .conversation
-            .accept_submission(&action, accepted)?)
+            .accept_submission(&action, accepted)?;
+        self.core.recorder.0.finish(RunOutcome::Completed);
+        self.refinement_progress(RefinementStage::Accepted);
+        self.core.progress.close();
+        Ok(accepted)
     }
     pub fn repair_missing_submission(&mut self) -> Result<(), ManualError> {
         self.core.check_active()?;
-        Ok(self.core.conversation.repair_missing_submission()?)
+        self.core.conversation.repair_missing_submission()?;
+        self.refinement_progress(RefinementStage::MissingSubmission);
+        Ok(())
     }
 }
 
@@ -330,12 +399,14 @@ impl ManualSession<'_, Text> {
             return Err(ManualError::NoText);
         }
         self.core.conversation.finish()?;
+        self.core.recorder.0.finish(RunOutcome::Completed);
+        self.core.progress.close();
         Ok(text)
     }
 }
 
 /// Awaiting this builder makes one explicit model invocation. Automatic retry,
-/// compaction, progress and recovery are integrated by their dedicated tasks.
+/// compaction and recovery are integrated by their dedicated tasks.
 pub struct ModelCall<'s, 'a> {
     core: &'s mut SessionCore<'a>,
     model: Model<'s>,
@@ -364,6 +435,8 @@ impl<'s> IntoFuture for ModelCall<'s, '_> {
 pub(super) struct SessionCore<'a> {
     model: Model<'a>,
     conversation: Conversation,
+    recorder: RunRecorder,
+    progress: ProgressOwner,
     tools: ToolRegistry<'a>,
     budget: Box<dyn Budget + 'a>,
     cancellation: CancellationToken,
@@ -376,14 +449,19 @@ pub(super) struct SessionCore<'a> {
 }
 
 impl SessionCore<'_> {
+    fn fail(&mut self, error: ManualError) -> ManualError {
+        self.conversation.stop();
+        self.recorder.incomplete(&error);
+        self.progress.close();
+        error
+    }
+
     fn check_active(&mut self) -> Result<(), ManualError> {
         if let Some(error) = self.setup_error.take() {
-            self.conversation.stop();
-            return Err(error.into());
+            return Err(self.fail(error.into()));
         }
         if self.cancellation.is_cancelled() {
-            self.conversation.stop();
-            return Err(ExecutionStop::Cancelled("execution cancelled".into()).into());
+            return Err(self.fail(ExecutionStop::Cancelled("execution cancelled".into()).into()));
         }
         if self.conversation.status() != super::ConversationStatus::Active {
             return Err(ConversationError::Terminal.into());
@@ -414,23 +492,70 @@ impl SessionCore<'_> {
             max_tokens: None,
             temperature: None,
         };
-        let execution = ExecutionControl::new(&*self.budget).with_cancellation(&self.cancellation);
-        let output = match model
-            .invoke_controlled(request, None, Observations::default(), execution)
-            .await
-        {
+        let input = self.conversation.request_input();
+        let execution = ExecutionControl::new(&*self.budget)
+            .with_cancellation(&self.cancellation)
+            .with_report(&self.recorder.0)
+            .with_input(&input);
+        let publisher = self.progress.publisher();
+        let result = if publisher.has_subscribers() && model.capabilities().streaming {
+            // Drive both futures here: borrowed adapters need no spawned task,
+            // and an undrained public receiver cannot backpressure this channel.
+            const TOKEN_BUFFER: usize = 16;
+            let (tokens, mut receiver) = tokio::sync::mpsc::channel(TOKEN_BUFFER);
+            let invocation =
+                model.invoke_controlled(request, Some(tokens), Observations::default(), execution);
+            tokio::pin!(invocation);
+            let emit = |token| {
+                publisher.emit(|| match token {
+                    StreamToken::Text(text) => Progress::Text {
+                        model: model.config().as_str(),
+                        text,
+                    },
+                    StreamToken::Reasoning(text) => Progress::Reasoning {
+                        model: model.config().as_str(),
+                        text,
+                    },
+                })
+            };
+            let mut open = true;
+            let result = loop {
+                tokio::select! {
+                    biased;
+                    result = &mut invocation => break result,
+                    token = receiver.recv(), if open => match token {
+                        Some(token) => emit(token),
+                        None => open = false,
+                    },
+                }
+            };
+            receiver.close();
+            // A custom adapter may retain cloned senders after returning. Never
+            // wait for them, or let post-return producers extend this drain.
+            for _ in 0..TOKEN_BUFFER {
+                match receiver.try_recv() {
+                    Ok(token) => emit(token),
+                    Err(_) => break,
+                }
+            }
+            result
+        } else {
+            model
+                .invoke_controlled(request, None, Observations::default(), execution)
+                .await
+        };
+        let output = match result {
             Ok(output) => output,
             Err(error @ ModelError::Unsupported { .. }) => return Err(error.into()),
             Err(ModelError::Provider(error)) => {
-                self.conversation.stop();
-                return Err(match error.into_execution_stop() {
+                let error = match error.into_execution_stop() {
                     Ok(stop) => stop.into(),
                     Err(error) => ModelError::Provider(error).into(),
-                });
+                };
+                return Err(self.fail(error));
             }
             Err(error) => {
-                self.conversation.stop();
-                return Err(error.into());
+                return Err(self.fail(error.into()));
             }
         };
         let actions = self.conversation.record_response(output, tools)?;
@@ -468,23 +593,23 @@ impl SessionCore<'_> {
                         .reject_tool(&action, ToolOutput::text(feedback))?);
                 }
                 Ok(ToolDecision::Stop(reason)) => {
-                    self.conversation.stop();
-                    return Err(ExecutionStop::Stopped(reason).into());
+                    return Err(self.fail(ExecutionStop::Stopped(reason).into()));
                 }
                 Err(error) => {
-                    self.conversation.stop();
-                    return Err(error);
+                    return Err(self.fail(error));
                 }
             }
         }
         // Admission belongs to dispatch, after asynchronous policy has finished.
-        let execution = ExecutionControl::new(&*self.budget).with_cancellation(&self.cancellation);
+        let execution = ExecutionControl::new(&*self.budget)
+            .with_cancellation(&self.cancellation)
+            .with_report(&self.recorder.0);
         match self
             .conversation
             .execute_tool(&action, &mut self.tools, execution)
             .await
         {
-            Err(ToolDispatchError::Stop(stop)) => Err(stop.into()),
+            Err(ToolDispatchError::Stop(stop)) => Err(self.fail(stop.into())),
             result => Ok(result?),
         }
     }

@@ -6,8 +6,8 @@ use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
 use super::{
-    ActionKind, Conversation, ManualError, ManualSession, PendingAction, Run, Structured,
-    Submission, Text,
+    ActionKind, Conversation, ExecutionReport, ManualError, ManualSession, PendingAction, Run,
+    Structured, Submission, Text,
 };
 
 /// An automatic run stopped without a completed output. The typed cause and
@@ -21,6 +21,8 @@ pub struct Incomplete<A = ()> {
     pub conversation: Box<Conversation>,
     /// Explicitly retained application progress, never an accepted result.
     pub retained: Option<A>,
+    /// Final snapshot from the same recorder exposed by Run::report.
+    pub report: Box<ExecutionReport>,
 }
 
 impl<A> std::fmt::Debug for Incomplete<A> {
@@ -29,6 +31,7 @@ impl<A> std::fmt::Debug for Incomplete<A> {
             .field("reason", &self.reason)
             .field("conversation", &self.conversation)
             .field("has_retained", &self.retained.is_some())
+            .field("report", &self.report)
             .finish()
     }
 }
@@ -40,11 +43,9 @@ impl<'a> IntoFuture for Run<'a, Text> {
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
             let mut session = self.manual();
-            drive_text(&mut session).await.map_err(|reason| Incomplete {
-                reason,
-                conversation: Box::new(session.into_stopped_conversation()),
-                retained: None,
-            })
+            drive_text(&mut session)
+                .await
+                .map_err(|reason| session.incomplete(reason, None))
         })
     }
 }
@@ -58,11 +59,7 @@ impl<'a, T: DeserializeOwned + JsonSchema + 'a> IntoFuture for Run<'a, Structure
             let mut session = self.manual();
             drive_structured(&mut session)
                 .await
-                .map_err(|reason| Incomplete {
-                    reason,
-                    conversation: Box::new(session.into_stopped_conversation()),
-                    retained: None,
-                })
+                .map_err(|reason| session.incomplete(reason, None))
         })
     }
 }

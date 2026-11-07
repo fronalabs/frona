@@ -53,6 +53,7 @@ impl Conversation {
                 ToolOutput::text(format!("Tool '{name}' is not registered.")),
             );
         };
+        let execution = execution.with_action(self.action_position(handle)?);
         let context = ToolContext::for_execution(call.id.as_str().into(), execution);
         let result = execution
             .with_cancellation(&context.cancellation)

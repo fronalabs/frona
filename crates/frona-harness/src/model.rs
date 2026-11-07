@@ -71,7 +71,7 @@ impl Capabilities {
 
 /// Usage provenance is explicit. LegacyNormalized is neither a verified report
 /// nor an estimate: old adapters may substitute zero for missing wire fields.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UsageReport {
     Reported(Usage),
     Unavailable,
@@ -309,6 +309,7 @@ impl<'a> Model<'a> {
                 });
             }
         }
+        let (execution, report) = execution.begin_model_call(&self.config);
         let start = std::time::Instant::now();
         let result = execution
             .model_attempt(
@@ -333,7 +334,10 @@ impl<'a> Model<'a> {
                 )
                 .await;
         }
-        execution.check_cancellation()?;
+        let result = execution.check_cancellation().and(result);
+        if let Some(report) = report {
+            report.finish(super::report::inference_outcome(&result));
+        }
         result.map_err(ModelError::Provider)
     }
 }

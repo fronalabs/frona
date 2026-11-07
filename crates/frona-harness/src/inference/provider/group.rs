@@ -101,14 +101,18 @@ impl ModelGroup {
         request: ModelRequest<'_>,
         execution: ExecutionControl<'_>,
     ) -> Result<ModelResponse, InferenceError> {
-        let (content, usage) = retry::inference_with_retry_and_fallback(
+        let (execution, report) = execution.begin_model_call(&self.main);
+        let result = retry::inference_with_retry_and_fallback(
             self,
             request,
             retry::HistoryOverflow::TruncateOldest,
             execution,
         )
-        .await?;
-        Ok(ModelResponse { content, usage })
+        .await;
+        if let Some(report) = report {
+            report.finish_inference(&result);
+        }
+        result.map(|(content, usage)| ModelResponse { content, usage })
     }
 
     /// Generate a completion without trimming any of its input. Each configured
@@ -145,6 +149,13 @@ impl ModelGroup {
         schema: serde_json::Value,
         execution: ExecutionControl<'_>,
     ) -> Result<serde_json::Value, InferenceError> {
-        retry::structured_inference_with_retry_and_fallback(self, request, schema, execution).await
+        let (execution, report) = execution.begin_model_call(&self.main);
+        let result =
+            retry::structured_inference_with_retry_and_fallback(self, request, schema, execution)
+                .await;
+        if let Some(report) = report {
+            report.finish_inference(&result);
+        }
+        result
     }
 }

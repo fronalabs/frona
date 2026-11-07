@@ -24,6 +24,12 @@ impl From<AppError> for ApiError {
     }
 }
 
+impl From<frona_harness::file_tools::FileError> for ApiError {
+    fn from(error: frona_harness::file_tools::FileError) -> Self {
+        Self(AppError::from(error))
+    }
+}
+
 impl ApiError {
     pub(crate) fn public_error(&self) -> PublicError {
         let (status, message) = match &self.0 {

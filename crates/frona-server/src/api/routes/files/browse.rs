@@ -3,7 +3,7 @@ use axum::extract::{Path as AxumPath, Query, State};
 use axum::response::Response;
 use tokio::fs;
 
-use crate::storage::path::{resolve_filesystem_path, resolve_workspace_path};
+use frona_harness::file_tools::path::{resolve_filesystem_path, resolve_workspace_path};
 
 use crate::storage::{
     FileEntry, SearchTarget, VirtualPath, open_workspace_file, validate_relative_path,

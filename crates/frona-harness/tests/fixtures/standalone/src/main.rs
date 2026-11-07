@@ -1,6 +1,6 @@
 use frona_harness::{
-    Decision, Harness, Model, ModelRequest, ToolContext, ToolDecision, ToolRegistry, UsageReport,
-    tool,
+    Decision, Harness, Model, ModelRequest, Progress, RunOutcome, ToolContext, ToolDecision,
+    ToolRegistry, UsageReport, tool, workspace_read_tools,
 };
 use frona_standalone_consumer::{Answer as Arguments, ApplicationClient};
 use serde_json::json;
@@ -22,6 +22,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(output.content.len(), 1);
 
     let harness = Harness::new(model);
+    let run = harness.run("observed standalone call");
+    let report = run.report();
+    let mut progress = run.subscribe();
+    let (result, updates) = tokio::join!(async { run.await }, async {
+        let mut updates = Vec::new();
+        while let Some(update) = progress.recv().await {
+            updates.push(update);
+        }
+        updates
+    });
+    assert_eq!(result?, application_state);
+    assert!(matches!(&updates[..], [Progress::Text { text, .. }] if text == &application_state));
+    assert_eq!(report.snapshot().outcome, Some(RunOutcome::Completed));
     assert_eq!(
         harness.run("automatic standalone call").await?,
         application_state
@@ -29,17 +42,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let answer: Arguments = harness.run("typed standalone call").structured().await?;
     assert_eq!(answer.value, application_state);
     let mut inspections = 0;
-    let accepted: String = harness
+    let run = harness
         .run("inspected standalone call")
-        .structured::<Arguments>()
+        .structured::<Arguments>();
+    let report = run.report();
+    let accepted: String = run
         .inspect(async |answer| {
             inspections += 1;
+            assert_eq!(report.snapshot().logical_calls(), 1);
+            assert_eq!(report.snapshot().provider_attempts(), 1);
+            assert_eq!(report.snapshot().outcome, None);
             tokio::task::yield_now().await;
             Ok::<_, ()>(Decision::accept(answer.value.to_uppercase()))
         })
         .await?;
     assert_eq!(accepted, application_state.to_uppercase());
     assert_eq!(inspections, 1);
+    assert_eq!(report.snapshot().outcome, Some(RunOutcome::Completed));
+    assert_eq!(
+        report.snapshot().attempts[0].usage,
+        Some(UsageReport::Unavailable)
+    );
     let mut invoked = false;
     assert_eq!(
         harness
@@ -59,6 +82,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut session = harness.run("manual standalone call").manual();
     assert!(session.call_model().await?.actions.is_empty());
     assert_eq!(session.finish()?, application_state);
+
+    // An actual standalone run discovers and reads files with only an explicit root.
+    let workspace = tempfile::tempdir()?;
+    std::fs::write(workspace.path().join("notes.txt"), "standalone notes")?;
+    let bundle_run = harness
+        .run("Find and read the notes")
+        .tools(workspace_read_tools(workspace.path())?);
+    let bundle_report = bundle_run.report();
+    assert_eq!(bundle_run.await?, application_state);
+    assert_eq!(bundle_report.snapshot().actions.len(), 2);
 
     let mut tools = ToolRegistry::default();
     tools.register(tool(

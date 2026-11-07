@@ -3,7 +3,10 @@
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
-use super::{ExecutionStop, Incomplete, ManualError, Run, Structured, automatic::next_submission};
+use super::{
+    ExecutionStop, Incomplete, ManualError, RefinementStage, Run, Structured,
+    automatic::next_submission,
+};
 
 /// An explicit application decision. Retention preserves unfinished progress;
 /// only `accept` can return a successful refinement result.
@@ -82,6 +85,7 @@ impl<T: DeserializeOwned + JsonSchema> Run<'_, Structured<T>> {
                 Err(error) => break Err(error),
             };
             let cancellation = session.cancellation_token();
+            session.refinement_progress(RefinementStage::Inspecting);
             let mut decision = tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => break Err(ManualError::Stop(
@@ -94,6 +98,7 @@ impl<T: DeserializeOwned + JsonSchema> Run<'_, Structured<T>> {
             };
             if let Some(candidate) = decision.retained_mut().take() {
                 retained = Some(candidate);
+                session.refinement_progress(RefinementStage::Retained);
             }
             match decision {
                 Decision::Accept { value, .. } => break session.accept(action, value),
@@ -105,10 +110,6 @@ impl<T: DeserializeOwned + JsonSchema> Run<'_, Structured<T>> {
                 Decision::Stop { reason, .. } => break Err(session.stop(reason)),
             }
         };
-        outcome.map_err(|reason| Incomplete {
-            reason,
-            retained,
-            conversation: Box::new(session.into_stopped_conversation()),
-        })
+        outcome.map_err(|reason| session.incomplete(reason, retained))
     }
 }

@@ -278,3 +278,5 @@ fn renamed_term_is_what_gets_stamped() {
     );
     assert_eq!((a.declared, a.aligned, a.deferred), (1, 2, 1));
 }
+
+mod refinement;

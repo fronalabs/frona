@@ -2921,6 +2921,12 @@ async fn resolve_type_filter_blocks_cross_type() {
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::ToolCalls(vec![("e".into(), "submit".into(), extract)]),
         MockResponse::ToolCalls(vec![("c".into(), "submit".into(), classify)]),
+        MockResponse::ToolCalls(vec![(
+            "reconcile".into(),
+            "submit".into(),
+            empty_reconcile(),
+        )]),
+        MockResponse::Text("Mercury is the closest planet to the sun.".into()),
     ]));
 
     let (service, harness) = ontology_service(&db, &config, mock.clone(), &memory_config).await;
@@ -4575,6 +4581,12 @@ async fn classify_loop_revises_after_reasoner_rejection() {
             json!({"diagnostic_id": "projection-0"}),
         )]),
         MockResponse::ToolCalls(vec![("s2".into(), "submit".into(), good)]),
+        MockResponse::ToolCalls(vec![(
+            "reconcile".into(),
+            "submit".into(),
+            empty_reconcile(),
+        )]),
+        MockResponse::Text("Acme is a company.".into()),
     ]));
 
     let storage = StorageService::new(&config);
@@ -5654,6 +5666,13 @@ async fn attribute_naming_an_entity_becomes_an_edge_without_inventing_an_inverse
             "attributes": { "employer": "Acme" }
         }),
     )]));
+    // The reintroduced literal is rejected; this pass must explicitly accept
+    // a correction instead of silently treating failed refinement as complete.
+    mock.enqueue(MockResponse::ToolCalls(vec![(
+        "correct-literal".into(),
+        "submit".into(),
+        empty_reconcile(),
+    )]));
     mock.enqueue(MockResponse::Text("Sarah is an engineer at Acme.".into()));
 
     // Re-dirty the page the way anything else would - quarantining and releasing a memory
@@ -6044,21 +6063,23 @@ async fn re_minting_the_same_entity_creates_no_duplicate() {
                 "submit".into(),
                 classify.clone(),
             )]));
-            mock.enqueue(MockResponse::ToolCalls(vec![(
-                "rm".into(),
-                "submit".into(),
-                empty_reconcile(),
-            )]));
-            mock.enqueue(MockResponse::ToolCalls(vec![(
-                "rs".into(),
-                "submit".into(),
-                empty_reconcile(),
-            )]));
-            mock.enqueue(MockResponse::Text(
-                "Example Corp is a technology company.".into(),
-            ));
-            mock.enqueue(MockResponse::Text("Sarah works at Example Corp.".into()));
         }
+        // Both passes complete reconciliation rather than relying on swallowed
+        // missing-submission errors in unrelated stages.
+        mock.enqueue(MockResponse::ToolCalls(vec![(
+            "rm".into(),
+            "submit".into(),
+            empty_reconcile(),
+        )]));
+        mock.enqueue(MockResponse::ToolCalls(vec![(
+            "rs".into(),
+            "submit".into(),
+            empty_reconcile(),
+        )]));
+        mock.enqueue(MockResponse::Text(
+            "Example Corp is a technology company.".into(),
+        ));
+        mock.enqueue(MockResponse::Text("Sarah works at Example Corp.".into()));
         // Re-dirty the source page so the second pass classifies it again with the same
         // answer - the same path the resume replay takes.
         repo.set_disposition("test-user", &fact, Disposition::Suspect)
@@ -6441,7 +6462,10 @@ async fn reconcile_does_not_apply_a_rejected_fallback_after_its_turn_budget() {
     let db = test_db().await;
     seed_identity(&db).await;
     let (_tmp, config) = tmp_config();
-    let memory_config = frona::core::config::MemoryConfig::default();
+    let memory_config = frona::core::config::MemoryConfig {
+        pkm_consolidation_max_submissions: 6,
+        ..Default::default()
+    };
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
 
     mark_clean(
@@ -6568,7 +6592,7 @@ async fn reconcile_does_not_apply_a_rejected_fallback_after_its_turn_budget() {
         &service,
         ontology_scope(&service),
         "Casey Owner has a golden retriever named Buddy.",
-        harness,
+        harness.clone(),
     )
     .await;
     let memories = repo
@@ -6584,11 +6608,27 @@ async fn reconcile_does_not_apply_a_rejected_fallback_after_its_turn_budget() {
         2,
         "a rejected fallback suppressed one of its source memories: {memories:?}; run={result:?}",
     );
+    let error = result.expect_err("an unaccepted reconciliation must stay retryable");
     assert!(
-        result.is_ok(),
-        "Reconcile accepted a range that made the pending target both a Person and a Product: \
-         {result:?}\n{:?}",
-        mock.histories(),
+        error.to_string().contains("submission budget exhausted"),
+        "{error}"
+    );
+    let record = repo
+        .latest_consolidation_record("test-user")
+        .await
+        .unwrap()
+        .unwrap();
+    let scoped = frona::db::repo::pkm::PkmConsolidationStore::new(Arc::new(repo.clone()))
+        .scoped(&record.consolidation_id, "test-user");
+    let owner = scoped.entity_by_path("people/me").await.unwrap().unwrap();
+    assert!(matches!(
+        owner.progress.reconciliation,
+        frona::memory::pkm::model::ReconciliationProgress::Pending
+    ));
+    assert_eq!(
+        mock.calls(),
+        3 + memory_config.pkm_consolidation_max_submissions,
+        "no author or later stage runs after incomplete reconciliation"
     );
 
     let histories = format!("{:?}", mock.histories());
@@ -6605,10 +6645,68 @@ async fn reconcile_does_not_apply_a_rejected_fallback_after_its_turn_budget() {
             .any(|memory| memory.content == "Casey Owner has a golden retriever named Buddy."),
         "the failed proposal must not lose its source memory: {memories:?}",
     );
+    // A new explicitly accepted proposal retries the pending entity. The other
+    // entity's queued response and adjudication belong to work not yet completed.
+    mock.prepend(MockResponse::ToolCalls(vec![(
+        "retry-owner".into(),
+        "submit".into(),
+        empty_reconcile(),
+    )]));
+    let resumed = service
+        .consolidate(ontology_scope(&service), harness)
+        .await
+        .unwrap();
+    assert_eq!(resumed.entities_reconciled, 1);
+    assert!(
+        repo.latest_consolidation_record("test-user")
+            .await
+            .unwrap()
+            .unwrap()
+            .state
+            .is_done()
+    );
+    let owner = repo
+        .entity_by_path("test-user", "people/me")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !owner
+            .attributes
+            .as_object()
+            .is_some_and(|attrs| attrs.contains_key("frona:unsupportedFlag"))
+    );
 }
 
 #[tokio::test]
 async fn reconcile_batches_entity_suggestions_and_commits_an_accepted_relation() {
+    reconciliation_advisory(AdvisoryOutcome::Promote).await;
+}
+
+#[tokio::test]
+async fn reconcile_advisory_is_one_shot_even_when_the_model_keeps_the_literal() {
+    reconciliation_advisory(AdvisoryOutcome::KeepLiteral).await;
+}
+
+#[tokio::test]
+async fn reconcile_cancelled_after_advisory_stays_pending_until_explicit_retry() {
+    reconciliation_advisory(AdvisoryOutcome::Cancelled).await;
+}
+
+#[tokio::test]
+async fn reconcile_token_exhaustion_after_advisory_never_commits_the_first_candidate() {
+    reconciliation_advisory(AdvisoryOutcome::Budget).await;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AdvisoryOutcome {
+    Promote,
+    KeepLiteral,
+    Cancelled,
+    Budget,
+}
+
+async fn reconciliation_advisory(outcome: AdvisoryOutcome) {
     let db = test_db().await;
     seed_identity(&db).await;
     let (_tmp, config) = tmp_config();
@@ -6662,12 +6760,14 @@ async fn reconcile_batches_entity_suggestions_and_commits_an_accepted_relation()
     let first_reconcile = json!({
         "relations": [], "entity_relations": [], "outdated": [], "moves": [],
         "description": "an engineer at Example Corp",
-        "attributes": {"employer": "Example Corp"}
+        "attributes": {"frona:employer": "Example Corp"},
+        "attribute_sources": [{"property":"frona:employer", "value":"Example Corp", "source_memory_ids":["m1"]}],
+        "declarations": [{"kind":"data_property", "term":"frona:employer", "description":"The organization employing the person."}]
     });
     let revised_reconcile = json!({
         "relations": [],
         "entity_relations": [{
-            "attribute": "employer",
+            "attribute": "frona:employer",
             "value": "Example Corp",
             "property": "frona:worksFor",
             "target": "organizations/example-corp",
@@ -6681,30 +6781,156 @@ async fn reconcile_batches_entity_suggestions_and_commits_an_accepted_relation()
             "description":"Links a person to an organization for which the person works."
         }]
     });
-    let mock = Arc::new(MockModelProvider::new(vec![
+    let mut responses = vec![
         MockResponse::ToolCalls(vec![("e".into(), "submit".into(), extract)]),
         MockResponse::ToolCalls(vec![("c".into(), "submit".into(), classify)]),
-        MockResponse::ToolCalls(vec![("r1".into(), "submit".into(), first_reconcile)]),
-        MockResponse::ToolCalls(vec![("r2".into(), "submit".into(), revised_reconcile)]),
         MockResponse::ToolCalls(vec![(
-            "a".into(),
+            "r1".into(),
             "submit".into(),
-            json!({"decisions": [
-                {"term": "frona:worksFor", "decision": "declare"}
-            ]}),
+            first_reconcile.clone(),
         )]),
-        MockResponse::Text("Sarah is an engineer at Example Corp.".into()),
-    ]));
-
-    let (service, harness) = ontology_service(&db, &config, mock, &memory_config).await;
-    full_pass(
+    ];
+    match outcome {
+        AdvisoryOutcome::Promote => responses.push(MockResponse::ToolCalls(vec![(
+            "r2".into(),
+            "submit".into(),
+            revised_reconcile.clone(),
+        )])),
+        AdvisoryOutcome::KeepLiteral => responses.push(MockResponse::ToolCalls(vec![(
+            "r2".into(),
+            "submit".into(),
+            first_reconcile,
+        )])),
+        AdvisoryOutcome::Cancelled => responses.push(MockResponse::Error(
+            frona_harness::inference::InferenceError::Cancelled("stop after advisory".into()),
+        )),
+        AdvisoryOutcome::Budget => {}
+    }
+    let mock = Arc::new(MockModelProvider::new(responses));
+    let interrupted = matches!(
+        outcome,
+        AdvisoryOutcome::Cancelled | AdvisoryOutcome::Budget
+    );
+    if outcome == AdvisoryOutcome::Budget {
+        mock.set_usage(frona_harness::inference::Usage {
+            total_tokens: 1_000_000,
+            ..Default::default()
+        });
+    }
+    if !interrupted {
+        mock.enqueue(MockResponse::ToolCalls(vec![("a".into(), "submit".into(), json!({"decisions":[{"term":if outcome == AdvisoryOutcome::KeepLiteral {"frona:employer"} else {"frona:worksFor"},"decision":"declare"}]}))]));
+        mock.enqueue(MockResponse::Text(
+            "Sarah is an engineer at Example Corp.".into(),
+        ));
+    }
+    let (service, harness) = ontology_service(&db, &config, mock.clone(), &memory_config).await;
+    let result = full_pass(
         &service,
         ontology_scope(&service),
         "Sarah currently works at Example Corp.",
-        harness,
+        harness.clone(),
     )
-    .await
-    .unwrap();
+    .await;
+    if interrupted {
+        let error = result.expect_err("advisory is not acceptance");
+        if outcome == AdvisoryOutcome::Cancelled {
+            assert!(
+                matches!(error, frona::core::error::AppError::Inference(error) if matches!(*error, frona_harness::inference::InferenceError::Cancelled(_)))
+            );
+        } else {
+            assert!(
+                error.to_string().contains("reconciliation incomplete"),
+                "{error}"
+            );
+        }
+        let record = repo
+            .latest_consolidation_record("test-user")
+            .await
+            .unwrap()
+            .unwrap();
+        let scoped = frona::db::repo::pkm::PkmConsolidationStore::new(Arc::new(repo.clone()))
+            .scoped(&record.consolidation_id, "test-user");
+        let held = scoped
+            .entity_by_path("people/sarah")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            held.progress.reconciliation,
+            frona::memory::pkm::model::ReconciliationProgress::Pending
+        ));
+        assert!(
+            !held
+                .attributes
+                .as_object()
+                .is_some_and(|attrs| attrs.contains_key("frona:employer"))
+        );
+        assert!(
+            repo.links_from_entity("test-user", "people/sarah")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let calls_before_retry = mock.calls();
+        assert_eq!(
+            calls_before_retry,
+            if outcome == AdvisoryOutcome::Budget {
+                3
+            } else {
+                4
+            }
+        );
+        mock.set_usage(frona_harness::inference::Usage {
+            total_tokens: 15,
+            ..Default::default()
+        });
+        mock.enqueue(MockResponse::ToolCalls(vec![(
+            "retry-reconcile".into(),
+            "submit".into(),
+            revised_reconcile,
+        )]));
+        mock.enqueue(MockResponse::ToolCalls(vec![(
+            "a".into(),
+            "submit".into(),
+            json!({"decisions":[{"term":"frona:worksFor", "decision":"declare"}]}),
+        )]));
+        mock.enqueue(MockResponse::Text(
+            "Sarah is an engineer at Example Corp.".into(),
+        ));
+        service
+            .consolidate(ontology_scope(&service), harness)
+            .await
+            .unwrap();
+        assert_eq!(
+            mock.calls(),
+            calls_before_retry + 3,
+            "banked classification must not repeat"
+        );
+    } else {
+        result.unwrap();
+        let histories = mock.histories();
+        let revision = format!("{:?}", histories[3]);
+        assert!(
+            revision.contains("Example Corp") && revision.contains("organizations/example-corp"),
+            "advisory must reach the next request: {revision}"
+        );
+        assert_eq!(mock.calls(), 6, "advisory requests only one revision");
+    }
+    if outcome == AdvisoryOutcome::KeepLiteral {
+        let sarah = repo
+            .entity_by_path("test-user", "people/sarah")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(sarah.attributes["frona:employer"], "Example Corp");
+        assert!(
+            repo.links_from_entity("test-user", "people/sarah")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        return;
+    }
 
     let links = repo
         .links_from_entity("test-user", "people/sarah")
@@ -7046,6 +7272,15 @@ async fn touch(db: &Surreal<Db>, path: &str, kind: &str) {
 /// moved with it.
 #[tokio::test]
 async fn assemble_align_stamps_the_standard_term_and_retypes_prior_entities() {
+    assemble_align_case(false).await;
+}
+
+#[tokio::test]
+async fn assemble_cancelled_adjudication_does_not_bank_or_apply_a_plan() {
+    assemble_align_case(true).await;
+}
+
+async fn assemble_align_case(cancelled: bool) {
     let db = test_db().await;
     seed_identity(&db).await;
     let (_tmp, config) = tmp_config();
@@ -7095,7 +7330,13 @@ async fn assemble_align_stamps_the_standard_term_and_retypes_prior_entities() {
         MockResponse::ToolCalls(vec![("e".into(), "submit".into(), extract)]),
         MockResponse::ToolCalls(vec![("c".into(), "submit".into(), classify)]),
         MockResponse::ToolCalls(vec![("r".into(), "submit".into(), empty_reconcile())]),
-        MockResponse::ToolCalls(vec![("a".into(), "submit".into(), adjudicate)]),
+        if cancelled {
+            MockResponse::Error(frona_harness::inference::InferenceError::Cancelled(
+                "stop adjudication".into(),
+            ))
+        } else {
+            MockResponse::ToolCalls(vec![("a".into(), "submit".into(), adjudicate)])
+        },
     ]));
 
     let storage = StorageService::new(&config);
@@ -7119,14 +7360,49 @@ async fn assemble_align_stamps_the_standard_term_and_retypes_prior_entities() {
         ontology_base(),
     );
     let harness = test_harness(&db, &config, mock.clone()).await;
-    full_pass(
+    let result = full_pass(
         &service,
         ontology_scope(&service),
         "Newco is a company.",
         harness,
     )
-    .await
-    .unwrap();
+    .await;
+    if cancelled {
+        let error = result.expect_err("cancelled adjudication must remain retryable");
+        assert!(
+            matches!(error, frona::core::error::AppError::Inference(error)
+            if matches!(*error, frona_harness::inference::InferenceError::Cancelled(_)))
+        );
+        assert_eq!(mock.calls(), 4, "no authoring after cancellation");
+        let record = repo
+            .latest_consolidation_record("test-user")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            record.state,
+            frona::memory::pkm::ConsolidationStageState::Assemble(ref state) if state.adjudicated.is_none()
+        ));
+        assert!(
+            repo.ontology_get("test-user")
+                .await
+                .unwrap()
+                .is_none_or(|ontology| !ontology.owl.contains("Company")
+                    && !ontology.owl.contains("AdjudicationFixture")),
+            "no proposed schema delta committed"
+        );
+        let oldco = repo
+            .entity_by_path("test-user", "orgs/oldco")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            oldco.kinds.iter().any(|kind| kind.ends_with("Company")),
+            "prior identity not retyped"
+        );
+        return;
+    }
+    result.unwrap();
 
     let newco = repo
         .entity_by_path("test-user", "orgs/newco")

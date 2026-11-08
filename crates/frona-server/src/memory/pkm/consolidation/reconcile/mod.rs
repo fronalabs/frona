@@ -16,6 +16,7 @@ use crate::memory::pkm::consolidation::ReconcilePromotion;
 use crate::memory::pkm::consolidation::classify::OntologyDeclaration;
 use crate::memory::pkm::consolidation::context::ConsolidationContext;
 
+#[derive(Clone)]
 pub(super) struct Reconcile {
     pub ctx: Arc<ConsolidationContext>,
     pub ontology: crate::memory::pkm::ontology::OntologyManager,
@@ -204,6 +205,7 @@ struct ReconciledEntityUpdate {
     declarations: Vec<OntologyDeclaration>,
 }
 
+mod inspection;
 mod projection;
 mod run;
 mod validation;

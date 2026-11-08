@@ -24,7 +24,6 @@ pub use sdk_bridge::PkmHarness;
 /// What domain validation decided about one valid structured submission.
 pub(crate) enum Verdict<A> {
     Accept(A),
-    Abandon,
     Revise { feedback: String, keep: Option<A> },
 }
 
@@ -68,7 +67,6 @@ where
             produced_candidate = true;
             match inspect(candidate).await? {
                 Verdict::Accept(value) => return Ok(Some(value)),
-                Verdict::Abandon => break,
                 Verdict::Revise { feedback, keep } => {
                     if keep.is_some() {
                         kept = keep;

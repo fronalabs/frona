@@ -1,45 +1,45 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, atomic::AtomicBool},
+};
 
 use tracing::warn;
 
-use crate::core::error::AppError;
-use crate::db::repo::pkm::{
-    ReconcileCommit, ReconcileEntityLinkSourceWrite, ReconcileMemoryRelationWrite,
-    ReconcileOutdatedWrite,
+use crate::{core::error::AppError, tool::registry::ToolFilter};
+use crate::{
+    db::repo::pkm::{
+        ReconcileCommit, ReconcileEntityLinkSourceWrite, ReconcileMemoryRelationWrite,
+        ReconcileOutdatedWrite,
+    },
+    memory::pkm::{
+        consolidation::{
+            ConsolidationProgress, Consolidator, PromptIds, PromptSpec, ReconcileOutcome,
+            ReconcilePromotion, ResolveOutcome, ResolveWorkState,
+            classify::ProposalSet,
+            comparison_key, projection_rejection_details,
+            reconcile::{
+                EntityOutcome, EntityVerdict, Reconcile, ReconciledEntityUpdate,
+                inspection::ReconciliationInspection,
+                projection::{
+                    curie_key, curie_key_attributes, drop_keys_held_as_relations,
+                    render_attribute_lines, render_memory_lines,
+                },
+                validation::{
+                    accepted_promotions, merge_explicit_retractions, replace_is_supported,
+                    replacement_retractions,
+                },
+            },
+            validate_proposal_projection,
+        },
+        model::{
+            AttributeSource, EntityCategory, KnowledgeEntityLink, KnowledgeMemory, RelationType,
+            SELF_ENTITY_PATH, terminal_task_plan_ids,
+        },
+        ontology::TermKind,
+        storage::normalize_path,
+    },
 };
-use crate::memory::pkm::consolidation::Verdict;
-use crate::memory::pkm::consolidation::classify::ProposalSet;
-use crate::memory::pkm::consolidation::reconcile::projection::{
-    close_property_replacements, curie_key, curie_key_attributes, drop_keys_held_as_relations,
-    memory_replacement_property_rejections, property_replacement_rejections,
-    render_attribute_lines, render_memory_lines, unsupported_scope_relations,
-};
-use crate::memory::pkm::consolidation::reconcile::validation::{
-    RelationPromotionValidation, accepted_promotions, assertion_provenance_rejections,
-    merge_explicit_retractions, promotion_suggestions, reconcile_declaration_rejections,
-    relation_promotion_rejections, render_promotion_suggestions, replace_is_supported,
-    replacement_retractions, unsupported_replaces,
-};
-use crate::memory::pkm::consolidation::reconcile::{
-    EntityOutcome, EntityVerdict, Reconcile, ReconciledEntityUpdate,
-};
-use crate::memory::pkm::consolidation::{
-    ConsolidationProgress, Consolidator, ReconcilePromotion, ResolveWorkState,
-};
-use crate::memory::pkm::consolidation::{
-    PromptIds, PromptSpec, ReconcileOutcome, ResolveOutcome, comparison_key,
-};
-use crate::memory::pkm::consolidation::{
-    projection_rejection_details, validate_proposal_projection,
-};
-use crate::memory::pkm::model::{
-    AttributeSource, EntityCategory, KnowledgeEntityLink, KnowledgeMemory, RelationType,
-    SELF_ENTITY_PATH, terminal_task_plan_ids,
-};
-use crate::memory::pkm::ontology::TermKind;
-use crate::memory::pkm::storage::normalize_path;
-use crate::tool::registry::ToolFilter;
+use frona_harness::{FailureKind, RunOutcome};
 
 struct ReconciliationEffects<'a> {
     path: &'a str,
@@ -278,7 +278,12 @@ impl Reconcile {
                         }
                     }
                 }
-                Err(e) => warn!(error = %e, path = %path, "pkm reconcile: entity failed"),
+                Err(error) => {
+                    // Keep this entity Pending and the pass before authoring. Accepted
+                    // entities are already banked and need not be regenerated on retry.
+                    warn!(%error, path = %path, "pkm reconcile: entity incomplete");
+                    return Err(error);
+                }
             }
         }
         Ok(())
@@ -322,7 +327,7 @@ impl Reconcile {
     /// Compile one Reconcile submission into the exact graph snapshot it would stage.
     /// This is deliberately side-effect free: the caller validates the returned snapshot
     /// before memory relations, consolidation entities, or checkpoints are changed.
-    async fn reconcile_trial(
+    pub(super) async fn reconcile_trial(
         &self,
         path: &str,
         entity: &crate::memory::pkm::model::KnowledgeConsolidationEntity,
@@ -533,71 +538,45 @@ impl Reconcile {
             .iter()
             .map(|l| format!("- {} → {}\n", l.relation, l.to_entity_path))
             .collect();
-        let rendered = self.ctx.llm.render(
-            PromptSpec::RECONCILE,
-            &[
-                ("path", path),
-                ("kind", &kinds),
-                ("name", &entity.name),
-                ("description", &entity.description),
-                ("memories", &memory_lines),
-                (
-                    "attributes",
-                    if attribute_lines.is_empty() {
-                        "(none)\n"
-                    } else {
-                        &attribute_lines
-                    },
-                ),
-                (
-                    "relations",
-                    if relation_lines.is_empty() {
-                        "(none)\n"
-                    } else {
-                        &relation_lines
-                    },
-                ),
-            ],
-        )?;
+        let vars = &[
+            ("path", path),
+            ("kind", &kinds),
+            ("name", &entity.name),
+            ("description", &entity.description),
+            ("memories", &memory_lines),
+            (
+                "attributes",
+                if attribute_lines.is_empty() {
+                    "(none)\n"
+                } else {
+                    &attribute_lines
+                },
+            ),
+            (
+                "relations",
+                if relation_lines.is_empty() {
+                    "(none)\n"
+                } else {
+                    &relation_lines
+                },
+            ),
+        ];
 
-        // A conversation rather than a one-shot call: `replace` is the one verdict that
-        // can label a still-true fact "do not use", so the model gets to see its own
-        // answer alongside every failed validation and revise. A proposal that never
-        // passes the complete gate is not returned when the turn budget ends.
-        //
-        // No chat and no tools. Reconcile is user-scoped, so the chat id would only
-        // supply an event sender it has no use for - and naming one would make the stage
-        // fail outright for a chat deleted between mining and consolidating, or for a caller
-        // that never had one (`resume_scope`).
-        let mut input = rendered.input;
-        if let Some(rejection) = initial_rejection {
-            input.push_str("\n\nThe checkpointed proposal is no longer valid against the reconstructed graph. Revise it before it can be staged:\n");
-            input.push_str(rejection);
-        }
-        let mut convo = match self
+        // Reconcile has no tools or Chat. Only explicitly accepted inspection
+        // results may reach its application transaction and completion checkpoint.
+        let suffix = initial_rejection.map(|rejection| format!(
+            "\n\nThe checkpointed proposal is no longer valid against the reconstructed graph. Revise it before it can be staged:\n{rejection}"
+        )).unwrap_or_default();
+        let harness = self
             .ctx
             .llm
-            .conversation::<EntityVerdict>(
-                None,
-                &self.ctx.scope.agent_id,
-                rendered.system,
-                input,
-                &[ToolFilter::AllowList(&[])],
-                &[],
-                0,
-            )
-            .await
-        {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(error = %e, path = %path, "pkm reconcile: entity failed");
-                return Ok(EntityOutcome::default());
-            }
-        };
-        // An entity whose model never produced an accepted answer is skipped, not fatal.
-        // Its memories and dirty state remain unchanged, so a later pass can retry it.
-        let (ctx, current, source_path, scopes) =
-            (&self.ctx, &prompt_memories, path, &memory_entities);
+            .sdk(&self.ctx.scope.agent_id, &[ToolFilter::AllowList(&[])], &[])
+            .await?;
+        let run = harness
+            .run_with_input_suffix(PromptSpec::RECONCILE, vars, &suffix)?
+            .structured::<EntityVerdict>()
+            .submission_attempts(self.max_submissions);
+
         let mut prompt_attribute_sources = entity.attribute_sources.clone();
         for source in &mut prompt_attribute_sources {
             for id in &mut source.source_memory_ids {
@@ -610,8 +589,6 @@ impl Reconcile {
                 *id = prompt_ids.local(id).to_string();
             }
         }
-        let existing_attribute_sources = &prompt_attribute_sources;
-        let existing_links = &prompt_links;
         let catalogue = self.ontology.catalog(&self.ctx.scope.user_id).await.ok();
         let mut known_object_properties: HashSet<String> = catalogue
             .as_ref()
@@ -632,132 +609,53 @@ impl Reconcile {
                 _ => {}
             }
         }
-        let known_object_properties = &known_object_properties;
-        let known_data_properties = &known_data_properties;
-        let prefixes = &self.prefixes;
         let draft = proposals.entity_draft();
         let suggestion_entities = self.ctx.view.snapshot_with(&draft).await?.into_entities();
-        let suggestion_links = links.clone();
-        let suggestion_entities = &suggestion_entities;
-        let suggestion_links = &suggestion_links;
-        let suggestions_sent = AtomicBool::new(false);
-        let sent = &suggestions_sent;
-        let reconciler = self;
-        let proposal_snapshot = proposals;
-        let validation_page = &entity;
-        let validation_links = &links;
-        let validation_memories = &memories;
-        let validation_ids = &prompt_ids;
-        let refined = convo
-            .refine(
-                self.max_submissions,
-                move |mut candidate: EntityVerdict| async move {
-                    close_property_replacements(&mut candidate);
-                    let mut rejections = reconcile_declaration_rejections(
-                        &candidate,
-                        known_object_properties,
-                        known_data_properties,
-                        prefixes,
-                    );
-                    rejections.extend(unsupported_replaces(&candidate, current));
-                    rejections.extend(property_replacement_rejections(
-                        &candidate,
-                        current,
-                        existing_attribute_sources,
-                        existing_links,
-                    ));
-                    rejections.extend(memory_replacement_property_rejections(
-                        &candidate,
-                        existing_attribute_sources,
-                        existing_links,
-                    ));
-                    rejections.extend(unsupported_scope_relations(&candidate, scopes, source_path));
-                    rejections.extend(assertion_provenance_rejections(
-                        &candidate,
-                        current,
-                        existing_attribute_sources,
-                        existing_links,
-                        scopes,
-                        source_path,
-                    ));
-                    rejections.extend(
-                        relation_promotion_rejections(
-                            &candidate,
-                            RelationPromotionValidation {
-                                ctx,
-                                proposals: proposal_snapshot,
-                                source_path,
-                                prefixes,
-                                memories: current,
-                                known_data_properties,
-                                existing: proposal_snapshot.promotions_for(source_path),
-                            },
-                        )
-                        .await?,
-                    );
-                    let advisory = if !sent.swap(true, Ordering::Relaxed) {
-                        let suggestions = promotion_suggestions(
-                            source_path,
-                            &candidate,
-                            suggestion_entities,
-                            suggestion_links,
-                        );
-                        if !suggestions.is_empty() {
-                            Some(render_promotion_suggestions(ctx, &suggestions)?)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-                    let mut expanded = candidate.clone();
-                    expanded.expand_prompt_ids(validation_ids)?;
-                    let trial = reconciler
-                        .reconcile_trial(
-                            source_path,
-                            validation_page,
-                            validation_links,
-                            validation_memories,
-                            &expanded,
-                            proposal_snapshot,
-                        )
-                        .await?;
-                    let validation =
-                        validate_proposal_projection(&reconciler.ctx, &reconciler.ontology, &trial)
-                            .await?;
-                    if !validation.is_valid() {
-                        rejections.push(projection_rejection_details(&validation));
-                    }
-                    if rejections.is_empty() && advisory.is_none() {
-                        return Ok(Verdict::Accept(candidate));
-                    }
-                    let mut feedback = if rejections.is_empty() {
-                        String::new()
-                    } else {
-                        ctx.llm.reject(
-                            PromptSpec::RECONCILE,
-                            &[("rejections", &rejections.join("\n"))],
-                        )?
-                    };
-                    if let Some(advisory) = advisory {
-                        if !feedback.is_empty() {
-                            feedback.push_str("\n\n");
-                        }
-                        feedback.push_str(&advisory);
-                    }
-                    Ok(Verdict::Revise {
-                        feedback,
-                        keep: None,
-                    })
-                },
-            )
+        let inspection = Arc::new(ReconciliationInspection {
+            reconciler: self.clone(),
+            path: path.to_string(),
+            current: prompt_memories,
+            scopes: memory_entities,
+            attribute_sources: prompt_attribute_sources,
+            prompt_links,
+            known_object_properties,
+            known_data_properties,
+            suggestion_entities,
+            suggestions_sent: AtomicBool::new(false),
+            proposals: proposals.clone(),
+            page: entity.clone(),
+            links: links.clone(),
+            memories: memories.clone(),
+            ids: prompt_ids.clone(),
+        });
+        let refined = run
+            .inspect(move |candidate| {
+                let inspection = inspection.clone();
+                async move { inspection.inspect(candidate).await }
+            })
             .await;
         let mut parsed = match refined {
-            Ok(Some(v)) => v,
-            Ok(None) => return Ok(EntityOutcome::default()),
-            Err(e) => {
-                warn!(error = %e, path = %path, "pkm reconcile: entity failed");
-                return Ok(EntityOutcome::default());
+            Ok(accepted) => accepted,
+            Err(incomplete) => {
+                warn!(reason = %incomplete.reason, outcome = ?incomplete.report.outcome,
+                    path = %path, "pkm reconcile: refinement incomplete");
+                if matches!(
+                    incomplete.report.outcome,
+                    Some(RunOutcome::Incomplete {
+                        kind: FailureKind::Cancelled,
+                        ..
+                    })
+                ) {
+                    return Err(AppError::Inference(Box::new(
+                        frona_harness::inference::InferenceError::Cancelled(
+                            incomplete.reason.to_string(),
+                        ),
+                    )));
+                }
+                return Err(AppError::Internal(format!(
+                    "reconciliation incomplete: {}",
+                    incomplete.reason
+                )));
             }
         };
         parsed.expand_prompt_ids(&prompt_ids)?;

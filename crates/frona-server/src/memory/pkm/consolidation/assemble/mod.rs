@@ -6,27 +6,33 @@
 //! CAS transaction, because an entity typed with a term the TBox never declared is an entity
 //! the reasoner cannot place.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    sync::Arc,
+};
 
 use oxrdf::Triple;
 use tracing::warn;
 
 pub(super) mod adjudicate;
+mod inspection;
+use inspection::{AdjudicationCandidate, AdjudicationInspection};
 
-use crate::core::error::AppError;
-use crate::db::repo::pkm::AttributeOps;
-use crate::memory::pkm::consolidation::Verdict;
-use crate::memory::pkm::consolidation::{AssembleOutcome, PromptSpec};
-use crate::memory::pkm::model::KnowledgeConsolidationEntity;
-use crate::memory::pkm::model::KnowledgeEntity;
-use crate::memory::pkm::ontology::{
-    AlignKind, Characteristic, OntologyManager, OverrideTarget, SchemaEdit, TypePlan,
+use crate::{core::error::AppError, tool::registry::ToolFilter};
+use crate::{
+    db::repo::pkm::AttributeOps,
+    memory::pkm::{
+        consolidation::{AssembleOutcome, PromptSpec},
+        model::{KnowledgeConsolidationEntity, KnowledgeEntity},
+        ontology::{
+            AlignKind, Characteristic, OntologyManager, OverrideTarget, SchemaEdit, TypePlan,
+        },
+    },
 };
-use crate::tool::registry::ToolFilter;
 use adjudicate::{
     AdjudicationResult, Decision, GateOutcome, Proposal, ProposalKind, gate, partition_proposals,
 };
+use frona_harness::{FailureKind, Incomplete, RunOutcome};
 
 use super::{ConsolidationProgress, Consolidator, bad_term_feedback};
 use crate::memory::pkm::consolidation::classify::ProposalSet;
@@ -147,6 +153,43 @@ impl AssemblePlan {
             .map(String::as_str)
             .unwrap_or(proposed)
     }
+}
+
+/// Explicit application policy for partial adjudication. Cancellation and required
+/// storage failure stop before banking. Other interrupted work may be salvaged only
+/// when inspection actually retained a candidate, and the caller re-gates it afresh.
+fn retained_for_salvage(
+    incomplete: Incomplete<AdjudicationCandidate>,
+) -> Result<AdjudicationCandidate, AppError> {
+    warn!(reason = %incomplete.reason, outcome = ?incomplete.report.outcome,
+        retained_edits = incomplete.retained.as_ref().map(|candidate| candidate.plan.edits.len()),
+        "pkm assemble: adjudication incomplete; evaluating application salvage");
+    match incomplete.report.outcome {
+        Some(RunOutcome::Incomplete {
+            kind: FailureKind::Cancelled,
+            ..
+        }) => {
+            return Err(AppError::Inference(Box::new(
+                frona_harness::inference::InferenceError::Cancelled(incomplete.reason.to_string()),
+            )));
+        }
+        Some(RunOutcome::Incomplete {
+            kind: FailureKind::Storage,
+            ..
+        }) => {
+            return Err(AppError::Internal(format!(
+                "adjudication storage failed: {}",
+                incomplete.reason
+            )));
+        }
+        _ => {}
+    }
+    incomplete.retained.ok_or_else(|| {
+        AppError::Internal(format!(
+            "adjudication ended without retained work: {}",
+            incomplete.reason,
+        ))
+    })
 }
 
 impl Consolidator {
@@ -691,20 +734,17 @@ impl Consolidator {
         for t in &in_force {
             axioms.push_str(&format!("- {}\n", render_override_target(t)));
         }
-        let rendered = self.ctx.llm.render(
-            PromptSpec::ASSEMBLE,
-            &[
-                ("proposals", &block),
-                (
-                    "axioms",
-                    if axioms.is_empty() {
-                        "(none)\n"
-                    } else {
-                        &axioms
-                    },
-                ),
-            ],
-        )?;
+        let vars: &[(&str, &str)] = &[
+            ("proposals", &block),
+            (
+                "axioms",
+                if axioms.is_empty() {
+                    "(none)\n"
+                } else {
+                    &axioms
+                },
+            ),
+        ];
         let overlay = std::sync::Arc::new(
             crate::memory::pkm::consolidation::tools::ontology::OntologyToolOverlay {
                 entities,
@@ -724,108 +764,67 @@ impl Consolidator {
                 Some(overlay),
                 crate::memory::pkm::consolidation::tools::ontology::OntologyToolProfile::Assemble,
             );
-        let mut input = rendered.input;
-        if let Some(rejection) = initial_rejection {
-            input.push_str("\n\nThe checkpointed adjudication is no longer valid against the reconstructed graph. Revise these rejected decisions:\n");
-            input.push_str(rejection);
-        }
-        let mut convo = self
+        let suffix = initial_rejection.map(|rejection| format!(
+            "\n\nThe checkpointed adjudication is no longer valid against the reconstructed graph. Revise these rejected decisions:\n{rejection}"
+        )).unwrap_or_default();
+        let harness = self
             .ctx
             .llm
-            .conversation::<AdjudicationResult>(
-                self.ctx.scope.chat_id.as_deref(),
+            .sdk(
                 &self.ctx.scope.agent_id,
-                rendered.system,
-                input,
                 &[ToolFilter::AllowList(&[])],
                 &tools,
-                candidates.len().saturating_mul(5).saturating_add(4),
             )
             .await?;
-
-        // Only the most complete round seen is kept, so a late worse revision cannot lose
-        // ground the model had already won. `refine` keeps the latest `Some`, so
-        // withholding the ones that do not improve is what makes "latest" mean "best".
-        let most_edits = AtomicUsize::new(0);
-        // Borrowed, not moved: `refine` wants an `FnMut`, so a closure that owned these
-        // could only be called once - and it is called once per revision.
-        let best_so_far = &most_edits;
-        let prefixes = &px;
-        let refined = convo
-            .refine(
-                self.config.pkm_adjudication_max_attempts_per_batch,
-                move |submission: AdjudicationResult| async move {
-                    // Before the guardrail: is every CURIE the model *chose* writable? An
-                    // unwritable one is not an edit the gate should weigh - committed, it makes
-                    // the delta unparseable, and the gate has nothing to say about that because
-                    // expansion never fails. Checked here so it costs a revision, not a schema.
-                    if let Some(feedback) = bad_term_feedback(
-                        &self.ctx,
-                        PromptSpec::ASSEMBLE,
-                        prefixes,
-                        submission
-                            .decisions
-                            .iter()
-                            .flat_map(|d| d.decision.proposed_terms()),
-                    )? {
-                        return Ok(Verdict::Revise {
-                            feedback,
-                            keep: None,
-                        });
-                    }
-                    let (outcome, rejected) = self
-                        .gate_submission(
-                            ontology_manager,
-                            candidates,
-                            &submission,
-                            projected_abox,
-                            accepted_edits,
-                        )
-                        .await?;
-                    let improved = outcome.edits.len() >= best_so_far.load(Ordering::Relaxed);
-                    if improved {
-                        best_so_far.store(outcome.edits.len(), Ordering::Relaxed);
-                    }
-                    // Nothing left to amend: stop with this round if it is the better one,
-                    // otherwise fall back to the round that already won.
-                    if rejected.is_empty() {
-                        return Ok(if improved {
-                            Verdict::Accept((outcome, submission))
-                        } else {
-                            Verdict::Abandon
-                        });
-                    }
-                    let feedback = self.ctx.llm.reject(
-                        PromptSpec::ASSEMBLE,
-                        &[("rejections", rejected.join("\n").as_str())],
-                    )?;
-                    Ok(Verdict::Revise {
-                        feedback,
-                        keep: improved.then_some((outcome, submission)),
-                    })
-                },
-            )
+        let run = harness
+            .run_with_input_suffix(PromptSpec::ASSEMBLE, vars, &suffix)?
+            .exploration_turns(candidates.len().saturating_mul(5).saturating_add(4))
+            .structured::<AdjudicationResult>()
+            .submission_attempts(self.config.pkm_adjudication_max_attempts_per_batch);
+        let inspection = Arc::new(AdjudicationInspection::new(
+            self.clone(),
+            ontology_manager.clone(),
+            candidates.to_vec(),
+            projected_abox.to_vec(),
+            accepted_edits.to_vec(),
+        ));
+        let refined = run
+            .inspect(move |submission| {
+                let inspection = inspection.clone();
+                async move { inspection.inspect(submission).await }
+            })
             .await;
 
-        // Gave up, out of budget, or never answered - commit whatever cleared the gate.
-        let best = match refined {
-            Ok(Some((outcome, submission))) => {
-                // Bank the submission that produced the winning set. A later stage dying
-                // re-gates this rather than re-running the conversation.
-                progress.bank_adjudication(&submission).await?;
-                progress
-                    .checkpoint_transition("adjudicate", "schema", proposals)
-                    .await?;
-                outcome
-            }
-            Ok(None) => AssemblePlan::default(),
-            Err(e) => {
-                warn!(error = %e, "pkm assemble: adjudication did not converge");
-                AssemblePlan::default()
-            }
+        // SDK success and application salvage stay separate. The retained value
+        // contains both the evaluated plan and its exact source submission; an
+        // incomplete result never becomes accepted by selecting that value.
+        let candidate = match refined {
+            Ok(accepted) => accepted,
+            Err(incomplete) => retained_for_salvage(incomplete)?,
         };
-
-        self.validate(ontology_manager, best, projected_abox).await
+        let (best, rejected) = self
+            .gate_submission(
+                ontology_manager,
+                candidates,
+                &candidate.submission,
+                projected_abox,
+                accepted_edits,
+            )
+            .await?;
+        if !rejected.is_empty() {
+            tracing::info!(rejections = ?rejected, retained_edits = candidate.plan.edits.len(),
+                salvaged_edits = best.edits.len(), "adjudicate: re-gated application subset");
+        }
+        let best = self
+            .validate(ontology_manager, best, projected_abox)
+            .await?;
+        // Bank only after independent re-gating and cumulative validation. Replay
+        // banks the source decision, never an old claim that its edits remain valid.
+        progress.bank_adjudication(&candidate.submission).await?;
+        progress
+            .checkpoint_transition("adjudicate", "schema", proposals)
+            .await?;
+        Ok(best)
     }
 
     /// Re-gate a submission this pass already reached, with no model call.

@@ -1,46 +1,14 @@
-//! Unit-level exercise of `structured_inference_with_tools`: the model calls a
-//! tool for one turn, its result is fed back, then the model `submit`s the
-//! structured verdict - the loop must execute the tool and return the parsed `T`.
-
+//! The prepared provider group uses the shared SDK tool loop and typed submission.
 mod helpers;
-
-use std::collections::HashMap;
+use frona_harness::{Harness, Model, ToolOutput, inference::ModelGroup, tool};
+use helpers::{MockModelProvider, MockResponse, test_model_group, test_providers};
+use serde_json::json;
 use std::sync::Arc;
 
-use serde_json::{Value, json};
-use surrealdb::Surreal;
-use surrealdb::engine::local::Mem;
-
-use frona::core::error::AppError;
-use frona::tool::registry::AgentToolRegistry;
-use frona::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
-
-use helpers::{
-    MockModelProvider, MockResponse, mock_context, test_model_group, test_providers,
-    test_usage_ctx, test_usage_service,
-};
-
-/// A trivial read-only "tool" the resolver would use to navigate the vault.
-struct EchoTool;
-
-#[async_trait::async_trait]
-impl AgentTool for EchoTool {
-    fn name(&self) -> &str {
-        "grep"
-    }
-    fn definitions(&self) -> Vec<ToolDefinition> {
-        vec![]
-    }
-    async fn execute(
-        &self,
-        _tool_name: &str,
-        _arguments: Value,
-        _ctx: &InferenceContext,
-    ) -> Result<ToolOutput, AppError> {
-        Ok(ToolOutput::text("match: organizations/amazon"))
-    }
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct Query {
+    pattern: String,
 }
-
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct Resolution {
     path: String,
@@ -48,51 +16,38 @@ struct Resolution {
 
 #[tokio::test]
 async fn structured_inference_with_tools_loops_then_submits() {
-    let db = Surreal::new::<Mem>(()).await.unwrap();
-    frona::db::init::setup_schema(&db).await.unwrap();
-
-    // Turn 1: model calls `grep`. Turn 2: model calls `submit` with the verdict.
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::ToolCalls(vec![(
             "t1".into(),
             "grep".into(),
-            json!({"pattern": "amazon"}),
+            json!({"pattern":"amazon"}),
         )]),
         MockResponse::ToolCalls(vec![(
             "t2".into(),
             "submit".into(),
-            json!({"path": "organizations/amazon"}),
+            json!({"path":"organizations/amazon"}),
         )]),
     ]));
-    let registry = test_providers("mock", mock.clone());
-
-    let mut tools: HashMap<String, Arc<dyn AgentTool>> = HashMap::new();
-    tools.insert("grep".into(), Arc::new(EchoTool));
-    let tool_registry = AgentToolRegistry::new(tools, HashMap::new(), vec![], false);
-
-    let ctx = mock_context();
-    let usage = test_usage_service(&db);
-    let usage_ctx = test_usage_ctx();
-
-    let result: Resolution = frona::inference::structured_inference_with_tools(
-        &frona_harness::inference::ModelGroup {
-            providers: registry.clone(),
-            ..(test_model_group()).clone()
-        },
-        "Resolve the entity to a canonical page path.",
-        vec![rig_core::completion::Message::user("Proposed: Amazon Inc")],
-        &tool_registry,
-        &ctx,
-        &usage,
-        &usage_ctx,
-        5,
-    )
-    .await
-    .expect("resolver submits a verdict");
-
-    assert_eq!(
-        result.path, "organizations/amazon",
-        "returns the submitted structured path"
-    );
-    assert_eq!(mock.calls(), 2, "looped: one tool turn + one submit turn");
+    let sdk = Harness::new(Model::from_group(ModelGroup {
+        providers: test_providers("mock", mock.clone()),
+        ..test_model_group()
+    }));
+    let mut searched = Vec::new();
+    let lookup = tool("grep", "Find a page", |query: Query| {
+        searched.push(query.pattern);
+        async { Ok(ToolOutput::text("match: organizations/amazon")) }
+    })
+    .unwrap();
+    let result = sdk
+        .run("Proposed: Amazon Inc")
+        .instructions("Resolve the entity to a canonical page path.")
+        .tool(lookup)
+        .model_responses(5)
+        .structured::<Resolution>()
+        .await
+        .unwrap();
+    assert_eq!(result.path, "organizations/amazon");
+    assert_eq!(searched, ["amazon"]);
+    assert_eq!(mock.calls(), 2);
+    assert!(format!("{:?}", mock.last_history()).contains("match: organizations/amazon"));
 }

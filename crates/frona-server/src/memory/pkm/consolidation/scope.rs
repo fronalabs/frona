@@ -11,8 +11,8 @@ pub struct ConsolidationScope {
     pub user_name: String,
     pub agent_id: String,
     /// The originating chat, or `None` for a detached pass (sync/External ingest -
-    /// runs as the `system` agent with no chat). Threaded to the investigator's
-    /// `structured_inference_with_tools` as `chat_id.as_deref()`.
+    /// runs as the `system` agent with no chat). This is domain provenance;
+    /// inner SDK dialogues do not create chat/message rows.
     pub chat_id: Option<String>,
     /// Where this user's files live - handle, Memory directory, absolute root. Resolved
     /// once per pass rather than re-derived at each use site. See [`VaultScope`].

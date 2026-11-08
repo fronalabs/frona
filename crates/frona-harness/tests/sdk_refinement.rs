@@ -617,3 +617,65 @@ async fn last_allowed_response_still_requires_shared_budget_admission_for_its_to
     ));
     assert_eq!(budget.snapshot().tool_calls, 0);
 }
+
+#[tokio::test]
+async fn model_response_limit_counts_tool_batches_in_manual_and_fluent_execution() {
+    for manual in [false, true] {
+        let (model, requests) =
+            scripted_model(vec![Ok(output(vec![call("r", "read", json!({}))]))]);
+        let harness = Harness::new(model);
+        let run = harness.run("input").model_responses(1).tool(
+            tool("read", "read", |_: Value| async {
+                Ok::<_, frona_harness::ToolError>("evidence")
+            })
+            .unwrap(),
+        );
+        let report = run.report();
+        if manual {
+            let mut session = run.manual();
+            let actions = session.call_model().await.unwrap();
+            for action in actions.actions {
+                session.execute(action).await.unwrap();
+            }
+            assert!(matches!(
+                session.call_model().await,
+                Err(ManualError::ModelResponsesExhausted { maximum: 1 })
+            ));
+        } else {
+            let incomplete = run.await.unwrap_err();
+            assert!(matches!(
+                incomplete.reason,
+                ManualError::ModelResponsesExhausted { maximum: 1 }
+            ));
+        }
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        assert_eq!(report.snapshot().actions.len(), 1);
+        assert!(matches!(
+            report.snapshot().outcome,
+            Some(frona_harness::RunOutcome::Incomplete {
+                kind: frona_harness::FailureKind::Budget,
+                ..
+            })
+        ));
+    }
+}
+
+#[tokio::test]
+async fn model_response_limit_accepts_the_last_response_and_zero_never_calls() {
+    let (model, requests) = scripted_model(vec![Ok(output(vec![AssistantContent::text("done")]))]);
+    let harness = Harness::new(model);
+    assert!(matches!(
+        harness
+            .run("zero")
+            .model_responses(0)
+            .await
+            .unwrap_err()
+            .reason,
+        ManualError::ModelResponsesExhausted { maximum: 0 }
+    ));
+    assert!(requests.lock().unwrap().is_empty());
+    assert_eq!(
+        harness.run("last").model_responses(1).await.unwrap(),
+        "done"
+    );
+}

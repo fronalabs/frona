@@ -4,9 +4,10 @@
 
 use std::sync::Arc;
 
+use frona_harness::inference::InferenceError;
+use frona_harness::{Budget, DefaultBudget, FailureKind, ManualError, ModelError, RunOutcome};
 use futures::StreamExt;
 use futures::future::BoxFuture;
-use rig_core::completion::Message as RigMessage;
 use tracing::warn;
 
 use crate::core::error::AppError;
@@ -28,9 +29,9 @@ pub(crate) struct PageAuthor {
 
 impl PageAuthor {
     /// Pages are authored concurrently: each is an independent model call writing its
-    /// own row and its own file, with no cross-page state - unlike classify (which
+    /// own row and its own file, sharing only admission allowance - unlike classify (which
     /// accumulates a proposal layer) or reconcile (whose worklist grows as it runs).
-    /// Bounded by the same budget as the sweep's ingest. Non-fatal per page: a failure
+    /// Caller-owned concurrency and one shared budget bound the batch. A failure
     /// logs and the rest proceed.
     ///
     /// **This stage keeps nothing in the pass record**, and needs nothing: `rendered_at`
@@ -42,14 +43,26 @@ impl PageAuthor {
     /// are sequential.
     pub(crate) async fn run(&self, reconciled: &[String]) -> PageAuthorOutcome {
         let mut out = PageAuthorOutcome::default();
-        self.author(reconciled, &mut out).await;
+        self.author(reconciled, &mut out, Arc::new(DefaultBudget::default()))
+            .await;
         out
     }
 
-    /// Author the pending pages. A page that fails is simply absent - it stays dirty and
-    /// is retried.
-    async fn author(&self, reconciled: &[String], stats: &mut PageAuthorOutcome) {
-        let redirects = self.ctx.view.redirects().await.unwrap_or_default();
+    /// Pre-commit failures stay dirty. A failed filesystem mirror after canonical
+    /// commit is repaired from durable bytes by recovery without re-authoring.
+    async fn author(
+        &self,
+        reconciled: &[String],
+        stats: &mut PageAuthorOutcome,
+        budget: Arc<dyn Budget>,
+    ) {
+        let redirects = match self.ctx.view.redirects().await {
+            Ok(redirects) => redirects,
+            Err(error) => {
+                warn!(%error, "pkm author: required redirects unavailable");
+                return;
+            }
+        };
 
         // Boxed rather than inline `async move` blocks: a closure returning one makes
         // `&Self` higher-ranked, and the compiler can then only prove `Send` for a
@@ -58,8 +71,9 @@ impl PageAuthor {
             .iter()
             .map(|path| {
                 let redirects = &redirects;
+                let budget = budget.clone();
                 Box::pin(async move {
-                    match self.author_page(path, redirects).await {
+                    match self.author_page(path, redirects, budget).await {
                         Ok(written) => written,
                         Err(e) => {
                             warn!(error = %e, path = %path, "pkm author: page failed");
@@ -86,7 +100,9 @@ impl PageAuthor {
         &self,
         path: &str,
         redirects: &std::collections::BTreeMap<String, String>,
+        budget: Arc<dyn Budget>,
     ) -> Result<bool, AppError> {
+        self.ctx.llm.check_cancelled()?;
         let Some(page) = self.ctx.view.entity_by_path(path).await? else {
             return Ok(false);
         };
@@ -95,14 +111,12 @@ impl PageAuthor {
             .ctx
             .repo
             .memories_for_entity(&self.ctx.scope.user_id, path)
-            .await
-            .unwrap_or_default();
+            .await?;
         let links = self
             .ctx
             .repo
             .links_from_entity(&self.ctx.scope.user_id, path)
-            .await
-            .unwrap_or_default();
+            .await?;
         // Current heads vs superseded/outdated history - disposition-aware
         // (erroneous excluded from both; an erroneous superseder is ignored, so
         // what it wrongly superseded is restored). See `classify_memories`.
@@ -115,8 +129,8 @@ impl PageAuthor {
                 &self.ctx.scope.timezone,
             ))
         } else {
-            self.authored_body(&page, &page.attributes, &current, &history)
-                .await
+            self.authored_body(&page, &page.attributes, &current, &history, budget)
+                .await?
                 .unwrap_or_else(|| {
                     MarkdownPage::parse(&deterministic_body(
                         &page,
@@ -139,6 +153,7 @@ impl PageAuthor {
             &self.prefixes,
             &self.ctx.scope.vault,
         );
+        self.ctx.llm.check_cancelled()?;
         let rev = crate::memory::pkm::sha256_hex(&file);
         self.ctx
             .repo
@@ -169,7 +184,8 @@ impl PageAuthor {
         attributes: &serde_json::Value,
         current: &[&KnowledgeMemory],
         history: &[&KnowledgeMemory],
-    ) -> Option<MarkdownPage> {
+        shared_budget: Arc<dyn Budget>,
+    ) -> Result<Option<MarkdownPage>, AppError> {
         let cur = list_or(current, "(none)", &self.ctx.scope.timezone);
         let old = list_or(
             history,
@@ -193,26 +209,6 @@ impl PageAuthor {
         let related_block = "Use `search_entities` for entities worth linking, then inspect the exact path with `read_entity`.";
         // The model reads and writes CURIEs; the database holds IRIs.
         let kinds = self.prefixes.display_joined(&page.kinds);
-        let rendered = match self.ctx.llm.render(
-            PromptSpec::PAGE_AUTHOR,
-            &[
-                ("name", &page.name),
-                ("kind", &kinds),
-                ("path", &page.path),
-                ("description", &page.description),
-                ("current", &cur),
-                ("superseded", &old),
-                ("attributes", &attrs),
-                ("related", related_block),
-            ],
-        ) {
-            Ok(r) => r,
-            Err(e) => {
-                warn!(error = %e, name = %page.name, "pkm author: prompt render failed");
-                return None;
-            }
-        };
-
         // The model authors the full article (title + prose). `MarkdownPage::parse`
         // applies lenient, language-agnostic syntax cleanup (unwrap a stray whole-doc
         // code fence, strip leading frontmatter) - we do NOT police headings/sections
@@ -238,31 +234,90 @@ impl PageAuthor {
                 budget: Some(budget),
             }),
         ];
-        let raw = match self
+        let harness = self
             .ctx
             .llm
-            .text_with_tools(
+            .sdk(
                 &self.ctx.scope.agent_id,
-                &rendered.system,
-                vec![RigMessage::user(&rendered.input)],
                 &[ToolFilter::AllowList(&[])],
                 &tools,
-                20,
             )
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                warn!(error = %e, name = %page.name, "pkm author: body generation failed");
-                return None;
+            .await?;
+        let run = harness
+            .run(
+                PromptSpec::PAGE_AUTHOR,
+                &[
+                    ("name", &page.name),
+                    ("kind", &kinds),
+                    ("path", &page.path),
+                    ("description", &page.description),
+                    ("current", &cur),
+                    ("superseded", &old),
+                    ("attributes", &attrs),
+                    ("related", related_block),
+                ],
+            )?
+            .budget(shared_budget)
+            // Preserve the former 20-response loop, including tool-bearing responses.
+            .model_responses(20);
+        let raw = match run.await {
+            Ok(raw) => raw,
+            Err(incomplete)
+                if replacement_allowed(&incomplete.reason, &incomplete.report.outcome) =>
+            {
+                warn!(error = %incomplete.reason, name = %page.name, "pkm author: using deterministic replacement");
+                return Ok(None);
+            }
+            Err(incomplete) => {
+                return Err(AppError::Internal(format!(
+                    "pkm author stopped: {}",
+                    incomplete.reason
+                )));
             }
         };
         let article = MarkdownPage::parse(&raw);
         if article.body.trim().is_empty() {
-            None
+            Ok(None)
         } else {
-            Some(article)
+            Ok(Some(article))
         }
+    }
+}
+
+/// Replacement is a domain choice for an unavailable provider or empty answer.
+/// Typed execution controls (including nested provider stops), setup, compaction,
+/// and protocol failures never become a successful deterministic page.
+fn replacement_allowed(reason: &ManualError, outcome: &Option<RunOutcome>) -> bool {
+    matches!(reason, ManualError::NoText)
+        || (matches!(reason, ManualError::Model(ModelError::Provider(error))
+            if provider_replacement_allowed(error))
+            && matches!(
+                outcome,
+                Some(RunOutcome::Incomplete {
+                    kind: FailureKind::Model,
+                    ..
+                })
+            ))
+}
+
+/// Prepared groups wrap both operational and setup failures with provider/fallback
+/// provenance. Only an aggregate of operational failures permits replacement.
+fn provider_replacement_allowed(error: &InferenceError) -> bool {
+    match error {
+        InferenceError::InferenceFailed(_)
+        | InferenceError::StreamingFailed(_)
+        | InferenceError::CompletionFailed(_)
+        | InferenceError::RateLimited { .. }
+        | InferenceError::EmptyResponse => true,
+        InferenceError::ModelFailed { source, .. } => provider_replacement_allowed(source),
+        InferenceError::AllFallbacksFailed(errors) => {
+            !errors.is_empty() && errors.iter().all(provider_replacement_allowed)
+        }
+        InferenceError::ProviderNotConfigured(_)
+        | InferenceError::ModelGroupNotFound(_)
+        | InferenceError::ConfigError(_)
+        | InferenceError::Stop(_)
+        | InferenceError::Cancelled(_) => false,
     }
 }
 
@@ -345,6 +400,9 @@ fn author_memory_bullet(memory: &KnowledgeMemory, timezone: &str) -> String {
     }
     rendered
 }
+
+#[cfg(test)]
+mod execution;
 
 #[cfg(test)]
 mod tests {

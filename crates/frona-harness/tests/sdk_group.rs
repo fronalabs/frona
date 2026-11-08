@@ -516,3 +516,30 @@ async fn one_submission_attempt_can_use_multiple_provider_attempts() {
     assert_eq!(report.snapshot().requests.len(), 1);
     assert_eq!(report.snapshot().attempts.len(), 2);
 }
+
+#[tokio::test]
+async fn model_response_limit_excludes_compaction_and_provider_retries() {
+    let (mut prepared, calls) = group(vec![
+        Err(InferenceError::RateLimited {
+            retry_after_secs: 0,
+        }),
+        output(vec![AssistantContent::text("Earlier facts summarized.")]),
+        Err(InferenceError::RateLimited {
+            retry_after_secs: 0,
+        }),
+        output(vec![AssistantContent::text("done")]),
+    ]);
+    prepared.context_window = 1400;
+    let harness = Harness::new(Model::from_group(prepared));
+    let zero = harness.resume(compaction_history()).model_responses(0);
+    assert!(matches!(
+        zero.await.unwrap_err().reason,
+        ManualError::ModelResponsesExhausted { maximum: 0 }
+    ));
+    assert!(calls.lock().unwrap().is_empty());
+    let run = harness.resume(compaction_history()).model_responses(1);
+    let report = run.report();
+    assert_eq!(run.await.unwrap(), "done");
+    assert_eq!(report.snapshot().requests.len(), 2);
+    assert_eq!(report.snapshot().attempts.len(), 4);
+}

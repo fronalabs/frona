@@ -81,6 +81,7 @@ impl<'a> Harness<'a> {
                 observer: None,
                 exploration_turns: None,
                 submission_attempts: None,
+                model_responses: None,
                 resume_pending,
                 resume_response: false,
             },
@@ -185,6 +186,19 @@ impl<'a, Mode> Run<'a, Mode> {
         self
     }
 
+    /// Bound ordinary model responses in this run, including tool-only responses.
+    /// Provider retries/fallbacks and compaction do not consume this local policy;
+    /// every actual call still requires shared budget admission. The last response
+    /// may finish normally, but a further request stops incomplete before compaction
+    /// or provider work. Each run/resume starts with a fresh counter.
+    pub fn model_responses(mut self, maximum: usize) -> Self {
+        self.core.model_responses = Some(ResponseLimit {
+            maximum,
+            remaining: maximum,
+        });
+        self
+    }
+
     pub fn instructions(mut self, instructions: impl Into<String>) -> Self {
         self.core.instructions = instructions.into();
         self
@@ -252,7 +266,7 @@ impl<T> Run<'_, Structured<T>> {
     /// incomplete. Provider retries/fallbacks remain independently budgeted attempts.
     /// This policy starts fresh on each run/resume and is not persisted.
     pub fn submission_attempts(mut self, maximum: usize) -> Self {
-        self.core.submission_attempts = Some(SubmissionAttempts {
+        self.core.submission_attempts = Some(ResponseLimit {
             maximum,
             remaining: maximum,
         });
@@ -260,7 +274,7 @@ impl<T> Run<'_, Structured<T>> {
     }
 }
 
-struct SubmissionAttempts {
+struct ResponseLimit {
     maximum: usize,
     remaining: usize,
 }
@@ -296,6 +310,8 @@ pub enum ManualError {
     ToolHook(String),
     #[error("submission budget exhausted after {maximum} response attempts")]
     SubmissionAttemptsExhausted { maximum: usize },
+    #[error("model response limit exhausted after {maximum} responses")]
+    ModelResponsesExhausted { maximum: usize },
     #[error("the current response has no final text")]
     NoText,
 }
@@ -605,7 +621,8 @@ pub(super) struct SessionCore<'a> {
     compaction_configured: bool,
     observer: Option<Box<dyn crate::inference::observation::InferenceObserver + 'a>>,
     exploration_turns: Option<usize>,
-    submission_attempts: Option<SubmissionAttempts>,
+    submission_attempts: Option<ResponseLimit>,
+    model_responses: Option<ResponseLimit>,
     resume_pending: bool,
     resume_response: bool,
 }
@@ -714,6 +731,13 @@ impl SessionCore<'_> {
                 maximum: limit.maximum,
             }));
         }
+        if let Some(limit) = &self.model_responses
+            && limit.remaining == 0
+        {
+            return Err(self.fail(ManualError::ModelResponsesExhausted {
+                maximum: limit.maximum,
+            }));
+        }
         let positions = self.conversation.model_view()?.original_positions();
         self.check_compatibility(model, &positions)?;
         let selection = if self.exploration_turns == Some(0) {
@@ -759,6 +783,9 @@ impl SessionCore<'_> {
             self.conversation
                 .record_response_from(output.output, tools, Some(output.origin));
         let actions = self.result(result)?;
+        if let Some(limit) = &mut self.model_responses {
+            limit.remaining = limit.remaining.saturating_sub(1);
+        }
         let has_tool = actions.actions.iter().any(|action| {
             self.conversation
                 .action(action)

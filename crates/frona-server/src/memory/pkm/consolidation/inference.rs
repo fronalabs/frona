@@ -5,8 +5,6 @@
 
 use std::sync::Arc;
 
-use rig_core::completion::Message as RigMessage;
-
 use crate::agent::harness::Harness;
 use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
@@ -15,7 +13,7 @@ use crate::tool::{AgentTool, registry::ToolFilter};
 use frona_harness::inference::ModelGroup;
 use tokio_util::sync::CancellationToken;
 
-use super::prompt::{PromptSpec, RenderedPrompt};
+use super::prompt::PromptSpec;
 
 mod sdk_bridge;
 pub use sdk_bridge::PkmHarness;
@@ -32,6 +30,7 @@ pub struct ConsolidationInference {
 }
 
 impl ConsolidationInference {
+    #[cfg(test)]
     pub fn new(
         harness: Arc<Harness>,
         model_group: ModelGroup,
@@ -97,12 +96,6 @@ impl ConsolidationInference {
         )
     }
 
-    /// Render a stage's system + user prompt pair. Fails rather than returning an empty
-    /// prompt - see [`PromptSpec`].
-    pub fn render(&self, p: PromptSpec, vars: &[(&str, &str)]) -> Result<RenderedPrompt, AppError> {
-        p.render(&self.prompts, vars)
-    }
-
     /// Render a stage's correction prompt - fed back mid-conversation on a rejection.
     pub fn reject(&self, p: PromptSpec, vars: &[(&str, &str)]) -> Result<String, AppError> {
         p.reject(&self.prompts, vars)
@@ -114,27 +107,11 @@ impl ConsolidationInference {
         p.bad_term(&self.prompts, vars)
     }
 
-    pub async fn text_with_tools(
-        &self,
-        agent_id: &str,
-        system: &str,
-        history: Vec<RigMessage>,
-        filters: &[ToolFilter],
-        tools: &[Arc<dyn AgentTool>],
-        max_turns: usize,
-    ) -> Result<String, AppError> {
-        self.harness
-            .text_inference_with_tools_cancel(
-                agent_id,
-                &self.model_group,
-                system,
-                history,
-                filters,
-                tools,
-                max_turns,
-                self.usage(),
-                self.cancel_token.clone(),
-            )
-            .await
+    /// Domain writes outside an SDK run must also respect caller cancellation.
+    pub(crate) fn check_cancelled(&self) -> Result<(), AppError> {
+        if self.cancel_token.is_cancelled() {
+            return Err(AppError::Internal("PKM inference cancelled".into()));
+        }
+        Ok(())
     }
 }

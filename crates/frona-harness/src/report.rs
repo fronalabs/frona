@@ -164,7 +164,8 @@ impl From<&crate::inference::InferenceError> for RunOutcome {
 pub(super) fn failure_kind(error: &ManualError) -> FailureKind {
     match error {
         ManualError::Compaction(_) => FailureKind::Compaction,
-        ManualError::SubmissionAttemptsExhausted { .. } => FailureKind::Budget,
+        ManualError::SubmissionAttemptsExhausted { .. }
+        | ManualError::ModelResponsesExhausted { .. } => FailureKind::Budget,
         ManualError::Stop(stop) => stop.failure_kind(),
         ManualError::Inspector(_) => FailureKind::Inspector,
         ManualError::Abandoned(_) => FailureKind::ApplicationStop,

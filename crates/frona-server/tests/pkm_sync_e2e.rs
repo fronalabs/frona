@@ -156,7 +156,7 @@ fn handle() -> frona::core::Handle {
 async fn writeback_on_existing_page_supersedes_and_recomputes_rev() {
     // The human edited the page; the LLM write-back supersedes the old fact.
     let mock = Arc::new(MockModelProvider::new(vec![]));
-    let (.., harness, repo, _, sync) = setup(mock.clone()).await;
+    let (db, harness, repo, _, sync) = setup(mock.clone()).await;
     seed_page(&repo, "people/bob", "Bob works at Acme", "rev1").await;
     let ops = json!({ "ops": [
         {"op":"supersede","kind":"fact","content":"Bob works at Globex","memory_id":"m1","note":"moved"}
@@ -196,6 +196,16 @@ async fn writeback_on_existing_page_supersedes_and_recomputes_rev() {
     );
     assert_eq!(hist.len(), 1, "old value demoted to history");
     assert_eq!(hist[0].content, "Bob works at Acme");
+    assert_eq!(mock.calls(), 1);
+    let offered = mock.tool_histories();
+    assert_eq!(offered.len(), 1, "planning uses the SDK submit protocol");
+    assert_eq!(
+        offered[0].len(),
+        1,
+        "no application tools or agent preparation"
+    );
+    assert_eq!(offered[0][0].name, "submit");
+    assert_detached_memory_usage(&db, 1).await;
 }
 
 /// `check_edit` and `apply_edit` must reach the same CAS verdict, including on the
@@ -651,6 +661,7 @@ async fn external_ingest_runs_as_system_agent_and_mines_memories() {
         mems.iter().all(|m| matches!(&m.evidence[0].source, EvidenceSource::ExternalNote { note, .. } if note == "Work Notes/standup")),
         "mined memories are External, tagged with the note path"
     );
+    assert_detached_memory_usage(&db, mock.calls()).await;
     let record = repo.latest_consolidation_record(U).await.unwrap().unwrap();
     let pending = PkmConsolidationStore::new(Arc::new(repo.clone()))
         .scoped(&record.consolidation_id, U)
@@ -666,6 +677,15 @@ async fn external_ingest_runs_as_system_agent_and_mines_memories() {
 
 #[tokio::test]
 async fn external_note_retries_extraction_after_failure() {
+    external_note_retries_extraction(false).await;
+}
+
+#[tokio::test]
+async fn external_note_cancelled_extraction_stays_pending_until_explicit_retry() {
+    external_note_retries_extraction(true).await;
+}
+
+async fn external_note_retries_extraction(cancel_in_flight: bool) {
     let extract = json!({
         "new_entities": [
             {"id":"fixture-page-1","path":"people/alex","kind":"person","name":"Alexandria Quill","description":"a colleague",
@@ -678,23 +698,44 @@ async fn external_note_retries_extraction_after_failure() {
         ]
     });
     let mock = Arc::new(MockModelProvider::new(vec![
-        MockResponse::Error(InferenceError::InferenceFailed("invalid request".into())),
+        if cancel_in_flight {
+            MockResponse::Pending
+        } else {
+            MockResponse::Error(InferenceError::InferenceFailed("invalid request".into()))
+        },
         MockResponse::ToolCalls(vec![("c2".into(), "submit".into(), extract)]),
     ]));
     let (db, harness, repo, _, sync) = setup(mock.clone()).await;
     seed_user_and_system_agent(&db).await;
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let sync = sync.with_cancellation(cancellation.clone());
     let edit = || EditOp::Upsert {
         path: "Work Notes/standup".into(),
         base_rev: None,
         content: "Alexandria Quill works at Globex.".into(),
     };
 
-    assert_eq!(
-        sync.apply_edit(&harness, U, &handle(), edit())
-            .await
-            .unwrap(),
-        EditResult::Indexed,
-    );
+    let user = handle();
+    let first = if cancel_in_flight {
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(sync.apply_edit(&harness, U, &user, edit()), async {
+                while mock.calls() == 0 {
+                    tokio::task::yield_now().await;
+                }
+                cancellation.cancel();
+            })
+        })
+        .await
+        .expect("external extraction must observe caller cancellation");
+        result
+    } else {
+        sync.apply_edit(&harness, U, &user, edit()).await
+    };
+    // Indexing already committed before extraction; cancellation must not pretend
+    // that it rolled the accepted mirror back or acknowledge derived memories.
+    assert_eq!(first.unwrap(), EditResult::Indexed);
+    assert_eq!(mock.calls(), 1);
+    assert!(repo.list_all_memories(U).await.unwrap().is_empty());
     let failed_page = repo
         .entity_by_path(U, "Work Notes/standup")
         .await
@@ -708,6 +749,7 @@ async fn external_note_retries_extraction_after_failure() {
         failed_page.extracted_rev, None,
         "failed extraction was not marked complete"
     );
+    let sync = sync.with_cancellation(tokio_util::sync::CancellationToken::new());
     let retry = sync
         .apply_edit(&harness, U, &handle(), edit())
         .await
@@ -729,6 +771,7 @@ async fn external_note_retries_extraction_after_failure() {
         .unwrap()
         .unwrap();
     assert_eq!(extracted_page.rev, extracted_page.extracted_rev);
+    assert_detached_memory_usage(&db, 1).await;
 }
 
 #[tokio::test]
@@ -1455,4 +1498,163 @@ async fn writeback_drops_add_ops_with_unknown_kinds() {
             .unwrap()
             .is_empty()
     );
+}
+
+/// Both direct planning and external-note extraction attribute usage without
+/// manufacturing a user-facing chat, even though the server owns the observer.
+async fn assert_detached_memory_usage(db: &Surreal<Db>, calls: usize) {
+    use frona::inference::usage::InferenceUsage;
+    let mut response = db
+        .query("SELECT *, meta::id(id) AS id FROM inference_usage; SELECT * FROM chat; SELECT * FROM message;")
+        .await
+        .unwrap();
+    let usage: Vec<InferenceUsage> = response.take(0).unwrap();
+    assert_eq!(usage.len(), calls);
+    assert!(usage.iter().all(|row| row.user_id == U
+        && row.kind_tag == "Memory"
+        && row.chat_id.is_none()
+        && !row.model_group.is_empty()));
+    for i in 1..=2 {
+        let rows: Vec<surrealdb::types::Value> = response.take(i).unwrap();
+        assert!(
+            rows.is_empty(),
+            "detached work must not create conversation rows"
+        );
+    }
+}
+
+#[tokio::test]
+async fn incomplete_writeback_preserves_page_and_retries_one_answer_only() {
+    let mock = Arc::new(MockModelProvider::new(vec![
+        MockResponse::ToolCalls(vec![(
+            "invalid".into(),
+            "submit".into(),
+            json!({"ops": "invalid"}),
+        )]),
+        MockResponse::ToolCalls(vec![(
+            "valid".into(),
+            "submit".into(),
+            json!({"ops": [
+                {"op": "add", "kind": "fact", "content": "Bob moved to London"}
+            ]}),
+        )]),
+    ]));
+    let (db, harness, repo, storage, sync) = setup(mock.clone()).await;
+    let original = "# Bob\n\nOriginal.";
+    let rev = author(&repo, &storage, "people/bob", original).await;
+    let edit = || EditOp::Upsert {
+        path: "Memory/people/bob".into(),
+        base_rev: Some(rev.clone()),
+        content: "# Bob\n\nBob moved to London.".into(),
+    };
+    let error = sync
+        .apply_edit(&harness, U, &handle(), edit())
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("submission budget exhausted"),
+        "{error}"
+    );
+    assert_eq!(
+        mock.calls(),
+        1,
+        "one-answer planning does not start refinement"
+    );
+    assert!(
+        repo.memories_for_entity(U, "people/bob")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let page = repo.entity_by_path(U, "people/bob").await.unwrap().unwrap();
+    assert_eq!(page.rev.as_deref(), Some(rev.as_str()));
+    assert_eq!(
+        storage.read_page(&vault(&storage), "people/bob").as_deref(),
+        Some(original)
+    );
+
+    assert!(matches!(
+        sync.apply_edit(&harness, U, &handle(), edit())
+            .await
+            .unwrap(),
+        EditResult::Accepted { .. }
+    ));
+    assert_eq!(
+        mock.calls(),
+        2,
+        "only explicit retry consumes the next answer"
+    );
+    assert_eq!(
+        repo.memories_for_entity(U, "people/bob")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_detached_memory_usage(&db, 2).await;
+}
+
+#[tokio::test]
+async fn cancelled_writeback_stops_in_flight_without_committing_and_can_retry() {
+    let mock = Arc::new(MockModelProvider::new(vec![MockResponse::Pending]));
+    let (db, harness, repo, storage, sync) = setup(mock.clone()).await;
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let sync = sync.with_cancellation(cancellation.clone());
+    let original = "# Bob\n\nOriginal.";
+    let rev = author(&repo, &storage, "people/bob", original).await;
+    let edit = || EditOp::Upsert {
+        path: "Memory/people/bob".into(),
+        base_rev: Some(rev.clone()),
+        content: "# Bob\n\nUpdated.".into(),
+    };
+    let user = handle();
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(sync.apply_edit(&harness, U, &user, edit()), async {
+            while mock.calls() == 0 {
+                tokio::task::yield_now().await;
+            }
+            cancellation.cancel();
+        })
+    })
+    .await
+    .expect("cancellation must stop an admitted provider call");
+    assert!(
+        matches!(result, Err(frona::core::error::AppError::Inference(error)) if error.is_cancelled())
+    );
+    assert_eq!(mock.calls(), 1);
+    assert!(
+        repo.memories_for_entity(U, "people/bob")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        repo.entity_by_path(U, "people/bob")
+            .await
+            .unwrap()
+            .unwrap()
+            .rev
+            .as_deref(),
+        Some(rev.as_str())
+    );
+    assert_eq!(
+        storage.read_page(&vault(&storage), "people/bob").as_deref(),
+        Some(original)
+    );
+    // A cancelled service cannot start another call or commit even a no-op edit.
+    assert!(sync.apply_edit(&harness, U, &user, edit()).await.is_err());
+    assert_eq!(mock.calls(), 1);
+
+    let sync = sync.with_cancellation(tokio_util::sync::CancellationToken::new());
+    mock.enqueue(MockResponse::ToolCalls(vec![(
+        "retry".into(),
+        "submit".into(),
+        json!({"ops": []}),
+    )]));
+    assert!(matches!(
+        sync.apply_edit(&harness, U, &user, edit()).await.unwrap(),
+        EditResult::Accepted { .. }
+    ));
+    assert_eq!(mock.calls(), 2);
+    assert_detached_memory_usage(&db, 1).await;
 }

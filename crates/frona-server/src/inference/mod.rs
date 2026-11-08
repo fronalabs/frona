@@ -20,9 +20,7 @@ pub use self::hitl::{
     Hitl, HitlDelivery, HitlOutcome, HitlRequest, HitlResponse, ResolveOutcome, VaultGrant,
 };
 pub use self::request::{InferenceContext, InferenceRequest, InferenceResponse, active_chat};
-pub use self::structured::{
-    AnswerAttempt, StructuredConversation, structured_inference, structured_inference_with_tools,
-};
+pub use self::structured::structured_inference;
 pub use self::tool_loop::{InferenceEvent, InferenceEventKind};
 pub use crate::chat::broadcast::EventSender;
 

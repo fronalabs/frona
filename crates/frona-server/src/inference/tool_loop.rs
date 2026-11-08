@@ -140,27 +140,6 @@ pub(crate) fn to_rig_tool_definitions(
     definitions
 }
 
-/// Append the model's assistant response to `chat_history`, returning whether it
-/// contained tool calls. The remaining legacy structured callers reuse the same
-/// UI projection as persistent execution; their migration is owned by HSDK-31–40.
-pub(crate) async fn process_model_response(
-    contents: &[AssistantContent],
-    chat_history: &mut Vec<RigMessage>,
-) -> bool {
-    let has_tool_calls = contents
-        .iter()
-        .any(|item| matches!(item, AssistantContent::ToolCall(_)));
-    let content = if contents.is_empty() {
-        vec![AssistantContent::text("")]
-    } else {
-        contents.to_vec()
-    };
-    chat_history.extend(crate::tool::persistent_dispatch::project_messages(&[
-        RigMessage::Assistant { id: None, content },
-    ]));
-    has_tool_calls
-}
-
 fn extend_unique_attachments(
     all_attachments: &mut Vec<crate::storage::Attachment>,
     attachments: &[crate::storage::Attachment],

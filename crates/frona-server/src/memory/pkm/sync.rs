@@ -7,7 +7,9 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use rig_core::completion::Message as RigMessage;
+use frona_harness::inference::InferenceError;
+use frona_harness::{ManualError, ModelError};
+use tokio_util::sync::CancellationToken;
 
 use crate::agent::harness::Harness;
 use crate::agent::prompt::PromptLoader;
@@ -166,6 +168,7 @@ pub struct PkmSyncService {
     /// Resolves the background model group lazily by name (see [`model_group`]).
     model_providers: Arc<ModelProviderService>,
     operations: super::operations::PkmOperationCoordinator,
+    cancellation: CancellationToken,
 }
 
 impl PkmSyncService {
@@ -205,7 +208,25 @@ impl PkmSyncService {
             prompts,
             model_providers,
             operations,
+            cancellation: CancellationToken::new(),
         }
+    }
+
+    /// Bind cancellation to this sync request's planning and extraction work.
+    /// Already committed edits or mirrored external notes are not rolled back;
+    /// unfinished extraction remains pending for an explicit subsequent push.
+    pub fn with_cancellation(mut self, cancellation: CancellationToken) -> Self {
+        self.cancellation = cancellation;
+        self
+    }
+
+    fn check_cancelled(&self) -> Result<(), AppError> {
+        if self.cancellation.is_cancelled() {
+            return Err(AppError::Inference(Box::new(InferenceError::Cancelled(
+                "PKM sync cancelled".into(),
+            ))));
+        }
+        Ok(())
     }
 
     /// Resolve the background model group by name (`memory.model_group`, falling
@@ -354,11 +375,13 @@ impl PkmSyncService {
         handle: &Handle,
         op: EditOp,
     ) -> Result<EditResult, AppError> {
+        self.check_cancelled()?;
         let _operation = self
             .operations
             .try_begin_write(user_id)
             .ok_or_else(|| AppError::Conflict("PKM reset is in progress".into()))?;
         let vault = self.vault(user_id, handle).await?;
+        self.check_cancelled()?;
         // Route by prefix: a path under the Memory directory is Internal (bidirectional
         // write-back); anything else is External (User Vault) → read-only ingest.
         let Some(clean) = vault.page_from_any(op.path()) else {
@@ -445,6 +468,7 @@ impl PkmSyncService {
                 // Keep the file finalization ordered with same-process edits. The
                 // repository CAS is still required for writers in other processes.
                 let _page_edit = self.operations.begin_page_edit(user_id, &clean_path).await;
+                self.check_cancelled()?;
                 match self
                     .repo
                     .commit_page_edit_cas(user_id, &clean_path, &write)
@@ -490,6 +514,7 @@ impl PkmSyncService {
                 // Serialize same-process pushes for this note. The durable revision
                 // checks below also reject stale work from another process.
                 let _page_edit = self.operations.begin_page_edit(user_id, &path).await;
+                self.check_cancelled()?;
                 let progress = self
                     .repo
                     .upsert_external_page(user_id, &path, &content, &rev)
@@ -563,11 +588,12 @@ impl PkmSyncService {
         };
         // Mine with the same extraction operation as the sweep. The pages it mints land
         // in the user's dirty set and are typed by the next sweep's consolidation.
-        let llm = ConsolidationInference::new(
+        let llm = ConsolidationInference::with_cancel_token(
             harness.clone(),
             self.model_group()?,
             self.prompts.clone(),
             user_id.to_string(),
+            self.cancellation.clone(),
         );
         let ctx = Arc::new(ConsolidationContext::detached(
             scope,
@@ -579,6 +605,7 @@ impl PkmSyncService {
         let batch = Ingest::new(ctx.clone()).run(&transcript).await?;
         let mut checkpoint = ctx.record().await;
         checkpoint.stats.absorb_ingest_batch(&batch);
+        self.check_cancelled()?;
         self.repo
             .commit_external_extract_patch_with_checkpoint(
                 user_id,
@@ -636,14 +663,26 @@ impl PkmSyncService {
             &[("memories", mem_lines.trim()), ("diff", diff.trim())],
         )?;
         let usage = UsageContext::new(InferenceKind::Memory, user_id, model_group.name.clone());
-        let mut parsed: WriteBackOps = harness
-            .structured_inference(
-                &model_group,
-                &rendered.system,
-                vec![RigMessage::user(rendered.input)],
-                usage,
-            )
-            .await?;
+        let sdk = frona_harness::Harness::new(frona_harness::Model::from_group(model_group));
+        let mut parsed = sdk
+            .run(rendered.input)
+            .instructions(rendered.system)
+            .observer(harness.usage_service.scoped(&usage))
+            .cancellation(self.cancellation.clone())
+            .structured::<WriteBackOps>()
+            // Preserve one-answer planning: no refinement inspector or domain repair.
+            // Provider retries/fallbacks retain their own admission checks.
+            .submission_attempts(1)
+            .await
+            .map_err(|incomplete| match incomplete.reason {
+                ManualError::Stop(stop) => AppError::Inference(Box::new(stop.into())),
+                ManualError::Model(ModelError::Provider(error)) => {
+                    AppError::Inference(Box::new(error))
+                }
+                reason => {
+                    AppError::Internal(format!("pkm writeback planning incomplete: {reason}"))
+                }
+            })?;
         for operation in &mut parsed.ops {
             if !operation.memory_id.trim().is_empty() {
                 operation.memory_id = prompt_ids.expand(&operation.memory_id)?;

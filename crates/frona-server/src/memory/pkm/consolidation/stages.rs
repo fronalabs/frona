@@ -364,7 +364,9 @@ impl Consolidator {
                 }
                 Err(error) => {
                     warn!(%error, entity = %path, "pkm resolve: resolve conversation failed");
-                    return Ok(None);
+                    // An interrupted investigation must remain retryable. Advancing
+                    // this stage would hide its pending identity decision.
+                    return Err(error);
                 }
             }
         };

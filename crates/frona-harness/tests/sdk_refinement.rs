@@ -481,3 +481,139 @@ async fn manual_loop_can_reuse_the_same_matchable_inspector_decisions() {
     assert_eq!(retained.unwrap().0, 1);
     assert_eq!(manual.conversation().status(), ConversationStatus::Finished);
 }
+
+#[tokio::test]
+async fn response_attempt_cap_excludes_exploration_and_accepts_the_last_mixed_submission() {
+    let (model, requests) = scripted_model(vec![
+        Ok(output(vec![call("explore", "read", json!({}))])),
+        Ok(output(vec![AssistantContent::text("missing submission")])),
+        Ok(output(vec![call(
+            "malformed",
+            "submit",
+            json!({"value":"bad"}),
+        )])),
+        Ok(output(vec![
+            call("last-read", "read", json!({})),
+            call("valid", "submit", json!({"value":7})),
+        ])),
+    ]);
+    let budget = DefaultBudget::new(BudgetLimits {
+        model_attempts: Some(4),
+        tool_calls: Some(2),
+        ..Default::default()
+    });
+    let harness = Harness::new(model);
+    let run = harness
+        .run("input")
+        .tool(tool("read", "Read", |_: Value| async { Ok("evidence") }).unwrap())
+        .budget(&budget)
+        .structured::<Answer>()
+        .submission_attempts(3);
+    let report = run.report();
+    let answer = run
+        .inspect(async |answer| Ok::<_, ()>(Decision::accept(answer.value)))
+        .await
+        .unwrap();
+    assert_eq!(answer, 7);
+    assert_eq!(requests.lock().unwrap().len(), 4);
+    assert_eq!(budget.snapshot().tool_calls, 2);
+    assert_eq!(
+        report.snapshot().outcome,
+        Some(frona_harness::RunOutcome::Completed)
+    );
+}
+
+#[tokio::test]
+async fn response_attempt_cap_stops_missing_submissions_and_is_fresh_on_manual_resume() {
+    let (model, requests) = scripted_model(vec![
+        Ok(output(vec![AssistantContent::text("not yet")])),
+        submitted(9),
+    ]);
+    let harness = Harness::new(model);
+    let mut session = harness
+        .run("input")
+        .structured::<Answer>()
+        .submission_attempts(1)
+        .manual();
+    session.call_model().await.unwrap();
+    assert!(matches!(
+        session.call_model().await,
+        Err(ManualError::SubmissionAttemptsExhausted { maximum: 1 })
+    ));
+    assert_eq!(requests.lock().unwrap().len(), 1);
+    let answer = harness
+        .resume(session.into_conversation())
+        .structured::<Answer>()
+        .submission_attempts(1)
+        .await
+        .unwrap();
+    assert_eq!(answer.value, 9);
+    assert_eq!(requests.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn closed_exploration_counts_unoffered_tool_only_responses_as_missing_submissions() {
+    let (model, requests) = scripted_model(vec![
+        Ok(output(vec![call("explore", "read", json!({}))])),
+        Ok(output(vec![call("unoffered", "read", json!({}))])),
+    ]);
+    let harness = Harness::new(model);
+    let incomplete = harness
+        .run("input")
+        .tool(tool("read", "Read", |_: Value| async { Ok("evidence") }).unwrap())
+        .exploration_turns(1)
+        .structured::<Answer>()
+        .submission_attempts(1)
+        .inspect(async |answer| Ok::<_, ()>(Decision::accept(answer.value)))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        incomplete.reason,
+        ManualError::SubmissionAttemptsExhausted { maximum: 1 }
+    ));
+    assert_eq!(requests.lock().unwrap().len(), 2);
+    assert_eq!(
+        incomplete
+            .report
+            .actions
+            .iter()
+            .filter(|action| action.started)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn last_allowed_response_still_requires_shared_budget_admission_for_its_tool() {
+    let (model, _) = scripted_model(vec![Ok(output(vec![
+        call("read", "read", json!({})),
+        call("valid", "submit", json!({"value":7})),
+    ]))]);
+    let budget = DefaultBudget::new(BudgetLimits {
+        tokens: Some(3),
+        ..Default::default()
+    });
+    let incomplete = Harness::new(model)
+        .run("input")
+        .tool(
+            tool("read", "Read", |_: Value| async {
+                panic!("budget must prevent this effect");
+                #[allow(unreachable_code)]
+                Ok("never")
+            })
+            .unwrap(),
+        )
+        .budget(&budget)
+        .structured::<Answer>()
+        .submission_attempts(1)
+        .inspect(async |answer| Ok::<_, ()>(Decision::accept(answer.value)))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        incomplete.reason,
+        ManualError::Dispatch(frona_harness::ToolDispatchError::Stop(
+            ExecutionStop::BudgetExhausted(_)
+        )) | ManualError::Stop(ExecutionStop::BudgetExhausted(_))
+    ));
+    assert_eq!(budget.snapshot().tool_calls, 0);
+}

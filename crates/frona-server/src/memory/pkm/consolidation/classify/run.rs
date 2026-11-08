@@ -1,30 +1,259 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::{
+    collections::{BTreeSet, HashMap, HashSet},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+};
 
 use tracing::warn;
 
-use crate::core::error::AppError;
-use crate::memory::pkm::consolidation::Verdict;
-use crate::memory::pkm::consolidation::candidates::{
-    RESOLUTION_PROMPT_LIMIT, Request, Search, Subject,
+use crate::memory::pkm::{
+    consolidation::{
+        ConsolidationProgress, Consolidator, PromptIds, PromptSpec, bad_term_feedback,
+        candidates::{RESOLUTION_PROMPT_LIMIT, Request, Search, Subject},
+        classify::{
+            claim_automatic_identity_discovery,
+            proposal::{
+                ATTRIBUTE_CANDIDATES, AttributeDecisions, AttributeMapping, Classification,
+                EVIDENCE_VOCAB_HITS, EntityProposal, NewEntity, ProposalSet, RelationMapping,
+                accept_mints, attribute_edits, classification_edits, render_value, search_terms,
+            },
+        },
+        projection_rejection_details, prompt_evidence, validate_proposal_projection,
+    },
+    model::{
+        EntityCategory, KnowledgeConsolidationEntity, KnowledgeEntity, KnowledgeEntityLink,
+        LinkOrigin,
+    },
+    ontology::{OntologyManager, SchemaEdit},
 };
-use crate::memory::pkm::consolidation::classify::claim_automatic_identity_discovery;
-use crate::memory::pkm::consolidation::classify::proposal::{
-    ATTRIBUTE_CANDIDATES, AttributeDecisions, AttributeMapping, Classification,
-    EVIDENCE_VOCAB_HITS, EntityProposal, NewEntity, ProposalSet, RelationMapping, accept_mints,
-    attribute_edits, classification_edits, render_value, search_terms,
-};
-use crate::memory::pkm::consolidation::{
-    ConsolidationProgress, Consolidator, bad_term_feedback, projection_rejection_details,
-    validate_proposal_projection,
-};
-use crate::memory::pkm::consolidation::{PromptIds, PromptSpec, prompt_evidence};
-use crate::memory::pkm::model::{
-    EntityCategory, KnowledgeConsolidationEntity, KnowledgeEntity, KnowledgeEntityLink, LinkOrigin,
-};
-use crate::memory::pkm::ontology::{OntologyManager, SchemaEdit};
-use crate::tool::registry::ToolFilter;
+use crate::{core::error::AppError, tool::registry::ToolFilter};
+use frona_harness::{Decision, FailureKind, ManualError, RunOutcome};
+
+/// Application-owned validation state. The inspector and research tools share the
+/// same diagnostics, while each async inspection owns its state at Send boundaries.
+struct ClassificationInspection {
+    consolidator: Consolidator,
+    ontology: OntologyManager,
+    entity: KnowledgeConsolidationEntity,
+    proposals: ProposalSet,
+    prompt_ids: PromptIds,
+    existing: HashSet<String>,
+    overlay: Arc<crate::memory::pkm::consolidation::tools::ontology::OntologyToolOverlay>,
+    requires_page_shape: bool,
+    attempts: AtomicUsize,
+    failures: AtomicUsize,
+    details: std::sync::Mutex<Vec<String>>,
+    challenged: AtomicBool,
+}
+
+impl ClassificationInspection {
+    async fn inspect(
+        &self,
+        candidate: Classification,
+    ) -> Result<Decision<Classification>, AppError> {
+        let ctx = &self.consolidator.ctx;
+        let prefixes = &self.consolidator.prefixes;
+        let ontology_manager = &self.ontology;
+        let entity = &self.entity;
+        let identity_page = entity;
+        let proposals_snapshot = &self.proposals;
+        let validation_prompt_ids = &self.prompt_ids;
+        let existing = &self.existing;
+        let diagnostic_store = &self.overlay.diagnostics;
+        let discovery_calls = &self.overlay.tool_calls;
+        let (attempts, failures, details, challenged) = (
+            &self.attempts,
+            &self.failures,
+            &self.details,
+            &self.challenged,
+        );
+        let requires_page_shape = self.requires_page_shape;
+        attempts.fetch_add(1, Ordering::Relaxed);
+        if candidate.entity.name.trim().is_empty() && requires_page_shape {
+            failures.fetch_add(1, Ordering::Relaxed);
+            let feedback = "The canonical entity name cannot be empty. Re-submit the complete classification with entity, classes, relations, attributes, new_entities, declarations, has_keys, and inverse_functional_properties.".to_string();
+            details
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(feedback.clone());
+            return Ok(Decision::revise(feedback));
+        }
+        let classes = candidate.class_curies();
+        if classes.is_empty() {
+            failures.fetch_add(1, Ordering::Relaxed);
+            details
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push("submission contained no classes".into());
+            return Ok(Decision::abandon("classification contained no classes"));
+        }
+        // A classification made without looking for the entity can be
+        // internally valid and still type a duplicate mention incorrectly.
+        // Give the first otherwise-formed submission one automatic identity
+        // discovery. Multiple plausible entities require an explicit second
+        // submission; the challenge is intentionally one-shot.
+        if claim_automatic_identity_discovery(discovery_calls, challenged) {
+            let mut subject_page = identity_page.clone();
+            subject_page.kinds = classes.clone();
+            if !candidate.entity.name.trim().is_empty() {
+                subject_page.name = candidate.entity.name.trim().to_string();
+                subject_page.description = candidate.entity.description.clone();
+                subject_page.aliases = candidate
+                    .entity
+                    .aliases
+                    .iter()
+                    .map(|alias| alias.trim().to_string())
+                    .filter(|alias| !alias.is_empty())
+                    .collect();
+                subject_page.rederive_search();
+            }
+            let candidates = Search::new(ctx.view.clone())
+                .find_candidates(
+                    Request {
+                        subject: Subject::from_entity(&subject_page),
+                        eligible_paths: None,
+                        additional_candidates: Vec::new(),
+                        forced_paths: Vec::new(),
+                        limit: RESOLUTION_PROMPT_LIMIT,
+                    },
+                    |_| {},
+                    |_, _| Some(0),
+                )
+                .await?;
+            if candidates.len() > 1 {
+                failures.fetch_add(1, Ordering::Relaxed);
+                let choices = candidates
+                    .iter()
+                    .map(|candidate| {
+                        format!(
+                            "- {} — {} [{}]: {}",
+                            candidate.entity.path,
+                            candidate.entity.name,
+                            candidate.entity.kinds.join(", "),
+                            candidate.entity.description,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let feedback = format!(
+                    "Automatic identity discovery found multiple plausible existing entities:\n{choices}\nConfirm whether this mention is distinct or revise the complete classification using the matching identity. Re-submit all fields; the next complete submission will proceed through normal ontology validation."
+                );
+                details
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(feedback.clone());
+                return Ok(Decision::revise(feedback));
+            }
+        }
+        if let Some(feedback) = candidate.declaration_feedback(existing, prefixes) {
+            failures.fetch_add(1, Ordering::Relaxed);
+            details
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(feedback.clone());
+            return Ok(Decision::revise(feedback));
+        }
+        if let Some(feedback) = candidate.identity_marker_feedback(entity) {
+            failures.fetch_add(1, Ordering::Relaxed);
+            details
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(feedback.clone());
+            return Ok(Decision::revise(feedback));
+        }
+        if let Some(feedback) =
+            bad_term_feedback(ctx, PromptSpec::CLASSIFY, prefixes, candidate.terms())?
+        {
+            failures.fetch_add(1, Ordering::Relaxed);
+            details
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(feedback.clone());
+            return Ok(Decision::revise(feedback));
+        }
+        let mut validation_candidate = candidate.clone();
+        validation_candidate.expand_prompt_ids(validation_prompt_ids)?;
+        // Compile every half of the response before admission so the gate also
+        // validates relation and attribute declarations.
+        let mut trial = proposals_snapshot.clone();
+        let fresh = self
+            .consolidator
+            .mint_entities(entity, &validation_candidate.new_entities, &mut trial)
+            .await;
+        let staged_targets: Vec<String> = trial.staged_entities.keys().cloned().collect();
+        let mut edits = classification_edits(&validation_candidate);
+        let (relation_edits, rekeys) = self
+            .consolidator
+            .relation_proposals(ontology_manager, &validation_candidate.relations)
+            .await;
+        let (attribute_edits, attr_rekeys, promoted) = self
+            .consolidator
+            .attribute_proposals(
+                ontology_manager,
+                entity,
+                &validation_candidate.attributes,
+                &fresh,
+                &staged_targets,
+            )
+            .await;
+        edits.extend(relation_edits);
+        edits.extend(attribute_edits);
+        if !validation_candidate.entity.name.trim().is_empty() {
+            trial
+                .entity_shapes
+                .insert(entity.path.clone(), validation_candidate.entity.clone());
+        }
+        trial.record(
+            &entity.path,
+            EntityProposal {
+                classes: classes.clone(),
+                edits,
+                rekeys,
+                attr_rekeys,
+                promoted,
+                promoted_sources: HashMap::new(),
+                retracted: Vec::new(),
+                has_keys: validation_candidate.has_keys.clone(),
+                inverse_functional_properties: validation_candidate
+                    .inverse_functional_properties
+                    .clone(),
+            },
+        );
+        let validation = validate_proposal_projection(ctx, ontology_manager, &trial).await?;
+        if validation.is_valid() {
+            return Ok(Decision::accept(candidate));
+        }
+        failures.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut held = diagnostic_store
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            held.clear();
+            held.extend(
+                validation
+                    .diagnostics
+                    .iter()
+                    .cloned()
+                    .map(|d| (d.id.clone(), d)),
+            );
+        }
+        let detail = projection_rejection_details(&validation);
+        details
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(detail.clone());
+        let feedback = ctx.llm.reject(
+            PromptSpec::CLASSIFY,
+            &[
+                ("violations", detail.as_str()),
+                ("class", classes.join(", ").as_str()),
+            ],
+        )?;
+        Ok(Decision::revise(feedback))
+    }
+}
 
 impl Consolidator {
     /// Classify **and its schema-satisfaction loop** as a non-persistent tool
@@ -32,11 +261,12 @@ impl Consolidator {
     /// the schema/graph via the ontology tools); the SYSTEM validates each submission
     /// with the cumulative projection validator; on a violation the reasoner
     /// errors are fed back - through our own `classify/reject.md` prompt - for a
-    /// revision, until it validates or the turn budget runs out. On success, commit the
-    /// mint + set the class; if it never converges (confident-but-violating), quarantine
-    /// the entity's live facts as `Suspect` and defer typing (the ladder's isolated rung).
-    /// Returns whether the entity was typed. An `Err` means the conversation never produced
-    /// an answer at all - the entity is left alone, not quarantined.
+    /// revision, until it validates or the response-attempt cap runs out. Accepted
+    /// proposals are banked and staged for the application's later graph commit.
+    /// Rejected classifications are discarded without hiding durable facts.
+    /// Returns whether the entity was typed. Execution or inspector failures are errors,
+    /// including interruption after a rejected candidate; the entity remains retryable.
+    /// Semantic exhaustion/empty abandonment is an explicit domain rejection.
     pub(crate) async fn classify_entity(
         &self,
         ontology_manager: &OntologyManager,
@@ -138,76 +368,70 @@ impl Consolidator {
             .unwrap_or_else(|| "[]".into());
         let identity_evidence = prompt_evidence(&entity.identity_evidence);
 
-        let rendered = self.ctx.llm.render(
-            PromptSpec::CLASSIFY,
-            &[
-                ("name", entity.name.as_str()),
-                (
-                    "description",
-                    if entity.description.is_empty() {
-                        "(none)"
-                    } else {
-                        &entity.description
-                    },
-                ),
-                (
-                    "facts",
-                    if fact_lines.is_empty() {
-                        "(none)\n"
-                    } else {
-                        &fact_lines
-                    },
-                ),
-                (
-                    "relations",
-                    if relation_lines.is_empty() {
-                        "(none)\n"
-                    } else {
-                        &relation_lines
-                    },
-                ),
-                (
-                    "attributes",
-                    if attribute_lines.is_empty() {
-                        "(none)\n"
-                    } else {
-                        &attribute_lines
-                    },
-                ),
-                ("minted", &minted),
-                ("evidence", &evidence_text),
-                ("contributions", &contribution_text),
-                ("identity_evidence", &identity_evidence),
-            ],
-        )?;
+        let vars = [
+            ("name", entity.name.as_str()),
+            (
+                "description",
+                if entity.description.is_empty() {
+                    "(none)"
+                } else {
+                    &entity.description
+                },
+            ),
+            (
+                "facts",
+                if fact_lines.is_empty() {
+                    "(none)\n"
+                } else {
+                    &fact_lines
+                },
+            ),
+            (
+                "relations",
+                if relation_lines.is_empty() {
+                    "(none)\n"
+                } else {
+                    &relation_lines
+                },
+            ),
+            (
+                "attributes",
+                if attribute_lines.is_empty() {
+                    "(none)\n"
+                } else {
+                    &attribute_lines
+                },
+            ),
+            ("minted", &minted),
+            ("evidence", &evidence_text),
+            ("contributions", &contribution_text),
+            ("identity_evidence", &identity_evidence),
+        ];
 
         let overlay = self.tool_overlay(ontology_manager, proposals).await?;
-        let diagnostic_store = overlay.diagnostics.clone();
-        let discovery_calls = overlay.tool_calls.clone();
         let tools =
             crate::memory::pkm::consolidation::tools::ontology::build_ontology_tools_with_overlay(
                 ontology_manager.clone(),
                 &self.ctx,
                 self.prefixes.clone(),
-                Some(overlay),
+                Some(overlay.clone()),
                 crate::memory::pkm::consolidation::tools::ontology::OntologyToolProfile::Classify,
             );
-        let mut input = rendered.input;
-        if let Some(rejection) = initial_rejection {
-            input.push_str("\n\nA previously accepted checkpoint proposal is no longer valid against the reconstructed graph. Revise it before it can be staged:\n");
-            input.push_str(rejection);
+        if self.config.pkm_consolidation_max_submissions == 0 {
+            return Err(AppError::Internal(
+                "classification: max_submissions must be at least one".into(),
+            ));
         }
-        let mut convo = self
+        let rejection = initial_rejection.map(|rejection| format!(
+            "\n\nA previously accepted checkpoint proposal is no longer valid against the reconstructed graph. Revise it before it can be staged:\n{rejection}"
+        )).unwrap_or_default();
+        let harness = self
             .ctx
             .llm
-            .conversation::<Classification>(
-                self.ctx.scope.chat_id.as_deref(),
+            .sdk(
                 &self.ctx.scope.agent_id,
-                rendered.system,
-                input,
                 &[ToolFilter::AllowList(&[])],
                 &tools,
-                self.config.pkm_consolidation_max_tool_turns,
             )
             .await?;
 
@@ -222,203 +446,46 @@ impl Consolidator {
             .chain(catalog.object_properties)
             .chain(catalog.data_properties)
             .collect();
-        let (ctx, prefixes) = (&self.ctx, &px);
-        let proposals_snapshot = proposals.clone();
-        let existing = &existing;
-        let validation_attempts = Arc::new(AtomicUsize::new(0));
-        let validation_failures = Arc::new(AtomicUsize::new(0));
-        let validation_details = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let attempts = validation_attempts.clone();
-        let failures = validation_failures.clone();
-        let details = validation_details.clone();
-        let identity_challenged = Arc::new(AtomicBool::new(false));
-        let challenged = identity_challenged.clone();
-        let identity_page = entity.clone();
-        let validation_prompt_ids = &prompt_ids;
-        let requires_page_shape = progress
-            .entity_row(&entity.path)
-            .is_some_and(|row| !row.contributions.is_empty());
-        let refined = convo
-            .refine(self.config.pkm_consolidation_max_submissions, move |candidate: Classification| {
-                let attempts = attempts.clone();
-                let failures = failures.clone();
-                let details = details.clone();
-                let challenged = challenged.clone();
-                let discovery_calls = discovery_calls.clone();
-                let identity_page = identity_page.clone();
-                let proposals_snapshot = proposals_snapshot.clone();
-                let diagnostic_store = diagnostic_store.clone();
-                async move {
-                    attempts.fetch_add(1, Ordering::Relaxed);
-                    if candidate.entity.name.trim().is_empty() && requires_page_shape {
-                        failures.fetch_add(1, Ordering::Relaxed);
-                        let feedback = "The canonical entity name cannot be empty. Re-submit the complete classification with entity, classes, relations, attributes, new_entities, declarations, has_keys, and inverse_functional_properties.".to_string();
-                        details.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .push(feedback.clone());
-                        return Ok(Verdict::Revise { feedback, keep: None });
-                    }
-                    let classes = candidate.class_curies();
-                    if classes.is_empty() {
-                        failures.fetch_add(1, Ordering::Relaxed);
-                        details
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .push("submission contained no classes".into());
-                        return Ok(Verdict::Abandon);
-                    }
-                    // A classification made without looking for the entity can be
-                    // internally valid and still type a duplicate mention incorrectly.
-                    // Give the first otherwise-formed submission one automatic identity
-                    // discovery. Multiple plausible entities require an explicit second
-                    // submission; the challenge is intentionally one-shot.
-                    if claim_automatic_identity_discovery(&discovery_calls, &challenged) {
-                        let mut subject_page = identity_page.clone();
-                        subject_page.kinds = classes.clone();
-                        if !candidate.entity.name.trim().is_empty() {
-                            subject_page.name = candidate.entity.name.trim().to_string();
-                            subject_page.description = candidate.entity.description.clone();
-                            subject_page.aliases = candidate.entity.aliases.iter()
-                                .map(|alias| alias.trim().to_string())
-                                .filter(|alias| !alias.is_empty())
-                                .collect();
-                            subject_page.rederive_search();
-                        }
-                        let candidates = Search::new(ctx.view.clone())
-                            .find_candidates(
-                                Request {
-                                    subject: Subject::from_entity(&subject_page),
-                                    eligible_paths: None,
-                                    additional_candidates: Vec::new(),
-                                    forced_paths: Vec::new(),
-                                    limit: RESOLUTION_PROMPT_LIMIT,
-                                },
-                                |_| {},
-                                |_, _| Some(0),
-                            )
-                            .await?;
-                        if candidates.len() > 1 {
-                            failures.fetch_add(1, Ordering::Relaxed);
-                            let choices = candidates.iter().map(|candidate| format!(
-                                "- {} — {} [{}]: {}",
-                                candidate.entity.path,
-                                candidate.entity.name,
-                                candidate.entity.kinds.join(", "),
-                                candidate.entity.description,
-                            )).collect::<Vec<_>>().join("\n");
-                            let feedback = format!(
-                                "Automatic identity discovery found multiple plausible existing entities:\n{choices}\nConfirm whether this mention is distinct or revise the complete classification using the matching identity. Re-submit all fields; the next complete submission will proceed through normal ontology validation."
-                            );
-                            details.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .push(feedback.clone());
-                            return Ok(Verdict::Revise { feedback, keep: None });
-                        }
-                    }
-                    if let Some(feedback) = candidate.declaration_feedback(existing, prefixes) {
-                        failures.fetch_add(1, Ordering::Relaxed);
-                        details.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .push(feedback.clone());
-                        return Ok(Verdict::Revise { feedback, keep: None });
-                    }
-                    if let Some(feedback) = candidate.identity_marker_feedback(entity) {
-                        failures.fetch_add(1, Ordering::Relaxed);
-                        details.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .push(feedback.clone());
-                        return Ok(Verdict::Revise { feedback, keep: None });
-                    }
-                    if let Some(feedback) = bad_term_feedback(
-                        ctx,
-                        PromptSpec::CLASSIFY,
-                        prefixes,
-                        candidate.terms(),
-                    )? {
-                        failures.fetch_add(1, Ordering::Relaxed);
-                        details
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .push(feedback.clone());
-                        return Ok(Verdict::Revise { feedback, keep: None });
-                    }
-                    let mut validation_candidate = candidate.clone();
-                    validation_candidate.expand_prompt_ids(validation_prompt_ids)?;
-                    // Compile every half of the response before admission so the gate also
-                    // validates relation and attribute declarations.
-                    let mut trial = proposals_snapshot.clone();
-                    let fresh = self
-                        .mint_entities(
-                            entity,
-                            &validation_candidate.new_entities,
-                            &mut trial,
-                        )
-                        .await;
-                    let staged_targets: Vec<String> = trial
-                        .staged_entities
-                        .keys()
-                        .cloned()
-                        .collect();
-                    let mut edits = classification_edits(&validation_candidate);
-                    let (relation_edits, rekeys) = self
-                        .relation_proposals(ontology_manager, &validation_candidate.relations).await;
-                    let (attribute_edits, attr_rekeys, promoted) = self
-                        .attribute_proposals(
-                            ontology_manager,
-                            entity,
-                            &validation_candidate.attributes,
-                            &fresh,
-                            &staged_targets,
-                        ).await;
-                    edits.extend(relation_edits);
-                    edits.extend(attribute_edits);
-                    if !validation_candidate.entity.name.trim().is_empty() {
-                        trial.entity_shapes.insert(
-                            entity.path.clone(), validation_candidate.entity.clone(),
-                        );
-                    }
-                    trial.record(&entity.path, EntityProposal {
-                        classes: classes.clone(), edits, rekeys, attr_rekeys, promoted,
-                        promoted_sources: HashMap::new(),
-                        retracted: Vec::new(),
-                        has_keys: validation_candidate.has_keys.clone(),
-                        inverse_functional_properties: validation_candidate.inverse_functional_properties.clone(),
-                    });
-                    let validation = validate_proposal_projection(
-                        ctx, ontology_manager, &trial,
-                    ).await?;
-                    if validation.is_valid() {
-                        return Ok(Verdict::Accept(candidate));
-                    }
-                    failures.fetch_add(1, Ordering::Relaxed);
-                    {
-                        let mut held = diagnostic_store.write()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        held.clear();
-                        held.extend(validation.diagnostics.iter().cloned().map(|d| (d.id.clone(), d)));
-                    }
-                    let detail = projection_rejection_details(&validation);
-                    details
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .push(detail.clone());
-                    let feedback = ctx.llm.reject(
-                        PromptSpec::CLASSIFY,
-                        &[
-                            ("violations", detail.as_str()),
-                            ("class", classes.join(", ").as_str()),
-                        ],
-                    )?;
-                    Ok(Verdict::Revise { feedback, keep: None })
-                }
+        let inspection = Arc::new(ClassificationInspection {
+            consolidator: self.clone(),
+            ontology: ontology_manager.clone(),
+            entity: entity.clone(),
+            proposals: proposals.clone(),
+            prompt_ids: prompt_ids.clone(),
+            existing,
+            overlay,
+            requires_page_shape: progress
+                .entity_row(&entity.path)
+                .is_some_and(|row| !row.contributions.is_empty()),
+            attempts: AtomicUsize::new(0),
+            failures: AtomicUsize::new(0),
+            details: std::sync::Mutex::new(Vec::new()),
+            challenged: AtomicBool::new(false),
+        });
+        let run = harness
+            .run_with_input_suffix(PromptSpec::CLASSIFY, &vars, &rejection)?
+            .exploration_turns(self.config.pkm_consolidation_max_tool_turns)
+            .structured::<Classification>()
+            .submission_attempts(self.config.pkm_consolidation_max_submissions);
+        let report = run.report();
+        let inspector = inspection.clone();
+        let refined = run
+            .inspect(move |candidate| {
+                let inspector = inspector.clone();
+                async move { inspector.inspect(candidate).await }
             })
             .await;
-        let request_count = convo.requests_used();
+        let execution = report.snapshot();
+        let request_count = execution.logical_calls();
         let diagnostic = serde_json::json!({
             "evidence": evidence,
             "request_count": request_count,
             "one_request": request_count == 1,
             "fallback_investigation_requests": request_count.saturating_sub(1),
             "validation": {
-                "attempts": validation_attempts.load(Ordering::Relaxed),
-                "failures": validation_failures.load(Ordering::Relaxed),
-                "failure_batches": validation_details
+                "attempts": inspection.attempts.load(Ordering::Relaxed),
+                "failures": inspection.failures.load(Ordering::Relaxed),
+                "failure_batches": inspection.details
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone(),
@@ -433,15 +500,38 @@ impl Consolidator {
             &entity.path,
             &diagnostic,
         );
-        // A model that never *answered* is not a model that answered wrongly. An `Err`
-        // here is a transient infrastructure failure - timeout, provider error, budget -
-        // and nothing about the entity has been shown to clash, so quarantining its facts
-        // would hide true ones from every projection until some later pass classified it
-        // cleanly. Propagate instead: the caller logs, the entity stays untyped and dirty,
-        // and the next pass retries it. Only `Ok(None)` - answered, never satisfied the
-        // ontology - is the ladder's isolated rung.
-        match refined? {
-            Some(mut candidate) => {
+        // A rejected semantic candidate is distinct from interrupted execution.
+        // Neither can enter the accepted checkpoint/commit path.
+        match refined {
+            Err(incomplete) => {
+                warn!(reason = %incomplete.reason, outcome = ?incomplete.report.outcome,
+                    "classification refinement incomplete");
+                match incomplete.reason {
+                    ManualError::Abandoned(_) => Ok(false),
+                    ManualError::SubmissionAttemptsExhausted { .. }
+                        if inspection.attempts.load(Ordering::Relaxed) > 0 =>
+                    {
+                        Ok(false)
+                    }
+                    reason
+                        if matches!(
+                            incomplete.report.outcome,
+                            Some(RunOutcome::Incomplete {
+                                kind: FailureKind::Cancelled,
+                                ..
+                            })
+                        ) =>
+                    {
+                        Err(AppError::Inference(Box::new(
+                            frona_harness::inference::InferenceError::Cancelled(reason.to_string()),
+                        )))
+                    }
+                    reason => Err(AppError::Internal(format!(
+                        "classification incomplete: {reason}"
+                    ))),
+                }
+            }
+            Ok(mut candidate) => {
                 candidate.expand_prompt_ids(&prompt_ids)?;
                 // House spelling before anything derives from it - including the bank, so a
                 // resumed pass proposes the same terms this one did rather than the raw ones.
@@ -468,9 +558,6 @@ impl Consolidator {
                     .await?;
                 Ok(recorded)
             }
-            // The model exhausted its semantic revision budget. The caller records a
-            // terminal candidate discard; extraction memories remain durable for Repair.
-            None => Ok(false),
         }
     }
 

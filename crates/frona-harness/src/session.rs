@@ -80,6 +80,7 @@ impl<'a> Harness<'a> {
                 compaction_configured: false,
                 observer: None,
                 exploration_turns: None,
+                submission_attempts: None,
                 resume_pending,
                 resume_response: false,
             },
@@ -243,6 +244,27 @@ impl<'a, Mode> Run<'a, Mode> {
     }
 }
 
+impl<T> Run<'_, Structured<T>> {
+    /// Bound response attempts in this structured conversation. Missing, malformed,
+    /// mixed and valid submissions each count once per response. Only tool-only
+    /// exploration while application tools are offered is excluded, as is compaction.
+    /// The last allowed response can still be accepted; a subsequent model call stops
+    /// incomplete. Provider retries/fallbacks remain independently budgeted attempts.
+    /// This policy starts fresh on each run/resume and is not persisted.
+    pub fn submission_attempts(mut self, maximum: usize) -> Self {
+        self.core.submission_attempts = Some(SubmissionAttempts {
+            maximum,
+            remaining: maximum,
+        });
+        self
+    }
+}
+
+struct SubmissionAttempts {
+    maximum: usize,
+    remaining: usize,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ManualError {
     #[error(transparent)]
@@ -272,6 +294,8 @@ pub enum ManualError {
     Inspector(String),
     #[error("application tool hook failed: {0}")]
     ToolHook(String),
+    #[error("submission budget exhausted after {maximum} response attempts")]
+    SubmissionAttemptsExhausted { maximum: usize },
     #[error("the current response has no final text")]
     NoText,
 }
@@ -581,6 +605,7 @@ pub(super) struct SessionCore<'a> {
     compaction_configured: bool,
     observer: Option<Box<dyn crate::inference::observation::InferenceObserver + 'a>>,
     exploration_turns: Option<usize>,
+    submission_attempts: Option<SubmissionAttempts>,
     resume_pending: bool,
     resume_response: bool,
 }
@@ -682,6 +707,13 @@ impl SessionCore<'_> {
     ) -> Result<ResponseActions, ManualError> {
         self.check_active()?;
         self.conversation.require_ready()?;
+        if let Some(limit) = &self.submission_attempts
+            && limit.remaining == 0
+        {
+            return Err(self.fail(ManualError::SubmissionAttemptsExhausted {
+                maximum: limit.maximum,
+            }));
+        }
         let positions = self.conversation.model_view()?.original_positions();
         self.check_compatibility(model, &positions)?;
         let selection = if self.exploration_turns == Some(0) {
@@ -727,12 +759,23 @@ impl SessionCore<'_> {
             self.conversation
                 .record_response_from(output.output, tools, Some(output.origin));
         let actions = self.result(result)?;
+        let has_tool = actions.actions.iter().any(|action| {
+            self.conversation
+                .action(action)
+                .is_ok_and(|view| view.kind == super::ActionKind::Tool)
+        });
+        let has_submission = actions.actions.iter().any(|action| {
+            self.conversation
+                .action(action)
+                .is_ok_and(|view| view.kind == super::ActionKind::Submission)
+        });
+        if (has_submission || !(application_tools_offered && has_tool))
+            && let Some(limit) = &mut self.submission_attempts
+        {
+            limit.remaining = limit.remaining.saturating_sub(1);
+        }
         if application_tools_offered
-            && actions.actions.iter().any(|action| {
-                self.conversation
-                    .action(action)
-                    .is_ok_and(|view| view.kind == super::ActionKind::Tool)
-            })
+            && has_tool
             && let Some(turns) = &mut self.exploration_turns
         {
             *turns = turns.saturating_sub(1);

@@ -17,6 +17,7 @@ use super::*;
 /// Holds `MemoryConfig` and hands each stage only the scalars it reads, so the rule that
 /// a stage never reads config directly is structural rather than six hand-copied
 /// constructor parameters.
+#[derive(Clone)]
 pub struct Consolidator {
     pub(super) ctx: Arc<ConsolidationContext>,
     pub(super) config: MemoryConfig,

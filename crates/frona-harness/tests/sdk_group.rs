@@ -434,3 +434,85 @@ async fn disabling_compaction_keeps_default_window_dynamic_and_prevents_summary_
     assert!(selected_calls.lock().unwrap().is_empty());
     assert!(initial_calls.lock().unwrap().is_empty());
 }
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct SubmissionValue {
+    value: u32,
+}
+
+#[tokio::test]
+async fn submission_attempt_policy_excludes_compaction_and_fallback_and_preflights_zero() {
+    let (mut prepared, calls) = group(vec![
+        failed(),
+        output(vec![AssistantContent::text("Earlier facts summarized.")]),
+        output(vec![AssistantContent::ToolCall(ToolCall::from_wire(
+            "result",
+            ToolFunction::new("submit".into(), json!({"value":8})),
+        ))]),
+    ]);
+    prepared.context_window = 1400;
+    prepared.fallbacks[0].request_settings.max_tokens = Some(600);
+    let harness = Harness::new(Model::from_group(prepared));
+    let mut zero = harness
+        .resume(structured_compaction_history().await)
+        .structured::<SubmissionValue>()
+        .submission_attempts(0)
+        .manual();
+    zero.recover().await.unwrap();
+    assert!(matches!(
+        zero.call_model().await,
+        Err(ManualError::SubmissionAttemptsExhausted { maximum: 0 })
+    ));
+    assert!(
+        calls.lock().unwrap().is_empty(),
+        "zero must stop before summary or main attempt"
+    );
+    let run = harness
+        .resume(structured_compaction_history().await)
+        .structured::<SubmissionValue>()
+        .submission_attempts(1);
+    let report = run.report();
+    let answer = run.await.unwrap();
+    assert_eq!(answer.value, 8);
+    assert_eq!(report.snapshot().requests.len(), 2);
+    assert_eq!(report.snapshot().attempts.len(), 3);
+}
+
+async fn structured_compaction_history() -> frona_harness::Conversation {
+    let (prepared, _) = group(vec![output(vec![AssistantContent::text(
+        "earlier analysis ".repeat(100),
+    )])]);
+    let harness = Harness::new(Model::from_group(prepared));
+    let mut session = harness
+        .run("earlier facts ".repeat(110))
+        .structured::<SubmissionValue>()
+        .manual();
+    session.call_model().await.unwrap();
+    let mut history = session.into_conversation();
+    history
+        .push_user(vec![rig_core::completion::message::UserContent::text(
+            "Continue with the next task",
+        )])
+        .unwrap();
+    history
+}
+
+#[tokio::test]
+async fn one_submission_attempt_can_use_multiple_provider_attempts() {
+    let (prepared, calls) = group(vec![
+        failed(),
+        output(vec![AssistantContent::ToolCall(ToolCall::from_wire(
+            "result",
+            ToolFunction::new("submit".into(), json!({"value":4})),
+        ))]),
+    ]);
+    let run = Harness::new(Model::from_group(prepared))
+        .run("input")
+        .structured::<SubmissionValue>()
+        .submission_attempts(1);
+    let report = run.report();
+    assert_eq!(run.await.unwrap().value, 4);
+    assert_eq!(calls.lock().unwrap().len(), 2);
+    assert_eq!(report.snapshot().requests.len(), 1);
+    assert_eq!(report.snapshot().attempts.len(), 2);
+}

@@ -210,6 +210,16 @@ impl PromptSpec {
         check_vars(self.dir, "input", self.vars, vars)?;
         let system = read(prompts, &self.system_path())?;
         let input = read_with(prompts, &self.input_path(), vars)?;
+        // Ingest must contain the actual transcript, not merely render a valid
+        // template. Keep this check at rendering so every SDK entry preserves it.
+        if *self == Self::INGEST
+            && let Some((_, transcript)) = vars.iter().find(|(key, _)| *key == "transcript")
+            && !input.contains(transcript.trim())
+        {
+            return Err(AppError::Internal(
+                "extract: rendered prompt does not contain the transcript — refusing to call the model with no input".into(),
+            ));
+        }
         Ok(RenderedPrompt { system, input })
     }
 
@@ -329,6 +339,27 @@ mod tests {
 
     fn sample(vars: &[&'static str]) -> Vec<(&'static str, &'static str)> {
         vars.iter().map(|v| (*v, "x")).collect()
+    }
+
+    #[test]
+    fn ingest_refuses_a_template_that_omits_its_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let stage = dir.path().join("pkm/ingest");
+        std::fs::create_dir_all(&stage).unwrap();
+        std::fs::write(stage.join("system.md"), "Extract grounded facts").unwrap();
+        std::fs::write(stage.join("input.md"), "No transcript here").unwrap();
+        let error = PromptSpec::INGEST
+            .render(
+                &PromptLoader::new(dir.path()),
+                &sample(PromptSpec::INGEST.vars),
+            )
+            .err()
+            .expect("missing payload must fail before a model call");
+        assert!(
+            error
+                .to_string()
+                .contains("does not contain the transcript")
+        );
     }
 
     /// Every stage's files exist and render with exactly its declared variables. Add a

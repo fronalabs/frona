@@ -1805,6 +1805,27 @@ const CLASSIFY_MAX_SUBMISSIONS: usize = 8;
 /// its last valid type and its durable facts remain current for a later repair pass.
 #[tokio::test]
 async fn classify_discards_a_clashing_submission_without_hiding_facts() {
+    classify_rejected_result(ClassificationEnd::RevisionLimit).await;
+}
+
+#[tokio::test]
+async fn classify_cancelled_after_rejection_remains_retryable_without_committing() {
+    classify_rejected_result(ClassificationEnd::Cancelled).await;
+}
+
+#[tokio::test]
+async fn classify_shared_budget_exhaustion_after_rejection_remains_retryable() {
+    classify_rejected_result(ClassificationEnd::Budget).await;
+}
+
+#[derive(Clone, Copy)]
+enum ClassificationEnd {
+    RevisionLimit,
+    Cancelled,
+    Budget,
+}
+
+async fn classify_rejected_result(ending: ClassificationEnd) {
     let db = test_db().await;
     seed_identity(&db).await;
     let tmp = tempfile::tempdir().unwrap();
@@ -1864,7 +1885,19 @@ async fn classify_discards_a_clashing_submission_without_hiding_facts() {
             classify.clone(),
         )]));
     }
+    if matches!(ending, ClassificationEnd::Cancelled) {
+        responses.truncate(1);
+        responses.push(MockResponse::Error(
+            frona_harness::inference::InferenceError::Cancelled("classification cancelled".into()),
+        ));
+    }
     let mock = Arc::new(MockModelProvider::new(responses));
+    if matches!(ending, ClassificationEnd::Budget) {
+        mock.set_usage(frona_harness::inference::Usage {
+            total_tokens: 1_000_000,
+            ..Default::default()
+        });
+    }
 
     let memory_config = frona::core::config::MemoryConfig::default();
     let registry = Arc::new(
@@ -1909,8 +1942,31 @@ async fn classify_discards_a_clashing_submission_without_hiding_facts() {
 
     let harness = test_harness(&db, &config, mock.clone()).await;
     let result = full_pass(&service, ontology_scope(&service), "", harness).await;
-    assert!(result.is_ok(), "{result:?}\n{:#?}", mock.histories());
-    let stats = result.unwrap();
+    let stats = match ending {
+        ClassificationEnd::RevisionLimit => {
+            Some(result.expect("semantic exhaustion is an explicit domain rejection"))
+        }
+        ClassificationEnd::Cancelled | ClassificationEnd::Budget => {
+            let error = result.expect_err("interrupted classification must remain retryable");
+            if matches!(ending, ClassificationEnd::Cancelled) {
+                assert!(
+                    matches!(&error, frona::core::error::AppError::Inference(error) if error.is_cancelled()),
+                    "{error}"
+                );
+            } else {
+                assert!(error.to_string().contains("Tokens"), "{error}");
+            }
+            assert_eq!(
+                mock.calls(),
+                if matches!(ending, ClassificationEnd::Cancelled) {
+                    2
+                } else {
+                    1
+                }
+            );
+            None
+        }
+    };
 
     let mems = repo
         .memories_for_entity("test-user", "organizations/acme")
@@ -1923,7 +1979,9 @@ async fn classify_discards_a_clashing_submission_without_hiding_facts() {
             .map(|m| (&m.content, m.disposition))
             .collect::<Vec<_>>(),
     );
-    assert_eq!(stats.facts_quarantined, 0);
+    if let Some(stats) = stats {
+        assert_eq!(stats.facts_quarantined, 0);
+    }
     let entity = repo
         .entity_by_path("test-user", "organizations/acme")
         .await
@@ -2987,10 +3045,10 @@ async fn resolve_llm_merges_variant_name() {
             "name": "Former Corp Inc", "description": "the retailer", "aliases": []
         }
     });
-    // resolve adjudication uses the investigator path, which falls back to a plain
-    // structured call in tests → the mock returns the last ToolCalls tuple's args.
+    // The application normalizes the accepted identity while SDK history keeps the
+    // exact submitted arguments.
     let resolve = json!({
-        "canonical":"orgs/former-corp",
+        "canonical":"  orgs/former-corp  ",
         "same_as":[],
         "merge_because":[{
             "candidate":"orgs/former-corp",
@@ -3350,6 +3408,23 @@ async fn resolve_accepts_grounding_from_effective_entity_state() {
             json!({"path":"devices/atlas-new"}),
         )]),
         MockResponse::ToolCalls(vec![("r".into(), "submit".into(), distinct)]),
+        // The new subject also receives its own decision. Previously the fixture
+        // omitted it and the stage swallowed the resulting missing-answer failure.
+        MockResponse::ToolCalls(vec![(
+            "r-new".into(),
+            "submit".into(),
+            json!({
+                "canonical":"", "same_as":[], "merge_because":[],
+                "distinct_because":[{
+                    "candidate":"devices/atlas-existing",
+                    "reason":"conflicting_unique_identifier",
+                    "evidence":[
+                        {"side":"subject", "field":"attributes", "property":"schema:serialNumber", "value":"A-1"},
+                        {"side":"candidate", "field":"attributes", "property":"schema:serialNumber", "value":"B-2"}
+                    ]
+                }]
+            }),
+        )]),
         MockResponse::ToolCalls(vec![(
             "reconcile-1".into(),
             "submit".into(),
@@ -4242,8 +4317,18 @@ async fn missing_update_only_path_never_reaches_classify_or_page_author() {
     });
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::ToolCalls(vec![("e".into(), "submit".into(), extract)]),
-        MockResponse::ToolCalls(vec![("c1".into(), "submit".into(), classify.clone())]),
-        MockResponse::ToolCalls(vec![("c2".into(), "submit".into(), classify)]),
+        MockResponse::ToolCalls(vec![("c1".into(), "submit".into(), classify)]),
+        // The separate owner entity is a person, not a second copy of the retailer.
+        // Otherwise this fixture creates an unrelated identity investigation.
+        MockResponse::ToolCalls(vec![(
+            "cm".into(),
+            "submit".into(),
+            json!({
+                "classes":[{"class":"schema:Person"}],
+                "relations":[], "attributes":[], "new_entities":[], "declarations":[],
+                "entity":{"name":"Casey Owner", "description":"The account owner.", "aliases":[]}
+            }),
+        )]),
         MockResponse::ToolCalls(vec![("r".into(), "submit".into(), empty_reconcile())]),
         MockResponse::Text("# Retailer\n\nRetailer processed the return.".into()),
     ]));
@@ -4484,6 +4569,11 @@ async fn classify_loop_revises_after_reasoner_rejection() {
     let mock = Arc::new(MockModelProvider::new(vec![
         MockResponse::ToolCalls(vec![("e".into(), "submit".into(), extract)]),
         MockResponse::ToolCalls(vec![("s1".into(), "submit".into(), bad)]),
+        MockResponse::ToolCalls(vec![(
+            "details".into(),
+            "validation_details".into(),
+            json!({"diagnostic_id": "projection-0"}),
+        )]),
         MockResponse::ToolCalls(vec![("s2".into(), "submit".into(), good)]),
     ]));
 
@@ -4536,6 +4626,18 @@ async fn classify_loop_revises_after_reasoner_rejection() {
     )
     .await
     .unwrap();
+
+    let histories = mock.histories();
+    let revised_input = format!("{:?}", histories[3]);
+    assert!(revised_input.contains("projection-0"), "{revised_input}");
+    assert!(
+        revised_input.contains("causal_axioms"),
+        "the executed diagnostic tool must see the preceding inspector's state: {revised_input}"
+    );
+    assert!(
+        !revised_input.contains("Unknown diagnostic"),
+        "{revised_input}"
+    );
 
     // The REVISED class was accepted (the loop recovered); the fact is NOT quarantined.
     let acme = repo
@@ -4955,6 +5057,34 @@ async fn adjudicated_term_matches_its_proposal_across_spellings() {
 /// correction budget. The unresolved duplicate is safer than a destructive false merge.
 #[tokio::test]
 async fn resolve_exhausted_ungrounded_merge_remains_unresolved() {
+    unresolved_resolution(None).await;
+}
+
+#[tokio::test]
+async fn resolve_cancelled_after_rejection_never_commits_a_merge_or_distinction() {
+    unresolved_resolution(Some(ResolutionInterruption::Cancelled)).await;
+}
+
+#[tokio::test]
+async fn resolve_token_exhaustion_after_rejection_keeps_work_retryable() {
+    unresolved_resolution(Some(ResolutionInterruption::Budget)).await;
+}
+
+#[tokio::test]
+async fn resolve_provider_failure_after_rejection_keeps_work_retryable() {
+    unresolved_resolution(Some(ResolutionInterruption::Provider)).await;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ResolutionInterruption {
+    Cancelled,
+    Provider,
+    Budget,
+}
+
+async fn unresolved_resolution(interruption: Option<ResolutionInterruption>) {
+    use frona::core::error::AppError;
+    use frona_harness::inference::InferenceError;
     let db = test_db().await;
     seed_identity(&db).await;
     let (_tmp, config) = tmp_config();
@@ -5006,24 +5136,46 @@ async fn resolve_exhausted_ungrounded_merge_remains_unresolved() {
         }],
         "distinct_because":[]
     });
-    let mock = Arc::new(MockModelProvider::new(vec![
+    let mut responses = vec![
         MockResponse::ToolCalls(vec![("e".into(), "submit".into(), extract)]),
         MockResponse::ToolCalls(vec![("c".into(), "submit".into(), classify)]),
         MockResponse::ToolCalls(vec![("r1".into(), "submit".into(), bogus.clone())]),
-        MockResponse::ToolCalls(vec![("r2".into(), "submit".into(), bogus.clone())]),
-        MockResponse::ToolCalls(vec![("r3".into(), "submit".into(), bogus.clone())]),
-        MockResponse::ToolCalls(vec![("r4".into(), "submit".into(), bogus.clone())]),
-        MockResponse::ToolCalls(vec![("r5".into(), "submit".into(), bogus.clone())]),
-        MockResponse::ToolCalls(vec![("r6".into(), "submit".into(), bogus.clone())]),
-        MockResponse::ToolCalls(vec![("r7".into(), "submit".into(), bogus.clone())]),
-        MockResponse::ToolCalls(vec![("r8".into(), "submit".into(), bogus)]),
-        MockResponse::ToolCalls(vec![(
-            "reconcile".into(),
-            "submit".into(),
-            empty_reconcile(),
-        )]),
-        MockResponse::Text("# Former Corp Inc\n\nFormer Corp Inc reported earnings.".into()),
-    ]));
+    ];
+    match interruption {
+        Some(ResolutionInterruption::Cancelled) => responses.push(MockResponse::Error(
+            InferenceError::Cancelled("resolver cancelled".into()),
+        )),
+        Some(ResolutionInterruption::Provider) => responses.push(MockResponse::Error(
+            InferenceError::InferenceFailed("resolver unavailable".into()),
+        )),
+        Some(ResolutionInterruption::Budget) => {}
+        None => {
+            responses.extend((2..=8).map(|attempt| {
+                MockResponse::ToolCalls(vec![(
+                    format!("r{attempt}"),
+                    "submit".into(),
+                    bogus.clone(),
+                )])
+            }));
+            responses.push(MockResponse::ToolCalls(vec![(
+                "reconcile".into(),
+                "submit".into(),
+                empty_reconcile(),
+            )]));
+            responses.push(MockResponse::Text(
+                "# Former Corp Inc\n\nFormer Corp Inc reported earnings.".into(),
+            ));
+        }
+    }
+    let mock = Arc::new(MockModelProvider::new(responses));
+    if interruption == Some(ResolutionInterruption::Budget) {
+        // Each successful earlier stage has its own allowance. The rejected
+        // resolver candidate exhausts this dialogue before its next request.
+        mock.set_usage(frona_harness::inference::Usage {
+            total_tokens: 1_000_000,
+            ..Default::default()
+        });
+    }
 
     let storage = StorageService::new(&config);
     let registry = Arc::new(
@@ -5047,14 +5199,113 @@ async fn resolve_exhausted_ungrounded_merge_remains_unresolved() {
     );
     let harness = test_harness(&db, &config, mock.clone()).await;
 
-    let stats = full_pass(
+    let outcome = full_pass(
         &service,
         ontology_scope(&service),
         "Former Corp Inc reported earnings.",
-        harness,
+        harness.clone(),
     )
-    .await
-    .unwrap();
+    .await;
+    if let Some(interruption) = interruption {
+        let error = outcome.expect_err("interrupted resolution must remain retryable");
+        if interruption == ResolutionInterruption::Cancelled {
+            assert!(
+                matches!(error, AppError::Inference(error) if matches!(*error, InferenceError::Cancelled(_)))
+            );
+        } else {
+            assert!(
+                error.to_string().contains("identity resolution incomplete"),
+                "{error}"
+            );
+        }
+        let canonical = repo
+            .entity_by_path("test-user", "orgs/former-corp")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!canonical.aliases.contains("Former Corp Inc"));
+        assert!(
+            !repo
+                .memories_for_entity("test-user", "orgs/former-corp")
+                .await
+                .unwrap()
+                .iter()
+                .any(|memory| memory.content.contains("reported earnings"))
+        );
+        let record = repo
+            .latest_consolidation_record("test-user")
+            .await
+            .unwrap()
+            .unwrap();
+        let scoped = frona::db::repo::pkm::PkmConsolidationStore::new(Arc::new(repo.clone()))
+            .scoped(&record.consolidation_id, "test-user");
+        let mention = scoped
+            .entity_by_path("orgs/former-corp-inc")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                mention.progress.identity,
+                frona::memory::pkm::model::IdentityProgress::Pending
+            ),
+            "no verified distinction or completed merge may be banked: {:?}",
+            mention.progress.identity
+        );
+        assert_eq!(
+            mock.calls(),
+            if interruption == ResolutionInterruption::Budget {
+                3
+            } else {
+                4
+            }
+        );
+        let calls_before_retry = mock.calls();
+        mock.set_usage(frona_harness::inference::Usage::default());
+        mock.prepend(MockResponse::Text(
+            "# Former Corp\n\nFormer Corp reported earnings.".into(),
+        ));
+        mock.prepend(MockResponse::ToolCalls(vec![(
+            "retry-reconcile".into(),
+            "submit".into(),
+            empty_reconcile(),
+        )]));
+        mock.prepend(MockResponse::ToolCalls(vec![(
+            "retry-resolve".into(),
+            "submit".into(),
+            json!({
+                "canonical":"orgs/former-corp", "same_as":[],
+                "merge_because":[{
+                    "candidate":"orgs/former-corp", "reason":"same_grounded_identity",
+                    "evidence":[
+                        {"side":"subject", "field":"name", "quote":"Former Corp Inc"},
+                        {"side":"candidate", "field":"name", "quote":"Former Corp"}
+                    ]
+                }], "distinct_because":[]
+            }),
+        )]));
+        let resumed = service
+            .consolidate(ontology_scope(&service), harness)
+            .await
+            .unwrap();
+        assert_eq!(
+            resumed.entities_merged, 1,
+            "retry reconsiders the pending identity"
+        );
+        assert_eq!(
+            mock.calls(),
+            calls_before_retry + 3,
+            "accepted earlier stages are not repeated"
+        );
+        assert!(
+            repo.entity_by_path("test-user", "orgs/former-corp-inc")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        return;
+    }
+    let stats = outcome.unwrap();
 
     assert_eq!(stats.resolve_evidence_corrections, 8);
     assert_eq!(stats.resolve_unresolved_pairs, 1);

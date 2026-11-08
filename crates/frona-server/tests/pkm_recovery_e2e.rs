@@ -997,6 +997,15 @@ async fn pass_killed_mid_page_author_resumes_without_re_authoring_what_it_wrote(
 /// cancelled sweep does, since no destructor writes anything.
 #[tokio::test]
 async fn classification_reaches_the_record_before_the_stage_finishes() {
+    resume_banked_classification(false).await;
+}
+
+#[tokio::test]
+async fn classification_revalidates_a_banked_proposal_against_changed_graph_state() {
+    resume_banked_classification(true).await;
+}
+
+async fn resume_banked_classification(change_graph: bool) {
     use frona::db::repo::pkm::PkmConsolidationStore;
     use frona::memory::pkm::ConsolidationStageState;
     use frona::memory::pkm::model::ClassificationProgress;
@@ -1011,7 +1020,7 @@ async fn classification_reaches_the_record_before_the_stage_finishes() {
                 "description": "The account owner.",
                 "aliases": [],
             },
-            "classes": [{"class": "schema:Person"}],
+            "classes": [{"class": if change_graph { "frona:Owner" } else { "schema:Person" }}],
             "relations": [],
             "attributes": [],
             "new_entities": [],
@@ -1024,6 +1033,27 @@ async fn classification_reaches_the_record_before_the_stage_finishes() {
     let expected_calls = responses.len() + 1; // the interrupted request is paid for once
     let mock = Arc::new(MockModelProvider::new(responses));
     let ctx = setup(mock.clone(), MemoryConfig::default(), false).await;
+    let fixture =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ontology");
+    let manager = frona::memory::pkm::ontology::OntologyManager::new(
+        frona::memory::pkm::ontology::Roots {
+            release: fixture.join("standard"),
+            user: fixture.join("no-user-ontologies"),
+        },
+        Arc::new(ctx.repo()),
+    );
+    if change_graph {
+        manager
+            .commit(
+                USER,
+                &[frona::memory::pkm::ontology::SchemaEdit::SubClassOf {
+                    sub: "frona:Owner".into(),
+                    sup: "schema:Person".into(),
+                }],
+            )
+            .await
+            .unwrap();
+    }
     let chat = seed_chat(&ctx.db).await;
     add_message(&ctx.db, &chat.id, "my postgres runs on 5433").await;
     let repo = ctx.repo();
@@ -1087,6 +1117,65 @@ async fn classification_reaches_the_record_before_the_stage_finishes() {
             "declarations": [],
         }),
     )]));
+
+    if change_graph {
+        // The saved custom class was valid when accepted. It now inherits two
+        // disjoint bases, so replay must reject it before any domain commit.
+        manager
+            .commit(
+                USER,
+                &[frona::memory::pkm::ontology::SchemaEdit::SubClassOf {
+                    sub: "frona:Owner".into(),
+                    sup: "schema:Organization".into(),
+                }],
+            )
+            .await
+            .unwrap();
+        mock.prepend(MockResponse::Error(
+            frona_harness::inference::InferenceError::Cancelled(
+                "stop after stale checkpoint rejection".into(),
+            ),
+        ));
+        ctx.consolidate()
+            .await
+            .expect_err("interrupted revalidation must remain retryable");
+        let histories = mock.histories();
+        let first_resumed = format!("{:?}", histories[calls_at_interruption]);
+        assert!(
+            first_resumed.contains("previously accepted checkpoint proposal is no longer valid"),
+            "{first_resumed}"
+        );
+        assert!(
+            first_resumed.contains("disjoint classes"),
+            "{first_resumed}"
+        );
+        let record = ctx.record().await.unwrap();
+        assert!(!record.state.is_done());
+        let effective =
+            PkmConsolidationStore::new(Arc::new(ctx.repo())).scoped(&record.consolidation_id, USER);
+        let owner = effective
+            .working_entity("people/me")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            !matches!(
+                owner.progress.classification,
+                ClassificationProgress::Accepted { .. }
+            ),
+            "the stale bank must not remain accepted after failed live validation"
+        );
+        let committed = repo
+            .entity_by_path(USER, "people/me")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            !committed.kinds.iter().any(|kind| kind.ends_with("Owner")),
+            "stale banked class was committed"
+        );
+        return;
+    }
 
     // Re-enter through the production consolidation driver, against the same database.
     // The queued responses contain only the work after the banked classification. If the
@@ -1261,7 +1350,10 @@ async fn cleanup_rehomes_memories_whose_entity_went_missing() {
     // Two passes' worth: the first builds the page, the second is the one whose cleanup
     // stage does the repair. A pass whose extract fails never reaches cleanup at all.
     let mut responses = page_responses("postgres", "Postgres runs on 5433", 2);
-    responses.extend(page_responses("redis", "Redis runs on 6380", 4));
+    // Only Redis is dirty in the second pass; the owner was already classified.
+    let mut second_pass = page_responses("redis", "Redis runs on 6380", 2);
+    second_pass.remove(1); // Do not feed the owner classification to Redis.
+    responses.extend(second_pass);
     let mock = Arc::new(MockModelProvider::new(responses));
     let ctx = setup(mock.clone(), MemoryConfig::default(), false).await;
     let chat = seed_chat(&ctx.db).await;
@@ -1295,6 +1387,10 @@ async fn cleanup_rehomes_memories_whose_entity_went_missing() {
     // to consolidate so the next tick opens a pass.
     add_message_at(&ctx.db, &chat.id, "and redis is on 6380", 30).await;
     ctx.sweep().await;
+    assert!(matches!(
+        ctx.record().await.unwrap().state,
+        ConsolidationStageState::Done
+    ));
 
     let page = repo
         .entity_by_path(USER, "services/postgres")

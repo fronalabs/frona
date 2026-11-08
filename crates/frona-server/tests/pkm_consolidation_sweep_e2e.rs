@@ -3553,6 +3553,176 @@ async fn ingest_applies_only_allowed_grounding_corrections() {
     assert_eq!(record.stats.grounding_corrections, 1);
 }
 
+fn rejected_ingest_quote() -> MockResponse {
+    MockResponse::ToolCalls(vec![(
+        "extract".into(),
+        "submit".into(),
+        json!({
+            "new_entities": [{"id":"postgres",
+                "path":"services/postgres", "name":"Postgres", "description":"database",
+                "sources":[{"message":"m1","quote":"Postgres","strength":"explicit"}],
+                "aliases":[], "candidate_attributes":[]
+            }],
+            "existing_entity_updates": [], "playbooks": [],
+            "memories": [{
+                "id":"unsupported", "kind":"fact", "content":"Postgres is a relational database", "entities":["services/postgres"],
+                "sources":[{"message":"m1","quote":"Postgres is a relational database","strength":"explicit"}]
+            }, {
+                "id":"supported", "kind":"fact", "content":"Postgres is a database", "entities":["services/postgres"],
+                "sources":[{"message":"m1","quote":"Postgres is a database","strength":"explicit"}]
+            }]
+        }),
+    )])
+}
+
+async fn rejected_ingest_context(mock: Arc<MockModelProvider>) -> (Ctx, Chat) {
+    let ctx = setup(mock).await;
+    let chat = seed_chat(&ctx.db).await;
+    add_message(
+        &ctx.db,
+        &chat.id,
+        MessageRole::User,
+        "Postgres is a database",
+        Utc::now() - Duration::hours(1),
+        None,
+    )
+    .await;
+    (ctx, chat)
+}
+
+#[tokio::test]
+async fn ingest_queued_feedback_blocked_by_budget_does_not_advance_watermark() {
+    let mock = Arc::new(MockModelProvider::new(vec![rejected_ingest_quote()]));
+    mock.set_usage(frona_harness::inference::Usage {
+        total_tokens: 1_000_000,
+        ..Default::default()
+    });
+    let (ctx, chat) = rejected_ingest_context(mock.clone()).await;
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
+    assert_eq!(mock.calls(), 1, "the second provider attempt was refused");
+    let repo = PkmRepo::new(ctx.db.clone(), 8);
+    assert!(
+        repo.consolidation_watermark(&chat.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "queued rejection was never shown; the complete window must retry"
+    );
+    assert!(repo.list_all_memories("u1").await.unwrap().is_empty());
+    let record = repo
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        working_entity(&repo, &record, "services/postgres")
+            .await
+            .is_none()
+    );
+    assert_eq!(
+        record.stats.grounding_items_dropped, 0,
+        "uncommitted cleanup is not counted"
+    );
+}
+
+#[tokio::test]
+async fn ingest_incomplete_budget_result_is_revalidated_before_salvaging_shown_failures() {
+    let mock = Arc::new(MockModelProvider::new(vec![
+        rejected_ingest_quote(),
+        rejected_ingest_quote(),
+    ]));
+    mock.set_usage(frona_harness::inference::Usage {
+        total_tokens: 500_000,
+        ..Default::default()
+    });
+    let (ctx, chat) = rejected_ingest_context(mock.clone()).await;
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
+    assert_eq!(mock.calls(), 2);
+    assert!(format!("{:?}", mock.last_history()).contains("quote_not_found"));
+    let repo = PkmRepo::new(ctx.db.clone(), 8);
+    assert!(
+        repo.consolidation_watermark(&chat.id)
+            .await
+            .unwrap()
+            .is_some(),
+        "application cleanup may commit the independently grounded entity"
+    );
+    let memories = repo.list_all_memories("u1").await.unwrap();
+    assert_eq!(
+        memories.len(),
+        1,
+        "only independently grounded work survives cleanup"
+    );
+    assert_eq!(memories[0].content, "Postgres is a database");
+    let record = repo
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        working_entity(&repo, &record, "services/postgres")
+            .await
+            .is_some()
+    );
+    assert_eq!(record.stats.grounding_corrections, 2);
+    assert_eq!(record.stats.grounding_items_dropped, 1);
+}
+
+#[tokio::test]
+async fn ingest_cancelled_revision_does_not_salvage_a_retained_candidate() {
+    let mock = Arc::new(MockModelProvider::new(vec![
+        rejected_ingest_quote(),
+        MockResponse::Error(frona_harness::inference::InferenceError::Cancelled(
+            "stop extraction".into(),
+        )),
+    ]));
+    let (ctx, chat) = rejected_ingest_context(mock.clone()).await;
+    ctx.pkm
+        .run_extraction_sweep(
+            &ctx.state.chat_service,
+            &ctx.state.contact_service,
+            &ctx.state.agent_service,
+            &ctx.harness,
+        )
+        .await
+        .unwrap();
+    assert_eq!(mock.calls(), 2);
+    let repo = PkmRepo::new(ctx.db.clone(), 8);
+    assert!(
+        repo.consolidation_watermark(&chat.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let record = repo
+        .latest_consolidation_record("u1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        working_entity(&repo, &record, "services/postgres")
+            .await
+            .is_none()
+    );
+    assert_eq!(record.stats.grounding_items_dropped, 0);
+}
+
 /// Extraction windows from one large chat may execute concurrently, while the public
 /// sweep commits them in order through the ordinary checkpoint transactions.
 #[tokio::test]

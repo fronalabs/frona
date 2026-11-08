@@ -18,15 +18,12 @@ use tokio_util::sync::CancellationToken;
 
 use super::prompt::{PromptSpec, RenderedPrompt};
 
-// Migration seam introduced by HSDK-31; remove this allowance with the first stage in HSDK-32.
-#[allow(dead_code)]
 mod sdk_bridge;
 pub use sdk_bridge::PkmHarness;
 
 /// What domain validation decided about one valid structured submission.
 pub(crate) enum Verdict<A> {
     Accept(A),
-    Stop(A),
     Abandon,
     Revise { feedback: String, keep: Option<A> },
 }
@@ -70,7 +67,7 @@ where
             };
             produced_candidate = true;
             match inspect(candidate).await? {
-                Verdict::Accept(value) | Verdict::Stop(value) => return Ok(Some(value)),
+                Verdict::Accept(value) => return Ok(Some(value)),
                 Verdict::Abandon => break,
                 Verdict::Revise { feedback, keep } => {
                     if keep.is_some() {
@@ -88,10 +85,6 @@ where
                 "conversation: submission budget exhausted without a valid submission".into(),
             ))
         }
-    }
-
-    pub fn requests_used(&self) -> usize {
-        self.inner.requests_used()
     }
 }
 
@@ -140,8 +133,6 @@ impl ConsolidationInference {
 
     /// Prepare selected runtime tools once; every returned SDK run stays in memory
     /// unless its caller explicitly adds storage. No Chat/message rows are created.
-    // HSDK-32 replaces the first legacy stage caller.
-    #[allow(dead_code)]
     pub async fn sdk(
         &self,
         agent_id: &str,

@@ -1,33 +1,181 @@
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
-use oxigraph::sparql::QueryResults;
-use oxigraph::store::Store;
+use oxigraph::{sparql::QueryResults, store::Store};
 use oxrdf::{Term, Triple};
 
-use crate::core::error::AppError;
-use crate::memory::pkm::consolidation::PromptSpec;
-use crate::memory::pkm::consolidation::Verdict;
-use crate::memory::pkm::consolidation::candidates::{
-    RESOLUTION_RETRIEVAL_LIMIT, RankedCandidate, Request, Search, Subject,
-};
-use crate::memory::pkm::consolidation::classify::ProposalSet;
-use crate::memory::pkm::consolidation::resolve::evidence::{
-    IdentityConversation, IdentityResolution, ResolutionDecisionContext, ResolveDecision,
-    validate_resolution_evidence,
-};
 #[cfg(test)]
 use crate::memory::pkm::consolidation::resolve::evidence::{
     IdentityMatch, identity_matches, pair_change_requires_judgment,
     resolution_identity_fingerprint, resolution_pair_fingerprint,
 };
-use crate::memory::pkm::consolidation::{
-    Consolidator, projection_rejection_details, validate_proposal_projection,
+use crate::memory::pkm::{
+    consolidation::{
+        Consolidator, PromptSpec,
+        candidates::{RESOLUTION_RETRIEVAL_LIMIT, RankedCandidate, Request, Search, Subject},
+        classify::ProposalSet,
+        projection_rejection_details,
+        resolve::evidence::{
+            IdentityConversation, IdentityResolution, ResolutionDecisionContext, ResolveDecision,
+            validate_resolution_evidence,
+        },
+        validate_proposal_projection,
+    },
+    model::KnowledgeConsolidationEntity,
+    ontology::{OntologyManager, individual_iri, path_from_individual, sparql},
 };
-use crate::memory::pkm::model::KnowledgeConsolidationEntity;
-use crate::memory::pkm::ontology::{OntologyManager, individual_iri, path_from_individual, sparql};
-use crate::tool::registry::ToolFilter;
+use crate::{core::error::AppError, tool::registry::ToolFilter};
+use frona_harness::{Decision, FailureKind, ManualError, RunOutcome};
+
+/// Evidence and projected validation stay in PKM. Each inspector future owns this
+/// state while the outer result reads the same correction diagnostics.
+struct ResolutionInspection {
+    ctx: Arc<crate::memory::pkm::consolidation::context::ConsolidationContext>,
+    ontology: OntologyManager,
+    proposals: ProposalSet,
+    subject_path: String,
+    offered_paths: Vec<String>,
+    evidence_context: ResolutionDecisionContext,
+    last_failures: Mutex<Vec<String>>,
+    correction_count: AtomicUsize,
+}
+
+impl ResolutionInspection {
+    async fn inspect(
+        &self,
+        decision: ResolveDecision,
+    ) -> Result<Decision<IdentityResolution>, AppError> {
+        let ctx = &self.ctx;
+        let ontology = &self.ontology;
+        let proposal_snapshot = &self.proposals;
+        let subject_path = &self.subject_path;
+        let offered_paths = &self.offered_paths;
+        let offered: HashSet<&str> = offered_paths.iter().map(String::as_str).collect();
+        let evidence_context = &self.evidence_context;
+        let captured_failures = &self.last_failures;
+        let captured_corrections = &self.correction_count;
+        let canonical = decision.canonical.trim().to_string();
+        let same_as: Vec<String> = decision
+            .same_as
+            .into_iter()
+            .map(|path| path.trim().to_string())
+            .collect();
+        let mut seen = HashSet::new();
+        let mut invalid = Vec::new();
+        if !canonical.is_empty()
+            && canonical != *subject_path
+            && !offered.contains(canonical.as_str())
+        {
+            invalid.push(canonical.as_str());
+        }
+        for path in &same_as {
+            if path.is_empty()
+                || path == &canonical
+                || !offered.contains(path.as_str())
+                || !seen.insert(path.as_str())
+            {
+                invalid.push(path.as_str());
+            }
+        }
+        let evidence_errors = validate_resolution_evidence(
+            &ResolveDecision {
+                canonical: canonical.clone(),
+                same_as: same_as.clone(),
+                merge_because: decision.merge_because.clone(),
+                distinct_because: decision.distinct_because.clone(),
+            },
+            subject_path,
+            &offered,
+            evidence_context,
+        );
+        let keeps_subject_without_merges = canonical == *subject_path && same_as.is_empty();
+        let distinct = canonical.is_empty() && same_as.is_empty();
+        if distinct && invalid.is_empty() && evidence_errors.is_empty() {
+            return Ok(Decision::accept(IdentityResolution::Distinct {
+                evidence: serde_json::json!({
+                    "merge_because": decision.merge_because,
+                    "distinct_because": decision.distinct_because,
+                }),
+            }));
+        }
+        if !canonical.is_empty()
+            && !same_as.iter().any(|path| path == &canonical)
+            && invalid.is_empty()
+            && evidence_errors.is_empty()
+            && !keeps_subject_without_merges
+        {
+            let mut trial = proposal_snapshot.clone();
+            let mut losing_paths = vec![subject_path.clone()];
+            losing_paths.extend(same_as.iter().cloned());
+            for losing in losing_paths {
+                if losing == canonical {
+                    continue;
+                }
+                trial.retarget(&losing, &canonical);
+                trial.forget(&losing);
+            }
+            let validation = validate_proposal_projection(ctx, ontology, &trial).await?;
+            if !validation.is_valid() {
+                let details = projection_rejection_details(&validation);
+                *captured_failures
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = vec![details.clone()];
+                captured_corrections.fetch_add(1, Ordering::Relaxed);
+                let feedback = ctx.llm.reject(
+                    PromptSpec::RESOLVE,
+                    &[
+                        (
+                            "proposed",
+                            "The proposed identity merge makes the projected graph invalid.",
+                        ),
+                        ("subject", subject_path.as_str()),
+                        ("candidates", details.as_str()),
+                    ],
+                )?;
+                return Ok(Decision::revise(feedback));
+            }
+            let evidence = serde_json::json!({
+                "merge_because": decision.merge_because,
+                "distinct_because": decision.distinct_because,
+            });
+            return Ok(Decision::accept(IdentityResolution::Merge {
+                canonical,
+                same_as,
+                evidence,
+            }));
+        }
+        let mut failures: Vec<String> = invalid
+            .iter()
+            .map(|path| format!("invalid identity path `{path}`"))
+            .collect();
+        failures.extend(evidence_errors.iter().cloned());
+        *captured_failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = failures;
+        captured_corrections.fetch_add(1, Ordering::Relaxed);
+        let proposed = serde_json::json!({
+            "canonical": canonical,
+            "same_as": same_as,
+            "invalid": invalid,
+            "evidence_errors": evidence_errors,
+        })
+        .to_string();
+        let feedback = ctx.llm.reject(
+            PromptSpec::RESOLVE,
+            &[
+                ("proposed", proposed.as_str()),
+                ("subject", subject_path.as_str()),
+                ("candidates", offered_paths.join(", ").as_str()),
+            ],
+        )?;
+        Ok(Decision::revise(feedback))
+    }
+}
 
 impl Consolidator {
     /// Retrieve the candidates for one identity against the current entity view.
@@ -116,46 +264,42 @@ impl Consolidator {
         decision_context: &ResolutionDecisionContext,
         proposals: &ProposalSet,
     ) -> Result<IdentityConversation, AppError> {
-        let paths: Vec<&str> = candidates.iter().map(|c| c.entity.path.as_str()).collect();
-        let valid: HashSet<&str> = paths.iter().copied().collect();
+        let paths: Vec<String> = candidates.iter().map(|c| c.entity.path.clone()).collect();
 
-        let rendered = self.ctx.llm.render(
-            PromptSpec::RESOLVE,
-            &[
-                ("path", entity.path.as_str()),
-                ("name", entity.name.as_str()),
-                (
-                    "aliases",
-                    if decision_context.subject_fields.aliases.is_empty() {
-                        "(none)"
-                    } else {
-                        &decision_context.subject_fields.aliases
-                    },
-                ),
-                (
-                    "description",
-                    if entity.description.is_empty() {
-                        "(none)"
-                    } else {
-                        &entity.description
-                    },
-                ),
-                ("kind", decision_context.kinds_display.as_str()),
-                (
-                    "identity_evidence",
-                    decision_context.identity_evidence.as_str(),
-                ),
-                (
-                    "assertions",
-                    if decision_context.subject_fields.assertions.is_empty() {
-                        "(none)"
-                    } else {
-                        &decision_context.subject_fields.assertions
-                    },
-                ),
-                ("candidates", &decision_context.candidate_block),
-            ],
-        )?;
+        let vars = [
+            ("path", entity.path.as_str()),
+            ("name", entity.name.as_str()),
+            (
+                "aliases",
+                if decision_context.subject_fields.aliases.is_empty() {
+                    "(none)"
+                } else {
+                    &decision_context.subject_fields.aliases
+                },
+            ),
+            (
+                "description",
+                if entity.description.is_empty() {
+                    "(none)"
+                } else {
+                    &entity.description
+                },
+            ),
+            ("kind", decision_context.kinds_display.as_str()),
+            (
+                "identity_evidence",
+                decision_context.identity_evidence.as_str(),
+            ),
+            (
+                "assertions",
+                if decision_context.subject_fields.assertions.is_empty() {
+                    "(none)"
+                } else {
+                    &decision_context.subject_fields.assertions
+                },
+            ),
+            ("candidates", &decision_context.candidate_block),
+        ];
         let overlay = self.tool_overlay(ontology_manager, proposals).await?;
         let evidence_context = decision_context
             .clone()
@@ -168,160 +312,75 @@ impl Consolidator {
                 Some(overlay),
                 crate::memory::pkm::consolidation::tools::ontology::OntologyToolProfile::Resolve,
             );
-        let mut convo = self
+        let harness = self
             .ctx
             .llm
-            .conversation::<ResolveDecision>(
-                self.ctx.scope.chat_id.as_deref(),
+            .sdk(
                 &self.ctx.scope.agent_id,
-                rendered.system,
-                rendered.input,
                 &[ToolFilter::AllowList(&[])],
                 &tools,
-                self.config.pkm_consolidation_max_tool_turns,
             )
             .await?;
-
-        // Distinct and unresolved are deliberately different outcomes. The former needs
-        // grounded evidence for every strong declined candidate; the latter is the safe
-        // terminal result when no submitted decision survives validation.
-        let subject_path = entity.path.clone();
-        let last_failures = Arc::new(Mutex::new(Vec::<String>::new()));
-        let correction_count = Arc::new(AtomicUsize::new(0));
-        let (ctx, offered, offered_paths, evidence_context) =
-            (&self.ctx, &valid, &paths, &evidence_context);
-        let ontology = ontology_manager;
-        let proposal_snapshot = proposals;
-        let captured_failures = last_failures.clone();
-        let captured_corrections = correction_count.clone();
-        let refined = convo
-            .refine(self.config.pkm_consolidation_max_submissions, move |decision: ResolveDecision| {
-                let subject_path = subject_path.clone();
-                let captured_failures = captured_failures.clone();
-                let captured_corrections = captured_corrections.clone();
-                async move {
-                    let canonical = decision.canonical.trim().to_string();
-                    let same_as: Vec<String> = decision.same_as.into_iter()
-                        .map(|path| path.trim().to_string())
-                        .collect();
-                    let mut seen = HashSet::new();
-                    let mut invalid = Vec::new();
-                    if !canonical.is_empty()
-                        && canonical != subject_path
-                        && !offered.contains(canonical.as_str())
-                    {
-                        invalid.push(canonical.as_str());
-                    }
-                    for path in &same_as {
-                        if path.is_empty()
-                            || path == &canonical
-                            || !offered.contains(path.as_str())
-                            || !seen.insert(path.as_str())
-                        {
-                            invalid.push(path.as_str());
-                        }
-                    }
-                    let evidence_errors = validate_resolution_evidence(
-                        &ResolveDecision {
-                            canonical: canonical.clone(),
-                            same_as: same_as.clone(),
-                            merge_because: decision.merge_because.clone(),
-                            distinct_because: decision.distinct_because.clone(),
-                        },
-                        &subject_path,
-                        offered,
-                        evidence_context,
-                    );
-                    let keeps_subject_without_merges =
-                        canonical == subject_path && same_as.is_empty();
-                    let distinct = canonical.is_empty() && same_as.is_empty();
-                    if distinct && invalid.is_empty() && evidence_errors.is_empty() {
-                        return Ok(Verdict::Accept(IdentityResolution::Distinct {
-                            evidence: serde_json::json!({
-                                "merge_because": decision.merge_because,
-                                "distinct_because": decision.distinct_because,
-                            }),
-                        }));
-                    }
-                    if !canonical.is_empty()
-                        && !same_as.iter().any(|path| path == &canonical)
-                        && invalid.is_empty()
-                        && evidence_errors.is_empty()
-                        && !keeps_subject_without_merges
-                    {
-                        let mut trial = proposal_snapshot.clone();
-                        let mut losing_paths = vec![subject_path.clone()];
-                        losing_paths.extend(same_as.iter().cloned());
-                        for losing in losing_paths {
-                            if losing == canonical { continue; }
-                            trial.retarget(&losing, &canonical);
-                            trial.forget(&losing);
-                        }
-                        let validation = validate_proposal_projection(
-                            ctx, ontology, &trial,
-                        ).await?;
-                        if !validation.is_valid() {
-                            let details = projection_rejection_details(&validation);
-                            *captured_failures.lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                                vec![details.clone()];
-                            captured_corrections.fetch_add(1, Ordering::Relaxed);
-                            let feedback = ctx.llm.reject(
-                                PromptSpec::RESOLVE,
-                                &[
-                                    ("proposed", "The proposed identity merge makes the projected graph invalid."),
-                                    ("subject", subject_path.as_str()),
-                                    ("candidates", details.as_str()),
-                                ],
-                            )?;
-                            return Ok(Verdict::Revise { feedback, keep: None });
-                        }
-                        let evidence = serde_json::json!({
-                            "merge_because": decision.merge_because,
-                            "distinct_because": decision.distinct_because,
-                        });
-                        return Ok(Verdict::Accept(IdentityResolution::Merge {
-                            canonical,
-                            same_as,
-                            evidence,
-                        }));
-                    }
-                    let mut failures: Vec<String> = invalid.iter()
-                        .map(|path| format!("invalid identity path `{path}`"))
-                        .collect();
-                    failures.extend(evidence_errors.iter().cloned());
-                    *captured_failures.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        failures;
-                    captured_corrections.fetch_add(1, Ordering::Relaxed);
-                    let proposed = serde_json::json!({
-                        "canonical": canonical,
-                        "same_as": same_as,
-                        "invalid": invalid,
-                        "evidence_errors": evidence_errors,
-                    }).to_string();
-                    let feedback = ctx.llm.reject(
-                        PromptSpec::RESOLVE,
-                        &[
-                        ("proposed", proposed.as_str()),
-                        ("subject", subject_path.as_str()),
-                        ("candidates", offered_paths.join(", ").as_str()),
-                        ],
-                    )?;
-                    Ok(Verdict::Revise { feedback, keep: None })
-                }
+        let inspection = Arc::new(ResolutionInspection {
+            ctx: self.ctx.clone(),
+            ontology: ontology_manager.clone(),
+            proposals: proposals.clone(),
+            subject_path: entity.path.clone(),
+            offered_paths: paths,
+            evidence_context,
+            last_failures: Mutex::new(Vec::new()),
+            correction_count: AtomicUsize::new(0),
+        });
+        let captured = inspection.clone();
+        let refined = harness
+            .run(PromptSpec::RESOLVE, &vars)?
+            .exploration_turns(self.config.pkm_consolidation_max_tool_turns)
+            .structured::<ResolveDecision>()
+            .submission_attempts(self.config.pkm_consolidation_max_submissions)
+            .inspect(move |decision| {
+                let inspection = captured.clone();
+                async move { inspection.inspect(decision).await }
             })
             .await;
-        let corrections = correction_count.load(Ordering::Relaxed);
-        let decision = match refined? {
-            Some(decision) => decision,
-            None => IdentityResolution::Unresolved {
-                diagnostic: serde_json::json!({
-                    "reason": "model_exhausted_without_valid_evidence",
-                    "validation_errors": last_failures.lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
-                }),
-                pair_count: paths.len(),
-            },
+        let corrections = inspection.correction_count.load(Ordering::Relaxed);
+        // An unresolved investigation is not evidence of distinct identities.
+        // Operational failures remain retryable rather than becoming domain decisions.
+        let decision = match refined {
+            Ok(decision) => decision,
+            Err(incomplete) => {
+                tracing::warn!(reason = %incomplete.reason, outcome = ?incomplete.report.outcome,
+                    "identity resolution incomplete");
+                match incomplete.reason {
+                    ManualError::SubmissionAttemptsExhausted { .. } if corrections > 0 => {
+                        IdentityResolution::Unresolved {
+                            diagnostic: serde_json::json!({
+                                "reason": "model_exhausted_without_valid_evidence",
+                                "validation_errors": inspection.last_failures.lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+                            }),
+                            pair_count: inspection.offered_paths.len(),
+                        }
+                    }
+                    reason
+                        if matches!(
+                            incomplete.report.outcome,
+                            Some(RunOutcome::Incomplete {
+                                kind: FailureKind::Cancelled,
+                                ..
+                            })
+                        ) =>
+                    {
+                        return Err(AppError::Inference(Box::new(
+                            frona_harness::inference::InferenceError::Cancelled(reason.to_string()),
+                        )));
+                    }
+                    reason => {
+                        return Err(AppError::Internal(format!(
+                            "identity resolution incomplete: {reason}"
+                        )));
+                    }
+                }
+            }
         };
         Ok(IdentityConversation {
             decision,

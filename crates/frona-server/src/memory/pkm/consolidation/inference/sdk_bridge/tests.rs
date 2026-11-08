@@ -467,3 +467,31 @@ fn complete_tool_outputs_and_explicit_host_effect_refusal() {
         ));
     }
 }
+
+#[tokio::test]
+async fn input_suffix_preserves_strict_rendering_and_reaches_the_first_request() {
+    let provider = Script::new(vec![submit(3)]);
+    let f = fixture(provider.clone()).await;
+    let bridge = prepare(&f, &[]).await;
+    assert!(
+        bridge
+            .run_with_input_suffix(PROMPT, &[], "saved proposal rejected")
+            .is_err()
+    );
+    assert!(provider.requests.lock().unwrap().is_empty());
+    bridge
+        .run_with_input_suffix(
+            PROMPT,
+            &[("input", "facts")],
+            "\nSaved proposal rejected: live graph changed",
+        )
+        .unwrap()
+        .structured::<Answer>()
+        .await
+        .unwrap();
+    let requests = provider.requests.lock().unwrap();
+    let input = format!("{:?}", requests[0].1);
+    assert!(input.contains("facts"));
+    assert!(input.contains("Saved proposal rejected: live graph changed"));
+    assert_eq!(requests[0].0, "Strict PKM instructions");
+}

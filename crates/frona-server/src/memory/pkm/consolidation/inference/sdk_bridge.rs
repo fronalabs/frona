@@ -52,7 +52,19 @@ impl PkmHarness {
         prompt: PromptSpec,
         vars: &[(&str, &str)],
     ) -> Result<Run<'_, Text>, AppError> {
-        let rendered = prompt.render(&self.prompts, vars)?;
+        self.run_with_input_suffix(prompt, vars, "")
+    }
+
+    /// Append application context, such as live-state rejection of a saved proposal,
+    /// after the same strict rendering used by a fresh run.
+    pub fn run_with_input_suffix(
+        &self,
+        prompt: PromptSpec,
+        vars: &[(&str, &str)],
+        suffix: &str,
+    ) -> Result<Run<'_, Text>, AppError> {
+        let mut rendered = prompt.render(&self.prompts, vars)?;
+        rendered.input.push_str(suffix);
         let tools = self.tools.portable(map_output)?;
         Ok(self
             .harness

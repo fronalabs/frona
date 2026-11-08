@@ -1,5 +1,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+use crate::core::error::AppError;
+use frona_harness::{ActionKind, ActionPosition, ExecutionReport};
 use frona_text::GroundingText;
 
 use crate::memory::pkm::consolidation::ingest::submission::{
@@ -24,6 +26,50 @@ pub(super) struct GroundingCorrectionState {
     pub(super) streak: usize,
     pub(super) retained: Option<Batch>,
     pub(super) failures: Vec<GroundingFailure>,
+}
+
+/// Grounding failures count as reported only after this exact rejection was
+/// included in an admitted provider attempt. Sibling tool results, schema repair
+/// and a summary covering old feedback do not establish literal delivery.
+#[derive(Default)]
+pub(super) struct GroundingFeedback {
+    queued: Vec<(ActionPosition, Vec<String>)>,
+}
+
+impl GroundingFeedback {
+    pub(super) fn queue(
+        &mut self,
+        fingerprints: Vec<String>,
+        report: &ExecutionReport,
+    ) -> Result<(), AppError> {
+        // The refinement driver has resolved every sibling and leaves precisely
+        // the selected submission pending while its inspector runs.
+        let mut pending = report
+            .actions
+            .iter()
+            .filter(|action| action.kind == ActionKind::Submission && action.outcome.is_none());
+        let selected = pending
+            .next()
+            .filter(|_| pending.next().is_none())
+            .ok_or_else(|| {
+                AppError::Internal(
+                    "extract cannot associate grounding feedback with its submission".into(),
+                )
+            })?;
+        self.queued.push((selected.position, fingerprints));
+        Ok(())
+    }
+
+    pub(super) fn has_unreported(&self, fingerprints: &[String], report: &ExecutionReport) -> bool {
+        fingerprints.iter().any(|fingerprint| {
+            !self.queued.iter().any(|(action, failures)| {
+                failures.contains(fingerprint)
+                    && report.feedback.iter().any(|feedback| {
+                        feedback.action == Some(*action) && !feedback.issued_in.is_empty()
+                    })
+            })
+        })
+    }
 }
 
 #[derive(Debug, Default, Clone)]

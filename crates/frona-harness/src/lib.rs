@@ -3,6 +3,52 @@
 //! Await configured runs for text or typed output, or use the same configuration
 //! for manual execution. Both drivers share admission, conversation and dispatch.
 
+extern crate self as frona_harness;
+
+mod annotated_tool;
+pub use annotated_tool::IntoTool;
+/// Define a portable tool from an async free function. Its function name and doc
+/// comments become tool metadata, and owned parameters become named JSON fields.
+/// A `ToolContext` parameter is injected automatically, at any position.
+///
+/// ```
+/// use frona_harness::{tool, ToolContext, ToolError, ToolRegistry};
+/// /// Add two integers.
+/// #[tool]
+/// async fn add(left: i64, right: i64, execution: ToolContext<'_>) -> Result<i64, ToolError> {
+///     let _ = execution.call_id;
+///     Ok(left + right)
+/// }
+/// let mut tools = ToolRegistry::default();
+/// tools.register(add)?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// Functions remain directly callable and registration performs no invocation.
+/// Use `#[tool(name = "lookup", description = "Find a record")]` to override
+/// metadata. Renamed Cargo dependencies are detected automatically; an explicit
+/// `crate = "path"` option supports re-exported SDK paths.
+///
+/// Supported signatures are safe async free functions with a `Result` output,
+/// owned model arguments, no generic parameters, and at most 16 parameters total.
+/// `ToolContext<'_>` or `&ToolContext<'_>` may be qualified by a module path;
+/// renamed imports/type aliases for that type are not detected. Explicit static
+/// context lifetimes and mutable context references are rejected. Other types
+/// are model arguments, never automatically injected application state. Use the
+/// closure helpers for captured dependencies or implement `Tool` for lending state.
+/// Each call returns a metadata-bearing future that boxes the original async body;
+/// awaiting it preserves the original `Result` type. Metadata is not recovered
+/// after erasing that return type to a general boxed future.
+#[doc(inline)]
+pub use frona_derive::tool;
+
+#[doc(hidden)]
+pub mod __private {
+    pub use super::annotated_tool::{AnnotatedFuture, AnnotatedTool};
+    pub use schemars;
+    pub use serde;
+}
+
 pub mod config;
 pub mod file_tools;
 pub mod handle;

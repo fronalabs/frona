@@ -5,6 +5,16 @@ use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
 use syn::{DeriveInput, Expr, ImplItem, ItemImpl, Lit, Meta, Token, parse_macro_input};
 
+mod sdk_tool;
+
+/// Define a portable tool from an async function.
+#[proc_macro_attribute]
+pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
+    sdk_tool::expand(attr.into(), item.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
 mod migration;
 mod parameter_metadata;
 

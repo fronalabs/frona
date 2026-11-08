@@ -19,3 +19,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt", "sync"] }
 tempfile = "3"
+
+[[bin]]
+name = "sdk_tools"
+path = "../../../examples/sdk_tools.rs"

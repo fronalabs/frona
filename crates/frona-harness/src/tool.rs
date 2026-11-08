@@ -258,7 +258,7 @@ where
 
 pub type ToolFuture<'a, O> = Pin<Box<dyn Future<Output = Result<O, ToolError>> + Send + 'a>>;
 
-fn typed_tool<A: JsonSchema, H>(
+pub(super) fn typed_tool<A: JsonSchema, H>(
     name: String,
     description: String,
     handler: H,
@@ -286,7 +286,7 @@ pub struct TypedTool<A, H> {
     arguments: PhantomData<fn(A)>,
 }
 
-trait TypedHandler<A>: Send {
+pub(super) trait TypedHandler<A>: Send {
     fn call(
         &mut self,
         arguments: A,
@@ -354,7 +354,11 @@ pub struct ToolRegistry<'a> {
 }
 
 impl<'a> ToolRegistry<'a> {
-    pub fn register(&mut self, tool: impl Tool + 'a) -> Result<(), ToolRegistrationError> {
+    pub fn register<M>(
+        &mut self,
+        tool: impl super::IntoTool<M, Tool: 'a>,
+    ) -> Result<(), ToolRegistrationError> {
+        let tool = tool.into_tool()?;
         let definition = tool.definition().clone();
         validate_name(&definition.name)?;
         if self.tools.contains_key(&definition.name) {

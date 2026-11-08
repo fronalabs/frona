@@ -16,7 +16,7 @@ use super::{
     ActionResolution, Budget, Conversation, ConversationError, DefaultBudget, ExecutionControl,
     ExecutionStop, Incomplete, Model, ModelError, ModelRequest, PendingAction, PendingActionView,
     Progress, ProgressReceiver, RefinementStage, ReportHandle, ResponseActions, RunOutcome,
-    Submission, SubmissionError, Tool, ToolCallHook, ToolDecision, ToolDispatchError, ToolOutput,
+    Submission, SubmissionError, ToolCallHook, ToolDecision, ToolDispatchError, ToolOutput,
     ToolRegistrationError, ToolRegistry, hook::CallbackHook, progress::ProgressOwner,
     report::RunRecorder, submission_tool,
 };
@@ -203,7 +203,7 @@ impl<'a, Mode> Run<'a, Mode> {
         self.core.instructions = instructions.into();
         self
     }
-    pub fn tool(mut self, tool: impl Tool + 'a) -> Self {
+    pub fn tool<M>(mut self, tool: impl super::IntoTool<M, Tool: 'a>) -> Self {
         if self.core.setup_error.is_none() {
             self.core.setup_error = self.core.tools.register(tool).err().map(Into::into);
         }

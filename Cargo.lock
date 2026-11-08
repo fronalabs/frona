@@ -3411,6 +3411,7 @@ version = "2026.11.0"
 dependencies = [
  "chrono",
  "heck 0.5.0",
+ "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 3.0.9",

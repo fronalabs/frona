@@ -76,6 +76,19 @@ impl InferenceError {
         }
     }
 
+    /// Classify nested terminal controls without losing provider provenance.
+    pub(crate) fn execution_failure_kind(&self) -> Option<crate::FailureKind> {
+        match self {
+            Self::Stop(stop) => Some(stop.failure_kind()),
+            Self::Cancelled(_) => Some(crate::FailureKind::Cancelled),
+            Self::ModelFailed { source, .. } => source.execution_failure_kind(),
+            Self::AllFallbacksFailed(errors) => {
+                errors.iter().find_map(Self::execution_failure_kind)
+            }
+            _ => None,
+        }
+    }
+
     /// Extract a control without string matching, retaining ordinary failures.
     pub fn into_execution_stop(self) -> Result<crate::ExecutionStop, Self> {
         if !self.is_terminal() {

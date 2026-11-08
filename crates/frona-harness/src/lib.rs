@@ -48,8 +48,9 @@ pub use budget::{
 };
 pub use conversation::{
     ActionKind, ActionRecord, ActionResolution, ActionStatus, CheckpointLoadError, CheckpointRef,
-    Conversation, ConversationError, ConversationStatus, HistoryReplay, LoadedCheckpoint,
-    PendingAction, PendingActionView, ResponseActions, ResponseRecord, replay_history,
+    Conversation, ConversationError, ConversationInput, ConversationStatus, HistoryReplay,
+    LoadedCheckpoint, PendingAction, PendingActionView, ResponseActions, ResponseRecord,
+    replay_history,
 };
 pub use dispatch::{RecoveryError, ToolDispatchError};
 pub use execution::{ExecutionControl, ExecutionStop};

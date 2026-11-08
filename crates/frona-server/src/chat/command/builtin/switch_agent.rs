@@ -52,7 +52,7 @@ impl Command for SwitchAgentCommand {
 
         let mut chat_for_turn = ctx.chat.clone();
         chat_for_turn.agent_id = target_agent.id.clone();
-        let new_session = ChatSessionContext::build_for_response(
+        let new_session = ChatSessionContext::build_for_response_controlled(
             ctx.harness,
             &ctx.user.id,
             chat_for_turn,
@@ -60,6 +60,7 @@ impl Command for SwitchAgentCommand {
             ctx.session.cancel_token.clone(),
             ctx.session.builder.clone(),
             &ctx.session.tool_filters,
+            ctx.session.controls.clone(),
         )
         .await?;
         *ctx.session = new_session;

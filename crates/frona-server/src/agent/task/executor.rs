@@ -572,9 +572,34 @@ impl TaskExecutor {
 
         self.save_initial_message_if_needed(&task, &chat_id).await?;
 
+        let budget = Arc::new(frona_harness::DefaultBudget::default());
         for turn in 0..MAX_TASK_RETRIES {
             if cancel_token.is_cancelled() {
                 self.handle_cancelled(&task).await?;
+                return Ok(());
+            }
+            let response = match self
+                .harness
+                .chat_service
+                .find_paused_message_for_chat(&chat_id)
+                .await?
+            {
+                Some(message) => Some(message),
+                None => {
+                    self.harness
+                        .chat_service
+                        .find_executing_message_for_chat(&chat_id)
+                        .await?
+                }
+            };
+            if let Some(mut response) = response
+                && self
+                    .harness
+                    .chat_service
+                    .restore_external_wait(&mut response)
+                    .await?
+                    .is_some()
+            {
                 return Ok(());
             }
             // Check for unprocessed lifecycle events (crash recovery)
@@ -622,7 +647,7 @@ impl TaskExecutor {
             let filters = tool_filters_for_task(&task);
             let result = self
                 .harness
-                .run_loop(
+                .run_loop_controlled(
                     &task.user_id,
                     &chat_id,
                     &agent_msg_id,
@@ -630,6 +655,7 @@ impl TaskExecutor {
                     builder,
                     &filters,
                     None,
+                    crate::inference::RuntimeControls::new(budget.clone()),
                 )
                 .await;
 
@@ -648,11 +674,10 @@ impl TaskExecutor {
                         response.content = text;
                         response.attachments = attachments;
                         response.reasoning = reasoning;
-                        let _ = self
-                            .harness
+                        self.harness
                             .chat_service
                             .complete_agent_message(response)
-                            .await;
+                            .await?;
 
                         if cancel_token.is_cancelled() {
                             self.handle_cancelled(&task).await?;
@@ -673,26 +698,59 @@ impl TaskExecutor {
                         continue;
                     }
                     InferenceResponse::ExternalToolPending { tool_calls, .. } => {
-                        let _ = self
-                            .harness
-                            .chat_service
-                            .pause_agent_message(
-                                response,
-                                crate::inference::tool_loop::PauseReason::Hitl,
-                                tool_calls,
-                            )
-                            .await;
+                        if response.status != Some(MessageStatus::Paused) {
+                            self.harness
+                                .chat_service
+                                .pause_agent_message(
+                                    response,
+                                    crate::inference::tool_loop::PauseReason::Hitl,
+                                    tool_calls,
+                                )
+                                .await?;
+                        }
                         // Exit cleanly. The HITL-resolve handler will respawn
                         // this task via `run_task` once the human resolves.
                         return Ok(());
                     }
+                    InferenceResponse::Shutdown {
+                        text,
+                        attachments,
+                        reasoning,
+                    } => {
+                        response.content = text;
+                        response.attachments = attachments;
+                        response.reasoning = reasoning;
+                        self.harness
+                            .chat_service
+                            .save_updated_message(&response)
+                            .await?;
+                        return Ok(());
+                    }
+                    InferenceResponse::Incomplete {
+                        reason,
+                        text,
+                        attachments,
+                        reasoning,
+                    } => {
+                        response.content = text;
+                        response.attachments = attachments;
+                        response.reasoning = reasoning;
+                        let error = AppError::Inference(Box::new(
+                            frona_harness::inference::InferenceError::Stop(reason),
+                        ));
+                        self.harness
+                            .chat_service
+                            .fail_agent_message(response, (&error).into())
+                            .await?;
+                        self.handle_error(&task, &error).await?;
+                        return Ok(());
+                    }
                     InferenceResponse::Cancelled(text) => {
                         response.content = text;
-                        let _ = self
-                            .harness
+                        self.harness
                             .chat_service
                             .cancel_agent_message(response)
-                            .await;
+                            .await?;
                         self.handle_cancelled(&task).await?;
                         return Ok(());
                     }
@@ -709,11 +767,10 @@ impl TaskExecutor {
                         .get_message(&task.user_id, &agent_msg_id)
                         .await
                     {
-                        let _ = self
-                            .harness
+                        self.harness
                             .chat_service
                             .fail_agent_message(msg, (&e).into())
-                            .await;
+                            .await?;
                     }
                     self.handle_error(&task, &e).await?;
                     return Ok(());
@@ -721,31 +778,12 @@ impl TaskExecutor {
             }
         }
 
-        tracing::warn!(
-            task_id = %task.id,
-            turns = MAX_TASK_RETRIES,
-            "Task reached max retries, auto-completing"
-        );
-        self.harness
-            .task_service
-            .mark_completed(
-                &task.id,
-                Some("Task auto-completed after max retries".into()),
-            )
-            .await?;
-        deliver_event_to_source(
-            &self.harness.chat_service,
-            &task,
-            TaskLifecycleEvent::Completion {
-                status: TaskStatus::Completed,
-                summary: Some("Task auto-completed after max retries".into()),
-            },
-            vec![],
-        )
-        .await;
-        self.resume_parent_if_requested(&task).await;
-
-        Ok(())
+        let error = AppError::Inference(Box::new(frona_harness::inference::InferenceError::Stop(
+            frona_harness::ExecutionStop::Stopped(
+                "maximum task continuation turns reached without a lifecycle result".into(),
+            ),
+        )));
+        self.handle_error(&task, &error).await
     }
 
     async fn find_lifecycle_event(&self, chat_id: &str) -> Option<LifecycleAction> {
@@ -956,31 +994,84 @@ impl TaskExecutor {
             .await;
 
         // Signal tasks complete via tool call, not System MessageEvent.
-        let mut lifecycle_event = None;
+        let lifecycle_event;
         match outcome {
             Ok(crate::agent::harness::AgentLoopOutcome {
                 inference,
                 mut response,
-            }) => {
-                if let InferenceResponse::Completed {
+            }) => match inference {
+                InferenceResponse::Completed {
                     text,
                     attachments,
                     reasoning,
                     lifecycle_event: lc,
-                    ..
-                } = inference
-                {
+                } => {
                     response.content = text;
                     response.attachments = attachments;
                     response.reasoning = reasoning;
-                    let _ = self
-                        .harness
+                    self.harness
                         .chat_service
                         .complete_agent_message(response)
-                        .await;
+                        .await?;
                     lifecycle_event = lc;
                 }
-            }
+                InferenceResponse::Shutdown {
+                    text,
+                    attachments,
+                    reasoning,
+                } => {
+                    response.content = text;
+                    response.attachments = attachments;
+                    response.reasoning = reasoning;
+                    self.harness
+                        .chat_service
+                        .save_updated_message(&response)
+                        .await?;
+                    return Ok(());
+                }
+                InferenceResponse::Incomplete {
+                    reason,
+                    text,
+                    attachments,
+                    reasoning,
+                } => {
+                    response.content = text;
+                    response.attachments = attachments;
+                    response.reasoning = reasoning;
+                    let error = AppError::Inference(Box::new(
+                        frona_harness::inference::InferenceError::Stop(reason),
+                    ));
+                    self.harness
+                        .chat_service
+                        .fail_agent_message(response, (&error).into())
+                        .await?;
+                    return Err(error);
+                }
+                InferenceResponse::Cancelled(text) => {
+                    response.content = text.clone();
+                    self.harness
+                        .chat_service
+                        .cancel_agent_message(response)
+                        .await?;
+                    return Err(AppError::Inference(Box::new(
+                        frona_harness::inference::InferenceError::Cancelled(text),
+                    )));
+                }
+                InferenceResponse::ExternalToolPending { tool_calls, .. } => {
+                    if response.status != Some(MessageStatus::Paused) {
+                        self.harness
+                            .chat_service
+                            .pause_agent_message(
+                                response,
+                                crate::inference::tool_loop::PauseReason::Hitl,
+                                tool_calls,
+                            )
+                            .await?;
+                    }
+                    return Ok(());
+                }
+                InferenceResponse::Handled => return Ok(()),
+            },
             Err(e) => {
                 if let Ok(msg) = self
                     .harness

@@ -1,6 +1,7 @@
-use self::streaming::ModelGroupStreaming;
 use frona_harness::inference::{InferenceError, ModelGroup};
 pub mod config;
+pub(crate) mod controls;
+pub use controls::RuntimeControls;
 pub mod conversation;
 pub mod credential;
 pub mod directory;
@@ -32,107 +33,44 @@ use crate::core::error::AppError;
 use self::usage::UsageService;
 
 pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, AppError> {
-    // For the no-tool path we record one Chat row. For the tool-loop path,
-    // tool_loop builds a fresh ToolTurn UsageContext per iteration and a
-    // final Chat row when it emits its last text turn.
-    let chat_usage_ctx = UsageContext::new(
-        InferenceKind::Text {
-            agent_id: request.ctx.agent.id.clone(),
-            chat_id: active_chat(&request.ctx)?.id.clone(),
-            message_id: request.message_id.clone(),
-        },
-        request.ctx.user.id.clone(),
-        request.model_group.name.clone(),
-    );
+    inference_controlled(request, &RuntimeControls::default()).await
+}
 
-    // Single source of truth: every inference turn (initial, resume, task
-    // executor's inner runs) flows through this function, so emitting
-    // `Start` here covers all entry points exactly once per turn.
+pub async fn inference_controlled(
+    request: InferenceRequest,
+    controls: &RuntimeControls,
+) -> Result<InferenceResponse, AppError> {
+    let report = controls.report();
+    report
+        .record_run(async {
+            let result = inference_in_scope(request, controls).await;
+            let state = crate::inference::controls::outcome(result.as_ref());
+            (result, state)
+        })
+        .await
+}
+
+pub(crate) async fn inference_in_scope(
+    request: InferenceRequest,
+    controls: &RuntimeControls,
+) -> Result<InferenceResponse, AppError> {
     request.ctx.event_tx.send(tool_loop::InferenceEvent {
         kind: tool_loop::InferenceEventKind::Start,
     });
-
-    if request.tool_registry.is_empty() {
-        use crate::inference::tool_loop::extract_reasoning;
-        // History is compaction-aware at load time; an
-        // over-budget request is rejected by the provider, not silently trimmed.
-        let history = request.history;
-
-        let mut response_text = String::new();
-        let event_tx = &request.ctx.event_tx;
-        match (request.model_group)
-            .stream_inference(
-                frona_harness::inference::ModelRequest {
-                    input_token_estimate: request.input_token_estimate,
-                    system_prompt: &request.system_prompt,
-                    history: history.to_vec(),
-                    tools: vec![],
-                    observations: frona_harness::inference::observation::Observations::new(
-                        &request.usage_service.scoped(&chat_usage_ctx),
-                    ),
-                    overrides: Default::default(),
-                },
-                event_tx,
-                &request.cancel_token,
-                &mut response_text,
-            )
-            .await?
-        {
-            streaming::StreamResult::Contents {
-                content: contents,
-                usage: _,
-            } => {
-                let reasoning = extract_reasoning(&contents);
-                Ok(InferenceResponse::Completed {
-                    text: response_text,
-                    attachments: vec![],
-                    lifecycle_event: None,
-                    reasoning,
-                })
-            }
-            streaming::StreamResult::Cancelled => Ok(InferenceResponse::Cancelled(response_text)),
-        }
-    } else {
-        let event_tx = request.ctx.event_tx.clone();
-        let outcome = tool_loop::run_tool_loop(
-            &request.model_group,
-            &request.system_prompt,
-            request.history,
-            &request.tool_registry,
-            event_tx,
-            request.cancel_token,
-            &request.ctx,
-            &request.usage_service,
-            &request.chat_service,
-            &request.message_id,
-            request.input_token_estimate,
-        )
-        .await?;
-
-        Ok(match outcome {
-            tool_loop::ToolLoopOutcome::Completed {
-                text,
-                attachments,
-                lifecycle_event,
-                reasoning,
-            } => InferenceResponse::Completed {
-                text,
-                attachments,
-                lifecycle_event,
-                reasoning,
-            },
-            tool_loop::ToolLoopOutcome::Cancelled(text) => InferenceResponse::Cancelled(text),
-            tool_loop::ToolLoopOutcome::ExternalToolPending {
-                turn_text,
-                tool_calls,
-                system_prompt,
-            } => InferenceResponse::ExternalToolPending {
-                turn_text,
-                tool_calls,
-                system_prompt,
-            },
-        })
-    }
+    tool_loop::run_tool_loop_controlled(
+        &request.model_group,
+        &request.system_prompt,
+        request.history,
+        &request.tool_registry,
+        request.ctx.event_tx.clone(),
+        &request.ctx,
+        &request.usage_service,
+        &request.chat_service,
+        &request.message_id,
+        request.input_token_estimate,
+        controls.execution(&request.cancel_token),
+    )
+    .await
 }
 
 pub async fn text_inference(

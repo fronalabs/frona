@@ -69,6 +69,17 @@ pub struct SummaryRequest<'a> {
 #[async_trait]
 pub trait ChatSummarizer: Send + Sync {
     async fn summarize(&self, request: SummaryRequest<'_>) -> Result<String, AppError>;
+
+    /// Injected summarizers retain their implementation; production generation
+    /// overrides this boundary to reuse the enclosing turn's controls.
+    async fn summarize_controlled(
+        &self,
+        request: SummaryRequest<'_>,
+        execution: frona_harness::ExecutionControl<'_>,
+    ) -> Result<String, AppError> {
+        execution.check_cancellation()?;
+        self.summarize(request).await
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -97,6 +108,16 @@ impl TextInferenceSummarizer {
 #[async_trait]
 impl ChatSummarizer for TextInferenceSummarizer {
     async fn summarize(&self, request: SummaryRequest<'_>) -> Result<String, AppError> {
+        let budget = frona_harness::DefaultBudget::default();
+        self.summarize_controlled(request, frona_harness::ExecutionControl::new(&budget))
+            .await
+    }
+
+    async fn summarize_controlled(
+        &self,
+        request: SummaryRequest<'_>,
+        execution: frona_harness::ExecutionControl<'_>,
+    ) -> Result<String, AppError> {
         let model_group = request.model_group;
         let usage_ctx = UsageContext::new(
             InferenceKind::Compaction {
@@ -109,18 +130,20 @@ impl ChatSummarizer for TextInferenceSummarizer {
             model_group.name.clone(),
         );
         let response = model_group
-            .inference_preserving_history(frona_harness::inference::ModelRequest {
-                input_token_estimate: request.input_token_estimate,
-                system_prompt: request.system_prompt,
-                history: request.history,
-                tools: request.tools,
-                observations: frona_harness::inference::observation::Observations::new(
-                    &self.usage_service.scoped(&usage_ctx),
-                ),
-                overrides: Default::default(),
-            })
-            .await
-            .map_err(|e| AppError::Internal(format!("Chat compaction failed: {e}")))?;
+            .inference_preserving_history_controlled(
+                frona_harness::inference::ModelRequest {
+                    input_token_estimate: request.input_token_estimate,
+                    system_prompt: request.system_prompt,
+                    history: request.history,
+                    tools: request.tools,
+                    observations: frona_harness::inference::observation::Observations::new(
+                        &self.usage_service.scoped(&usage_ctx),
+                    ),
+                    overrides: Default::default(),
+                },
+                execution,
+            )
+            .await?;
         // This is generation only: definitions preserve the cached prefix, never
         // authorize tool execution. A tool request is not a completed summary.
         if response
@@ -302,6 +325,22 @@ impl ChatCompactor {
         chat_id: &str,
         context: CompactionContext<'_>,
     ) -> Result<CompactionOutcome, AppError> {
+        let budget = frona_harness::DefaultBudget::default();
+        self.compact_chat_controlled(
+            chat_id,
+            context,
+            frona_harness::ExecutionControl::new(&budget),
+        )
+        .await
+    }
+
+    pub async fn compact_chat_controlled(
+        &self,
+        chat_id: &str,
+        context: CompactionContext<'_>,
+        execution: frona_harness::ExecutionControl<'_>,
+    ) -> Result<CompactionOutcome, AppError> {
+        execution.check_cancellation()?;
         let CompactionContext {
             agent_context,
             system_prompt,
@@ -513,25 +552,29 @@ impl ChatCompactor {
             + estimate_message_tokens(history.last().expect("summary instruction"));
         let content = self
             .summarizer
-            .summarize(SummaryRequest {
-                input_token_estimate: calibrated.then(|| {
-                    InputTokenEstimate::new(
-                        summary_input_tokens,
-                        &model_group.main,
-                        system_prompt,
-                        &history,
-                        tools,
-                    )
-                }),
-                model_group,
-                user_id,
-                agent_id: chat_agent_id,
-                chat_id,
-                system_prompt,
-                history,
-                tools: tools.to_vec(),
-            })
+            .summarize_controlled(
+                SummaryRequest {
+                    input_token_estimate: calibrated.then(|| {
+                        InputTokenEstimate::new(
+                            summary_input_tokens,
+                            &model_group.main,
+                            system_prompt,
+                            &history,
+                            tools,
+                        )
+                    }),
+                    model_group,
+                    user_id,
+                    agent_id: chat_agent_id,
+                    chat_id,
+                    system_prompt,
+                    history,
+                    tools: tools.to_vec(),
+                },
+                execution,
+            )
             .await?;
+        execution.check_cancellation()?;
         if content.trim().is_empty() {
             return Err(AppError::Internal(
                 "Chat compaction returned an empty summary".into(),
@@ -579,14 +622,21 @@ impl ChatCompactor {
             )?;
         }
         if existing.is_some() {
-            self.chat_summary_repo.update(&row).await?;
+            self.chat_summary_repo
+                .update(&row)
+                .await
+                .map_err(crate::inference::controls::required_write_error)?;
         } else {
-            self.chat_summary_repo.create(&row).await?;
+            self.chat_summary_repo
+                .create(&row)
+                .await
+                .map_err(crate::inference::controls::required_write_error)?;
         }
         if agent_context_state != chat.agent_context_state {
             crate::db::repo::chats::SurrealChatRepo::new(self.message_repo.db().clone())
                 .save_agent_context_state(chat_id, &agent_context_state)
-                .await?;
+                .await
+                .map_err(crate::inference::controls::required_write_error)?;
         }
         let input_token_estimate = (calibrated && !has_agent_context).then(|| {
             InputTokenEstimate::new(

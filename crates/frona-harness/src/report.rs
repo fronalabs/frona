@@ -143,6 +143,24 @@ impl RunOutcome {
     }
 }
 
+impl From<&super::ExecutionStop> for RunOutcome {
+    fn from(stop: &super::ExecutionStop) -> Self {
+        Self::Incomplete {
+            kind: stop.failure_kind(),
+            message: stop.to_string(),
+        }
+    }
+}
+
+impl From<&crate::inference::InferenceError> for RunOutcome {
+    fn from(error: &crate::inference::InferenceError) -> Self {
+        Self::Incomplete {
+            kind: error.execution_failure_kind().unwrap_or(FailureKind::Model),
+            message: error.to_string(),
+        }
+    }
+}
+
 pub(super) fn failure_kind(error: &ManualError) -> FailureKind {
     match error {
         ManualError::Compaction(_) => FailureKind::Compaction,
@@ -188,6 +206,56 @@ impl ExecutionReport {
 pub struct ReportHandle(Arc<Mutex<ExecutionReport>>);
 
 impl ReportHandle {
+    /// Scope an application-owned run, including all required final writes.
+    /// The caller classifies its final host outcome only after those writes.
+    /// Dropping this future records abandonment, even before its first poll.
+    /// Call once at the outer lifecycle boundary, not inside a session already
+    /// owning this report. This cannot replace a previously recorded outcome.
+    /// A claimed completion with unfinished tracked activity becomes a protocol
+    /// failure; external persistence and acceptance remain the caller's responsibility.
+    pub fn record_run<T, F>(&self, work: F) -> impl std::future::Future<Output = T>
+    where
+        F: std::future::Future<Output = (T, RunOutcome)>,
+    {
+        let recorder = RunRecorder(self.clone());
+        // Host orchestration futures can be large. Keep this lifecycle layer
+        // pointer-sized instead of adding their state to every enclosing future.
+        let work = Box::pin(work);
+        async move {
+            let (result, outcome) = work.await;
+            {
+                let mut report = recorder.0.read();
+                if report.outcome.is_none() {
+                    let unfinished = report
+                        .requests
+                        .iter()
+                        .any(|request| request.outcome.is_none())
+                        || report
+                            .attempts
+                            .iter()
+                            .any(|attempt| attempt.outcome.is_none())
+                        || report.actions.iter().any(|action| {
+                            matches!(
+                                action.outcome,
+                                None | Some(ActionOutcome::Stopped | ActionOutcome::Abandoned)
+                            )
+                        });
+                    report.outcome =
+                        Some(if matches!(outcome, RunOutcome::Completed) && unfinished {
+                            RunOutcome::Incomplete {
+                                kind: FailureKind::Protocol,
+                                message: "host claimed completion with unfinished tracked activity"
+                                    .into(),
+                            }
+                        } else {
+                            outcome
+                        });
+                }
+            }
+            result
+        }
+    }
+
     pub fn snapshot(&self) -> ExecutionReport {
         self.read().clone()
     }

@@ -120,6 +120,21 @@ pub enum InferenceResponse {
         lifecycle_event: Option<TaskEvent>,
         reasoning: Option<Reasoning>,
     },
+    /// Server shutdown leaves canonical work resumable on startup. Core work
+    /// is incomplete; this is distinct from user cancellation or task failure.
+    Shutdown {
+        text: String,
+        attachments: Vec<crate::storage::Attachment>,
+        reasoning: Option<Reasoning>,
+    },
+    /// Work ended without protocol completion. Partial output is displayable,
+    /// but never an accepted refinement or a successful task completion.
+    Incomplete {
+        reason: frona_harness::ExecutionStop,
+        text: String,
+        attachments: Vec<crate::storage::Attachment>,
+        reasoning: Option<crate::chat::message::models::Reasoning>,
+    },
     Cancelled(String),
     ExternalToolPending {
         turn_text: String,

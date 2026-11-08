@@ -487,7 +487,7 @@ async fn streaming_tool_result_retries_and_fallback_preserve_the_complete_active
         tokio_util::sync::CancellationToken::new(),
         &helpers::mock_context(),
         &test_metrics_ctx(),
-        &helpers::test_chat_service().await,
+        &helpers::test_chat_service_for_turn("active-turn").await,
         "active-turn",
         None,
     )

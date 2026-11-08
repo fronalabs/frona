@@ -34,7 +34,7 @@ impl Command for CompactCommand {
             .harness
             .chat_service
             .compactor()
-            .compact_chat(
+            .compact_chat_controlled(
                 &ctx.chat.id,
                 crate::chat::compactor::CompactionContext {
                     agent_context: ctx.session.agent_context_scope(),
@@ -43,6 +43,7 @@ impl Command for CompactCommand {
                     model_history: &ctx.session.model_history,
                     tools: &tools,
                 },
+                ctx.session.controls.execution(&ctx.session.cancel_token),
             )
             .await?;
         ctx.session.rig_history = outcome.model_history.history.clone();

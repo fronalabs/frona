@@ -42,6 +42,10 @@ fn build_cascade_user_delete_events() -> String {
 
 pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
     db.use_ns("frona").use_db("frona").await?;
+    // The backed-up embedded runtime used this marker for the same native
+    // records. Reject unknown encodings before changing any schema or data.
+    db.query("IF $frona_harness_schema_version != NONE AND $frona_harness_schema_version != 1 { THROW 'Unsupported harness schema version'; };")
+        .await?.check()?;
 
     let static_schema = "
         DEFINE TABLE IF NOT EXISTS user SCHEMALESS;
@@ -296,8 +300,18 @@ pub async fn setup_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
     let cascade_events = build_cascade_user_delete_events();
     let schema = format!("{static_schema}\n{cascade_events}");
 
-    db.query(schema).await?;
+    db.query(schema).await?.check()?;
 
+    Ok(())
+}
+
+/// Install server schemas and historical migrations before adopting the legacy
+/// embedded-runtime marker. The portable harness owns no schema initialization.
+pub async fn initialize_schema(db: &Surreal<Db>) -> Result<(), surrealdb::Error> {
+    setup_schema(db).await?;
+    crate::db::migrations::run_migrations(db).await?;
+    db.query("BEGIN TRANSACTION; IF $frona_harness_schema_version != NONE AND $frona_harness_schema_version != 1 { THROW 'Unsupported harness schema version'; }; DEFINE PARAM IF NOT EXISTS $frona_harness_schema_version VALUE 1; COMMIT TRANSACTION;")
+        .await?.check()?;
     Ok(())
 }
 
@@ -323,8 +337,7 @@ pub async fn init(path: &str) -> Result<Surreal<Db>, surrealdb::Error> {
         }
     };
 
-    setup_schema(&db).await?;
-    crate::db::migrations::run_migrations(&db).await?;
+    initialize_schema(&db).await?;
 
     info!("SurrealDB schema initialized");
     Ok(db)

@@ -220,6 +220,31 @@ pub struct Conversation {
     compacted: Option<super::CompactedView>,
 }
 
+/// Borrowed provenance for one projected model-facing conversation suffix.
+/// Constructed only by a ready conversation; it carries no editable identities.
+/// Keep this value alive through the model call and send the same projection.
+pub struct ConversationInput<'a> {
+    conversation: &'a Conversation,
+    input: RequestInput,
+}
+
+impl ConversationInput<'_> {
+    pub fn execution<'a>(
+        &'a self,
+        execution: super::ExecutionControl<'a>,
+    ) -> Result<super::ExecutionControl<'a>, ConversationError> {
+        if let (Some(expected), Some(actual)) =
+            (self.conversation.report.as_ref(), execution.report_handle())
+            && !expected.same_scope(actual)
+        {
+            return Err(ConversationError::InvalidView(
+                "input belongs to another report scope".into(),
+            ));
+        }
+        Ok(execution.with_input(&self.input))
+    }
+}
+
 impl Default for Conversation {
     fn default() -> Self {
         Self::empty_with_id(Uuid::now_v7())
@@ -227,6 +252,54 @@ impl Default for Conversation {
 }
 
 impl Conversation {
+    /// Start a fresh live suffix tracked by the supplied execution scope.
+    /// Persisted host prefixes are not fabricated into live action history.
+    pub fn from_execution(execution: super::ExecutionControl<'_>) -> Self {
+        match execution.report_handle() {
+            Some(report) => Self::default().with_report(report.clone()),
+            None => Self::default(),
+        }
+    }
+
+    /// Correlate a position-preserving native projection of the selected view.
+    /// Changed messages are never counted as literal feedback delivery. Summary
+    /// entries have no original position; retained entries keep their original
+    /// positions even after compaction. A host prefix must not be included here.
+    pub fn projected_input(
+        &self,
+        projected: &[Message],
+    ) -> Result<ConversationInput<'_>, ConversationError> {
+        self.require_ready()?;
+        let view = self
+            .model_view()
+            .map_err(|error| ConversationError::InvalidView(error.to_string()))?;
+        let selected = view.messages();
+        if selected.len() != projected.len()
+            || selected.iter().zip(projected).any(|(original, projected)| {
+                std::mem::discriminant(original) != std::mem::discriminant(projected)
+            })
+        {
+            return Err(ConversationError::InvalidView(
+                "projection must preserve message positions and roles".into(),
+            ));
+        }
+        let messages = view
+            .entries()
+            .iter()
+            .zip(selected.iter().zip(projected))
+            .filter_map(|(entry, (selected, projected))| match entry {
+                super::HistoryViewEntry::Original(position) if selected == projected => {
+                    Some(*position)
+                }
+                _ => None,
+            })
+            .collect();
+        Ok(ConversationInput {
+            conversation: self,
+            input: self.request_input(messages),
+        })
+    }
+
     fn empty_with_id(id: Uuid) -> Self {
         Self {
             id,
@@ -1080,3 +1153,6 @@ impl Conversation {
 
 #[cfg(test)]
 mod recovery_tests;
+
+#[cfg(test)]
+mod projection_tests;

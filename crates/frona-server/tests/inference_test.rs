@@ -122,7 +122,7 @@ async fn test_tool_loop_simple_text_response() {
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
-    let chat_service = test_chat_service().await;
+    let chat_service = test_chat_service_for_turn("test-msg").await;
 
     let outcome = run_tool_loop(
         &frona_harness::inference::ModelGroup {
@@ -184,7 +184,7 @@ async fn test_tool_loop_single_tool_call() {
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
-    let chat_service = test_chat_service().await;
+    let chat_service = test_chat_service_for_turn("test-msg").await;
 
     let outcome = run_tool_loop(
         &frona_harness::inference::ModelGroup {
@@ -259,7 +259,7 @@ async fn test_tool_loop_multi_turn() {
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
-    let chat_service = test_chat_service().await;
+    let chat_service = test_chat_service_for_turn("test-msg").await;
 
     let outcome = run_tool_loop(
         &frona_harness::inference::ModelGroup {
@@ -303,7 +303,7 @@ async fn test_tool_loop_external_tool_returns_pending() {
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
-    let chat_service = test_chat_service().await;
+    let chat_service = test_chat_service_for_turn("test-msg").await;
 
     let outcome = run_tool_loop(
         &frona_harness::inference::ModelGroup {
@@ -353,7 +353,7 @@ async fn test_tool_loop_mixed_internal_external() {
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
-    let chat_service = test_chat_service().await;
+    let chat_service = test_chat_service_for_turn("test-msg").await;
 
     let outcome = run_tool_loop(
         &frona_harness::inference::ModelGroup {
@@ -402,7 +402,7 @@ async fn test_tool_loop_multiple_external_tools_in_same_turn() {
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
-    let chat_service = test_chat_service().await;
+    let chat_service = test_chat_service_for_turn("test-msg").await;
 
     let outcome = run_tool_loop(
         &frona_harness::inference::ModelGroup {
@@ -456,7 +456,7 @@ async fn test_tool_loop_mixed_internal_and_multiple_external() {
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
-    let chat_service = test_chat_service().await;
+    let chat_service = test_chat_service_for_turn("test-msg").await;
 
     let outcome = run_tool_loop(
         &frona_harness::inference::ModelGroup {
@@ -502,7 +502,7 @@ async fn test_tool_loop_cancellation_before_inference() {
     cancel.cancel();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
-    let chat_service = test_chat_service().await;
+    let chat_service = test_chat_service_for_turn("test-msg").await;
 
     let outcome = run_tool_loop(
         &frona_harness::inference::ModelGroup {
@@ -547,7 +547,7 @@ async fn test_tool_loop_rate_limit_retry() {
     // SurrealDB schema initialization uses timeout-based retries internally;
     // initialize it with the clock running, then pause again for retry timing.
     tokio::time::resume();
-    let chat_service = test_chat_service().await;
+    let chat_service = test_chat_service_for_turn("test-msg").await;
     tokio::time::pause();
 
     let outcome = run_tool_loop(
@@ -608,7 +608,7 @@ async fn test_tool_loop_rate_limit_exhausted() {
     // SurrealDB schema initialization uses timeout-based retries internally;
     // initialize it with the clock running, then pause again for retry timing.
     tokio::time::resume();
-    let chat_service = test_chat_service().await;
+    let chat_service = test_chat_service_for_turn("test-msg").await;
     tokio::time::pause();
 
     let result = run_tool_loop(
@@ -658,7 +658,7 @@ async fn test_tool_loop_tool_call_failure() {
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
-    let chat_service = test_chat_service().await;
+    let chat_service = test_chat_service_for_turn("test-msg").await;
 
     let outcome = run_tool_loop(
         &frona_harness::inference::ModelGroup {
@@ -708,7 +708,7 @@ async fn test_tool_loop_provider_error() {
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
-    let chat_service = test_chat_service().await;
+    let chat_service = test_chat_service_for_turn("test-msg").await;
 
     let result = run_tool_loop(
         &frona_harness::inference::ModelGroup {
@@ -1101,7 +1101,7 @@ async fn test_streaming_tokens_arrive_individually() {
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
-    let chat_service = test_chat_service().await;
+    let chat_service = test_chat_service_for_turn("test-msg").await;
 
     let handle = tokio::spawn(async move {
         run_tool_loop(
@@ -1202,7 +1202,7 @@ async fn test_tool_loop_reasoning_in_completed_outcome() {
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
-    let chat_service = test_chat_service().await;
+    let chat_service = test_chat_service_for_turn("test-msg").await;
 
     let outcome = run_tool_loop(
         &frona_harness::inference::ModelGroup {
@@ -1274,7 +1274,7 @@ async fn test_tool_loop_reasoning_with_tool_calls() {
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
-    let chat_service = test_chat_service().await;
+    let chat_service = test_chat_service_for_turn("test-msg").await;
 
     let outcome = run_tool_loop(
         &frona_harness::inference::ModelGroup {
@@ -1330,7 +1330,7 @@ async fn test_tool_loop_no_reasoning_when_absent() {
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
-    let chat_service = test_chat_service().await;
+    let chat_service = test_chat_service_for_turn("test-msg").await;
 
     let outcome = run_tool_loop(
         &frona_harness::inference::ModelGroup {
@@ -1386,7 +1386,7 @@ async fn test_tool_result_sse_includes_summary() {
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
-    let chat_service = test_chat_service().await;
+    let chat_service = test_chat_service_for_turn("test-msg").await;
 
     let _outcome = run_tool_loop(
         &frona_harness::inference::ModelGroup {
@@ -1466,7 +1466,7 @@ async fn test_tool_loop_deduplicates_attachments_before_lifecycle_return() {
     let cancel = CancellationToken::new();
     let ctx = mock_context();
     let metrics = test_metrics_ctx();
-    let chat_service = test_chat_service().await;
+    let chat_service = test_chat_service_for_turn("test-msg").await;
 
     let outcome = run_tool_loop(
         &frona_harness::inference::ModelGroup {
@@ -1566,6 +1566,7 @@ async fn tool_instructions_leave_system_stable_and_replay_the_exact_live_tail() 
         providers: test_providers("mock", provider.clone()),
         ..test_model_group()
     };
+    seed_tool_turn(&db, &ctx, "response").await;
     run_tool_loop(
         &group,
         "standing system",
@@ -1623,4 +1624,227 @@ async fn tool_instructions_leave_system_stable_and_replay_the_exact_live_tail() 
         replay.history[3],
         RigMessage::user("instructions for second")
     );
+}
+
+#[tokio::test]
+async fn persistent_calls_share_admission_and_report_each_proposal() {
+    use frona::inference::InferenceRequest;
+    use frona::inference::RuntimeControls;
+    use frona::inference::inference_controlled;
+    use frona_harness::BudgetLimits;
+    use frona_harness::DefaultBudget;
+    use frona_harness::ExecutionStop;
+    use frona_harness::FailureKind;
+    use frona_harness::RunOutcome;
+    for (model_limit, tool_limit, token_limit, expected_models, expected_tools) in [
+        (Some(0), None, None, 0, 0),
+        (None, Some(1), None, 1, 1),
+        (None, None, Some(1), 1, 0),
+    ] {
+        let provider = Arc::new(MockModelProvider::new(vec![MockResponse::ToolCalls(vec![
+            ("same-id".into(), "search".into(), serde_json::json!({})),
+            ("same-id".into(), "search".into(), serde_json::json!({})),
+        ])]));
+        let model_group = frona_harness::inference::ModelGroup {
+            providers: test_providers("mock", provider.clone()),
+            ..test_model_group()
+        };
+        let budget = Arc::new(DefaultBudget::new(BudgetLimits {
+            model_attempts: model_limit,
+            tool_calls: tool_limit,
+            tokens: token_limit,
+            ..BudgetLimits::unlimited()
+        }));
+        let controls = RuntimeControls::new(budget.clone());
+        let report = controls.report();
+        let mut tools = AgentToolRegistry::empty();
+        tools.register(Arc::new(MockInternalTool::new(
+            "search",
+            vec!["first".into(), "second".into()],
+        )));
+        let service = test_chat_service_for_turn("test-msg").await;
+        let outcome = inference_controlled(
+            InferenceRequest {
+                input_token_estimate: None,
+                model_group,
+                system_prompt: "system".into(),
+                history: vec![RigMessage::user("search")],
+                tool_registry: tools,
+                ctx: mock_context(),
+                cancel_token: CancellationToken::new(),
+                chat_service: service.clone(),
+                message_id: "test-msg".into(),
+                usage_service: test_metrics_ctx(),
+            },
+            &controls,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(
+                outcome,
+                ToolLoopOutcome::Incomplete {
+                    reason: ExecutionStop::BudgetExhausted(_),
+                    ..
+                }
+            ),
+            "{outcome:?}"
+        );
+        assert_eq!(provider.calls(), expected_models);
+        assert_eq!(
+            service
+                .get_tool_calls_by_message("test-msg")
+                .await
+                .unwrap()
+                .len(),
+            expected_tools
+        );
+        assert_eq!(budget.snapshot().tool_calls, expected_tools as u64);
+        let report = report.snapshot();
+        assert!(matches!(
+            report.outcome,
+            Some(RunOutcome::Incomplete {
+                kind: FailureKind::Budget,
+                ..
+            })
+        ));
+        assert_eq!(report.attempts.len(), expected_models);
+        assert_eq!(
+            report.actions.iter().filter(|a| a.started).count(),
+            expected_tools
+        );
+        if expected_models != 0 {
+            assert_eq!(report.actions.len(), 2);
+            assert_ne!(report.actions[0].position, report.actions[1].position);
+        }
+    }
+}
+
+#[tokio::test]
+async fn persistent_turn_cap_is_incomplete_but_does_not_disable_no_tool_requests() {
+    for (with_tools, turns, expected_calls) in [(true, 0, 0), (true, 1, 1), (false, 0, 1)] {
+        let response = if with_tools {
+            MockResponse::ToolCalls(vec![("c".into(), "search".into(), serde_json::json!({}))])
+        } else {
+            MockResponse::Text("done".into())
+        };
+        let provider = Arc::new(MockModelProvider::new(vec![response]));
+        let mut group = test_model_group();
+        group.providers = test_providers("mock", provider.clone());
+        group.inference.max_tool_turns = turns;
+        let mut tools = AgentToolRegistry::empty();
+        if with_tools {
+            tools.register(Arc::new(MockInternalTool::new(
+                "search",
+                vec!["result".into()],
+            )));
+        }
+        let ctx = mock_context();
+        let outcome = run_tool_loop(
+            &group,
+            "system",
+            vec![RigMessage::user("input")],
+            &tools,
+            ctx.event_tx.clone(),
+            CancellationToken::new(),
+            &ctx,
+            &test_metrics_ctx(),
+            &test_chat_service_for_turn("test-msg").await,
+            "test-msg",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(provider.calls(), expected_calls);
+        if with_tools {
+            assert!(
+                matches!(outcome, ToolLoopOutcome::Incomplete { .. }),
+                "{outcome:?}"
+            );
+        } else {
+            assert!(matches!(outcome, ToolLoopOutcome::Completed { text, .. } if text == "done"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn unexpected_submit_is_paired_without_acceptance_or_tool_allowance() {
+    use frona::inference::InferenceRequest;
+    use frona::inference::RuntimeControls;
+    use frona::inference::inference_controlled;
+    use frona_harness::ActionKind;
+    use frona_harness::ActionOutcome;
+    use frona_harness::BudgetLimits;
+    use frona_harness::DefaultBudget;
+    for mixed in [false, true] {
+        let mut calls = vec![(
+            "submit-id".into(),
+            "submit".into(),
+            serde_json::json!({"untrusted":"answer"}),
+        )];
+        if mixed {
+            calls.push(("ordinary-id".into(), "search".into(), serde_json::json!({})));
+        }
+        let provider = Arc::new(MockModelProvider::new(vec![
+            MockResponse::ToolCalls(calls),
+            MockResponse::Text("repaired text".into()),
+        ]));
+        let mut tools = AgentToolRegistry::empty();
+        if mixed {
+            tools.register(Arc::new(MockInternalTool::new(
+                "search",
+                vec!["result".into()],
+            )));
+        }
+        let budget = Arc::new(DefaultBudget::new(BudgetLimits {
+            tool_calls: Some(u64::from(mixed)),
+            ..BudgetLimits::unlimited()
+        }));
+        let controls = RuntimeControls::new(budget.clone());
+        let report = controls.report();
+        let service = test_chat_service_for_turn("test-msg").await;
+        let result = inference_controlled(
+            InferenceRequest {
+                input_token_estimate: None,
+                model_group: frona_harness::inference::ModelGroup {
+                    providers: test_providers("mock", provider.clone()),
+                    ..test_model_group()
+                },
+                system_prompt: "system".into(),
+                history: vec![RigMessage::user("input")],
+                tool_registry: tools,
+                ctx: mock_context(),
+                cancel_token: CancellationToken::new(),
+                chat_service: service.clone(),
+                message_id: "test-msg".into(),
+                usage_service: test_metrics_ctx(),
+            },
+            &controls,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(result, ToolLoopOutcome::Completed { text, .. } if text == "repaired text")
+        );
+        assert_eq!(provider.calls(), 2);
+        assert_eq!(budget.snapshot().tool_calls, u64::from(mixed));
+        let records = service.get_tool_calls_by_message("test-msg").await.unwrap();
+        assert_eq!(records.len(), 1 + usize::from(mixed));
+        let rejected = records.iter().find(|call| call.name == "submit").unwrap();
+        assert!(!rejected.success);
+        assert!(rejected.result.contains("not offered"));
+        let report = report.snapshot();
+        let action = report
+            .actions
+            .iter()
+            .find(|action| action.kind == ActionKind::Submission)
+            .unwrap();
+        assert_eq!(action.outcome, Some(ActionOutcome::Rejected));
+        assert!(!action.started);
+        assert!(
+            serde_json::to_string(&provider.histories()[1])
+                .unwrap()
+                .contains("not offered")
+        );
+    }
 }

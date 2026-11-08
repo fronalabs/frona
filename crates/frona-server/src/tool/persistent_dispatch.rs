@@ -75,6 +75,7 @@ pub struct PersistentToolDispatcher<'a> {
     service: &'a ChatService,
     registry: &'a AgentToolRegistry,
     context: &'a InferenceContext,
+    events: crate::chat::broadcast::EventSender,
     message_id: String,
     turn: u32,
     turn_text: Option<String>,
@@ -109,12 +110,19 @@ impl<'a> PersistentToolDispatcher<'a> {
             service,
             registry,
             context,
+            events: context.event_tx.clone(),
             message_id: message_id.into(),
             turn,
             turn_text,
             reasoning,
             metadata_saved: false,
         })
+    }
+
+    /// Preserve an existing runtime caller's explicit lifecycle event sink.
+    pub fn with_events(mut self, events: crate::chat::broadcast::EventSender) -> Self {
+        self.events = events;
+        self
     }
 
     /// Dispatch a proposal with fresh shared admission. Authorization remains in
@@ -125,7 +133,7 @@ impl<'a> PersistentToolDispatcher<'a> {
         action: &PendingAction,
         execution: ExecutionControl<'_>,
     ) -> Result<PersistentToolOutcome, ToolDispatchError> {
-        let proposal = conversation.tool_proposal(action)?;
+        let proposal = conversation.action_proposal(action)?;
         let call = proposal.call.clone();
         let name = &call.function.name;
         let offered = proposal.offered_tools.iter().any(|tool| tool.name == *name);
@@ -142,6 +150,7 @@ impl<'a> PersistentToolDispatcher<'a> {
             };
             return self.reject(conversation, action, execution, feedback).await;
         }
+        conversation.tool_proposal(action)?;
         let definition = definition.expect("checked registered tool");
         let mut returned = None;
         let mut tools = harness::ToolRegistry::default();
@@ -187,7 +196,7 @@ impl<'a> PersistentToolDispatcher<'a> {
         execution: ExecutionControl<'_>,
         feedback: String,
     ) -> Result<PersistentToolOutcome, ToolDispatchError> {
-        conversation.tool_proposal(action)?;
+        conversation.action_proposal(action)?;
         if let Err(error) = execution.check_cancellation() {
             return Err(conversation
                 .stop_execution(error.into_execution_stop().expect("terminal cancellation")));
@@ -212,7 +221,17 @@ impl<'a> PersistentToolDispatcher<'a> {
             return Err(conversation
                 .stop_execution(error.into_execution_stop().expect("terminal cancellation")));
         }
-        let resolution = conversation.reject_tool(action, harness::ToolOutput::text(feedback))?;
+        let resolution = if conversation.action(action)?.kind == harness::ActionKind::Submission {
+            conversation
+                .revise_submission(action, feedback.clone())
+                .map_err(|error| match error {
+                    harness::SubmissionError::Conversation(error) => ToolDispatchError::from(error),
+                    error => ToolDispatchError::ToolHook(error.to_string()),
+                })?;
+            ActionResolution::Rejected(harness::ToolOutput::text(feedback))
+        } else {
+            conversation.reject_tool(action, harness::ToolOutput::text(feedback))?
+        };
         Ok(PersistentToolOutcome::Continue(PersistentToolResult {
             record: record.into(),
             resolution,
@@ -253,7 +272,7 @@ impl<'a> PersistentToolDispatcher<'a> {
             )
             .await?;
         self.metadata_saved = true;
-        self.context.event_tx.send(InferenceEvent {
+        self.events.send(InferenceEvent {
             kind: InferenceEventKind::ToolCall {
                 id: record.id.clone(),
                 provider_call_id: record.provider_call_id.clone(),
@@ -297,7 +316,7 @@ impl<'a> PersistentToolDispatcher<'a> {
         record.task_event = output.task_event().cloned();
         record.system_prompt = system_prompt;
         if !pending(output) {
-            self.context.event_tx.send(InferenceEvent {
+            self.events.send(InferenceEvent {
                 kind: InferenceEventKind::ToolResult {
                     name: record.name.clone(),
                     result: text,

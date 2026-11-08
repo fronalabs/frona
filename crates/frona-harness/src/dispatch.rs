@@ -305,6 +305,16 @@ impl Conversation {
         Ok(self.action(handle)?)
     }
 
+    /// Inspect any unstarted proposal, including a submission the host may reject.
+    /// This validates identity and storage state before required host writes.
+    pub fn action_proposal(
+        &self,
+        handle: &PendingAction,
+    ) -> Result<super::PendingActionView<'_>, ToolDispatchError> {
+        self.require_action_proposal(handle)?;
+        Ok(self.action(handle)?)
+    }
+
     /// Stop with a typed host execution failure, retaining unfinished actions.
     /// A failed required stop write takes precedence over the supplied reason.
     /// The returned error is the authoritative stop; this never completes work.
@@ -316,6 +326,14 @@ impl Conversation {
         &self,
         handle: &PendingAction,
     ) -> Result<(), ToolDispatchError> {
+        self.require_action_proposal(handle)?;
+        if self.action(handle)?.kind != ActionKind::Tool {
+            return Err(ToolDispatchError::Submission);
+        }
+        Ok(())
+    }
+
+    fn require_action_proposal(&self, handle: &PendingAction) -> Result<(), ToolDispatchError> {
         self.require_storage_ready()?;
         if let Some(failure) = self.history_failure() {
             return Err(ExecutionStop::Storage(Box::new(failure.clone())).into());
@@ -326,9 +344,6 @@ impl Conversation {
         let view = self.action(handle)?;
         if view.status == ActionStatus::Started {
             return Err(ConversationError::AlreadyStarted.into());
-        }
-        if view.kind != ActionKind::Tool {
-            return Err(ToolDispatchError::Submission);
         }
         Ok(())
     }

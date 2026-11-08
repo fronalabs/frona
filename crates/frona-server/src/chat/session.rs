@@ -16,6 +16,7 @@ use crate::tool::registry::{AgentToolRegistry, ToolFilter};
 use frona_harness::inference::ModelGroup;
 
 pub struct ChatSessionContext {
+    pub(crate) controls: crate::inference::RuntimeControls,
     pub chat: Chat,
     pub agent_config: AgentConfig,
     pub system_prompt: String,
@@ -65,6 +66,30 @@ impl ChatSessionContext {
         cancel_token: CancellationToken,
         builder: Arc<dyn ConversationBuilder>,
         tool_filters: &[ToolFilter],
+    ) -> Result<Self, AppError> {
+        Self::build_for_response_controlled(
+            harness,
+            user_id,
+            chat,
+            response_id,
+            cancel_token,
+            builder,
+            tool_filters,
+            Default::default(),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn build_for_response_controlled(
+        harness: &Harness,
+        user_id: &str,
+        chat: Chat,
+        response_id: Option<&str>,
+        cancel_token: CancellationToken,
+        builder: Arc<dyn ConversationBuilder>,
+        tool_filters: &[ToolFilter],
+        controls: crate::inference::RuntimeControls,
     ) -> Result<Self, AppError> {
         let event_sender: EventSender =
             harness
@@ -220,7 +245,7 @@ impl ChatSessionContext {
             tool_registry.mcp_bridge_mode(),
         );
         let request = conversation
-            .prepare(
+            .prepare_controlled(
                 harness.chat_service.compactor(),
                 super::conversation::PersistentRequest {
                     agent_context: tool_ctx.agent_context_scope(),
@@ -228,6 +253,7 @@ impl ChatSessionContext {
                     model_group: &model_group,
                     tools: &tools,
                 },
+                controls.execution(&cancel_token),
             )
             .await?;
         let input_token_estimate = conversation.input_token_estimate();
@@ -235,6 +261,7 @@ impl ChatSessionContext {
         let model_history = conversation.into_model_history();
 
         Ok(Self {
+            controls,
             chat,
             agent_config,
             system_prompt,

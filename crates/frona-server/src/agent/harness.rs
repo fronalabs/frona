@@ -519,19 +519,75 @@ impl Harness {
         command_context_registry: Option<Arc<CommandRegistry>>,
         execution: NewExecution,
     ) {
+        self.run_turn_with_execution_controlled(
+            user_id,
+            chat_id,
+            message_id,
+            cancel_token,
+            builder,
+            tool_filters,
+            command_context_registry,
+            execution,
+            Default::default(),
+        )
+        .await;
+    }
+
+    /// Runtime-owned execution including final canonical persistence. The report
+    /// remains observable through the supplied controls after this method ends.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_turn_with_execution_controlled(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        message_id: &str,
+        cancel_token: CancellationToken,
+        builder: Box<dyn ConversationBuilder>,
+        tool_filters: &[ToolFilter],
+        command_context_registry: Option<Arc<CommandRegistry>>,
+        execution: NewExecution,
+        controls: crate::inference::RuntimeControls,
+    ) {
         let _execution = self.execution_registry.start(user_id, execution);
+        let report = controls.report();
+        report.record_run(async {
         let outcome = self
-            .run_loop(
+            .run_loop_inner(
                 user_id,
                 chat_id,
                 message_id,
-                cancel_token,
+                cancel_token.clone(),
                 builder,
                 tool_filters,
                 command_context_registry,
+                controls.clone(),
             )
             .await;
-        self.finalize(message_id, user_id, outcome).await;
+        let state = crate::inference::controls::outcome(
+            outcome.as_ref().map(|outcome| &outcome.inference),
+        );
+        let state = match self.finalize(message_id, user_id, outcome).await {
+            Ok(()) => {
+                if matches!(state, frona_harness::RunOutcome::Completed) && cancel_token.is_cancelled()
+                {
+                    frona_harness::RunOutcome::Incomplete {
+                        kind: frona_harness::FailureKind::Cancelled,
+                        message: "cancelled during final response persistence".into(),
+                    }
+                } else {
+                    state
+                }
+            }
+            Err(error) => {
+                tracing::warn!(message_id, error = %error, "required response persistence failed");
+                frona_harness::RunOutcome::Incomplete {
+                    kind: frona_harness::FailureKind::Storage,
+                    message: error.to_string(),
+                }
+            }
+        };
+        ((), state)
+        }).await;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -544,6 +600,66 @@ impl Harness {
         builder: Box<dyn ConversationBuilder>,
         tool_filters: &[ToolFilter],
         command_context_registry: Option<Arc<CommandRegistry>>,
+    ) -> Result<AgentLoopOutcome, AppError> {
+        self.run_loop_controlled(
+            user_id,
+            chat_id,
+            message_id,
+            cancel_token,
+            builder,
+            tool_filters,
+            command_context_registry,
+            Default::default(),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_loop_controlled(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        message_id: &str,
+        cancel_token: CancellationToken,
+        builder: Box<dyn ConversationBuilder>,
+        tool_filters: &[ToolFilter],
+        command_context_registry: Option<Arc<CommandRegistry>>,
+        controls: crate::inference::RuntimeControls,
+    ) -> Result<AgentLoopOutcome, AppError> {
+        let report = controls.report();
+        report
+            .record_run(async {
+                let result = self
+                    .run_loop_inner(
+                        user_id,
+                        chat_id,
+                        message_id,
+                        cancel_token,
+                        builder,
+                        tool_filters,
+                        command_context_registry,
+                        controls,
+                    )
+                    .await;
+                let state = crate::inference::controls::outcome(
+                    result.as_ref().map(|outcome| &outcome.inference),
+                );
+                (result, state)
+            })
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_loop_inner(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        message_id: &str,
+        cancel_token: CancellationToken,
+        builder: Box<dyn ConversationBuilder>,
+        tool_filters: &[ToolFilter],
+        command_context_registry: Option<Arc<CommandRegistry>>,
+        controls: crate::inference::RuntimeControls,
     ) -> Result<AgentLoopOutcome, AppError> {
         let mut chat = self
             .chat_service
@@ -573,6 +689,24 @@ impl Harness {
             });
         }
 
+        if let Some(tool_calls) = self
+            .chat_service
+            .restore_external_wait(&mut response)
+            .await?
+        {
+            let system_prompt = tool_calls
+                .last()
+                .and_then(|call| call.system_prompt.clone());
+            return Ok(AgentLoopOutcome {
+                inference: InferenceResponse::ExternalToolPending {
+                    turn_text: response.content.clone(),
+                    tool_calls,
+                    system_prompt,
+                },
+                response,
+            });
+        }
+
         let mut chat_for_turn = chat.clone();
         if let Some(request) = &request
             && let Some(MessageCommand::Command { name, .. }) = &request.command
@@ -585,7 +719,7 @@ impl Harness {
         {
             chat_for_turn.agent_id = target.id;
         }
-        let mut session = ChatSessionContext::build_for_response(
+        let mut session = ChatSessionContext::build_for_response_controlled(
             self,
             user_id,
             chat_for_turn,
@@ -593,6 +727,7 @@ impl Harness {
             cancel_token.clone(),
             builder.into(),
             tool_filters,
+            controls.clone(),
         )
         .await?;
 
@@ -614,8 +749,9 @@ impl Harness {
                 .await?
                 .ok_or_else(|| AppError::NotFound(format!("user {user_id}")))?;
 
-            // `response` is always written via the terminal API at end-of-turn,
-            // so no snapshot is needed for it - only chat/request.
+            // A per-turn agent switch must be visible to the canonical tool
+            // ownership check before the first effect, not only at finalization.
+            let response_agent = response.agent_id.clone();
             let chat_snapshot = chat.clone();
             let request_snapshot = request.clone();
 
@@ -648,12 +784,24 @@ impl Harness {
             };
 
             if chat != chat_snapshot {
-                let _ = self.chat_service.save_chat(&chat).await;
+                self.chat_service
+                    .save_chat(&chat)
+                    .await
+                    .map_err(crate::inference::controls::required_write_error)?;
             }
             if request != request_snapshot {
-                let _ = self.chat_service.save_updated_message(&request).await;
+                self.chat_service
+                    .save_updated_message(&request)
+                    .await
+                    .map_err(crate::inference::controls::required_write_error)?;
             }
 
+            if response.agent_id != response_agent {
+                self.chat_service
+                    .save_updated_message(&response)
+                    .await
+                    .map_err(crate::inference::controls::required_write_error)?;
+            }
             match outcome {
                 Ok(CommandOutcome::Prompt(rendered)) => {
                     request = self
@@ -672,31 +820,34 @@ impl Harness {
                 }
                 Ok(CommandOutcome::Message(text)) => {
                     response.content = text;
-                    let _ = self
-                        .chat_service
+                    self.chat_service
                         .complete_agent_message(response.clone())
-                        .await;
+                        .await
+                        .map_err(crate::inference::controls::required_write_error)?;
                     return Ok(AgentLoopOutcome {
                         inference: InferenceResponse::Handled,
                         response,
                     });
                 }
                 Ok(CommandOutcome::End) => {
-                    let _ = self
-                        .chat_service
+                    self.chat_service
                         .cancel_agent_message(response.clone())
-                        .await;
+                        .await
+                        .map_err(crate::inference::controls::required_write_error)?;
                     return Ok(AgentLoopOutcome {
                         inference: InferenceResponse::Handled,
                         response,
                     });
                 }
+                Err(AppError::Inference(error)) if error.is_terminal() => {
+                    return Err(AppError::Inference(error));
+                }
                 Err(e) => {
                     response.content = format!("Command failed: {e}");
-                    let _ = self
-                        .chat_service
+                    self.chat_service
                         .complete_agent_message(response.clone())
-                        .await;
+                        .await
+                        .map_err(crate::inference::controls::required_write_error)?;
                     return Ok(AgentLoopOutcome {
                         inference: InferenceResponse::Handled,
                         response,
@@ -776,18 +927,21 @@ impl Harness {
             ),
             input_token_estimate,
         )?;
-        let mut inference = crate::inference::inference(InferenceRequest {
-            input_token_estimate,
-            model_group,
-            system_prompt,
-            history: rig_history,
-            tool_registry,
-            ctx: tool_ctx,
-            cancel_token,
-            chat_service: self.chat_service.clone(),
-            message_id: message_id.to_string(),
-            usage_service: self.usage_service.clone(),
-        })
+        let mut inference = crate::inference::inference_in_scope(
+            InferenceRequest {
+                input_token_estimate,
+                model_group,
+                system_prompt,
+                history: rig_history,
+                tool_registry,
+                ctx: tool_ctx,
+                cancel_token,
+                chat_service: self.chat_service.clone(),
+                message_id: message_id.to_string(),
+                usage_service: self.usage_service.clone(),
+            },
+            &controls,
+        )
         .await?;
 
         if let InferenceResponse::Cancelled(text) = &mut inference
@@ -888,9 +1042,15 @@ impl Harness {
             return Ok(ResolveOutcome::AlreadyResolved);
         }
 
+        let chat = self
+            .chat_service
+            .find_chat(&te.chat_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("chat {}", te.chat_id)))?;
         let tool = self
             .tool_manager
-            .find_tool_for_resume(&te.name)
+            .find_user_tool_for_resume(&chat.user_id, &te.name)
+            .await
             .ok_or_else(|| {
                 AppError::Validation(format!(
                     "no tool registered to handle resume for '{}'",
@@ -898,11 +1058,6 @@ impl Harness {
                 ))
             })?;
 
-        let chat = self
-            .chat_service
-            .find_chat(&te.chat_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("chat {}", te.chat_id)))?;
         let user = self
             .user_service
             .find_by_id(&chat.user_id)
@@ -1010,7 +1165,7 @@ impl Harness {
         message_id: &str,
         user_id: &str,
         outcome: Result<AgentLoopOutcome, AppError>,
-    ) {
+    ) -> Result<(), AppError> {
         match outcome {
             Ok(AgentLoopOutcome {
                 inference,
@@ -1025,21 +1180,49 @@ impl Harness {
                     response.content = text;
                     response.attachments = attachments;
                     response.reasoning = reasoning;
-                    let _ = self.chat_service.complete_agent_message(response).await;
+                    self.chat_service.complete_agent_message(response).await?;
+                }
+                InferenceResponse::Shutdown {
+                    text,
+                    attachments,
+                    reasoning,
+                } => {
+                    response.content = text;
+                    response.attachments = attachments;
+                    response.reasoning = reasoning;
+                    self.chat_service.save_updated_message(&response).await?;
+                }
+                InferenceResponse::Incomplete {
+                    reason,
+                    text,
+                    attachments,
+                    reasoning,
+                } => {
+                    response.content = text;
+                    response.attachments = attachments;
+                    response.reasoning = reasoning;
+                    let error = AppError::Inference(Box::new(
+                        frona_harness::inference::InferenceError::Stop(reason),
+                    ));
+                    self.chat_service
+                        .fail_agent_message(response, (&error).into())
+                        .await?;
                 }
                 InferenceResponse::Cancelled(text) => {
                     response.content = text;
-                    let _ = self.chat_service.cancel_agent_message(response).await;
+                    self.chat_service.cancel_agent_message(response).await?;
                 }
                 InferenceResponse::ExternalToolPending { tool_calls, .. } => {
-                    let _ = self
-                        .chat_service
-                        .pause_agent_message(
-                            response,
-                            crate::inference::tool_loop::PauseReason::Hitl,
-                            tool_calls,
-                        )
-                        .await;
+                    if response.status != Some(crate::chat::message::models::MessageStatus::Paused)
+                    {
+                        self.chat_service
+                            .pause_agent_message(
+                                response,
+                                crate::inference::tool_loop::PauseReason::Hitl,
+                                tool_calls,
+                            )
+                            .await?;
+                    }
                 }
                 InferenceResponse::Handled => {
                     // Command dispatch already wrote/cancelled the response.
@@ -1048,9 +1231,12 @@ impl Harness {
             Err(e) => {
                 tracing::warn!(message_id, error = %e, "agent loop failed");
                 if let Ok(msg) = self.chat_service.get_message(user_id, message_id).await {
-                    let _ = self.chat_service.fail_agent_message(msg, (&e).into()).await;
+                    self.chat_service
+                        .fail_agent_message(msg, (&e).into())
+                        .await?;
                 }
             }
         }
+        Ok(())
     }
 }

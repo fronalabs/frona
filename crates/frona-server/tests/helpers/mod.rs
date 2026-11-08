@@ -1077,12 +1077,46 @@ pub fn chat_service_with_context(
 
 /// Create a minimal ChatService backed by an in-memory SurrealDB for tool loop tests.
 pub async fn test_chat_service() -> frona::chat::service::ChatService {
+    build_test_chat_service(None).await
+}
+
+pub async fn test_chat_service_for_turn(message_id: &str) -> frona::chat::service::ChatService {
+    build_test_chat_service(Some(message_id)).await
+}
+
+pub async fn seed_tool_turn(db: &Surreal<Db>, ctx: &InferenceContext, message_id: &str) {
+    use frona::chat::message::models::Message;
+    use frona::chat::message::models::MessageRole;
+    use frona::chat::message::models::MessageStatus;
+    use frona::core::repository::Repository;
+    SurrealRepo::new(db.clone())
+        .create(&ctx.user)
+        .await
+        .unwrap();
+    SurrealRepo::new(db.clone())
+        .create(&ctx.agent)
+        .await
+        .unwrap();
+    let chat = ctx.chat.as_ref().unwrap();
+    SurrealRepo::new(db.clone()).create(chat).await.unwrap();
+    let mut message = Message::builder(&chat.id, MessageRole::Agent, String::new())
+        .agent_id(ctx.agent.id.clone())
+        .status(MessageStatus::Executing)
+        .build();
+    message.id = message_id.into();
+    SurrealRepo::new(db.clone()).create(&message).await.unwrap();
+}
+
+async fn build_test_chat_service(message_id: Option<&str>) -> frona::chat::service::ChatService {
     use frona::db::repo::generic::SurrealRepo;
-    use surrealdb::Surreal;
-    use surrealdb::engine::local::Mem;
+    use surrealdb::{Surreal, engine::local::Mem};
 
     let db = Surreal::new::<Mem>(()).await.unwrap();
     frona::db::init::setup_schema(&db).await.unwrap();
+
+    if let Some(id) = message_id {
+        seed_tool_turn(&db, &mock_context(), id).await;
+    }
 
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path().to_string_lossy().to_string();

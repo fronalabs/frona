@@ -550,7 +550,34 @@ async fn execute_heartbeat(
             }
             InferenceResponse::Cancelled(text) => {
                 response.content = text;
-                let _ = state.chat_service.complete_agent_message(response).await;
+                let _ = state.chat_service.cancel_agent_message(response).await;
+            }
+            InferenceResponse::Shutdown {
+                text,
+                attachments,
+                reasoning,
+            } => {
+                response.content = text;
+                response.attachments = attachments;
+                response.reasoning = reasoning;
+                let _ = state.chat_service.save_updated_message(&response).await;
+            }
+            InferenceResponse::Incomplete {
+                reason,
+                text,
+                attachments,
+                reasoning,
+            } => {
+                response.content = text;
+                response.attachments = attachments;
+                response.reasoning = reasoning;
+                let error = AppError::Inference(Box::new(
+                    frona_harness::inference::InferenceError::Stop(reason),
+                ));
+                let _ = state
+                    .chat_service
+                    .fail_agent_message(response, (&error).into())
+                    .await;
             }
             InferenceResponse::ExternalToolPending { .. } => {
                 tracing::warn!(chat_id = %chat_id, "Heartbeat agent hit external tool pending — not supported");

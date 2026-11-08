@@ -324,6 +324,39 @@ async fn handle_voice_turn(
                 let _ = state.chat_service.complete_agent_message(response).await;
                 return Ok((text, false));
             }
+            InferenceResponse::Shutdown {
+                text,
+                attachments,
+                reasoning,
+            } => {
+                response.content = text;
+                response.attachments = attachments;
+                response.reasoning = reasoning;
+                state.chat_service.save_updated_message(&response).await?;
+                return Err(AppError::Inference(Box::new(
+                    frona_harness::inference::InferenceError::Stop(
+                        frona_harness::ExecutionStop::Stopped("server shutting down".into()),
+                    ),
+                )));
+            }
+            InferenceResponse::Incomplete {
+                reason,
+                text,
+                attachments,
+                reasoning,
+            } => {
+                response.content = text;
+                response.attachments = attachments;
+                response.reasoning = reasoning;
+                let error = AppError::Inference(Box::new(
+                    frona_harness::inference::InferenceError::Stop(reason),
+                ));
+                let _ = state
+                    .chat_service
+                    .fail_agent_message(response, (&error).into())
+                    .await;
+                return Err(error);
+            }
             _ => {
                 let _ = state
                     .chat_service

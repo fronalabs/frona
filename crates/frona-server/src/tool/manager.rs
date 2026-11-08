@@ -335,6 +335,25 @@ impl ToolManager {
         }
     }
 
+    /// Resolve a host tool from the canonical chat owner's registry. Existing
+    /// built-in lookup remains the fallback when no user registry supplies it.
+    pub(crate) async fn find_user_tool_for_resume(
+        &self,
+        user_id: &str,
+        name: &str,
+    ) -> Option<Arc<dyn AgentTool>> {
+        if let Some(registry) = self.user_registries.read().await.get(user_id)
+            && let Some(tool) = registry.tools.values().find(|tool| {
+                tool.definitions()
+                    .iter()
+                    .any(|definition| definition.id == name)
+            })
+        {
+            return Some(tool.clone());
+        }
+        self.find_tool_for_resume(name)
+    }
+
     /// Find a builtin tool by its sub-tool name (e.g. "ask_user_question",
     /// "manage_app") for the resolve dispatcher. Bypasses per-user and
     /// per-agent filtering - the agent already had policy permission to emit

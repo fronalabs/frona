@@ -267,7 +267,10 @@ impl AgentContextManager {
             .as_ref()
             .is_none_or(|old| old.signature != snapshot.signature)
         {
-            self.repository.ensure_stored(&snapshot).await?;
+            self.repository
+                .ensure_stored(&snapshot)
+                .await
+                .map_err(crate::inference::controls::required_write_error)?;
         }
         text.push_str(&transient);
         Ok(PreparedAgentContext {

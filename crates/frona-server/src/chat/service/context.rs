@@ -54,7 +54,8 @@ impl ChatService {
         if chat.agent_context_state != previous_state {
             self.chat_repo
                 .save_agent_context_state(&chat.id, &chat.agent_context_state)
-                .await?;
+                .await
+                .map_err(crate::inference::controls::required_write_error)?;
         }
         Ok(saved)
     }

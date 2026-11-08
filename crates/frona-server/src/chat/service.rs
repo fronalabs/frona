@@ -474,6 +474,48 @@ impl ChatService {
         chat_id: &str,
         req: SendMessageRequest,
     ) -> Result<Vec<MessageResponse>, AppError> {
+        self.send_message_controlled(
+            user_id,
+            chat_id,
+            req,
+            Default::default(),
+            Default::default(),
+        )
+        .await
+    }
+
+    pub async fn send_message_controlled(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        req: SendMessageRequest,
+        controls: crate::inference::RuntimeControls,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> Result<Vec<MessageResponse>, AppError> {
+        let report = controls.report();
+        report
+            .record_run(async {
+                let result = self
+                    .send_message_inner(user_id, chat_id, req, &controls, &cancellation)
+                    .await;
+                let state = crate::inference::controls::outcome(
+                    result
+                        .as_ref()
+                        .map(|_| &crate::inference::InferenceResponse::Handled),
+                );
+                (result, state)
+            })
+            .await
+    }
+
+    async fn send_message_inner(
+        &self,
+        user_id: &str,
+        chat_id: &str,
+        req: SendMessageRequest,
+        controls: &crate::inference::RuntimeControls,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<Vec<MessageResponse>, AppError> {
         let chat = self.get_chat(user_id, chat_id).await?;
         let agent = self
             .agent_service
@@ -559,7 +601,7 @@ impl ChatService {
             .last()
             .and_then(|message| message.agent_context_signature.clone());
         let request = conversation
-            .prepare(
+            .prepare_controlled(
                 &self.compactor,
                 super::conversation::PersistentRequest {
                     agent_context: scope,
@@ -567,6 +609,7 @@ impl ChatService {
                     model_group: &model_group,
                     tools: &[],
                 },
+                controls.execution(cancellation),
             )
             .await?;
         let response_signature = if conversation.was_compacted() {
@@ -597,17 +640,45 @@ impl ChatService {
             model_group.name.clone(),
         );
         let response = model_group
-            .inference(frona_harness::inference::ModelRequest {
-                input_token_estimate,
-                system_prompt: &system_prompt,
-                history: rig_history,
-                tools: vec![],
-                observations: frona_harness::inference::observation::Observations::new(
-                    &self.usage_service.scoped(&usage_ctx),
-                ),
-                overrides: Default::default(),
-            })
+            .inference_preserving_history_controlled(
+                frona_harness::inference::ModelRequest {
+                    input_token_estimate,
+                    system_prompt: &system_prompt,
+                    history: rig_history,
+                    tools: vec![],
+                    observations: frona_harness::inference::observation::Observations::new(
+                        &self.usage_service.scoped(&usage_ctx),
+                    ),
+                    overrides: Default::default(),
+                },
+                controls.execution(cancellation),
+            )
             .await?;
+        let mut live =
+            frona_harness::Conversation::from_execution(controls.execution(cancellation));
+        let actions = live
+            .record_response(
+                frona_harness::ModelOutput::new(
+                    response.content.clone(),
+                    frona_harness::UsageReport::LegacyNormalized(response.usage),
+                ),
+                vec![],
+            )
+            .map_err(|error| AppError::Internal(error.to_string()))?;
+        if !actions.actions.is_empty() {
+            live.stop()
+                .map_err(|error| AppError::Internal(error.to_string()))?;
+            return Err(AppError::Inference(Box::new(
+                frona_harness::inference::InferenceError::Stop(
+                    frona_harness::ExecutionStop::Stopped(
+                        "unexpected tool proposal in text reply".into(),
+                    ),
+                ),
+            )));
+        }
+        controls.execution(cancellation).check_cancellation()?;
+        live.finish()
+            .map_err(|error| AppError::Internal(error.to_string()))?;
         let response_text =
             frona_harness::inference::provider::extract_text_from_choice(&response.content)?;
 
@@ -626,12 +697,16 @@ impl ChatService {
                 chat.space_id.as_deref(),
                 crate::chat::broadcast::EntityAction::Created,
             )
-            .await?;
+            .await
+            .map_err(crate::inference::controls::required_write_error)?;
 
         if let Some(handle) = title_handle {
             let _ = handle.await;
         }
 
+        // Completion evidence may already be durable. Cancellation during the
+        // required write/title await still makes this live invocation incomplete.
+        controls.execution(cancellation).check_cancellation()?;
         Ok(vec![user_message, assistant_message])
     }
 
@@ -1363,6 +1438,50 @@ impl ChatService {
         let updated = self.chat_repo.update(chat).await?;
         self.broadcast_chat_entity(&updated, crate::chat::broadcast::EntityAction::Updated);
         Ok(updated)
+    }
+
+    /// Restore the canonical external-result barrier before recovery or task
+    /// continuation. Pending HITLs can survive a crash before Executing became
+    /// Paused. A Paused row remains parked until the host's explicit ready CAS:
+    /// resolved HITLs alone cannot prove a callback-only sibling has finished.
+    pub(crate) async fn restore_external_wait(
+        &self,
+        message: &mut Message,
+    ) -> Result<Option<Vec<crate::inference::tool_call::ToolCallResponse>>, AppError> {
+        if !matches!(
+            message.status,
+            Some(MessageStatus::Executing | MessageStatus::Paused)
+        ) {
+            return Ok(None);
+        }
+        let calls = self.get_tool_calls_by_message(&message.id).await?;
+        let pending: Vec<_> = calls
+            .iter()
+            .filter(|call| {
+                call.hitl
+                    .as_ref()
+                    .is_some_and(|hitl| hitl.status == ToolStatus::Pending)
+            })
+            .cloned()
+            .map(Into::into)
+            .collect();
+        if !pending.is_empty() {
+            if message.status == Some(MessageStatus::Executing) {
+                self.pause_agent_message(
+                    message.clone(),
+                    crate::inference::tool_loop::PauseReason::Hitl,
+                    pending.clone(),
+                )
+                .await
+                .map_err(crate::inference::controls::required_write_error)?;
+                message.status = Some(MessageStatus::Paused);
+            }
+            return Ok(Some(pending));
+        }
+        if message.status == Some(MessageStatus::Paused) {
+            return Ok(Some(vec![]));
+        }
+        Ok(None)
     }
 
     /// Returns `true` iff this call performed the flip. Callers racing on the

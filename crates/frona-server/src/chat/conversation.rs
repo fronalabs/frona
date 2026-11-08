@@ -10,10 +10,8 @@
 //! input already present in the persisted prefix. Prefix positions must never
 //! be passed as live original positions when recording report delivery.
 //!
-//! This module prepares history; it does not perform shared execution admission.
-//! HSDK-30 must thread the live budget, cancellation and report through both the
-//! main call and `TextInferenceSummarizer::summarize` in `chat::compactor`, whose
-//! current `ModelGroup::inference_preserving_history` call retains server controls.
+//! Controlled preparation shares the live budget, cancellation and report with
+//! the main turn, including actual summary generation and provider retries.
 
 use frona_harness::{
     HistoryView, ModelRequest,
@@ -121,8 +119,23 @@ impl PersistentConversation {
         compactor: &ChatCompactor,
         request: PersistentRequest<'_>,
     ) -> Result<ModelRequest, AppError> {
+        let budget = frona_harness::DefaultBudget::default();
+        self.prepare_controlled(
+            compactor,
+            request,
+            frona_harness::ExecutionControl::new(&budget),
+        )
+        .await
+    }
+
+    pub async fn prepare_controlled(
+        &mut self,
+        compactor: &ChatCompactor,
+        request: PersistentRequest<'_>,
+        execution: frona_harness::ExecutionControl<'_>,
+    ) -> Result<ModelRequest, AppError> {
         let outcome = compactor
-            .compact_chat(
+            .compact_chat_controlled(
                 &self.chat_id,
                 CompactionContext {
                     agent_context: request.agent_context,
@@ -131,6 +144,7 @@ impl PersistentConversation {
                     model_history: &self.model_history,
                     tools: request.tools,
                 },
+                execution,
             )
             .await?;
         validate_initial_context(

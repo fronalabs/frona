@@ -115,22 +115,24 @@ impl ModelGroup {
         result.map(|(content, usage)| ModelResponse { content, usage })
     }
 
-    /// Generate a completion without trimming any of its input. Each configured
-    /// candidate must fit the whole request; retry, fallback and usage accounting
-    /// otherwise follow the normal completion path.
-    pub async fn inference_preserving_history(
+    /// Generate without trimming the selected history, using the turn's shared controls.
+    pub async fn inference_preserving_history_controlled(
         &self,
         request: ModelRequest<'_>,
+        execution: ExecutionControl<'_>,
     ) -> Result<ModelResponse, InferenceError> {
-        let budget = DefaultBudget::default();
-        let (content, usage) = retry::inference_with_retry_and_fallback(
+        let (execution, report) = execution.begin_model_call(&self.main);
+        let result = retry::inference_with_retry_and_fallback(
             self,
             request,
             retry::HistoryOverflow::Reject,
-            ExecutionControl::new(&budget),
+            execution,
         )
-        .await?;
-        Ok(ModelResponse { content, usage })
+        .await;
+        if let Some(report) = report {
+            report.finish_inference(&result);
+        }
+        result.map(|(content, usage)| ModelResponse { content, usage })
     }
 
     pub async fn structured_inference(

@@ -237,10 +237,20 @@ impl App {
         legacy_groups: bool,
         provider: frona_harness::config::ProviderModel,
     ) -> Self {
+        Self::with_provider_and_events(window, legacy_groups, provider, None).await
+    }
+
+    async fn with_provider_and_events(
+        window: usize,
+        legacy_groups: bool,
+        provider: frona_harness::config::ProviderModel,
+        events: Option<frona::chat::broadcast::BroadcastService>,
+    ) -> Self {
         let db = Surreal::new::<Mem>(()).await.unwrap();
         frona::db::init::setup_schema(&db).await.unwrap();
         let fixture = helpers::app_state::build(&db).await;
         let state = &fixture.state;
+        let events = events.unwrap_or_else(|| state.broadcast_service.clone().into());
         // These tests exercise compaction on initialized histories; legacy
         // initialization has its own transactional tests in agent_context.rs.
         frona::db::repo::agent_context_snapshots::SurrealAgentContextSnapshotRepo(db.clone())
@@ -298,7 +308,7 @@ impl App {
             state.storage_service.clone(),
             state.user_service.clone(),
             state.prompts.clone(),
-            state.broadcast_service.clone(),
+            events.clone(),
             state.presign_service.clone(),
             state.usage_service.clone(),
             helpers::empty_agent_context_manager(&state.db),
@@ -314,7 +324,7 @@ impl App {
             state.mcp_service.clone(),
             state.tool_manager.clone(),
             state.policy_service.clone(),
-            state.broadcast_service.clone(),
+            events.clone(),
             state.active_sessions.clone(),
             state.execution_registry.clone(),
             state.shutdown_token.clone(),
@@ -937,7 +947,10 @@ async fn manual_and_automatic_failures_never_report_success_or_lose_requests() {
                     .expect("automatic failure must not prepare an inference turn")
             };
             if persistence_failure {
-                assert!(matches!(error, AppError::Database(_)), "{error}");
+                assert!(
+                    matches!(&error, AppError::Inference(error) if matches!(error.as_ref(), frona_harness::inference::InferenceError::Stop(frona_harness::ExecutionStop::Storage(_)))),
+                    "{error}"
+                );
             } else {
                 assert!(
                     error.to_string().contains("injected summarizer failure"),
@@ -1091,7 +1104,9 @@ async fn persistence_update_failure_preserves_previous_summary_and_can_be_retrie
         .check()
         .unwrap();
     let result = compactor.compact("u", "chat", "agent", "", 120, 0).await;
-    assert!(matches!(result, Err(AppError::Database(_))));
+    assert!(
+        matches!(result, Err(AppError::Inference(error)) if matches!(error.as_ref(), frona_harness::inference::InferenceError::Stop(frona_harness::ExecutionStop::Storage(_))))
+    );
     let after = summaries.find_by_chat_id("chat").await.unwrap().unwrap();
     assert_eq!(after.content, before.content);
     assert_eq!(after.compacted_until, before.compacted_until);
@@ -3238,4 +3253,330 @@ async fn persistent_request_compacts_then_reopens_the_saved_prefix_and_row_mappi
         saved_summary
     );
     assert_eq!(app.model.calls(), calls);
+}
+
+#[tokio::test]
+async fn persistent_summary_and_main_call_consume_one_shared_allowance() {
+    use frona::inference::InferenceResponse;
+    use frona::inference::RuntimeControls;
+    use frona_harness::BudgetLimits;
+    use frona_harness::DefaultBudget;
+    use frona_harness::ExecutionStop;
+    use frona_harness::FailureKind;
+    use frona_harness::RunOutcome;
+    for direct_reply in [false, true] {
+        let app = App::new().await;
+        app.history(MessageRole::User, false).await;
+        let budget = Arc::new(DefaultBudget::new(BudgetLimits {
+            model_attempts: Some(1),
+            ..BudgetLimits::unlimited()
+        }));
+        let controls = RuntimeControls::new(budget.clone());
+        let report = controls.report();
+        if direct_reply {
+            let error = app
+                .chat_service
+                .send_message_controlled(
+                    &app.user.id,
+                    &app.chat.id,
+                    frona::chat::message::models::SendMessageRequest {
+                        content: "new request".into(),
+                        attachments: vec![],
+                        metadata: None,
+                    },
+                    controls,
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap_err();
+            let AppError::Inference(error) = error else {
+                panic!("expected typed model control")
+            };
+            assert!(matches!(
+                error.into_execution_stop(),
+                Ok(ExecutionStop::BudgetExhausted(_))
+            ));
+        } else {
+            let outcome = app
+                .harness
+                .run_loop_controlled(
+                    &app.user.id,
+                    "chat",
+                    "placeholder",
+                    CancellationToken::new(),
+                    app.builder(),
+                    &[],
+                    None,
+                    controls,
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                outcome.inference,
+                InferenceResponse::Incomplete {
+                    reason: ExecutionStop::BudgetExhausted(_),
+                    ..
+                }
+            ));
+        }
+        assert_eq!(app.summary_calls(), 1);
+        assert_eq!(app.inference_calls(), 0);
+        assert_eq!(budget.snapshot().model_attempts, 1);
+        let report = report.snapshot();
+        assert_eq!(
+            report.requests.len(),
+            2,
+            "summary and refused main are separate logical requests"
+        );
+        assert_eq!(report.attempts.len(), 1);
+        assert!(matches!(
+            report.outcome,
+            Some(RunOutcome::Incomplete {
+                kind: FailureKind::Budget,
+                ..
+            })
+        ));
+    }
+}
+
+#[tokio::test]
+async fn required_summary_and_reply_writes_report_storage_stops() {
+    use frona::inference::RuntimeControls;
+    use frona_harness::ExecutionStop;
+    use frona_harness::FailureKind;
+    use frona_harness::RunOutcome;
+    for summary in [true, false] {
+        let app = App::with_window(if summary { 18_000 } else { 128_000 }).await;
+        if summary {
+            app.history(MessageRole::User, false).await;
+        }
+        app.db
+            .query(if summary {
+                "DEFINE FIELD content ON chat_summary TYPE string ASSERT false"
+            } else {
+                "DEFINE FIELD content ON message TYPE string ASSERT $value != 'default response'"
+            })
+            .await
+            .unwrap()
+            .check()
+            .unwrap();
+        let controls = RuntimeControls::default();
+        let report = controls.report();
+        let error = if summary {
+            app.harness
+                .run_loop_controlled(
+                    &app.user.id,
+                    "chat",
+                    "placeholder",
+                    CancellationToken::new(),
+                    app.builder(),
+                    &[],
+                    None,
+                    controls,
+                )
+                .await
+                .err()
+                .unwrap()
+        } else {
+            app.chat_service
+                .send_message_controlled(
+                    &app.user.id,
+                    "chat",
+                    frona::chat::message::models::SendMessageRequest {
+                        content: "input".into(),
+                        attachments: vec![],
+                        metadata: None,
+                    },
+                    controls,
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap_err()
+        };
+        assert!(
+            matches!(error, AppError::Inference(ref error) if matches!(error.as_ref(), frona_harness::inference::InferenceError::Stop(ExecutionStop::Storage(_)))),
+            "{error:?}"
+        );
+        assert!(matches!(
+            report.snapshot().outcome,
+            Some(RunOutcome::Incomplete {
+                kind: FailureKind::Storage,
+                ..
+            })
+        ));
+        assert_eq!(app.inference_calls(), usize::from(!summary));
+    }
+}
+
+#[tokio::test]
+async fn switched_agent_tools_use_the_persisted_executing_owner() {
+    let app = App::with_window(128_000).await;
+    app.fixture.state.policy_service.create_policy(&app.user.id, r#"@id("switch-write") permit(principal, action == Policy::Action::"invoke_tool", resource) when { resource == Policy::Tool::"write" };"#).await.unwrap();
+    let mut other = helpers::mock_context().agent;
+    other.id = "other-agent".into();
+    other.handle = frona::handle!("other-agent");
+    other.model_group = "conversation".into();
+    other.prompt = Some("Selected agent".into());
+    SurrealRepo::new(app.db.clone())
+        .create(&other)
+        .await
+        .unwrap();
+    app.command_rows("other-agent").await;
+    app.model.enqueue(MockResponse::ToolCalls(vec![(
+        "write-call".into(),
+        "write".into(),
+        serde_json::json!({"path":"switch.txt","content":"target-owned"}),
+    )]));
+    let outcome = app
+        .harness
+        .run_loop(
+            &app.user.id,
+            "chat",
+            "command-response",
+            CancellationToken::new(),
+            app.builder(),
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        outcome.inference,
+        frona::inference::InferenceResponse::Completed { .. }
+    ));
+    let response = app
+        .messages()
+        .find_by_id("command-response")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.agent_id.as_deref(), Some("other-agent"));
+    let calls = app
+        .chat_service
+        .get_tool_calls_by_message(&response.id)
+        .await
+        .unwrap();
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].success, "{calls:?}");
+}
+
+#[tokio::test]
+async fn cancellation_during_final_runtime_write_keeps_durable_evidence_but_report_is_incomplete() {
+    use frona::chat::broadcast::BroadcastEventKind;
+    use frona::chat::broadcast::BroadcastService;
+    use frona::core::execution::ExecutionKind;
+    use frona::core::execution::NewExecution;
+    use frona::inference::InferenceEventKind;
+    use frona::inference::RuntimeControls;
+    use frona_harness::FailureKind;
+    use frona_harness::RunOutcome;
+    for direct_reply in [true, false] {
+        let cancellation = CancellationToken::new();
+        // A receiver waker runs synchronously when the production event bus
+        // publishes. Drain nonterminal events and rearm before the final write.
+        struct CancelOnTerminal {
+            receiver: std::sync::Mutex<
+                tokio::sync::mpsc::UnboundedReceiver<frona::chat::broadcast::BroadcastEvent>,
+            >,
+            cancellation: CancellationToken,
+        }
+        impl std::task::Wake for CancelOnTerminal {
+            fn wake(self: Arc<Self>) {
+                Self::wake_by_ref(&self);
+            }
+            fn wake_by_ref(self: &Arc<Self>) {
+                let waker = std::task::Waker::from(self.clone());
+                let mut context = std::task::Context::from_waker(&waker);
+                let mut receiver = self.receiver.lock().unwrap();
+                while let std::task::Poll::Ready(Some(event)) = receiver.poll_recv(&mut context) {
+                    let terminal = match event.kind {
+                        BroadcastEventKind::ChatMessage { message } => {
+                            message.status == Some(MessageStatus::Completed)
+                        }
+                        BroadcastEventKind::Inference(InferenceEventKind::Done { .. }) => true,
+                        _ => false,
+                    };
+                    if terminal {
+                        self.cancellation.cancel();
+                    }
+                }
+            }
+        }
+        let events = BroadcastService::new();
+        let observer = Arc::new(CancelOnTerminal {
+            receiver: std::sync::Mutex::new(events.subscribe_raw()),
+            cancellation: cancellation.clone(),
+        });
+        std::task::Wake::wake_by_ref(&observer);
+        let app = App::with_provider_and_events(
+            128_000,
+            true,
+            frona_harness::config::ProviderModel::Generic,
+            Some(events),
+        )
+        .await;
+        let controls = RuntimeControls::default();
+        let report = controls.report();
+        if direct_reply {
+            let error = app
+                .chat_service
+                .send_message_controlled(
+                    &app.user.id,
+                    "chat",
+                    frona::chat::message::models::SendMessageRequest {
+                        content: "input".into(),
+                        attachments: vec![],
+                        metadata: None,
+                    },
+                    controls,
+                    cancellation.clone(),
+                )
+                .await
+                .unwrap_err();
+            assert!(matches!(error, AppError::Inference(error) if error.is_cancelled()));
+        } else {
+            app.next_request().await;
+            app.harness
+                .run_turn_with_execution_controlled(
+                    &app.user.id,
+                    "chat",
+                    "new-response",
+                    cancellation.clone(),
+                    app.builder(),
+                    &[],
+                    None,
+                    NewExecution {
+                        title: "test".into(),
+                        agent_name: None,
+                        kind: ExecutionKind::Inference,
+                        action: None,
+                        source: None,
+                        related_chat_ids: vec!["chat".into()],
+                        can_cancel: true,
+                    },
+                    controls,
+                )
+                .await;
+        }
+        assert!(cancellation.is_cancelled());
+        assert!(
+            matches!(
+                report.snapshot().outcome,
+                Some(RunOutcome::Incomplete {
+                    kind: FailureKind::Cancelled,
+                    ..
+                })
+            ),
+            "{:?}",
+            report.snapshot()
+        );
+        let messages = app.messages().find_by_chat_id("chat").await.unwrap();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.status == Some(MessageStatus::Completed)
+                    && message.content == "default response"),
+            "durable completion cannot be rolled back by late cancellation"
+        );
+    }
 }

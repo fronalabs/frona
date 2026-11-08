@@ -406,3 +406,117 @@ async fn send_message_filtered_in_non_heartbeat_chat_of_heartbeat_agent() {
         "send_message must remain hidden in non-heartbeat chats even when the agent has a heartbeat elsewhere"
     );
 }
+
+#[tokio::test]
+async fn portable_send_message_resolver_uses_shared_model_budget_before_sending() {
+    use frona::tool::InferenceContext;
+    use frona_harness::{
+        BudgetLimits, Conversation, DefaultBudget, ExecutionControl, ExecutionStop, ModelOutput,
+        ToolDispatchError, UsageReport,
+    };
+    use rig_core::completion::{
+        AssistantContent,
+        message::{ToolCall, ToolFunction},
+    };
+    let (state, _tmp) = build_state().await;
+    seed_user_and_agent(&state).await;
+    // A real candidate forces the routing-model branch (no candidate would
+    // simply create a chat). The provider has no responses and must not be called.
+    let chat = state
+        .chat_service
+        .create_chat(
+            "user-1",
+            CreateChatRequest {
+                agent_id: "agent-1".into(),
+                space_id: None,
+                task_id: None,
+                title: Some("Candidate".into()),
+                metadata: None,
+            },
+        )
+        .await
+        .unwrap();
+    let user = state
+        .user_service
+        .find_by_id("user-1")
+        .await
+        .unwrap()
+        .unwrap();
+    let agent = state
+        .agent_service
+        .find_by_id("agent-1")
+        .await
+        .unwrap()
+        .unwrap();
+    let ctx = InferenceContext::new_detached(
+        user,
+        agent,
+        CancellationToken::new(),
+        CancellationToken::new(),
+    );
+    let tool = frona::tool::send_message::SendMessageTool::new(
+        state.chat_service.clone(),
+        state.notification_service.clone(),
+        state.broadcast_service.clone(),
+        state.agent_service.clone(),
+        state.task_service.clone(),
+        state.prompts.clone(),
+    );
+    state
+        .tool_manager
+        .register_user_tool(&ctx.user.id, Arc::new(tool))
+        .await;
+    state.policy_service.create_policy(&ctx.user.id, "@id(\"allow-nested\") permit(principal, action == Policy::Action::\"invoke_tool\", resource);").await.unwrap();
+    let legacy = state
+        .tool_manager
+        .build_agent_registry(&ctx.user.id, &ctx.agent, &state.policy_service, None)
+        .await;
+    let mut tools = legacy
+        .portable(&ctx, |output| {
+            Ok(frona_harness::ToolOutput::text(output.text_content()))
+        })
+        .unwrap();
+    let mut conversation = Conversation::default();
+    let actions = conversation
+        .record_response(
+            ModelOutput::new(
+                vec![AssistantContent::ToolCall(ToolCall::from_wire(
+                    "send",
+                    ToolFunction::new(
+                        "send_message".into(),
+                        serde_json::json!({"content":"Do not send this"}),
+                    ),
+                ))],
+                UsageReport::Unavailable,
+            ),
+            tools.definitions().cloned().collect(),
+        )
+        .unwrap();
+    let budget = DefaultBudget::new(BudgetLimits {
+        model_attempts: Some(0),
+        ..Default::default()
+    });
+    let error = conversation
+        .execute_tool(
+            &actions.actions[0],
+            &mut tools,
+            ExecutionControl::new(&budget),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            ToolDispatchError::Stop(ExecutionStop::BudgetExhausted(_))
+        ),
+        "{error:?}"
+    );
+    assert!(
+        state
+            .chat_service
+            .list_messages("user-1", &chat.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

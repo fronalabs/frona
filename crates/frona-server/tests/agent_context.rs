@@ -14,7 +14,7 @@ use frona::db::repo::{
     chat_summaries::SurrealChatSummaryRepo, generic::SurrealRepo, messages::SurrealMessageRepo,
 };
 use frona::inference::conversation::{
-    ConversationBuilder, ConversationContext, DefaultConversationBuilder, ModelConversationHistory,
+    ConversationContext, DefaultConversationBuilder, ModelConversationHistory,
 };
 use std::sync::{
     Arc, Mutex,
@@ -163,31 +163,26 @@ impl App {
             .unwrap()
     }
     async fn history(&self) -> ModelConversationHistory {
-        let loaded = self
-            .service
-            .compactor()
-            .load_conversation("test-chat")
-            .await
-            .unwrap();
         let state = &self.fixture.state;
-        let mut history = DefaultConversationBuilder {
+        let builder = DefaultConversationBuilder {
             user_service: state.user_service.clone(),
             storage_service: state.storage_service.clone(),
             agent_service: state.agent_service.clone(),
-        }
-        .build(
-            &loaded.messages,
-            &[],
+        };
+        frona::chat::conversation::PersistentConversation::load(
+            &self.service,
+            "test-chat",
+            None,
+            &builder,
             &ConversationContext {
                 agent_id: "test-agent".into(),
                 user_id: "test-user".into(),
                 model_config: helpers::test_model_group().main,
             },
-            loaded.summary.as_deref(),
         )
-        .await;
-        history.set_summary_context(loaded.agent_context.as_deref());
-        history
+        .await
+        .unwrap()
+        .into_model_history()
     }
 }
 
@@ -851,7 +846,12 @@ async fn compaction_prepends_summary_and_live_context_and_preserves_retained_mes
             .unwrap()
             .contains("<temporal_context>")
     );
+    // Reopening uses the saved snapshot even when current sources are unavailable.
+    let captures = app.source.calls.load(Ordering::SeqCst);
+    app.source.fail.store(true, Ordering::SeqCst);
     assert_eq!(result.model_history.history, app.history().await.history);
+    assert_eq!(app.source.calls.load(Ordering::SeqCst), captures);
+    app.source.fail.store(false, Ordering::SeqCst);
     response.content = "reply after compaction".into();
     app.service.complete_agent_message(response).await.unwrap();
     let completed = app.history().await;

@@ -201,7 +201,7 @@ pub fn truncate_history(
 /// assistant response. Results may span several User messages, or share one
 /// message with text, so User roles alone are not sufficient to check pairing.
 fn validate_tool_groups(history: &[RigMessage]) -> Result<(), String> {
-    tool_group_boundaries(history, false).map(|_| ())
+    tool_group_boundaries(history, false, false).map(|_| ())
 }
 
 /// SDK actions distinguish duplicate provider IDs by proposal position. Their
@@ -209,10 +209,21 @@ fn validate_tool_groups(history: &[RigMessage]) -> Result<(), String> {
 /// in order rather than collapsing duplicate IDs. Legacy truncation retains its
 /// stricter duplicate-ID rejection and historical ID-only matching.
 pub(crate) fn compaction_group_boundaries(history: &[RigMessage]) -> Result<Vec<usize>, String> {
-    tool_group_boundaries(history, true)
+    tool_group_boundaries(history, true, true)
 }
 
-fn tool_group_boundaries(history: &[RigMessage], exact: bool) -> Result<Vec<usize>, String> {
+/// Persisted builders retain their historical result identity: some providers
+/// omit item IDs on results, and repaired tools may have a different result name.
+/// Consume duplicate correlation IDs in order without rewriting that evidence.
+pub(crate) fn persisted_group_boundaries(history: &[RigMessage]) -> Result<Vec<usize>, String> {
+    tool_group_boundaries(history, false, true)
+}
+
+fn tool_group_boundaries(
+    history: &[RigMessage],
+    exact: bool,
+    allow_duplicates: bool,
+) -> Result<Vec<usize>, String> {
     use rig_core::completion::{AssistantContent, message::UserContent};
     let mut pending = Vec::new();
     let mut boundaries = vec![0];
@@ -226,7 +237,7 @@ fn tool_group_boundaries(history: &[RigMessage], exact: bool) -> Result<Vec<usiz
                 }
                 for item in content {
                     if let AssistantContent::ToolCall(call) = item {
-                        if !exact
+                        if !allow_duplicates
                             && pending.iter().any(
                                 |prior: &&rig_core::completion::message::ToolCall| {
                                     prior.id == call.id

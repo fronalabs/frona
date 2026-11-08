@@ -53,6 +53,7 @@ impl ModelConversationHistory {
             .eq(messages.iter().map(|message| &message.id))
             || self.summary.as_deref() != summary
             || self.row_ends.len() != messages.len()
+            || self.summary_end != usize::from(summary.is_some_and(|text| !text.trim().is_empty()))
             || self.summary_end > self.history.len()
             || self
                 .row_ends
@@ -70,10 +71,20 @@ impl ModelConversationHistory {
     }
 
     /// Replace whole stored rows, retaining their native tail and injected messages.
-    pub(crate) fn replace_prefix(&mut self, rows: usize, summary: &str) {
+    pub(crate) fn replace_prefix(
+        &mut self,
+        rows: usize,
+        summary: &str,
+        context: Option<&str>,
+    ) -> Result<(), crate::core::error::AppError> {
         let prefix_end = self.row_range(rows - 1).end;
-        self.history
-            .splice(..prefix_end, [summary_message(summary, None)]);
+        self.history = frona_harness::HistoryView::compact_persisted_prefix(
+            &self.history,
+            prefix_end,
+            summary_message(summary, context),
+        )
+        .map_err(|error| crate::core::error::AppError::Validation(error.to_string()))?
+        .messages();
         self.row_ids.drain(..rows);
         self.row_ends.drain(..rows);
         for end in &mut self.row_ends {
@@ -81,6 +92,7 @@ impl ModelConversationHistory {
         }
         self.summary = Some(summary.to_owned());
         self.summary_end = 1;
+        Ok(())
     }
 
     /// Include the frozen agent context in the leading summary message so both

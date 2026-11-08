@@ -549,8 +549,7 @@ impl ChatCompactor {
             )?;
         }
         let mut compacted_history = model_history.clone();
-        compacted_history.replace_prefix(keep_from_idx, &content);
-        compacted_history.set_summary_context(Some(&context_text));
+        compacted_history.replace_prefix(keep_from_idx, &content, Some(&context_text))?;
         let compacted_until = messages_to_compact
             .last()
             .map(|m| m.created_at)

@@ -115,6 +115,14 @@ impl<'a> HistoryView<'a> {
         originals: &'a [Message],
         compacted: &CompactedView,
     ) -> Result<Self, CompactionError> {
+        Self::restore_with(originals, compacted, compaction_group_boundaries)
+    }
+
+    fn restore_with(
+        originals: &'a [Message],
+        compacted: &CompactedView,
+        groups: fn(&[Message]) -> Result<Vec<usize>, String>,
+    ) -> Result<Self, CompactionError> {
         if compacted.source_message_count > originals.len() {
             return Err(invalid(
                 "compacted view refers to unavailable original messages",
@@ -170,7 +178,7 @@ impl<'a> HistoryView<'a> {
         // Removal must preserve complete original protocol groups. The active
         // user input remains literal even inside a long single-input tool loop.
         let source = &originals[..compacted.source_message_count];
-        let boundaries = compaction_group_boundaries(source).map_err(invalid)?;
+        let boundaries = groups(source).map_err(invalid)?;
         for range in boundaries.windows(2) {
             if covered[range[0]..range[1]]
                 .iter()
@@ -190,13 +198,47 @@ impl<'a> HistoryView<'a> {
             originals,
             entries: compacted.entries.clone(),
         };
-        compaction_group_boundaries(&view.messages()).map_err(invalid)?;
+        groups(&view.messages()).map_err(invalid)?;
         // Later unresolved proposals can be displayed/restored without executing
         // them. Planning still requires the entire current history to be ready.
         view.entries.extend(
             (compacted.source_message_count..originals.len()).map(HistoryViewEntry::Original),
         );
         Ok(view)
+    }
+
+    /// Historical request evidence from the persistent runtime is not a JSONL
+    /// lifecycle. Keep its native messages and legacy result identities intact.
+    pub fn persisted(originals: &'a [Message]) -> Result<Self, CompactionError> {
+        crate::inference::context::persisted_group_boundaries(originals).map_err(invalid)?;
+        Ok(Self::new(originals))
+    }
+
+    /// Apply a whole-row prefix selected by the persistent compactor, using the
+    /// same coverage/group/active-input validation as standalone compaction.
+    /// The caller owns calibrated costs and asynchronous summary persistence.
+    pub fn compact_persisted_prefix(
+        originals: &'a [Message],
+        prefix_end: usize,
+        summary: Message,
+    ) -> Result<Self, CompactionError> {
+        if prefix_end == 0 || prefix_end > originals.len() {
+            return Err(invalid("invalid persisted summary prefix"));
+        }
+        let compacted = CompactedView {
+            source_message_count: originals.len(),
+            entries: std::iter::once(HistoryViewEntry::Summary {
+                message: summary,
+                covered_original_positions: (0..prefix_end).collect(),
+            })
+            .chain((prefix_end..originals.len()).map(HistoryViewEntry::Original))
+            .collect(),
+        };
+        Self::restore_with(
+            originals,
+            &compacted,
+            crate::inference::context::persisted_group_boundaries,
+        )
     }
 
     pub fn originals(&self) -> &'a [Message] {

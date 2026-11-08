@@ -11,9 +11,7 @@ use crate::core::repository::Repository;
 use crate::core::template::render_template;
 use crate::db::repo::chats::SurrealChatRepo;
 use crate::db::repo::messages::SurrealMessageRepo;
-use crate::inference::conversation::{
-    ConversationBuilder, ConversationContext, DefaultConversationBuilder,
-};
+use crate::inference::conversation::{ConversationContext, DefaultConversationBuilder};
 use crate::inference::provider::service::ModelProviderService;
 use crate::storage::StorageService;
 use context::effective_signature;
@@ -538,20 +536,6 @@ impl ChatService {
             &frona_harness::inference::ModelRef(model_group_name.clone().into()),
             &frona_harness::inference::ModelRef::PRIMARY,
         )?;
-        let loaded = self.compactor.load_conversation(chat_id).await?;
-        let agent_context = loaded.agent_context;
-        let conversation_summary = loaded.summary;
-        let mut stored_messages = loaded.messages;
-        let request_index = stored_messages
-            .iter()
-            .position(|m| m.id == user_message.id)
-            .ok_or_else(|| {
-                AppError::Conflict("Request is outside the active conversation".into())
-            })?;
-        stored_messages.truncate(request_index + 1);
-        let request_signature = stored_messages
-            .last()
-            .and_then(|m| m.agent_context_signature.clone());
         let conv_builder = DefaultConversationBuilder {
             user_service: self.user_service.clone(),
             storage_service: self.storage_service.clone(),
@@ -562,31 +546,30 @@ impl ChatService {
             model_config: model_group.main.clone(),
             user_id: user_id.to_string(),
         };
-        let tool_calls = self.get_tool_calls(chat_id).await?;
-        let mut model_history = conv_builder
-            .build(
-                &stored_messages,
-                &tool_calls,
-                &conv_ctx,
-                conversation_summary.as_deref(),
-            )
-            .await;
-        model_history.set_summary_context(agent_context.as_deref());
-
-        let compacted = self
-            .compactor
-            .compact_chat(
-                chat_id,
-                super::compactor::CompactionContext {
+        let mut conversation = super::conversation::PersistentConversation::load(
+            self,
+            chat_id,
+            Some(&user_message.id),
+            &conv_builder,
+            &conv_ctx,
+        )
+        .await?;
+        let request_signature = conversation
+            .stored_messages()
+            .last()
+            .and_then(|message| message.agent_context_signature.clone());
+        let request = conversation
+            .prepare(
+                &self.compactor,
+                super::conversation::PersistentRequest {
                     agent_context: scope,
                     system_prompt: &system_prompt,
                     model_group: &model_group,
-                    model_history: &model_history,
                     tools: &[],
                 },
             )
             .await?;
-        let response_signature = if compacted.compacted {
+        let response_signature = if conversation.was_compacted() {
             use crate::chat::repository::ChatSummaryRepository;
             crate::db::repo::chat_summaries::SurrealChatSummaryRepo::new(
                 self.message_repo.db().clone(),
@@ -598,16 +581,9 @@ impl ChatService {
         } else {
             request_signature
         };
-        let rig_history = compacted.model_history.history;
-        let input_token_estimate = compacted.input_token_estimate;
+        let rig_history = request.messages;
+        let input_token_estimate = conversation.input_token_estimate();
 
-        super::compactor::validate_initial_context(
-            &rig_history,
-            &system_prompt,
-            &model_group,
-            &[],
-            input_token_estimate,
-        )?;
         // Pre-allocate the message id so the usage row's message_id matches
         // the assistant Message that's about to be persisted.
         let assistant_message_id = crate::core::repository::new_id();

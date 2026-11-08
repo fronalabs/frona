@@ -158,6 +158,58 @@ impl AgentToolRegistry {
             })
     }
 
+    /// Portable execution bridge for existing registries, including detached
+    /// PKM registries. Mapping server effects remains an explicit caller choice.
+    pub fn portable<'a, F>(
+        &'a self,
+        context: &'a InferenceContext,
+        map_output: F,
+    ) -> Result<frona_harness::ToolRegistry<'a>, AppError>
+    where
+        F: FnMut(ToolOutput) -> frona_harness::ToolResult + Clone + Send + 'a,
+    {
+        let mut registry = frona_harness::ToolRegistry::default();
+        for definition in &self.definitions {
+            let owner = self
+                .tool_name_to_owner
+                .get(&definition.id)
+                .and_then(|owner| self.tools.get(owner))
+                .ok_or_else(|| {
+                    AppError::NotFound(format!("Tool owner not found: {}", definition.id))
+                })?;
+            registry
+                .register(super::sdk_adapter::AgentToolAdapter::new(
+                    owner.as_ref(),
+                    context,
+                    &definition.id,
+                    map_output.clone(),
+                )?)
+                .map_err(|error| AppError::Validation(error.to_string()))?;
+        }
+        Ok(registry)
+    }
+
+    pub async fn execute_controlled(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+        control: &frona_harness::ToolContext<'_>,
+    ) -> Result<ToolOutput, AppError> {
+        let owner = self
+            .tool_name_to_owner
+            .get(tool_name)
+            .and_then(|owner| self.tools.get(owner))
+            .ok_or_else(|| AppError::NotFound(format!("Unknown tool: {tool_name}")))?;
+        owner
+            .execute_controlled(tool_name, arguments, ctx, control)
+            .await
+            .map_err(|source| AppError::ToolExecution {
+                tool_name: tool_name.to_owned(),
+                source: Box::new(source),
+            })
+    }
+
     pub fn definitions(&self) -> &[ToolDefinition] {
         &self.definitions
     }

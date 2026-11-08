@@ -10,6 +10,7 @@ pub mod manage_policy;
 pub mod manager;
 pub mod mcp;
 pub mod notify_human;
+pub mod persistent_dispatch;
 pub mod produce_file;
 pub mod provider;
 pub mod registry;
@@ -221,7 +222,7 @@ impl ToolOutput {
         Self::text(text).with_images(images)
     }
 
-    pub(crate) fn with_images(mut self, images: Vec<ImageData>) -> Self {
+    pub fn with_images(mut self, images: Vec<ImageData>) -> Self {
         self.images = images;
         self
     }
@@ -321,6 +322,19 @@ pub trait AgentTool: Send + Sync {
         arguments: Value,
         ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError>;
+    /// Execute under the dispatcher's shared controls. Tools doing nested model
+    /// work override this and pass `control` through that work. Leaf tools keep
+    /// their existing implementation; no persistent identity enters the SDK.
+    async fn execute_controlled(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+        _control: &frona_harness::ToolContext<'_>,
+    ) -> Result<ToolOutput, AppError> {
+        self.execute(tool_name, arguments, ctx).await
+    }
+
     /// Called after a human resolves a HITL prompt this tool emitted from
     /// `execute`. The tool reads its original `request` payload, validates the
     /// `response` shape, performs any side effect (deploy, bind credential,

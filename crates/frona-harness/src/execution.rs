@@ -145,7 +145,9 @@ impl<'a> ExecutionControl<'a> {
             .is_some_and(CancellationToken::is_cancelled)
     }
 
-    pub(crate) fn check_cancellation(self) -> Result<(), InferenceError> {
+    /// Recheck caller cancellation between required host writes and an effect.
+    /// This does not admit work or revoke a permit because a budget was exhausted.
+    pub fn check_cancellation(self) -> Result<(), InferenceError> {
         if self.is_cancelled() {
             Err(cancelled())
         } else {
@@ -193,6 +195,7 @@ impl<'a> ExecutionControl<'a> {
             // SDK control errors at the dispatch boundary.
             result.map_err(|error| match error {
                 ToolError::Failed(error) => ToolError::failed(error),
+                ToolError::Feedback(output) => ToolError::Feedback(output),
                 error => error,
             })
         };

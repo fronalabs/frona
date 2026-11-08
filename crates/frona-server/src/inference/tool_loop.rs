@@ -383,6 +383,17 @@ async fn execute_tool_calls(
                 (text, Some(output))
             }
             Err(e) => {
+                let e = match crate::tool::sdk_adapter::legacy_error(e) {
+                    frona_harness::ToolError::Stop(stop) => {
+                        return Err(AppError::Inference(Box::new(
+                            frona_harness::inference::InferenceError::Stop(stop),
+                        )));
+                    }
+                    frona_harness::ToolError::Failed(error) => error,
+                    frona_harness::ToolError::Feedback(_) => {
+                        unreachable!("legacy_error preserves errors or stops")
+                    }
+                };
                 tracing::warn!(tool = %tool_name, error = %e, "Tool execution failed");
                 let duration = start.elapsed();
                 metrics::record_tool_call(

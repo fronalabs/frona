@@ -56,17 +56,29 @@ impl<F: FnMut(ToolOutput) -> ToolResult + Send> Tool for AgentToolAdapter<'_, F>
         &self.definition
     }
 
-    async fn call(&mut self, arguments: Value, _context: &ToolContext<'_>) -> ToolResult {
+    async fn call(&mut self, arguments: Value, context: &ToolContext<'_>) -> ToolResult {
         let output = self
             .tool
-            .execute(&self.definition.name, arguments, self.context)
+            .execute_controlled(&self.definition.name, arguments, self.context, context)
             .await
             .map_err(legacy_error)?;
         (self.map_output)(output)
     }
 }
 
-fn legacy_error(error: AppError) -> ToolError {
+/// Preserve controls when a runtime tool calls a portable nested operation.
+pub fn runtime_error(error: ToolError) -> AppError {
+    match error {
+        ToolError::Stop(stop) => AppError::Inference(Box::new(
+            frona_harness::inference::InferenceError::Stop(stop),
+        )),
+        ToolError::Failed(error) => AppError::Tool(error.to_string()),
+        ToolError::Feedback(output) => AppError::Tool(format!("{output:?}")),
+    }
+}
+
+/// Preserve terminal categories across legacy wrappers without text matching.
+pub fn legacy_error(error: AppError) -> ToolError {
     fn terminal(error: &AppError) -> bool {
         match error {
             AppError::Inference(error) => error.is_terminal(),

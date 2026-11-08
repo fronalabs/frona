@@ -82,12 +82,44 @@ struct AuthorizedTool {
     policy_service: PolicyService,
 }
 
+impl AuthorizedTool {
+    async fn denial(
+        &self,
+        tool_name: &str,
+        ctx: &InferenceContext,
+    ) -> Result<Option<ToolOutput>, AppError> {
+        let tool_group = self
+            .inner
+            .definitions()
+            .iter()
+            .find(|definition| definition.id == tool_name)
+            .map(|definition| definition.provider_id.clone())
+            .unwrap_or_default();
+        let decision = self
+            .policy_service
+            .authorize(
+                &ctx.user.id,
+                &ctx.agent,
+                PolicyAction::InvokeTool {
+                    tool_name: tool_name.to_owned(),
+                    tool_group,
+                },
+            )
+            .await?;
+        Ok(decision.is_denied().then(|| {
+            ToolOutput::error(format!(
+                "Authorization denied: agent '{}' is not permitted to use tool '{}'.",
+                ctx.agent.name, tool_name,
+            ))
+        }))
+    }
+}
+
 #[async_trait]
 impl AgentTool for AuthorizedTool {
     fn name(&self) -> &str {
         self.inner.name()
     }
-
     fn definitions(&self) -> Vec<ToolDefinition> {
         self.inner.definitions()
     }
@@ -98,33 +130,30 @@ impl AgentTool for AuthorizedTool {
         arguments: Value,
         ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
-        let tool_group = self
-            .definitions()
-            .iter()
-            .find(|d| d.id == tool_name)
-            .map(|d| d.provider_id.clone())
-            .unwrap_or_default();
-
-        let decision = self
-            .policy_service
-            .authorize(
-                &ctx.user.id,
-                &ctx.agent,
-                PolicyAction::InvokeTool {
-                    tool_name: tool_name.to_string(),
-                    tool_group,
-                },
-            )
-            .await?;
-
-        if decision.is_denied() {
-            return Ok(ToolOutput::error(format!(
-                "Authorization denied: agent '{}' is not permitted to use tool '{}'.",
-                ctx.agent.name, tool_name
-            )));
+        if let Some(denial) = self.denial(tool_name, ctx).await? {
+            return Ok(denial);
         }
-
         self.inner.execute(tool_name, arguments, ctx).await
+    }
+
+    async fn execute_controlled(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+        control: &frona_harness::ToolContext<'_>,
+    ) -> Result<ToolOutput, AppError> {
+        if let Some(denial) = self.denial(tool_name, ctx).await? {
+            return Ok(denial);
+        }
+        control
+            .execution()
+            .map_err(super::sdk_adapter::runtime_error)?
+            .check_cancellation()
+            .map_err(|error| AppError::Inference(Box::new(error)))?;
+        self.inner
+            .execute_controlled(tool_name, arguments, ctx, control)
+            .await
     }
 }
 

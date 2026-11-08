@@ -52,6 +52,27 @@ impl SendMessageTool {
         arguments: Value,
         ctx: &InferenceContext,
     ) -> Result<ToolOutput, AppError> {
+        self.send(arguments, ctx, None).await
+    }
+
+    async fn execute_controlled(
+        &self,
+        _tool_name: &str,
+        arguments: Value,
+        ctx: &InferenceContext,
+        control: &frona_harness::ToolContext<'_>,
+    ) -> Result<ToolOutput, AppError> {
+        self.send(arguments, ctx, Some(control)).await
+    }
+}
+
+impl SendMessageTool {
+    async fn send(
+        &self,
+        arguments: Value,
+        ctx: &InferenceContext,
+        control: Option<&frona_harness::ToolContext<'_>>,
+    ) -> Result<ToolOutput, AppError> {
         let content = arguments
             .get("content")
             .and_then(|v| v.as_str())
@@ -65,7 +86,7 @@ impl SendMessageTool {
 
         let _ = attachments;
 
-        let (resolved_chat, is_new_chat) = self.resolve_target_chat(ctx, &content).await?;
+        let (resolved_chat, is_new_chat) = self.resolve_target_chat(ctx, &content, control).await?;
 
         // Broadcast space_id must match the resolved chat - task chats are
         // None-spaced, but the resolved channel chat lives in the channel's
@@ -134,6 +155,7 @@ impl SendMessageTool {
         &self,
         ctx: &InferenceContext,
         message_content: &str,
+        control: Option<&frona_harness::ToolContext<'_>>,
     ) -> Result<(Chat, bool), AppError> {
         // Detached (chatless) send: no chat to anchor to → let the model pick/create
         // a target via `llm_resolve_chat`. When a chat IS present, keep the existing
@@ -150,7 +172,7 @@ impl SendMessageTool {
             }
         }
 
-        self.llm_resolve_chat(ctx, message_content).await
+        self.llm_resolve_chat(ctx, message_content, control).await
     }
 
     async fn walk_task_chain(&self, ctx: &InferenceContext, start_chat_id: &str) -> Option<Chat> {
@@ -190,6 +212,7 @@ impl SendMessageTool {
         &self,
         ctx: &InferenceContext,
         message_content: &str,
+        control: Option<&frona_harness::ToolContext<'_>>,
     ) -> Result<(Chat, bool), AppError> {
         let heartbeat_ids = self.agent_service.heartbeat_chat_ids(&ctx.user.id).await;
 
@@ -235,15 +258,40 @@ impl SendMessageTool {
             ctx.user.id.clone(),
             model_group.name.clone(),
         );
-        let response = inference::text_inference(
-            &model_group,
-            &system_prompt,
-            vec![RigMessage::user("Which chat should this message go to?")],
-            self.chat_service.usage_service(),
-            &usage_ctx,
-        )
-        .await
-        .map_err(|e| AppError::Internal(format!("LLM chat resolution failed: {e}")))?;
+        let response = if let Some(control) = control {
+            let observations = self.chat_service.usage_service().scoped(&usage_ctx);
+            let request = frona_harness::inference::ModelRequest {
+                input_token_estimate: None,
+                system_prompt: &system_prompt,
+                history: vec![RigMessage::user("Which chat should this message go to?")],
+                tools: vec![],
+                observations: frona_harness::inference::observation::Observations::new(
+                    &observations,
+                ),
+                overrides: Default::default(),
+            };
+            let output = model_group
+                .inference_controlled(
+                    request,
+                    control
+                        .execution()
+                        .map_err(crate::tool::sdk_adapter::runtime_error)?,
+                )
+                .await
+                .map_err(|error| AppError::Inference(Box::new(error)))?;
+            frona_harness::inference::provider::extract_text_from_choice(&output.content)
+                .map_err(|error| AppError::Inference(Box::new(error)))?
+        } else {
+            inference::text_inference(
+                &model_group,
+                &system_prompt,
+                vec![RigMessage::user("Which chat should this message go to?")],
+                self.chat_service.usage_service(),
+                &usage_ctx,
+            )
+            .await
+            .map_err(|error| AppError::Inference(Box::new(error)))?
+        };
 
         let chosen = response.trim();
 

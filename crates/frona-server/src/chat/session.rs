@@ -149,25 +149,6 @@ impl ChatSessionContext {
                 &frona_harness::inference::ModelRef::PRIMARY,
             )?;
 
-        let loaded = harness
-            .chat_service
-            .compactor()
-            .load_conversation(&chat.id)
-            .await?;
-        let agent_context = loaded.agent_context;
-        let conversation_summary = loaded.summary;
-        let mut stored_messages = loaded.messages;
-        if let Some(response_id) = response_id {
-            let response_index = stored_messages
-                .iter()
-                .position(|m| m.id == response_id)
-                .ok_or_else(|| {
-                    AppError::Conflict("Response is outside the active conversation".into())
-                })?;
-            stored_messages.truncate(response_index + 1);
-        }
-        let tool_calls = harness.chat_service.get_tool_calls(&chat.id).await?;
-
         // Cron is already filtered from `task_in_progress`: TASK.md would prompt
         // complete_task → status=Completed → cron stops firing forever.
         let task_prompt = task_in_progress
@@ -187,18 +168,17 @@ impl ChatSessionContext {
             user_id: user_id.to_string(),
         };
 
-        let mut model_history = builder
-            .build(
-                &stored_messages,
-                &tool_calls,
-                &conv_ctx,
-                conversation_summary.as_deref(),
-            )
-            .await;
-        model_history.set_summary_context(agent_context.as_deref());
+        let mut conversation = super::conversation::PersistentConversation::load(
+            &harness.chat_service,
+            &chat.id,
+            response_id,
+            builder.as_ref(),
+            &conv_ctx,
+        )
+        .await?;
 
         let mut file_paths = Vec::new();
-        for msg in &stored_messages {
+        for msg in conversation.stored_messages() {
             for att in &msg.attachments {
                 let resolved =
                     resolve_attachment_path(att, &harness.user_service, &harness.storage_service)
@@ -232,8 +212,6 @@ impl ChatSessionContext {
         tool_ctx.file_paths = file_paths;
         tool_ctx.task = task;
 
-        let rig_history;
-
         for filter in tool_filters {
             tool_registry.apply_filter(filter);
         }
@@ -241,30 +219,20 @@ impl ChatSessionContext {
             tool_registry.definitions(),
             tool_registry.mcp_bridge_mode(),
         );
-        let compacted = harness
-            .chat_service
-            .compactor()
-            .compact_chat(
-                &chat.id,
-                super::compactor::CompactionContext {
+        let request = conversation
+            .prepare(
+                harness.chat_service.compactor(),
+                super::conversation::PersistentRequest {
                     agent_context: tool_ctx.agent_context_scope(),
                     system_prompt: &system_prompt,
                     model_group: &model_group,
-                    model_history: &model_history,
                     tools: &tools,
                 },
             )
             .await?;
-        let input_token_estimate = compacted.input_token_estimate;
-        model_history = compacted.model_history;
-        rig_history = model_history.history.clone();
-        super::compactor::validate_initial_context(
-            &rig_history,
-            &system_prompt,
-            &model_group,
-            &tools,
-            input_token_estimate,
-        )?;
+        let input_token_estimate = conversation.input_token_estimate();
+        let rig_history = request.messages;
+        let model_history = conversation.into_model_history();
 
         Ok(Self {
             chat,

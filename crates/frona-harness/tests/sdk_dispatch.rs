@@ -647,3 +647,43 @@ async fn cancellation_from_budget_completion_stops_before_pairing_success() {
     assert_eq!(action.status(), ActionStatus::Started);
     assert!(action.resolution().is_none());
 }
+
+#[tokio::test]
+async fn unsuccessful_rich_feedback_preserves_content_and_metadata() {
+    use frona_harness::ToolContent;
+    use rig_core::completion::message::{DocumentSourceKind, Image, ImageMediaType};
+    let output = ToolOutput::content(vec![
+        ToolContent::text("exact unsuccessful feedback"),
+        ToolContent::Image(Image {
+            data: DocumentSourceKind::Raw(vec![1, 2, 3]),
+            media_type: Some(ImageMediaType::PNG),
+            detail: None,
+            additional_params: None,
+        }),
+    ])
+    .with_metadata(json!({"source":"application"}));
+    let returned = output.clone();
+    let mut tools = ToolRegistry::default();
+    tools
+        .register(
+            tool(
+                "rich_failure",
+                "return unsuccessful content",
+                move |_: Args| {
+                    let output = returned.clone();
+                    async move { Err::<ToolOutput, _>(ToolError::Feedback(output)) }
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let mut conversation = Conversation::default();
+    let actions = record(&mut conversation, &["rich_failure"], &tools);
+    let budget = DefaultBudget::default();
+    let resolution = conversation
+        .execute_tool(&actions[0], &mut tools, ExecutionControl::new(&budget))
+        .await
+        .unwrap();
+    assert_eq!(resolution, ActionResolution::Failed(output));
+    assert_eq!(conversation.status(), ConversationStatus::Active);
+}

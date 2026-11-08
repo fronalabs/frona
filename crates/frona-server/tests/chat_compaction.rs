@@ -3006,3 +3006,236 @@ async fn compaction_keeps_input_received_during_summary() {
     assert!(replay.messages.contains(&input));
     assert!(replay.agent_context.is_some());
 }
+
+/// A builder may retain native history that cannot be represented by the SDK's
+/// live response events. Loading it must not invent origins or normalize IDs.
+struct NativePrefix(Vec<RigMessage>);
+
+#[async_trait]
+impl ConversationBuilder for NativePrefix {
+    async fn build(
+        &self,
+        messages: &[Message],
+        _: &[frona::inference::tool_call::ToolCall],
+        _: &ConversationContext,
+        summary: Option<&str>,
+    ) -> frona::inference::conversation::ModelConversationHistory {
+        assert!(summary.is_none());
+        assert_eq!(messages.len(), 1);
+        frona::inference::conversation::ModelConversationHistory {
+            history: self.0.clone(),
+            row_ids: messages.iter().map(|row| row.id.clone()).collect(),
+            row_ends: vec![self.0.len()],
+            summary: None,
+            summary_end: 0,
+        }
+    }
+}
+
+#[tokio::test]
+async fn persistent_request_preserves_native_ids_signatures_system_and_mixed_results() {
+    use frona::chat::conversation::{PersistentConversation, PersistentRequest};
+    use rig_core::completion::message::{
+        ProviderCallId, Reasoning, ToolCall, ToolCallId, ToolFunction, ToolResult,
+        ToolResultContent,
+    };
+    let app = App::new().await;
+    let saved = row("source", 0, MessageRole::User, "raw input");
+    app.messages().create(&saved).await.unwrap();
+    let call = ToolCall::from_dual_wire(
+        "item-17",
+        "call-9",
+        ToolFunction::new(
+            "original-name".into(),
+            serde_json::json!({"nested": [1, null, "exact"]}),
+        ),
+    )
+    .with_signature(Some("opaque+/=\nsignature".into()))
+    .with_additional_params(Some(serde_json::json!({"provider": "opaque"})));
+    let provider = ProviderCallId::new("call-9");
+    let native = vec![
+        RigMessage::System {
+            content: "native system".into(),
+        },
+        RigMessage::user("frozen input"),
+        RigMessage::Assistant {
+            id: Some("native-assistant-id".into()),
+            content: vec![
+                AssistantContent::Reasoning(Reasoning::new_with_signature(
+                    "native reasoning",
+                    Some("reason-signature".into()),
+                )),
+                AssistantContent::ToolCall(call),
+            ],
+        },
+        RigMessage::User {
+            content: vec![
+                UserContent::ToolResult(ToolResult {
+                    call: ToolCallId::for_provider(provider.as_ref()),
+                    provider,
+                    name: "repaired-name".into(),
+                    content: vec![ToolResultContent::text("exact result")],
+                }),
+                UserContent::text("mixed feedback"),
+            ],
+        },
+    ];
+    let builder = NativePrefix(native.clone());
+    let group = helpers::test_model_group();
+    let context = ConversationContext {
+        user_id: app.user.id.clone(),
+        agent_id: app.chat.agent_id.clone(),
+        model_config: group.main.clone(),
+    };
+    let scope = helpers::mock_context();
+    for _ in 0..2 {
+        let mut conversation = PersistentConversation::load(
+            &app.chat_service,
+            "chat",
+            Some("source"),
+            &builder,
+            &context,
+        )
+        .await
+        .unwrap();
+        let request = conversation
+            .prepare(
+                app.chat_service.compactor(),
+                PersistentRequest {
+                    agent_context: scope.agent_context_scope(),
+                    system_prompt: "outer system",
+                    model_group: &group,
+                    tools: &[],
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(request.messages).unwrap(),
+            serde_json::to_value(&native).unwrap()
+        );
+        assert_eq!(request.system, "outer system");
+        assert!(!conversation.was_compacted());
+        assert_eq!(conversation.model_history().row_ids, vec!["source"]);
+        assert_eq!(conversation.stored_messages(), std::slice::from_ref(&saved));
+    }
+    assert_eq!(
+        app.messages().find_by_id("source").await.unwrap(),
+        Some(saved)
+    );
+    assert_eq!(app.model.calls(), 0);
+    assert!(
+        app.summaries()
+            .find_by_chat_id("chat")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn persistent_request_compacts_then_reopens_the_saved_prefix_and_row_mapping() {
+    use frona::chat::conversation::{PersistentConversation, PersistentRequest};
+    let app = App::with_window(14_000).await;
+    let retained = app.history(MessageRole::User, false).await;
+    let tool_repo = frona::db::repo::tool_calls::SurrealToolCallRepo::new(app.db.clone());
+    let mut call = tool_repo
+        .find_by_message_id(&retained[2].id)
+        .await
+        .unwrap()
+        .remove(0);
+    call.provider_item_id = Some("persisted-item-id".into());
+    call.signature = Some("persisted-opaque+/=signature".into());
+    tool_repo.update(&call).await.unwrap();
+    let saved_calls = app.chat_service.get_tool_calls("chat").await.unwrap();
+    let before = app.messages().find_by_chat_id("chat").await.unwrap();
+    let builder = app.builder();
+    let group = app
+        .chat_service
+        .model_providers()
+        .resolve_with_fallback(
+            &frona_harness::inference::ModelRef("conversation".into()),
+            &frona_harness::inference::ModelRef::PRIMARY,
+        )
+        .unwrap();
+    let context = ConversationContext {
+        user_id: app.user.id.clone(),
+        agent_id: app.chat.agent_id.clone(),
+        model_config: group.main.clone(),
+    };
+    let scope = helpers::mock_context();
+    let mut conversation =
+        PersistentConversation::load(&app.chat_service, "chat", None, builder.as_ref(), &context)
+            .await
+            .unwrap();
+    let request = conversation
+        .prepare(
+            app.chat_service.compactor(),
+            PersistentRequest {
+                agent_context: scope.agent_context_scope(),
+                system_prompt: "system",
+                model_group: &group,
+                tools: &[],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(conversation.was_compacted());
+    let serialized = serde_json::to_string(&request.messages).unwrap();
+    assert!(serialized.contains("persisted-item-id"));
+    assert!(serialized.contains("persisted-opaque+/=signature"));
+    assert_eq!(
+        serde_json::to_value(app.chat_service.get_tool_calls("chat").await.unwrap()).unwrap(),
+        serde_json::to_value(saved_calls).unwrap()
+    );
+    assert_eq!(conversation.stored_messages(), retained);
+    assert_eq!(
+        conversation.model_history().row_ids,
+        retained
+            .iter()
+            .map(|row| row.id.clone())
+            .collect::<Vec<_>>()
+    );
+    let saved_summary = app
+        .summaries()
+        .find_by_chat_id("chat")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(saved_summary.agent_context_signature.is_some());
+    let prefix = serde_json::to_string(&request.messages[0]).unwrap();
+    assert!(prefix.contains("<conversation_summary>"));
+    let snapshot = app
+        .chat_service
+        .agent_context_manager()
+        .load(saved_summary.agent_context_signature.as_ref().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        request.messages[0],
+        frona_harness::inference::compaction::summary_message(
+            &saved_summary.content,
+            Some(&snapshot.render()),
+        )
+    );
+    let calls = app.model.calls();
+    let reopened =
+        PersistentConversation::load(&app.chat_service, "chat", None, builder.as_ref(), &context)
+            .await
+            .unwrap();
+    assert_eq!(reopened.model_history().history, request.messages);
+    assert_eq!(reopened.stored_messages(), conversation.stored_messages());
+    assert_eq!(
+        app.messages().find_by_chat_id("chat").await.unwrap(),
+        before
+    );
+    assert_eq!(
+        app.summaries()
+            .find_by_chat_id("chat")
+            .await
+            .unwrap()
+            .unwrap(),
+        saved_summary
+    );
+    assert_eq!(app.model.calls(), calls);
+}

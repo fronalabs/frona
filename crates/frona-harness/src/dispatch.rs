@@ -241,6 +241,7 @@ impl Conversation {
         }
         let resolution = match result {
             Ok(output) => ActionResolution::Result(output),
+            Err(ToolError::Feedback(output)) => ActionResolution::Failed(output),
             Err(ToolError::Failed(error)) => {
                 ActionResolution::Failed(ToolOutput::text(error.to_string()))
             }
@@ -293,10 +294,35 @@ impl Conversation {
         Ok(resolution)
     }
 
+    /// Inspect a validated, unstarted ordinary proposal before host-side writes.
+    /// This checks canonical identity, state and pending storage obligations; it
+    /// does not authorize the tool or reserve admission. Execution revalidates.
+    pub fn tool_proposal(
+        &self,
+        handle: &PendingAction,
+    ) -> Result<super::PendingActionView<'_>, ToolDispatchError> {
+        self.require_tool_proposal(handle)?;
+        Ok(self.action(handle)?)
+    }
+
+    /// Stop with a typed host execution failure, retaining unfinished actions.
+    /// A failed required stop write takes precedence over the supplied reason.
+    /// The returned error is the authoritative stop; this never completes work.
+    pub fn stop_execution(&mut self, stop: ExecutionStop) -> ToolDispatchError {
+        self.stop_dispatch_error(stop.into())
+    }
+
     pub(super) fn require_tool_proposal(
         &self,
         handle: &PendingAction,
     ) -> Result<(), ToolDispatchError> {
+        self.require_storage_ready()?;
+        if let Some(failure) = self.history_failure() {
+            return Err(ExecutionStop::Storage(Box::new(failure.clone())).into());
+        }
+        if self.pending_write().is_some() {
+            return Err(ConversationError::PendingWrite.into());
+        }
         let view = self.action(handle)?;
         if view.status == ActionStatus::Started {
             return Err(ConversationError::AlreadyStarted.into());

@@ -22,6 +22,9 @@ pub type ToolFailure = Box<dyn std::error::Error + Send + Sync>;
 pub enum ToolError {
     #[error("tool failed: {0}")]
     Failed(#[source] ToolFailure),
+    /// Ordinary unsuccessful output retaining rich model content and metadata.
+    #[error("tool returned unsuccessful output")]
+    Feedback(ToolOutput),
     #[error(transparent)]
     Stop(#[from] ExecutionStop),
 }

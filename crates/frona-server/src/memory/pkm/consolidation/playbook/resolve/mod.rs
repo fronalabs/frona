@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
+mod inspection;
 mod state;
+use frona_harness::{FailureKind, RunOutcome};
+use inspection::PlaybookInspection;
 
 pub use state::PlaybookResolveState;
 
@@ -397,14 +400,11 @@ impl PlaybookResolve {
             "path={}\nname={}\ndescription={}",
             candidate.path, candidate.name, candidate.description
         );
-        let rendered = self.ctx.llm.render(
-            PromptSpec::PLAYBOOK_RESOLVE,
-            &[
-                ("candidate", &candidate_block),
-                ("memories", &memory_block),
-                ("existing_playbooks", &existing_block),
-            ],
-        )?;
+        let vars = [
+            ("candidate", candidate_block.as_str()),
+            ("memories", memory_block.as_str()),
+            ("existing_playbooks", existing_block.as_str()),
+        ];
 
         let allowed: BTreeSet<String> = memories.iter().map(|memory| memory.id.clone()).collect();
         let playbook_lookup = Arc::new(super::tools::PlaybookLookup::default());
@@ -439,117 +439,63 @@ impl PlaybookResolve {
                 total: total_tool_budget,
             }),
         ];
-        let mut conversation = self
+        let harness = self
             .ctx
             .llm
-            .conversation::<Verdict>(
-                None,
+            .sdk(
                 &self.ctx.scope.agent_id,
-                rendered.system,
-                rendered.input,
                 &[ToolFilter::AllowList(&[
                     "read_memory_context",
                     "find_playbooks",
                     "read_playbook",
                 ])],
                 &tools,
-                self.max_tool_turns,
             )
             .await?;
-        let prompt = &self.ctx.llm;
-        let accepted = conversation.refine(self.max_submissions, move |mut verdict: Verdict| {
-            let ids = ids.clone();
-            let allowed = allowed.clone();
-            let existing_by_path = existing_by_path.clone();
-            let playbook_lookup = playbook_lookup.clone();
-            let staged_paths = staged_paths.clone();
-            async move {
-                let mut errors = Vec::new();
-                let mut claimed = BTreeSet::new();
-                for target in &mut verdict.playbooks {
-                    if let Err(error) = ids.expand_all(&mut target.memory_ids) {
-                        errors.push(error.to_string());
-                    }
-                    target.memory_ids.sort();
-                    target.memory_ids.dedup();
-                    let Some(path) = normalize_path(&target.path) else {
-                        errors.push(format!("invalid target path `{}`", target.path));
-                        continue;
-                    };
-                    target.path = path;
-                    if target.name.trim().is_empty() || target.description.trim().is_empty() {
-                        errors.push(format!("target `{}` needs name and description", target.path));
-                    }
-                    if let Some(existing) = target.existing_path.as_mut() {
-                        let Some(path) = normalize_path(existing) else {
-                            errors.push(format!("invalid existing path `{existing}`"));
-                            continue;
-                        };
-                        *existing = path.clone();
-                        if existing_by_path.get(&path) != Some(&EntityCategory::Playbook) {
-                            errors.push(format!("existing target `{path}` is not a Playbook"));
-                        } else if !staged_paths.contains(&path) && !playbook_lookup.read_paths.read()
-                            .expect("playbook lookup poisoned").contains(&path)
-                        {
-                            errors.push(format!(
-                                "existing target `{path}` must be found and inspected with read_playbook first"
-                            ));
-                        }
-                    } else if let Some(category) = existing_by_path.get(&target.path) {
-                        if *category != EntityCategory::Playbook {
-                            errors.push(format!("target `{}` collides with a non-Playbook entity", target.path));
-                        } else {
-                            if !staged_paths.contains(&target.path) && !playbook_lookup.read_paths.read()
-                                .expect("playbook lookup poisoned").contains(&target.path)
-                            {
-                                errors.push(format!(
-                                    "existing target `{}` must be found and inspected with read_playbook first",
-                                    target.path
-                                ));
-                            }
-                            target.existing_path = Some(target.path.clone());
-                        }
-                    }
-                    for source in &mut target.merge_from {
-                        let Some(path) = normalize_path(source) else {
-                            errors.push(format!("invalid merge source `{source}`"));
-                            continue;
-                        };
-                        *source = path.clone();
-                        if existing_by_path.get(&path) != Some(&EntityCategory::Playbook) {
-                            errors.push(format!("merge source `{path}` is not a Playbook"));
-                        } else if !staged_paths.contains(&path) && !playbook_lookup.read_paths.read()
-                            .expect("playbook lookup poisoned").contains(&path)
-                        {
-                            errors.push(format!(
-                                "merge source `{path}` must be found and inspected with read_playbook first"
-                            ));
-                        }
-                    }
-                    target.merge_from.sort();
-                    target.merge_from.dedup();
-                    for memory_id in &target.memory_ids {
-                        if !allowed.contains(memory_id) {
-                            errors.push(format!("memory `{memory_id}` does not belong to this candidate"));
-                        } else if !claimed.insert(memory_id.clone()) {
-                            errors.push(format!("memory `{memory_id}` is claimed by multiple targets"));
-                        }
-                    }
+        let inspection = Arc::new(PlaybookInspection {
+            ctx: self.ctx.clone(),
+            ids,
+            allowed,
+            existing_by_path,
+            playbook_lookup,
+            staged_paths,
+        });
+        let result = harness
+            .run(PromptSpec::PLAYBOOK_RESOLVE, &vars)?
+            .exploration_turns(self.max_tool_turns)
+            .structured::<Verdict>()
+            .submission_attempts(self.max_submissions)
+            .inspect(move |verdict| {
+                let inspection = inspection.clone();
+                async move { inspection.inspect(verdict) }
+            })
+            .await;
+        match result {
+            Ok(accepted) => Ok(accepted),
+            Err(incomplete) => {
+                tracing::warn!(reason = %incomplete.reason, outcome = ?incomplete.report.outcome,
+                    "playbook resolution incomplete");
+                if matches!(
+                    incomplete.report.outcome,
+                    Some(RunOutcome::Incomplete {
+                        kind: FailureKind::Cancelled,
+                        ..
+                    })
+                ) {
+                    return Err(AppError::Inference(Box::new(
+                        frona_harness::inference::InferenceError::Cancelled(
+                            incomplete.reason.to_string(),
+                        ),
+                    )));
                 }
-                if errors.is_empty() {
-                    Ok(crate::memory::pkm::consolidation::Verdict::Accept(verdict))
-                } else {
-                    let feedback = prompt.reject(
-                        PromptSpec::PLAYBOOK_RESOLVE,
-                        &[("rejections", &errors.join("\n"))],
-                    )?;
-                    Ok(crate::memory::pkm::consolidation::Verdict::Revise { feedback, keep: None })
-                }
+                // The outer work queue checkpoints Failed and retries this item.
+                // An unfinished assignment must never become an accepted empty plan.
+                Err(AppError::Internal(format!(
+                    "playbook resolution incomplete: {}",
+                    incomplete.reason
+                )))
             }
-        }).await?;
-        Ok(accepted
-            .map(|verdict| verdict.playbooks)
-            .unwrap_or_default())
+        }
     }
 
     async fn apply(

@@ -374,11 +374,6 @@ impl ReadPlaybookTool {
             return Ok(ToolOutput::text("Unknown Playbook path."));
         };
         let path = entity.path.clone();
-        self.lookup
-            .read_paths
-            .write()
-            .expect("playbook lookup poisoned")
-            .insert(path.clone());
         let mut memories_by_id = std::collections::BTreeMap::new();
         for memory in self
             .memories
@@ -406,14 +401,22 @@ impl ReadPlaybookTool {
         } else {
             &entity.body
         };
-        Ok(ToolOutput::text(format!(
+        let output = ToolOutput::text(format!(
             "path={}\nname={}\ndescription={}\nsource_memories:\n{}\nbody:\n{}",
             entity.path,
             entity.name,
             entity.description,
             source_memories,
             redact_text(body, &[])
-        )))
+        ));
+        // A visible entity is not evidence of a completed read. Both memory
+        // queries and output preparation must succeed before inspection can rely on it.
+        self.lookup
+            .read_paths
+            .write()
+            .expect("playbook lookup poisoned")
+            .insert(path);
+        Ok(output)
     }
 }
 

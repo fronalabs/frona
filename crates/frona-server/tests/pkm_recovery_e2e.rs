@@ -382,6 +382,26 @@ fn page_responses(name: &str, fact: &str, classify_entitys: usize) -> Vec<MockRe
 
 #[tokio::test]
 async fn procedural_memory_resolves_and_authors_a_playbook_end_to_end() {
+    playbook_resolution_pipeline(None).await;
+}
+
+#[tokio::test]
+async fn exhausted_playbook_resolution_stays_failed_and_retries_before_authoring() {
+    playbook_resolution_pipeline(Some(PlaybookResolutionInterruption::Rejected)).await;
+}
+
+#[tokio::test]
+async fn cancelled_playbook_resolution_stays_failed_and_retries_before_authoring() {
+    playbook_resolution_pipeline(Some(PlaybookResolutionInterruption::Cancelled)).await;
+}
+
+#[derive(Clone, Copy)]
+enum PlaybookResolutionInterruption {
+    Rejected,
+    Cancelled,
+}
+
+async fn playbook_resolution_pipeline(interruption: Option<PlaybookResolutionInterruption>) {
     let extract = json!({
         "new_entities": [],
         "existing_entity_updates": [],
@@ -417,15 +437,49 @@ async fn procedural_memory_resolves_and_authors_a_playbook_end_to_end() {
         "relations": [], "outdated": [], "attributes": {},
         "description": "The account owner.", "moves": []
     });
-    let mock = Arc::new(MockModelProvider::new(vec![
+    let mut responses = vec![
         MockResponse::ToolCalls(vec![("e".into(), "submit".into(), extract)]),
         MockResponse::ToolCalls(vec![("c".into(), "submit".into(), classify)]),
         MockResponse::ToolCalls(vec![("q".into(), "submit".into(), reconcile)]),
         MockResponse::ToolCalls(vec![("r".into(), "submit".into(), resolve)]),
         MockResponse::ToolCalls(vec![("a".into(), "submit".into(), author)]),
         MockResponse::Text("The account owner.".into()),
-    ]));
-    let ctx = setup(mock.clone(), MemoryConfig::default(), false).await;
+    ];
+    let interrupted_calls = match interruption {
+        Some(PlaybookResolutionInterruption::Rejected) => {
+            let rejected = json!({"playbooks": [{
+                "path": "playbooks/restart-postgres", "name": "Restart Postgres",
+                "description": "Restart Postgres safely", "memory_ids": ["unknown"]
+            }]});
+            responses.splice(
+                3..3,
+                (0..2).map(|index| {
+                    MockResponse::ToolCalls(vec![(
+                        format!("rejected-{index}"),
+                        "submit".into(),
+                        rejected.clone(),
+                    )])
+                }),
+            );
+            5
+        }
+        Some(PlaybookResolutionInterruption::Cancelled) => {
+            responses.insert(
+                3,
+                MockResponse::Error(frona_harness::inference::InferenceError::Cancelled(
+                    "stop resolution".into(),
+                )),
+            );
+            4
+        }
+        None => 0,
+    };
+    let mock = Arc::new(MockModelProvider::new(responses));
+    let config = MemoryConfig {
+        pkm_playbook_max_submissions: 2,
+        ..Default::default()
+    };
+    let ctx = setup(mock.clone(), config, false).await;
     let chat = seed_chat(&ctx.db).await;
     add_agent_message(
         &ctx.db,
@@ -438,6 +492,60 @@ async fn procedural_memory_resolves_and_authors_a_playbook_end_to_end() {
     ctx.sweep().await;
 
     let repo = ctx.repo();
+    if interruption.is_some() {
+        use frona::{
+            db::repo::pkm::PkmConsolidationStore, memory::pkm::model::PlaybookResolutionProgress,
+        };
+
+        assert_eq!(
+            mock.calls(),
+            interrupted_calls,
+            "stop before another model call"
+        );
+        let record = ctx.record().await.unwrap();
+        assert!(matches!(
+            record.state,
+            ConsolidationStageState::PlaybookResolve(_)
+        ));
+        let effective =
+            PkmConsolidationStore::new(Arc::new(ctx.repo())).scoped(&record.consolidation_id, USER);
+        let working = effective
+            .working_entity("playbooks/restart-postgres")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                working.progress.playbook_resolution,
+                PlaybookResolutionProgress::Failed { .. }
+            ),
+            "an incomplete decision must never be checkpointed as an accepted empty plan"
+        );
+        assert!(
+            repo.entity_by_path(USER, "playbooks/restart-postgres")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !ctx.pkm.storage().page_exists(
+                &ctx.pkm
+                    .storage()
+                    .vault_scope(frona::handle!("testuser"), "Memory")
+                    .unwrap(),
+                "playbooks/restart-postgres",
+            )
+        );
+
+        ctx.consolidate()
+            .await
+            .expect("retry the unfinished resolution before authoring");
+        assert_eq!(
+            mock.calls(),
+            interrupted_calls + 3,
+            "resume only resolves, authors the playbook, and authors the owner"
+        );
+    }
     let page = repo
         .entity_by_path(USER, "playbooks/restart-postgres")
         .await
@@ -488,8 +596,61 @@ async fn procedural_memory_resolves_and_authors_a_playbook_end_to_end() {
 
 #[tokio::test]
 async fn failed_playbook_author_stays_parked_and_resumes_from_the_dirty_page() {
-    let mock = Arc::new(MockModelProvider::new(Vec::new()));
+    playbook_author_failure_then_retry(AuthorFailure::Model).await;
+}
+
+#[tokio::test]
+async fn exhausted_playbook_author_retries_without_writing_incomplete_content() {
+    playbook_author_failure_then_retry(AuthorFailure::SubmissionLimit).await;
+}
+
+#[tokio::test]
+async fn token_exhausted_playbook_author_keeps_queued_feedback_and_page_dirty() {
+    playbook_author_failure_then_retry(AuthorFailure::TokenLimit).await;
+}
+
+#[tokio::test]
+async fn cancelled_playbook_author_retries_without_writing_incomplete_content() {
+    playbook_author_failure_then_retry(AuthorFailure::Cancelled).await;
+}
+
+#[derive(Clone, Copy)]
+enum AuthorFailure {
+    Model,
+    SubmissionLimit,
+    TokenLimit,
+    Cancelled,
+}
+
+async fn playbook_author_failure_then_retry(failure: AuthorFailure) {
+    let invalid = || {
+        MockResponse::ToolCalls(vec![(
+            "missing-body".into(),
+            "submit".into(),
+            json!({"name":"Restart Postgres", "description":"Restart it safely", "body":" ", "related_playbooks":[]}),
+        )])
+    };
+    let responses = match failure {
+        AuthorFailure::Model => Vec::new(),
+        AuthorFailure::SubmissionLimit => vec![invalid(), invalid()],
+        AuthorFailure::TokenLimit => vec![invalid()],
+        AuthorFailure::Cancelled => vec![
+            invalid(),
+            MockResponse::Error(frona_harness::inference::InferenceError::Cancelled(
+                "author cancelled".into(),
+            )),
+        ],
+    };
+    let mock = Arc::new(MockModelProvider::new(responses));
+    if matches!(failure, AuthorFailure::TokenLimit) {
+        mock.set_usage(frona_harness::inference::Usage {
+            total_tokens: 1_000_000,
+            ..Default::default()
+        });
+    }
     let config = MemoryConfig {
+        pkm_playbook_max_submissions: 2,
+        pkm_playbook_max_tool_turns: 1,
         pkm_consolidation_max_attempts: 1,
         pkm_consolidation_retry_base_secs: 0,
         ..Default::default()
@@ -547,13 +708,56 @@ async fn failed_playbook_author_stays_parked_and_resumes_from_the_dirty_page() {
         ConsolidationStageState::PlaybookAuthor
     ));
     assert_eq!(parked.attempts, 1);
+    let page = repo
+        .entity_by_path(USER, "playbooks/restart-postgres")
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
-        repo.entity_by_path(USER, "playbooks/restart-postgres")
-            .await
-            .unwrap()
-            .is_some()
+        page.body.is_empty(),
+        "incomplete authoring must not write a page"
     );
-
+    assert!(
+        repo.entities_needing_reconciliation_by_category(
+            USER,
+            frona::memory::pkm::model::EntityCategory::Playbook
+        )
+        .await
+        .unwrap()
+        .contains(&"playbooks/restart-postgres".to_string())
+    );
+    assert_eq!(parked.stats.playbooks_built, 0);
+    let first_tools: std::collections::BTreeSet<_> = mock.tool_histories()[0]
+        .iter()
+        .map(|tool| tool.name.clone())
+        .collect();
+    assert_eq!(
+        first_tools,
+        [
+            "get_tool_output",
+            "read_transcript",
+            "find_playbooks",
+            "read_playbook",
+            "search_entities",
+            "read_entity",
+            "submit"
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    );
+    if matches!(failure, AuthorFailure::TokenLimit) {
+        assert_eq!(
+            mock.calls(),
+            1,
+            "queued correction must not bypass token exhaustion"
+        );
+    }
+    let calls_before_retry = mock.calls();
+    mock.set_usage(frona_harness::inference::Usage {
+        total_tokens: 15,
+        ..Default::default()
+    });
     mock.enqueue(MockResponse::ToolCalls(vec![(
         "a".into(),
         "submit".into(),
@@ -569,6 +773,11 @@ async fn failed_playbook_author_stays_parked_and_resumes_from_the_dirty_page() {
         .unwrap()
         .unwrap();
     assert!(page.body.contains("pg_ctl restart"));
+    assert_eq!(
+        mock.calls() - calls_before_retry,
+        1,
+        "retry authors only the unfinished playbook"
+    );
     assert!(matches!(
         ctx.record().await.unwrap().state,
         ConsolidationStageState::Done

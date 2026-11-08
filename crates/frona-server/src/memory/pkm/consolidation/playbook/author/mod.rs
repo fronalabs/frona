@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
+use frona_harness::{Decision, FailureKind, RunOutcome};
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use serde::Deserialize;
@@ -149,18 +150,15 @@ impl PlaybookAuthor {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        let rendered = self.ctx.llm.render(
-            PromptSpec::PLAYBOOK_AUTHOR,
-            &[
-                ("path", &page.path),
-                ("name", &page.name),
-                ("description", &page.description),
-                ("body", &page.body),
-                ("memories", &memory_block),
-                ("transcript", &transcript),
-                ("invocations", &invocation_block),
-            ],
-        )?;
+        let vars: [(&str, &str); 7] = [
+            ("path", &page.path),
+            ("name", &page.name),
+            ("description", &page.description),
+            ("body", &page.body),
+            ("memories", &memory_block),
+            ("transcript", &transcript),
+            ("invocations", &invocation_block),
+        ];
         let allowed = invocations
             .iter()
             .enumerate()
@@ -218,14 +216,11 @@ impl PlaybookAuthor {
                 prefixes: self.prefixes.clone(),
             }),
         ];
-        let mut conversation = self
+        let harness = self
             .ctx
             .llm
-            .conversation::<AuthoredPlaybook>(
-                None,
+            .sdk(
                 &self.ctx.scope.agent_id,
-                rendered.system,
-                rendered.input,
                 &[ToolFilter::AllowList(&[
                     "get_tool_output",
                     "read_transcript",
@@ -235,45 +230,40 @@ impl PlaybookAuthor {
                     "read_entity",
                 ])],
                 &tools,
-                self.max_tool_turns,
             )
             .await?;
-        let llm = &self.ctx.llm;
-        let authored = conversation
-            .refine(
-                self.max_submissions,
-                move |candidate: AuthoredPlaybook| async move {
-                    let mut missing = Vec::new();
-                    if candidate.name.trim().is_empty() {
-                        missing.push("name");
-                    }
-                    if candidate.description.trim().is_empty() {
-                        missing.push("description");
-                    }
-                    if candidate.body.trim().is_empty() {
-                        missing.push("body");
-                    }
-                    if missing.is_empty() {
-                        Ok(crate::memory::pkm::consolidation::Verdict::Accept(
-                            candidate,
-                        ))
-                    } else {
-                        let feedback = llm.reject(
-                            PromptSpec::PLAYBOOK_AUTHOR,
-                            &[("rejections", &format!("missing: {}", missing.join(", ")))],
-                        )?;
-                        Ok(crate::memory::pkm::consolidation::Verdict::Revise {
-                            feedback,
-                            keep: None,
-                        })
-                    }
-                },
-            )
-            .await?
-            .ok_or_else(|| {
-                AppError::Internal(format!(
-                    "playbook author: `{path}` exhausted its submission budget"
-                ))
+        let prompts = self.ctx.llm.prompts().clone();
+        let authored = harness
+            .run(PromptSpec::PLAYBOOK_AUTHOR, &vars)?
+            .exploration_turns(self.max_tool_turns)
+            .structured::<AuthoredPlaybook>()
+            .submission_attempts(self.max_submissions)
+            .inspect(move |candidate| {
+                let prompts = prompts.clone();
+                async move { inspect_submission(candidate, &prompts) }
+            })
+            .await
+            .map_err(|incomplete| {
+                tracing::warn!(reason = %incomplete.reason, outcome = ?incomplete.report.outcome,
+                    path, "pkm playbook author: refinement incomplete");
+                if matches!(
+                    incomplete.report.outcome,
+                    Some(RunOutcome::Incomplete {
+                        kind: FailureKind::Cancelled,
+                        ..
+                    })
+                ) {
+                    AppError::Inference(Box::new(
+                        frona_harness::inference::InferenceError::Cancelled(
+                            incomplete.reason.to_string(),
+                        ),
+                    ))
+                } else {
+                    AppError::Internal(format!(
+                        "playbook author: `{path}` incomplete: {}",
+                        incomplete.reason
+                    ))
+                }
             })?;
 
         let mut related = Vec::new();
@@ -471,6 +461,32 @@ impl PlaybookAuthor {
     }
 }
 
+/// Domain content inspection; only explicit acceptance can enter page projection.
+fn inspect_submission(
+    candidate: AuthoredPlaybook,
+    prompts: &crate::agent::prompt::PromptLoader,
+) -> Result<Decision<AuthoredPlaybook>, AppError> {
+    let mut missing = Vec::new();
+    if candidate.name.trim().is_empty() {
+        missing.push("name");
+    }
+    if candidate.description.trim().is_empty() {
+        missing.push("description");
+    }
+    if candidate.body.trim().is_empty() {
+        missing.push("body");
+    }
+    if missing.is_empty() {
+        Ok(Decision::accept(candidate))
+    } else {
+        let feedback = PromptSpec::PLAYBOOK_AUTHOR.reject(
+            prompts,
+            &[("rejections", &format!("missing: {}", missing.join(", ")))],
+        )?;
+        Ok(Decision::revise(feedback))
+    }
+}
+
 fn require_requested_path(requested: &str, resolved: &str) -> Result<(), AppError> {
     if requested == resolved {
         return Ok(());
@@ -519,6 +535,8 @@ fn invocation_projection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod refinement;
 
     #[test]
     fn author_rejects_an_entity_redirected_away_from_the_requested_output_path() {

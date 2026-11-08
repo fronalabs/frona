@@ -76,7 +76,7 @@ use projection::*;
 use stages::{ResolveWorkState, bad_term_feedback};
 
 pub(crate) use context::ConsolidationContext;
-pub(crate) use inference::{ConsolidationInference, Verdict};
+pub(crate) use inference::ConsolidationInference;
 pub(crate) use prompt::{PromptIds, PromptSpec, prompt_evidence};
 
 pub(crate) use checkpoint::prepare_ingest_batch;

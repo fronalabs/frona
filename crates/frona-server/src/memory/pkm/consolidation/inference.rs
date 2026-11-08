@@ -11,7 +11,6 @@ use crate::agent::harness::Harness;
 use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use crate::inference::usage::{InferenceKind, UsageContext};
-use crate::inference::{AnswerAttempt, StructuredConversation};
 use crate::tool::{AgentTool, registry::ToolFilter};
 use frona_harness::inference::ModelGroup;
 use tokio_util::sync::CancellationToken;
@@ -20,71 +19,6 @@ use super::prompt::{PromptSpec, RenderedPrompt};
 
 mod sdk_bridge;
 pub use sdk_bridge::PkmHarness;
-
-/// What domain validation decided about one valid structured submission.
-pub(crate) enum Verdict<A> {
-    Accept(A),
-    Revise { feedback: String, keep: Option<A> },
-}
-
-/// A consolidation dialogue that owns submission accounting and domain refinement.
-pub(crate) struct ConsolidationConversation<'a, T> {
-    inner: StructuredConversation<'a, T>,
-}
-
-impl<'a, T> ConsolidationConversation<'a, T>
-where
-    T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
-{
-    pub async fn refine<A, Fut>(
-        &mut self,
-        max_submissions: usize,
-        mut inspect: impl FnMut(T) -> Fut,
-    ) -> Result<Option<A>, AppError>
-    where
-        Fut: std::future::Future<Output = Result<Verdict<A>, AppError>> + Send,
-    {
-        if max_submissions == 0 {
-            return Err(AppError::Internal(
-                "conversation: max_submissions must be at least one".into(),
-            ));
-        }
-
-        let mut kept: Option<A> = None;
-        let mut produced_candidate = false;
-        for _ in 0..max_submissions {
-            let attempt = match self.inner.next_attempt().await {
-                Ok(attempt) => attempt,
-                Err(e) if !produced_candidate => return Err(e),
-                Err(e) => {
-                    tracing::warn!(error = %e, "structured conversation: revision did not converge");
-                    break;
-                }
-            };
-            let AnswerAttempt::Submitted(candidate) = attempt else {
-                continue;
-            };
-            produced_candidate = true;
-            match inspect(candidate).await? {
-                Verdict::Accept(value) => return Ok(Some(value)),
-                Verdict::Revise { feedback, keep } => {
-                    if keep.is_some() {
-                        kept = keep;
-                    }
-                    self.inner.reject_submission(feedback)?;
-                }
-            }
-        }
-
-        if produced_candidate || kept.is_some() {
-            Ok(kept)
-        } else {
-            Err(AppError::Internal(
-                "conversation: submission budget exhausted without a valid submission".into(),
-            ))
-        }
-    }
-}
 
 /// Background inference for one consolidation pass, scoped to one user.
 #[derive(Clone)]
@@ -202,41 +136,5 @@ impl ConsolidationInference {
                 self.cancel_token.clone(),
             )
             .await
-    }
-
-    /// A multi-turn tool conversation: the model proposes, the system validates
-    /// externally, and rejections are fed back for a revision.
-    /// The returned conversation borrows the harness for its lifetime, so it must not
-    /// outlive this `ConsolidationInference`.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn conversation<'a, T>(
-        &'a self,
-        chat_id: Option<&str>,
-        agent_id: &str,
-        system: String,
-        initial: String,
-        filters: &[ToolFilter],
-        tools: &[Arc<dyn AgentTool>],
-        max_tool_turns: usize,
-    ) -> Result<ConsolidationConversation<'a, T>, AppError>
-    where
-        T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
-    {
-        let inner = self
-            .harness
-            .structured_conversation_with_cancel::<T>(
-                chat_id,
-                agent_id,
-                &self.model_group,
-                system,
-                initial,
-                filters,
-                tools,
-                max_tool_turns,
-                self.usage(),
-                self.cancel_token.clone(),
-            )
-            .await?;
-        Ok(ConsolidationConversation { inner })
     }
 }

@@ -1,9 +1,22 @@
-//! Individual action dispatch shared by future manual and automatic drivers.
+//! Individual action dispatch shared by manual, automatic, and recovery drivers.
 
 use super::{
-    ActionKind, ActionResolution, ActionStatus, Conversation, ConversationError, ExecutionControl,
-    ExecutionStop, PendingAction, ToolContext, ToolError, ToolOutput, ToolRegistry,
+    ActionKind, ActionResolution, ActionStatus, Conversation, ConversationError,
+    ConversationStatus, ExecutionControl, ExecutionStop, FailureKind, PendingAction,
+    ResponseActions, ToolCallHook, ToolContext, ToolDecision, ToolError, ToolOutput, ToolRegistry,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RecoveryError {
+    #[error("history is already completed; recovery cannot recreate an application result")]
+    AlreadyCompleted,
+    #[error("interrupted tool '{name}' has no restored implementation")]
+    MissingTool { name: String },
+    #[error("interrupted tool '{name}' was not offered for its recorded request")]
+    UnofferedTool { name: String },
+    #[error("recovery requires a new, unfinished execution report")]
+    FinalizedReport,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ToolDispatchError {
@@ -11,6 +24,10 @@ pub enum ToolDispatchError {
     Conversation(ConversationError),
     #[error("submission actions require submission resolution, not tool dispatch")]
     Submission,
+    #[error(transparent)]
+    Recovery(#[from] RecoveryError),
+    #[error("application tool hook failed: {0}")]
+    ToolHook(String),
     #[error(transparent)]
     Stop(#[from] ExecutionStop),
 }
@@ -27,24 +44,140 @@ impl From<ConversationError> for ToolDispatchError {
 }
 
 impl Conversation {
-    /// Execute one proposed ordinary tool. Validation happens before admission
-    /// or effects; each call gets its own budget permit. Refused/unknown tools
-    /// receive paired feedback without invocation or consumption. Typed execution
-    /// stops terminate this conversation and leave unfinished actions intact.
+    /// Execute one proposed ordinary tool. Each call receives fresh admission.
+    /// Unknown/unoffered tools receive paired rejection without invocation.
     pub async fn execute_tool(
         &mut self,
         handle: &PendingAction,
         tools: &mut ToolRegistry<'_>,
         execution: ExecutionControl<'_>,
     ) -> Result<ActionResolution, ToolDispatchError> {
-        self.require_tool_proposal(handle)?;
-        if let Err(error) = execution.check_cancellation() {
-            return Err(self.stop_dispatch(
-                error
-                    .into_execution_stop()
-                    .expect("cancellation is terminal"),
-            ));
+        self.dispatch_tool(handle, tools, execution, None, false)
+            .await
+    }
+
+    /// Explicitly retry interrupted ordinary calls, in proposal order, using
+    /// freshly supplied tools and shared controls. Tools must be safe to repeat:
+    /// a prior attempt may already have completed an external effect.
+    ///
+    /// Resolved/rejected calls never rerun. Unstarted proposals and submissions
+    /// are returned for caller decisions. This neither invokes a model nor
+    /// restores inspector state or budget consumption. A supplied report must
+    /// belong to a new execution scope; old report/progress bindings are detached.
+    pub async fn recover_tools(
+        &mut self,
+        tools: &mut ToolRegistry<'_>,
+        execution: ExecutionControl<'_>,
+    ) -> Result<ResponseActions, ToolDispatchError> {
+        self.recover_tools_inner(tools, execution, None).await
+    }
+
+    /// Recovery with restored application policy. Reject/Stop preserves an
+    /// interrupted action and stops recovery; it cannot undo a prior effect and
+    /// therefore never writes rejection feedback for an interrupted call.
+    pub async fn recover_tools_with_hook(
+        &mut self,
+        tools: &mut ToolRegistry<'_>,
+        execution: ExecutionControl<'_>,
+        hook: &mut dyn ToolCallHook,
+    ) -> Result<ResponseActions, ToolDispatchError> {
+        self.recover_tools_inner(tools, execution, Some(hook)).await
+    }
+
+    async fn recover_tools_inner(
+        &mut self,
+        tools: &mut ToolRegistry<'_>,
+        execution: ExecutionControl<'_>,
+        mut hook: Option<&mut dyn ToolCallHook>,
+    ) -> Result<ResponseActions, ToolDispatchError> {
+        // These checks must precede reactivation, observer rebinding, or writes.
+        if let Some(failure) = self.history_failure() {
+            return Err(ExecutionStop::Storage(Box::new(failure.clone())).into());
         }
+        self.require_storage_ready()?;
+        if self.pending_write().is_some() {
+            return Err(ConversationError::PendingWrite.into());
+        }
+        if self.status() == ConversationStatus::Finished {
+            return Err(RecoveryError::AlreadyCompleted.into());
+        }
+        if execution
+            .report_handle()
+            .is_some_and(|r| r.snapshot().outcome.is_some())
+        {
+            return Err(RecoveryError::FinalizedReport.into());
+        }
+        self.activate_recovery(execution.report_handle());
+        self.check_dispatch_cancellation(execution)?;
+        let pending = self.pending_actions()?;
+        // Preflight all interrupted dependencies before any retry can have an effect.
+        for action in &pending.actions {
+            if self.action(action)?.status == ActionStatus::Started
+                && let Err(error) = self.require_recovery_tool(action, tools)
+            {
+                return Err(self.stop_dispatch_error(error));
+            }
+        }
+        for action in &pending.actions {
+            if self.action(action)?.status != ActionStatus::Started {
+                continue;
+            }
+            let hook = hook
+                .as_mut()
+                .map(|hook| &mut **hook as &mut dyn ToolCallHook);
+            self.dispatch_tool(action, tools, execution, hook, true)
+                .await?;
+        }
+        self.pending_actions().map_err(Into::into)
+    }
+
+    fn require_recovery_tool(
+        &self,
+        handle: &PendingAction,
+        tools: &mut ToolRegistry<'_>,
+    ) -> Result<(), ToolDispatchError> {
+        self.next_invocation(handle, true)?;
+        let view = self.action(handle)?;
+        let name = &view.call.function.name;
+        if !view
+            .offered_tools
+            .iter()
+            .any(|definition| definition.name == *name)
+        {
+            return Err(RecoveryError::UnofferedTool { name: name.clone() }.into());
+        }
+        if tools.get_mut(name).is_none() {
+            return Err(RecoveryError::MissingTool { name: name.clone() }.into());
+        }
+        Ok(())
+    }
+
+    pub(super) async fn execute_tool_with_hook(
+        &mut self,
+        handle: &PendingAction,
+        tools: &mut ToolRegistry<'_>,
+        execution: ExecutionControl<'_>,
+        hook: Option<&mut dyn ToolCallHook>,
+    ) -> Result<ActionResolution, ToolDispatchError> {
+        self.dispatch_tool(handle, tools, execution, hook, false)
+            .await
+    }
+
+    async fn dispatch_tool(
+        &mut self,
+        handle: &PendingAction,
+        tools: &mut ToolRegistry<'_>,
+        execution: ExecutionControl<'_>,
+        hook: Option<&mut dyn ToolCallHook>,
+        recovery: bool,
+    ) -> Result<ActionResolution, ToolDispatchError> {
+        self.require_storage_ready()?;
+        if recovery {
+            self.require_recovery_tool(handle, tools)?;
+        } else {
+            self.require_tool_proposal(handle)?;
+        }
+        self.check_dispatch_cancellation(execution)?;
         let view = self.action(handle)?;
         let call = view.call.clone();
         let name = call.function.name.clone();
@@ -64,26 +197,45 @@ impl Conversation {
                 ToolOutput::text(format!("Tool '{name}' is not registered.")),
             );
         };
+        if let Some(hook) = hook {
+            let decision = tokio::select! {
+                biased;
+                _ = execution.cancelled() => Err(ToolDispatchError::Stop(
+                    ExecutionStop::Cancelled("execution cancelled during tool hook".into())
+                )),
+                result = hook.decide(&call) => result.map_err(|e| ToolDispatchError::ToolHook(e.to_string())),
+            };
+            // Synchronously ready policy may cancel while returning Reject.
+            self.check_dispatch_cancellation(execution)?;
+            match decision {
+                Ok(ToolDecision::Execute) => {}
+                Ok(ToolDecision::Reject(feedback)) if !recovery => {
+                    return self.reject_tool(handle, ToolOutput::text(feedback));
+                }
+                Ok(ToolDecision::Reject(reason) | ToolDecision::Stop(reason)) => {
+                    return Err(self.stop_dispatch_error(ExecutionStop::Stopped(reason).into()));
+                }
+                Err(error) => return Err(self.stop_dispatch_error(error)),
+            }
+        }
+        // Admission occurs only after policy. Both initial and recovery attempts
+        // use this one dispatch boundary, including nested controls and storage.
         let execution = execution.with_action(self.action_position(handle)?);
         let context = ToolContext::for_execution(call.id.as_str().into(), execution);
         let result = execution
             .with_cancellation(&context.cancellation)
             .tool_attempt(&name, || async {
-                // The exclusive conversation borrow has remained held since
-                // validation; no other transition can invalidate this proposal.
-                self.start(handle).map_err(|error| match error {
-                    ConversationError::Storage(failure) => {
-                        ToolError::Stop(ExecutionStop::Storage(Box::new((*failure).clone())))
-                    }
-                    error => ToolError::failed(error),
-                })?;
+                self.start_invocation(handle, recovery)
+                    .map_err(|error| match error {
+                        ConversationError::Storage(failure) => {
+                            ToolError::Stop(ExecutionStop::Storage(Box::new((*failure).clone())))
+                        }
+                        error => ToolError::failed(error),
+                    })?;
                 execution.check_cancellation()?;
                 tool.call(call.function.arguments, &context).await
             })
             .await;
-        // Cancellation may arrive from the required write or budget callback.
-        // Preserve its failed-write diagnostic rather than replacing it with a
-        // secondary cancellation stop.
         if let Some(failure) = self.history_failure() {
             return Err(ExecutionStop::Storage(Box::new(failure.clone())).into());
         }
@@ -92,18 +244,38 @@ impl Conversation {
             Err(ToolError::Failed(error)) => {
                 ActionResolution::Failed(ToolOutput::text(error.to_string()))
             }
-            Err(ToolError::Stop(stop)) => {
-                return Err(self.stop_dispatch(stop));
-            }
+            Err(ToolError::Stop(stop)) => return Err(self.stop_dispatch_error(stop.into())),
         };
         self.resolve(handle, resolution.clone())?;
+        self.check_dispatch_cancellation(execution)?;
         Ok(resolution)
     }
 
-    fn stop_dispatch(&mut self, stop: ExecutionStop) -> ToolDispatchError {
-        match self.stop_with_reason(stop.failure_kind(), stop.to_string()) {
+    fn check_dispatch_cancellation(
+        &mut self,
+        execution: ExecutionControl<'_>,
+    ) -> Result<(), ToolDispatchError> {
+        if let Err(error) = execution.check_cancellation() {
+            return Err(self.stop_dispatch_error(
+                error
+                    .into_execution_stop()
+                    .expect("cancellation is terminal")
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn stop_dispatch_error(&mut self, error: ToolDispatchError) -> ToolDispatchError {
+        let category = match &error {
+            ToolDispatchError::Stop(stop) => stop.failure_kind(),
+            ToolDispatchError::Recovery(_) => FailureKind::Setup,
+            ToolDispatchError::ToolHook(_) => FailureKind::ToolHook,
+            _ => FailureKind::Protocol,
+        };
+        match self.stop_with_reason(category, error.to_string()) {
             Err(error) => error.into(),
-            Ok(()) => stop.into(),
+            Ok(()) => error,
         }
     }
 

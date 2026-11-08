@@ -80,6 +80,7 @@ pub enum HistoryEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryOperation {
+    Resume,
     Open,
     User,
     Response,
@@ -119,6 +120,10 @@ pub struct HistoryRecord {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryWritePhase {
+    Open,
+    Read,
+    Revalidate,
+    Truncate,
     Serialize,
     Append,
     Flush,
@@ -149,6 +154,8 @@ pub enum EffectState {
 #[error("{operation:?} record {attempted_seq} failed during {phase:?}: {cause}")]
 pub struct HistoryFailure {
     pub acknowledged_seq: Option<u64>,
+    /// Failed record position, or the next position for Resume setup (which
+    /// prepares storage without writing a history event).
     pub attempted_seq: u64,
     pub operation: HistoryOperation,
     pub phase: HistoryWritePhase,
@@ -245,27 +252,75 @@ impl History {
         if let Some(writer) = &mut self.writer
             && let Err(error) = writer.commit(&record)
         {
-            let failure = Arc::new(HistoryFailure {
-                acknowledged_seq: self.memory.records.last().map(|r| r.seq),
-                attempted_seq: record.seq,
-                operation: record.event.operation(),
-                phase: error.phase,
-                persistence: if error.phase == HistoryWritePhase::Serialize {
-                    PersistenceOutcome::NotWritten
-                } else {
-                    PersistenceOutcome::Unknown
-                },
-                effect,
-                cause: error.cause,
-            });
-            self.candidate = Some(record);
-            self.failure = Some(failure.clone());
-            // The uncertain writer can never be used again by this state.
-            self.writer = None;
-            return Err(failure);
+            return Err(self.fail(record.event.operation(), effect, error, Some(record)));
         }
         self.memory.records.push(record);
         Ok(())
+    }
+
+    /// Explicit payload serialization can fail before a record exists. Keep
+    /// failure evidence without inventing a placeholder payload/candidate.
+    pub(crate) fn serialization_failed(
+        &mut self,
+        operation: HistoryOperation,
+        cause: String,
+    ) -> Arc<HistoryFailure> {
+        self.fail(
+            operation,
+            EffectState::NoEffect,
+            HistoryWriteError {
+                phase: HistoryWritePhase::Serialize,
+                cause,
+            },
+            None,
+        )
+    }
+
+    #[cfg(feature = "jsonl")]
+    pub(crate) fn resume_failed(
+        &mut self,
+        phase: HistoryWritePhase,
+        cause: String,
+    ) -> Arc<HistoryFailure> {
+        self.fail(
+            HistoryOperation::Resume,
+            EffectState::Prevented,
+            HistoryWriteError { phase, cause },
+            None,
+        )
+    }
+
+    fn fail(
+        &mut self,
+        operation: HistoryOperation,
+        effect: EffectState,
+        error: HistoryWriteError,
+        candidate: Option<HistoryRecord>,
+    ) -> Arc<HistoryFailure> {
+        let failure = Arc::new(HistoryFailure {
+            acknowledged_seq: self.memory.records.last().map(|r| r.seq),
+            attempted_seq: self.memory.records.len() as u64,
+            operation,
+            phase: error.phase,
+            persistence: if matches!(
+                error.phase,
+                HistoryWritePhase::Serialize
+                    | HistoryWritePhase::Open
+                    | HistoryWritePhase::Read
+                    | HistoryWritePhase::Revalidate
+            ) {
+                PersistenceOutcome::NotWritten
+            } else {
+                PersistenceOutcome::Unknown
+            },
+            effect,
+            cause: error.cause,
+        });
+        self.candidate = candidate;
+        self.failure = Some(failure.clone());
+        // The failed writer can never be used again by this state.
+        self.writer = None;
+        failure
     }
 
     pub fn detach(&mut self) -> bool {

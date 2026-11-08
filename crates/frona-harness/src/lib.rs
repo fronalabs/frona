@@ -47,11 +47,11 @@ pub use budget::{
     BudgetPermit, BudgetRefusal, BudgetSnapshot, DefaultBudget, UncertainUsagePolicy,
 };
 pub use conversation::{
-    ActionKind, ActionRecord, ActionResolution, ActionStatus, Conversation, ConversationError,
-    ConversationStatus, HistoryReplay, PendingAction, PendingActionView, ResponseActions,
-    ResponseRecord, replay_history,
+    ActionKind, ActionRecord, ActionResolution, ActionStatus, CheckpointLoadError, CheckpointRef,
+    Conversation, ConversationError, ConversationStatus, HistoryReplay, LoadedCheckpoint,
+    PendingAction, PendingActionView, ResponseActions, ResponseRecord, replay_history,
 };
-pub use dispatch::ToolDispatchError;
+pub use dispatch::{RecoveryError, ToolDispatchError};
 pub use execution::{ExecutionControl, ExecutionStop};
 pub use hook::{ToolCallHook, ToolDecision};
 pub use model::{
@@ -65,16 +65,12 @@ pub use tool::{
 };
 
 pub use session::{
-    Harness, ManualError, ManualSession, ModelCall, Run, Structured, Text, ToolSelection,
+    Harness, ManualError, ManualSession, ModelCall, ResumeError, Run, Structured, Text,
+    ToolSelection,
 };
 
 mod workspace_tools;
 pub use workspace_tools::workspace_read_tools;
-
-/// Initialize the TLS provider for built-in clients. Safe to call more than once.
-pub fn initialize_tls() {
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-}
 
 pub use history::{
     EffectState, HistoryCheckpoint, HistoryCompletion, HistoryEvent, HistoryFailure, HistoryMode,
@@ -85,3 +81,8 @@ pub use compaction::{
     CompactedView, CompactionConfig, CompactionError, CompactionLimits, CompactionPlan,
     HistoryView, HistoryViewEntry,
 };
+
+/// Initialize the TLS provider for built-in clients. Safe to call more than once.
+pub fn initialize_tls() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+}

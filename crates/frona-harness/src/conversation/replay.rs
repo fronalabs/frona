@@ -33,8 +33,6 @@ pub fn replay_history(records: &[HistoryRecord]) -> Result<HistoryReplay, Histor
         ));
     };
     let mut conversation = Conversation::empty_with_id(first.conversation);
-    let mut checkpoint = None;
-    let mut checkpoint_stale = false;
     for (index, record) in records.iter().enumerate() {
         let seq = u64::try_from(index).map_err(|e| state_error(u64::MAX, e.to_string()))?;
         if record.version != 1 {
@@ -87,8 +85,6 @@ pub fn replay_history(records: &[HistoryRecord]) -> Result<HistoryReplay, Histor
                     "checkpoint must refer to exactly the preceding prefix".into(),
                 ));
             }
-            checkpoint = Some((seq, saved.clone()));
-            checkpoint_stale = false;
             continue;
         }
         if conversation.status == ConversationStatus::Finished {
@@ -96,9 +92,6 @@ pub fn replay_history(records: &[HistoryRecord]) -> Result<HistoryReplay, Histor
                 seq,
                 "only checkpoints may follow completion".into(),
             ));
-        }
-        if checkpoint.is_some() {
-            checkpoint_stale = true;
         }
         // Stopped is a diagnostic boundary, not acceptance or permanent sealing.
         conversation.status = ConversationStatus::Active;
@@ -108,6 +101,9 @@ pub fn replay_history(records: &[HistoryRecord]) -> Result<HistoryReplay, Histor
     // Keep exact source evidence, including completion kind, raw outputs, and
     // checkpoints. Shared memory transitions above cannot invoke external code.
     conversation.history = History::from_records(records.to_vec());
+    let checkpoint = conversation.checkpoint();
+    let checkpoint_stale = checkpoint.is_some_and(|saved| saved.stale);
+    let checkpoint = checkpoint.map(|saved| (saved.seq, saved.checkpoint.clone()));
     Ok(HistoryReplay {
         conversation,
         checkpoint,

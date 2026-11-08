@@ -66,7 +66,7 @@ impl<'a, T: DeserializeOwned + JsonSchema + 'a> IntoFuture for Run<'a, Structure
 
 async fn drive_text(session: &mut ManualSession<'_, Text>) -> Result<String, ManualError> {
     loop {
-        let turn = session.call_model().await?;
+        let turn = session.next_response().await?;
         if turn.actions.is_empty() {
             return session.finish();
         }
@@ -96,7 +96,7 @@ pub(super) async fn next_submission<T: DeserializeOwned + JsonSchema>(
     session: &mut ManualSession<'_, Structured<T>>,
 ) -> Result<(PendingAction, T), ManualError> {
     loop {
-        let turn = session.call_model().await?;
+        let turn = session.next_response().await?;
         let mut submissions = Vec::new();
         // Finish sibling tool effects before choosing any output. A terminal
         // tool stop cannot turn an earlier valid-looking submission into success.
@@ -109,7 +109,15 @@ pub(super) async fn next_submission<T: DeserializeOwned + JsonSchema>(
             }
         }
         if submissions.is_empty() {
-            session.repair_missing_submission()?;
+            // A resumed mixed batch may already contain a repaired/rejected
+            // submission. Its remaining tool siblings do not imply missing submit.
+            if !session.conversation().responses()[turn.response_index]
+                .actions()
+                .iter()
+                .any(|action| action.kind() == ActionKind::Submission)
+            {
+                session.repair_missing_submission()?;
+            }
             continue;
         }
         let mut selected = None;

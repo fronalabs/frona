@@ -2,6 +2,8 @@
 
 mod replay;
 pub use replay::{HistoryReplay, replay_history};
+mod checkpoint;
+pub use checkpoint::{CheckpointLoadError, CheckpointRef, LoadedCheckpoint};
 
 use super::history::History;
 #[cfg(test)]
@@ -161,6 +163,8 @@ pub enum ConversationStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConversationError {
+    #[error("loaded storage must be prepared by explicit resume before mutation")]
+    StorageNotReady,
     #[error("invalid selected model view: {0}")]
     InvalidView(String),
     #[error(transparent)]
@@ -185,13 +189,18 @@ pub enum ConversationError {
     StaleAction,
     #[error("action has already been started")]
     AlreadyStarted,
+    #[error("action has not been started")]
+    NotStarted,
+    #[error("action invocation ordinal overflow")]
+    InvocationOverflow,
     #[error("submission actions cannot be started as tool invocations")]
     SubmissionStart,
     #[error("action has already been resolved")]
     AlreadyResolved,
 }
 
-/// Portable protocol state; it owns no model, tools, identities, or persistence.
+/// Portable protocol state with optional reliable history storage. It owns no
+/// model, tools, or runtime identities.
 /// Recording and resolution execute nothing. The next model request is available
 /// only after every proposal has a paired result. Stopping never implies success.
 #[derive(Debug)]
@@ -204,6 +213,8 @@ pub struct Conversation {
     report: Option<ReportHandle>,
     progress: ProgressPublisher,
     history: History,
+    #[cfg(feature = "jsonl")]
+    pending_jsonl: Option<super::jsonl::JsonlContinuation>,
     instructions: String,
     mode: HistoryMode,
     compacted: Option<super::CompactedView>,
@@ -226,6 +237,8 @@ impl Conversation {
             report: None,
             progress: ProgressPublisher::default(),
             history: History::default(),
+            #[cfg(feature = "jsonl")]
+            pending_jsonl: None,
             instructions: String::new(),
             mode: HistoryMode::Text,
             compacted: None,
@@ -282,7 +295,7 @@ impl Conversation {
     /// Configuration remains mutable until that transition commits `Opened`.
     #[cfg(feature = "jsonl")]
     pub fn attach_jsonl(&mut self, writer: super::JsonlWriter) -> Result<(), super::JsonlError> {
-        if !self.history.can_attach_new() {
+        if self.pending_jsonl.is_some() || !self.history.can_attach_new() {
             return Err(super::JsonlError::AlreadyAttached);
         }
         self.history.attach(Box::new(writer));
@@ -292,6 +305,49 @@ impl Conversation {
     #[cfg(feature = "jsonl")]
     pub(super) fn attach_restored_jsonl(&mut self, writer: super::JsonlWriter) {
         self.history.attach_restored(Box::new(writer));
+    }
+
+    #[cfg(feature = "jsonl")]
+    pub(super) fn with_pending_jsonl(mut self, source: super::jsonl::JsonlContinuation) -> Self {
+        self.pending_jsonl = Some(source);
+        self
+    }
+
+    #[cfg(feature = "jsonl")]
+    pub(super) fn prepare_jsonl(&mut self) -> Result<(), ConversationError> {
+        if let Some(source) = &self.pending_jsonl {
+            match source.prepare() {
+                Ok(writer) => {
+                    self.attach_restored_jsonl(writer);
+                    self.pending_jsonl = None;
+                }
+                Err(error) => {
+                    let failure = self
+                        .history
+                        .resume_failed(error.resume_phase(), error.to_string());
+                    self.mark_stopped();
+                    return Err(failure.into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn require_storage_ready(&self) -> Result<(), ConversationError> {
+        #[cfg(feature = "jsonl")]
+        if self.pending_jsonl.is_some() {
+            return Err(ConversationError::StorageNotReady);
+        }
+        Ok(())
+    }
+
+    pub(super) fn saved_configuration(&self) -> Option<(&str, &HistoryMode)> {
+        match self.history().first().map(|record| &record.event) {
+            Some(HistoryEvent::Opened {
+                instructions, mode, ..
+            }) => Some((instructions, mode)),
+            _ => None,
+        }
     }
 
     #[cfg(test)]
@@ -316,6 +372,7 @@ impl Conversation {
         if let Some(failure) = self.history.failure() {
             return Err(failure.clone().into());
         }
+        self.require_storage_ready()?;
         if self.history.candidate().is_some() {
             return Err(ConversationError::PendingWrite);
         }
@@ -349,12 +406,18 @@ impl Conversation {
     }
 
     /// Explicitly abandon an uncertain writer. No file is changed, and failure
-    /// provenance stays attached. This does not adopt its pending transition.
+    /// provenance stays attached. This does not adopt its pending transition or
+    /// reactivate a completed history whose later checkpoint write failed.
     pub fn into_memory(mut self) -> Result<Self, ConversationError> {
-        if !self.history.detach() {
+        let detached = self.history.detach();
+        #[cfg(feature = "jsonl")]
+        let detached = self.pending_jsonl.take().is_some() || detached;
+        if !detached {
             return Err(ConversationError::NotStorageStopped);
         }
-        self.status = ConversationStatus::Active;
+        if self.status != ConversationStatus::Finished {
+            self.status = ConversationStatus::Active;
+        }
         self.report = None;
         self.progress = ProgressPublisher::default();
         for response in &mut self.responses {
@@ -427,8 +490,17 @@ impl Conversation {
 
     /// Discard an unacknowledged intent. A returned model/tool result must be
     /// adopted explicitly instead, so forgetting it cannot silently repeat work.
+    /// A failed checkpoint after completion may be discarded without reopening
+    /// execution; a later explicit checkpoint can save new application state.
     pub fn discard_pending_write(&mut self) -> Result<(), ConversationError> {
-        if self.history.failure().is_some() || self.status != ConversationStatus::Active {
+        let terminal_checkpoint = self.status == ConversationStatus::Finished
+            && self
+                .history
+                .candidate()
+                .is_some_and(|r| matches!(r.event, HistoryEvent::Checkpoint { .. }));
+        if self.history.failure().is_some()
+            || (self.status != ConversationStatus::Active && !terminal_checkpoint)
+        {
             return Err(ConversationError::Terminal);
         }
         if self.history.candidate().is_some_and(|r| {
@@ -483,6 +555,12 @@ impl Conversation {
     }
 
     pub(super) fn with_report(mut self, report: ReportHandle) -> Self {
+        self.seed_report(&report);
+        self.report = Some(report);
+        self
+    }
+
+    fn seed_report(&self, report: &ReportHandle) {
         // Restored unresolved proposals belong to the new execution's action
         // scope, but no old invocation, usage or delivery is fabricated.
         for (response_index, response) in self.responses.iter().enumerate() {
@@ -500,8 +578,6 @@ impl Conversation {
                 }
             }
         }
-        self.report = Some(report);
-        self
     }
 
     pub(super) fn request_input(&self, messages: Vec<usize>) -> RequestInput {
@@ -734,28 +810,74 @@ impl Conversation {
     /// Reserve a proposal before an external effect. A second start is rejected.
     /// This state transition itself performs no effect or budget admission.
     pub fn start(&mut self, handle: &PendingAction) -> Result<(), ConversationError> {
-        let action = self.validate(handle)?;
-        if action.kind == ActionKind::Submission {
-            return Err(ConversationError::SubmissionStart);
-        }
-        if action.status == ActionStatus::Started {
-            return Err(ConversationError::AlreadyStarted);
-        }
+        self.start_invocation(handle, false)
+    }
+
+    pub(super) fn start_invocation(
+        &mut self,
+        handle: &PendingAction,
+        recovery: bool,
+    ) -> Result<(), ConversationError> {
+        let ordinal = self.next_invocation(handle, recovery)?;
         self.ensure_history()?;
         self.commit(
             HistoryEvent::ToolStarted {
                 action: self.action_position(handle)?,
-                ordinal: 1,
+                ordinal,
             },
             EffectState::Prevented,
         )?;
         self.responses[handle.response].actions[handle.slot].status = ActionStatus::Started;
-        self.responses[handle.response].actions[handle.slot].invocation_ordinal = 1;
+        self.responses[handle.response].actions[handle.slot].invocation_ordinal = ordinal;
         if let Some(report) = &self.report {
             report.started(self.action_position(handle)?);
         }
         self.emit_action(handle);
         Ok(())
+    }
+
+    pub(super) fn next_invocation(
+        &self,
+        handle: &PendingAction,
+        recovery: bool,
+    ) -> Result<u64, ConversationError> {
+        let action = self.validate(handle)?;
+        if action.kind == ActionKind::Submission {
+            return Err(ConversationError::SubmissionStart);
+        }
+        match (recovery, action.status) {
+            (false, ActionStatus::Started) => return Err(ConversationError::AlreadyStarted),
+            (true, ActionStatus::Proposed) => return Err(ConversationError::NotStarted),
+            _ => {}
+        }
+        action
+            .invocation_ordinal
+            .checked_add(1)
+            .ok_or(ConversationError::InvocationOverflow)
+    }
+
+    pub(super) fn activate_recovery(&mut self, report: Option<&ReportHandle>) {
+        // A live incomplete Conversation may still hold its previous recorder.
+        // Only a newly supplied, nonfinalized scope can receive recovery evidence.
+        let same_scope = self
+            .report
+            .as_ref()
+            .zip(report)
+            .is_some_and(|(old, new)| old.same_scope(new));
+        if !same_scope {
+            self.report = None;
+            self.progress = ProgressPublisher::default();
+            if let Some(report) = report {
+                self.seed_report(report);
+                self.report = Some(report.clone());
+            }
+        }
+        self.status = ConversationStatus::Active;
+        for response in &mut self.responses {
+            for action in &mut response.actions {
+                action.submission_validated = false;
+            }
+        }
     }
 
     /// Resolve one proposal. Results may arrive out of order; the replay message
@@ -955,3 +1077,6 @@ impl Conversation {
         Ok(action)
     }
 }
+
+#[cfg(test)]
+mod recovery_tests;

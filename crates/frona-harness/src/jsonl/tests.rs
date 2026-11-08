@@ -218,3 +218,103 @@ fn attaching_does_not_freeze_mode_or_instructions() {
     assert_eq!(instructions, "standing instructions");
     assert_eq!(mode, &crate::HistoryMode::Structured(submission.parameters));
 }
+
+#[tokio::test]
+async fn checkpoint_failures_preserve_acknowledged_state_and_terminal_history() {
+    use crate::{ConversationError, ConversationStatus, RecoveryError};
+    for phase in [
+        HistoryWritePhase::Append,
+        HistoryWritePhase::Flush,
+        HistoryWritePhase::Synchronize,
+    ] {
+        for terminal in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("checkpoint.jsonl");
+            let writer = JsonlWriter {
+                file: Box::new(FaultFile {
+                    file: File::create(&path).unwrap(),
+                    fail: phase,
+                    record: 0,
+                    fail_record: if terminal { 4 } else { 3 },
+                    operations: Arc::default(),
+                }),
+            };
+            let mut conversation = Conversation::new("input");
+            conversation.attach_jsonl(writer).unwrap();
+            conversation
+                .save_checkpoint("app", 1, &json!({"candidate":"old"}))
+                .unwrap();
+            if terminal {
+                conversation.finish().unwrap();
+            }
+            let error = conversation
+                .save_checkpoint("app", 1, &json!({"candidate":"new"}))
+                .unwrap_err();
+            let ConversationError::Storage(failure) = error else {
+                panic!("storage failure")
+            };
+            assert_eq!(failure.operation, HistoryOperation::Checkpoint);
+            assert_eq!(failure.phase, phase);
+            assert_eq!(failure.effect, EffectState::NoEffect);
+            assert_eq!(failure.persistence, PersistenceOutcome::Unknown);
+            assert_eq!(
+                conversation.checkpoint().unwrap().checkpoint.payload,
+                json!({"candidate":"old"})
+            );
+            assert!(matches!(
+                conversation.pending_write().unwrap().event,
+                crate::HistoryEvent::Checkpoint { .. }
+            ));
+            let saved_bytes = std::fs::read(&path).unwrap();
+            assert!(
+                conversation
+                    .save_checkpoint("app", 1, &json!("again"))
+                    .is_err()
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), saved_bytes);
+            let loaded = Jsonl::open(&path).unwrap();
+            let partial = phase == HistoryWritePhase::Append;
+            assert_eq!(loaded.incomplete_tail().is_some(), partial);
+            assert_eq!(
+                loaded.checkpoint().unwrap().1.payload,
+                json!({"candidate": if partial { "old" } else { "new" }})
+            );
+            assert_eq!(loaded.checkpoint_stale(), partial && terminal);
+            if terminal {
+                assert_eq!(loaded.conversation().status(), ConversationStatus::Finished);
+            }
+
+            let mut memory = conversation.into_memory().unwrap();
+            assert!(
+                memory.adopt_pending_write().is_err(),
+                "failed checkpoint cannot be adopted as saved"
+            );
+            memory.discard_pending_write().unwrap();
+            if terminal {
+                assert_eq!(memory.status(), ConversationStatus::Finished);
+                assert!(matches!(
+                    memory
+                        .recover_tools(
+                            &mut ToolRegistry::default(),
+                            ExecutionControl::new(&DefaultBudget::default())
+                        )
+                        .await,
+                    Err(ToolDispatchError::Recovery(RecoveryError::AlreadyCompleted))
+                ));
+            }
+            memory
+                .save_checkpoint("app", 1, &json!({"candidate":"memory"}))
+                .unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), saved_bytes);
+            assert!(memory.responses().is_empty());
+            assert_eq!(
+                memory.status(),
+                if terminal {
+                    ConversationStatus::Finished
+                } else {
+                    ConversationStatus::Active
+                }
+            );
+        }
+    }
+}

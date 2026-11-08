@@ -87,6 +87,10 @@ impl<'a> ExecutionControl<'a> {
         self
     }
 
+    pub(super) fn report_handle(self) -> Option<&'a ReportHandle> {
+        self.report
+    }
+
     pub(super) fn with_input(mut self, input: &'a RequestInput) -> Self {
         self.input = Some(input);
         self

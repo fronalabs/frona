@@ -1,8 +1,12 @@
 use frona_harness::{
-    Decision, Harness, Model, ModelRequest, Progress, RunOutcome, ToolContext, ToolDecision,
-    ToolRegistry, UsageReport, tool, workspace_read_tools,
+    Decision, Harness, Model, ModelOutput, ModelRequest, Progress, RunOutcome, ToolContext,
+    ToolDecision, ToolRegistry, UsageReport, tool, workspace_read_tools,
 };
 use frona_standalone_consumer::{Answer as Arguments, ApplicationClient};
+use rig_core::completion::{
+    AssistantContent,
+    message::{ToolCall, ToolFunction},
+};
 use serde_json::json;
 
 #[tokio::main(flavor = "current_thread")]
@@ -17,6 +21,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "local",
         ApplicationClient(&application_state),
     )?;
+    // Owned conversation handoff keeps borrowed model clients usable on resume.
+    let mut saved = Harness::new(model.clone()).run("resume input").manual();
+    saved.call_model().await?;
+    let resumed = Harness::new(model.clone())
+        .resume(saved.into_conversation())
+        .await?;
+    assert_eq!(resumed, application_state);
+
     let output = model.complete(ModelRequest::new("hello")).await?;
     assert!(matches!(output.usage, UsageReport::Unavailable));
     assert_eq!(output.content.len(), 1);
@@ -54,7 +66,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(frona_harness::HistoryEvent::Finished { .. })
     ));
     assert!(memory.conversation().history_failure().is_none());
-
     // Pure JSONL reconstruction works in this separate application with no
     // SurrealDB feature, credentials, storage backend, or runtime restoration.
     let encoded = frona_harness::encode_jsonl(memory.conversation().history())?;
@@ -182,22 +193,92 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .call(json!({"value": "hello"}), &ToolContext::default())
         .await?;
     assert!(!result.content.is_empty());
+    let mut interrupted = frona_harness::Conversation::new("recover this");
+    let action = interrupted
+        .record_response(
+            ModelOutput::new(
+                vec![AssistantContent::ToolCall(ToolCall::from_wire(
+                    "recovery-echo",
+                    ToolFunction::new("echo".into(), json!({"value": "recover"})),
+                ))],
+                UsageReport::Unavailable,
+            ),
+            tools.definitions().cloned().collect(),
+        )?
+        .actions
+        .remove(0);
+    interrupted.start(&action)?;
+    let bytes = frona_harness::encode_jsonl(interrupted.history())?;
+    let mut restored = frona_harness::decode_jsonl(&bytes)?.replay.conversation;
+    let budget = frona_harness::DefaultBudget::default();
+    assert!(
+        restored
+            .recover_tools(&mut tools, frona_harness::ExecutionControl::new(&budget))
+            .await?
+            .actions
+            .is_empty()
+    );
+    assert_eq!(restored.responses()[0].actions()[0].invocation_ordinal(), 2);
+    assert_eq!(budget.snapshot().tool_calls, 1);
     #[cfg(feature = "jsonl")]
     {
         use frona_harness::{Conversation, Jsonl};
         use rig_core::completion::message::UserContent;
         let dir = tempfile::tempdir()?;
+        let resumed_path = dir.path().join("fluent.jsonl");
+        let mut saved_run = harness
+            .run("saved typed result")
+            .jsonl(Jsonl::create(&resumed_path)?)
+            .structured::<Arguments>()
+            .manual();
+        saved_run.call_model().await?;
+        saved_run.save_checkpoint("consumer", 1, &"application state")?;
+        drop(saved_run);
+        let loaded_run = Jsonl::open(&resumed_path)?;
+        assert_eq!(
+            loaded_run
+                .load_checkpoint::<String>("consumer", 1)?
+                .unwrap()
+                .payload,
+            "application state"
+        );
+        let resumed_result = harness.resume(loaded_run).structured::<Arguments>().await?;
+        assert_eq!(resumed_result.value, application_state);
+
         let path = dir.path().join("history.jsonl");
         let mut conversation = Conversation::new("save this");
         conversation.attach_jsonl(Jsonl::create(&path)?)?;
         conversation.push_user(vec![UserContent::text("explicit feedback")])?;
+        let saved = conversation.save_checkpoint("consumer-loop", 1, &vec!["candidate"])?;
         drop(conversation);
         let loaded = Jsonl::open(&path)?;
         assert_eq!(loaded.conversation().messages().len(), 2);
+        let checkpoint = loaded
+            .load_checkpoint::<Vec<String>>("consumer-loop", 1)?
+            .unwrap();
+        assert_eq!(checkpoint.seq, saved);
+        assert_eq!(checkpoint.payload, ["candidate"]);
         let mut writable = loaded.into_writable()?;
         writable.finish()?;
+        assert!(matches!(
+            writable.load_checkpoint::<Vec<String>>("consumer-loop", 1),
+            Err(frona_harness::CheckpointLoadError::Stale { .. })
+        ));
+        writable.save_checkpoint(
+            "consumer-loop",
+            1,
+            &vec!["application state after completion"],
+        )?;
         drop(writable);
-        assert_eq!(Jsonl::open(&path)?.conversation().history().len(), 3);
+        let completed = Jsonl::open(&path)?;
+        assert_eq!(completed.conversation().history().len(), 5);
+        assert_eq!(
+            completed
+                .load_checkpoint::<Vec<String>>("consumer-loop", 1)?
+                .unwrap()
+                .payload,
+            ["application state after completion"]
+        );
     }
     Ok(())
 }

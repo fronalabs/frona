@@ -150,7 +150,12 @@ pub(super) fn failure_kind(error: &ManualError) -> FailureKind {
         ManualError::Inspector(_) => FailureKind::Inspector,
         ManualError::ToolHook(_) => FailureKind::ToolHook,
         ManualError::Model(_) => FailureKind::Model,
-        ManualError::Setup(_) => FailureKind::Setup,
+        ManualError::Resume(_) => FailureKind::Setup,
+        #[cfg(feature = "jsonl")]
+        ManualError::HistorySetup(_) => FailureKind::Setup,
+        ManualError::Setup(_) | ManualError::Dispatch(super::ToolDispatchError::Recovery(_)) => {
+            FailureKind::Setup
+        }
         _ => FailureKind::Protocol,
     }
 }
@@ -240,6 +245,10 @@ impl ReportHandle {
             id,
             complete: false,
         }
+    }
+
+    pub(super) fn same_scope(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 
     pub(super) fn proposed(

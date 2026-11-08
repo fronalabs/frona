@@ -873,3 +873,70 @@ async fn failed_completion_write_takes_precedence_over_simultaneous_cancellation
         })
     ));
 }
+
+#[tokio::test]
+async fn resumed_tool_result_failure_retains_known_effect_in_normal_incomplete() {
+    let (model, calls) = model(vec![call("effect", json!({}))]);
+    let harness = Harness::new(model);
+    let effects = Arc::new(AtomicUsize::new(0));
+    let make_tool = || {
+        let effects = effects.clone();
+        tool("effect", "count", move |_: Value| {
+            effects.fetch_add(1, Ordering::SeqCst);
+            async { Ok("completed effect") }
+        })
+        .unwrap()
+    };
+    let (run, _) = fault(
+        harness.run("input").tool(make_tool()),
+        HistoryOperation::ActionResolution,
+    );
+    let mut session = run.manual();
+    let action = session.call_model().await.unwrap().actions.pop().unwrap();
+    let mut conversation = session.into_conversation();
+    conversation.start(&action).unwrap();
+    let incomplete = harness
+        .resume(conversation)
+        .tool(make_tool())
+        .await
+        .unwrap_err();
+    storage(&incomplete.reason);
+    failed(
+        &incomplete.conversation,
+        HistoryOperation::ActionResolution,
+        EffectState::Returned,
+    );
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let mut memory = incomplete.conversation.into_memory().unwrap();
+    memory.adopt_pending_write().unwrap();
+    assert_eq!(memory.pending_count(), 0);
+}
+
+#[tokio::test]
+async fn resumed_inspector_completion_failure_never_returns_accepted_value() {
+    let (model, calls) = model(vec![call("submit", json!({"value":"saved"}))]);
+    let harness = Harness::new(model);
+    let (run, _) = fault(
+        harness.run("input").structured::<Answer>(),
+        HistoryOperation::SubmissionCompletion,
+    );
+    let mut session = run.manual();
+    session.call_model().await.unwrap();
+    let incomplete = harness
+        .resume(session.into_conversation())
+        .structured::<Answer>()
+        .inspect(async |_: Answer| {
+            Ok::<_, String>(Decision::accept("accepted").retain("unfinished"))
+        })
+        .await
+        .unwrap_err();
+    storage(&incomplete.reason);
+    assert_eq!(incomplete.retained, Some("unfinished"));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(incomplete.conversation.pending_count(), 1);
+    assert!(!matches!(
+        incomplete.conversation.status(),
+        super::super::ConversationStatus::Finished
+    ));
+}

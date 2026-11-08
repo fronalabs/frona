@@ -60,10 +60,8 @@ impl JsonlError {
 /// writer. The caller must coordinate all readers/writers; there are no locks.
 #[derive(Debug)]
 pub struct Jsonl {
-    path: PathBuf,
-    bytes: Vec<u8>,
+    source: JsonlContinuation,
     replay: HistoryReplay,
-    incomplete_tail: Option<Range<usize>>,
 }
 
 impl Jsonl {
@@ -100,10 +98,12 @@ impl Jsonl {
             source,
         })?;
         Ok(Self {
-            path,
-            bytes,
+            source: JsonlContinuation {
+                path,
+                bytes,
+                incomplete_tail: decoded.incomplete_tail,
+            },
             replay: decoded.replay,
-            incomplete_tail: decoded.incomplete_tail,
         })
     }
 
@@ -122,8 +122,18 @@ impl Jsonl {
         self.replay.checkpoint_stale
     }
 
+    /// Decode the latest checkpoint without opening a writer or restoring any
+    /// execution. Raw evidence remains available through `checkpoint` on error.
+    pub fn load_checkpoint<T: serde::de::DeserializeOwned>(
+        &self,
+        schema: &str,
+        version: u64,
+    ) -> Result<Option<super::LoadedCheckpoint<T>>, super::CheckpointLoadError> {
+        self.conversation().load_checkpoint(schema, version)
+    }
+
     pub fn incomplete_tail(&self) -> Option<Range<usize>> {
-        self.incomplete_tail.clone()
+        self.source.incomplete_tail.clone()
     }
 
     /// Deliberately detach the loaded evidence. Later mutations are memory-only;
@@ -138,26 +148,70 @@ impl Jsonl {
     /// be removed, and that truncation is synchronized before returning.
     /// No action is retried and stopped/terminal status remains unchanged.
     pub fn into_writable(mut self) -> Result<Conversation, JsonlError> {
+        let writer = self.source.prepare()?;
+        self.replay.conversation.attach_restored_jsonl(writer);
+        Ok(self.replay.conversation)
+    }
+
+    pub(super) fn into_pending(self) -> Conversation {
+        self.replay.conversation.with_pending_jsonl(self.source)
+    }
+}
+
+/// Owned loading evidence retained by Conversation until explicit preparation.
+#[derive(Debug)]
+pub(super) struct JsonlContinuation {
+    path: PathBuf,
+    bytes: Vec<u8>,
+    incomplete_tail: Option<Range<usize>>,
+}
+
+impl JsonlContinuation {
+    pub(super) fn prepare(&self) -> Result<JsonlWriter, JsonlError> {
         let mut file = OpenOptions::new()
             .read(true)
             .append(true)
             .open(&self.path)
             .map_err(|e| JsonlError::io(&self.path, JsonlOperation::Open, e))?;
         if read(&mut file, &self.path)? != self.bytes {
-            return Err(JsonlError::Changed { path: self.path });
+            return Err(JsonlError::Changed {
+                path: self.path.clone(),
+            });
         }
-        if let Some(tail) = self.incomplete_tail {
+        if let Some(tail) = &self.incomplete_tail {
             file.set_len(tail.start as u64)
                 .map_err(|e| JsonlError::io(&self.path, JsonlOperation::Truncate, e))?;
         }
-        // A complete surviving record may come from an unacknowledged write.
-        // Establish durability of the entire accepted prefix before continuation.
         file.sync_all()
             .map_err(|e| JsonlError::io(&self.path, JsonlOperation::SynchronizeFile, e))?;
-        self.replay
-            .conversation
-            .attach_restored_jsonl(JsonlWriter::new(file));
-        Ok(self.replay.conversation)
+        Ok(JsonlWriter::new(file))
+    }
+}
+
+impl JsonlError {
+    pub(super) fn resume_phase(&self) -> HistoryWritePhase {
+        match self {
+            Self::Io {
+                operation:
+                    JsonlOperation::Open | JsonlOperation::ResolvePath | JsonlOperation::Create,
+                ..
+            } => HistoryWritePhase::Open,
+            Self::Io {
+                operation: JsonlOperation::Read,
+                ..
+            } => HistoryWritePhase::Read,
+            Self::Io {
+                operation: JsonlOperation::Truncate,
+                ..
+            } => HistoryWritePhase::Truncate,
+            Self::Io {
+                operation: JsonlOperation::SynchronizeFile | JsonlOperation::SynchronizeDirectory,
+                ..
+            } => HistoryWritePhase::Synchronize,
+            Self::Changed { .. } | Self::Decode { .. } | Self::AlreadyAttached => {
+                HistoryWritePhase::Revalidate
+            }
+        }
     }
 }
 
@@ -235,3 +289,10 @@ impl HistoryWriter for JsonlWriter {
 
 #[cfg(test)]
 mod tests;
+
+/// Conversion preserves deferred file intent; only explicit resume prepares it.
+impl From<Jsonl> for Conversation {
+    fn from(loaded: Jsonl) -> Self {
+        loaded.into_pending()
+    }
+}

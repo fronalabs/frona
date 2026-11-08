@@ -39,9 +39,29 @@ impl<'a> Harness<'a> {
     where
         'a: 'run,
     {
+        self.configured(Conversation::new(input), false)
+    }
+
+    /// Configure explicit continuation of owned memory or loaded JSONL history.
+    /// No recovery, file mutation, or provider/tool work happens until execution.
+    pub fn resume<'run>(&self, history: impl Into<Conversation>) -> Run<'run, Text>
+    where
+        'a: 'run,
+    {
+        self.configured(history.into(), true)
+    }
+
+    fn configured<'run>(&self, conversation: Conversation, resume_pending: bool) -> Run<'run, Text>
+    where
+        'a: 'run,
+    {
+        let instructions = conversation
+            .saved_configuration()
+            .map(|(instructions, _)| instructions.to_owned())
+            .unwrap_or_default();
         let recorder = RunRecorder::new();
         let progress = ProgressOwner::default();
-        let conversation = Conversation::new(input)
+        let conversation = conversation
             .with_report(recorder.0.clone())
             .with_progress(progress.publisher());
         Run {
@@ -53,11 +73,13 @@ impl<'a> Harness<'a> {
                 tools: ToolRegistry::default(),
                 budget: Box::new(DefaultBudget::default()),
                 cancellation: CancellationToken::new(),
-                instructions: String::new(),
+                instructions,
                 submission: None,
                 setup_error: None,
                 tool_hook: None,
                 compaction: super::CompactionConfig::default(),
+                resume_pending,
+                resume_response: false,
             },
             mode: PhantomData,
         }
@@ -99,6 +121,21 @@ pub struct Run<'a, Mode = Text> {
 }
 
 impl<'a, Mode> Run<'a, Mode> {
+    /// Attach a freshly created file writer. Instructions and mode remain
+    /// configurable until execution writes Opened. Errors use the normal outcome.
+    #[cfg(feature = "jsonl")]
+    pub fn jsonl(mut self, writer: super::JsonlWriter) -> Self {
+        if self.core.setup_error.is_none() {
+            self.core.setup_error = self
+                .core
+                .conversation
+                .attach_jsonl(writer)
+                .err()
+                .map(ManualError::HistorySetup);
+        }
+        self
+    }
+
     pub fn compaction(mut self, config: super::CompactionConfig) -> Self {
         self.core.compaction = config;
         self
@@ -131,13 +168,13 @@ impl<'a, Mode> Run<'a, Mode> {
     }
     pub fn tool(mut self, tool: impl Tool + 'a) -> Self {
         if self.core.setup_error.is_none() {
-            self.core.setup_error = self.core.tools.register(tool).err();
+            self.core.setup_error = self.core.tools.register(tool).err().map(Into::into);
         }
         self
     }
     pub fn tools(mut self, tools: ToolRegistry<'a>) -> Self {
         if self.core.setup_error.is_none() {
-            self.core.setup_error = self.core.tools.extend(tools).err();
+            self.core.setup_error = self.core.tools.extend(tools).err().map(Into::into);
         }
         self
     }
@@ -187,6 +224,11 @@ impl<'a, Mode> Run<'a, Mode> {
 #[derive(Debug, thiserror::Error)]
 pub enum ManualError {
     #[error(transparent)]
+    Resume(#[from] ResumeError),
+    #[cfg(feature = "jsonl")]
+    #[error(transparent)]
+    HistorySetup(super::JsonlError),
+    #[error(transparent)]
     Compaction(#[from] super::CompactionError),
     #[error(transparent)]
     Setup(#[from] ToolRegistrationError),
@@ -232,6 +274,7 @@ impl From<ToolDispatchError> for ManualError {
     fn from(error: ToolDispatchError) -> Self {
         match error {
             ToolDispatchError::Conversation(error @ ConversationError::Storage(_)) => error.into(),
+            ToolDispatchError::ToolHook(error) => Self::ToolHook(error),
             ToolDispatchError::Stop(stop @ ExecutionStop::Storage(_)) => Self::Stop(stop),
             error => Self::Dispatch(error),
         }
@@ -471,8 +514,8 @@ impl ManualSession<'_, Text> {
     }
 }
 
-/// Awaiting this builder makes one explicit model invocation. Automatic retry,
-/// compaction and recovery are integrated by their dedicated tasks.
+/// Awaiting this builder makes one explicit model invocation, with shared
+/// admission and compaction. Resumed manual sessions must recover first.
 pub struct ModelCall<'s, 'a> {
     core: &'s mut SessionCore<'a>,
     model: Model<'s>,
@@ -508,9 +551,11 @@ pub(super) struct SessionCore<'a> {
     cancellation: CancellationToken,
     instructions: String,
     submission: Option<ToolDefinition>,
-    setup_error: Option<ToolRegistrationError>,
+    setup_error: Option<ManualError>,
     tool_hook: Option<Box<dyn ToolCallHook + 'a>>,
     compaction: super::CompactionConfig,
+    resume_pending: bool,
+    resume_response: bool,
 }
 
 impl SessionCore<'_> {
@@ -526,6 +571,14 @@ impl SessionCore<'_> {
     }
 
     fn fail(&mut self, error: ManualError) -> ManualError {
+        if self.resume_pending {
+            // Preparation may still own a read-only JSONL source. Do not invent
+            // an acknowledged in-memory Stopped record for that source.
+            self.conversation.mark_stopped();
+            self.recorder.incomplete(&error);
+            self.progress.close();
+            return error;
+        }
         self.conversation
             .configure_history(&self.instructions, self.submission.as_ref());
         let error = match self
@@ -556,13 +609,16 @@ impl SessionCore<'_> {
     }
 
     fn check_active(&mut self) -> Result<(), ManualError> {
+        if self.resume_pending {
+            return Err(ResumeError::PreparationRequired.into());
+        }
         self.conversation
             .configure_history(&self.instructions, self.submission.as_ref());
         if let Some(failure) = self.conversation.history_failure() {
             return Err(ExecutionStop::Storage(Box::new(failure.clone())).into());
         }
         if let Some(error) = self.setup_error.take() {
-            return Err(self.fail(error.into()));
+            return Err(self.fail(error));
         }
         if self.cancellation.is_cancelled() {
             return Err(self.fail(ExecutionStop::Cancelled("execution cancelled".into()).into()));
@@ -574,6 +630,24 @@ impl SessionCore<'_> {
         self.result(result)
     }
 
+    fn model_request(&self, selection: ToolSelection) -> ModelRequest {
+        let mut tools: Vec<_> = match selection {
+            ToolSelection::All => self.tools.definitions().cloned().collect(),
+            ToolSelection::None => Vec::new(),
+        };
+        if let Some(submission) = &self.submission {
+            tools.push(submission.clone());
+        }
+        ModelRequest {
+            system: self.instructions.clone(),
+            messages: Vec::new(),
+            tools,
+            schema: None,
+            max_tokens: None,
+            temperature: None,
+        }
+    }
+
     async fn call_model(
         &mut self,
         model: &Model<'_>,
@@ -583,21 +657,8 @@ impl SessionCore<'_> {
         self.conversation.require_ready()?;
         let positions = self.conversation.model_view()?.original_positions();
         self.check_compatibility(model, &positions)?;
-        let mut tools: Vec<_> = match selection {
-            ToolSelection::All => self.tools.definitions().cloned().collect(),
-            ToolSelection::None => Vec::new(),
-        };
-        if let Some(submission) = &self.submission {
-            tools.push(submission.clone());
-        }
-        let mut request = ModelRequest {
-            system: self.instructions.clone(),
-            messages: Vec::new(),
-            tools: tools.clone(),
-            schema: None,
-            max_tokens: None,
-            temperature: None,
-        };
+        let mut request = self.model_request(selection);
+        let tools = request.tools.clone();
         // Reject unsupported main requests before a summary can consume budget
         // or commit a different view. Invocation repeats the same preflight.
         let publisher = self.progress.publisher();
@@ -705,52 +766,24 @@ impl SessionCore<'_> {
 
     async fn execute(&mut self, action: PendingAction) -> Result<ActionResolution, ManualError> {
         self.check_active()?;
-        self.conversation.require_tool_proposal(&action)?;
-        let view = self.conversation.action(&action)?;
-        // Unoffered or missing tools follow ordinary paired rejection without
-        // consulting application policy. A hook cannot authorize either one.
-        let eligible = view
-            .offered_tools
-            .iter()
-            .any(|tool| tool.name == view.call.function.name)
-            && self.tools.get_mut(&view.call.function.name).is_some();
-        if eligible && let Some(hook) = &mut self.tool_hook {
-            let result = tokio::select! {
-                biased;
-                _ = self.cancellation.cancelled() => Err(ManualError::Stop(
-                    ExecutionStop::Cancelled("execution cancelled during tool hook".into())
-                )),
-                result = hook.decide(view.call) => result.map_err(|error| ManualError::ToolHook(error.to_string())),
-            };
-            // A hook may cancel the scope synchronously while returning a
-            // decision, including Reject. Never pair or execute after that stop.
-            self.check_active()?;
-            match result {
-                Ok(ToolDecision::Execute) => {}
-                Ok(ToolDecision::Reject(feedback)) => {
-                    let result = self
-                        .conversation
-                        .reject_tool(&action, ToolOutput::text(feedback));
-                    return self.result(result);
-                }
-                Ok(ToolDecision::Stop(reason)) => {
-                    return Err(self.fail(ExecutionStop::Stopped(reason).into()));
-                }
-                Err(error) => {
-                    return Err(self.fail(error));
-                }
-            }
-        }
         // Admission belongs to dispatch, after asynchronous policy has finished.
         let execution = ExecutionControl::new(&*self.budget)
             .with_cancellation(&self.cancellation)
             .with_report(&self.recorder.0);
         match self
             .conversation
-            .execute_tool(&action, &mut self.tools, execution)
+            .execute_tool_with_hook(
+                &action,
+                &mut self.tools,
+                execution,
+                self.tool_hook
+                    .as_mut()
+                    .map(|hook| &mut **hook as &mut dyn ToolCallHook),
+            )
             .await
         {
             Err(ToolDispatchError::Stop(stop)) => Err(self.fail(stop.into())),
+            Err(error @ ToolDispatchError::ToolHook(_)) => Err(self.fail(error.into())),
             result => self.result(result),
         }
     }
@@ -821,3 +854,6 @@ mod compaction;
 
 #[cfg(test)]
 mod compaction_tests;
+
+mod resume;
+pub use resume::ResumeError;

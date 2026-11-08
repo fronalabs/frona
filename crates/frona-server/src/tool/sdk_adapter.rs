@@ -2,7 +2,9 @@
 //! identity dependency; the portable SDK tool module does not import it.
 
 use async_trait::async_trait;
+use base64::Engine;
 use frona_harness::{Tool, ToolContext, ToolError, ToolResult};
+use rig_core::completion::message::{DocumentSourceKind, Image, ImageMediaType, MimeType};
 use rig_core::completion::request::ToolDefinition;
 use serde_json::Value;
 
@@ -63,6 +65,30 @@ impl<F: FnMut(ToolOutput) -> ToolResult + Send> Tool for AgentToolAdapter<'_, F>
             .await
             .map_err(legacy_error)?;
         (self.map_output)(output)
+    }
+}
+
+/// Convert model-facing text/images and success status only. Callers must first
+/// handle or explicitly refuse host effects (attachments, HITL, task lifecycle,
+/// pending external work and system-prompt changes); this pure conversion does
+/// not interpret them or authorize dropping them.
+pub fn content_result(output: &ToolOutput) -> ToolResult {
+    let mut content = vec![frona_harness::ToolContent::text(output.text_content())];
+    for image in output.images() {
+        content.push(frona_harness::ToolContent::Image(Image {
+            data: DocumentSourceKind::Base64(
+                base64::engine::general_purpose::STANDARD.encode(&image.bytes),
+            ),
+            media_type: ImageMediaType::from_mime_type(&image.media_type),
+            detail: None,
+            additional_params: None,
+        }));
+    }
+    let result = frona_harness::ToolOutput::content(content);
+    if output.is_success() {
+        Ok(result)
+    } else {
+        Err(ToolError::Feedback(result))
     }
 }
 

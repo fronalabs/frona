@@ -3,7 +3,6 @@
 use std::{future::IntoFuture, marker::PhantomData, num::NonZeroUsize, pin::Pin};
 
 use rig_core::completion::{
-    AssistantContent,
     message::{ToolResultContent, UserContent},
     request::ToolDefinition,
 };
@@ -77,7 +76,10 @@ impl<'a> Harness<'a> {
                 submission: None,
                 setup_error: None,
                 tool_hook: None,
-                compaction: super::CompactionConfig::default(),
+                compaction: self.model.compaction_config(),
+                compaction_configured: false,
+                observer: None,
+                exploration_turns: None,
                 resume_pending,
                 resume_response: false,
             },
@@ -138,6 +140,7 @@ impl<'a, Mode> Run<'a, Mode> {
 
     pub fn compaction(mut self, config: super::CompactionConfig) -> Self {
         self.core.compaction = config;
+        self.core.compaction_configured = true;
         self
     }
     /// Disable summary calls while retaining context-overflow checks.
@@ -160,6 +163,25 @@ impl<'a, Mode> Run<'a, Mode> {
     /// An independent read-only handle; this neither borrows nor starts the run.
     pub fn report(&self) -> ReportHandle {
         self.core.recorder.0.clone()
+    }
+
+    /// Optional telemetry for both ordinary calls and compaction. Observer errors
+    /// are logged; they never become required-storage or execution failures.
+    pub fn observer(
+        mut self,
+        observer: impl crate::inference::observation::InferenceObserver + 'a,
+    ) -> Self {
+        self.core.observer = Some(Box::new(observer));
+        self
+    }
+
+    /// Offer application tools for at most this many response batches containing
+    /// ordinary tool proposals. Submission-only responses and compaction do not
+    /// consume this phase. This is not a budget: later submission requests still
+    /// need ordinary shared admission. Restored runs configure a fresh phase.
+    pub fn exploration_turns(mut self, turns: usize) -> Self {
+        self.core.exploration_turns = Some(turns);
+        self
     }
 
     pub fn instructions(mut self, instructions: impl Into<String>) -> Self {
@@ -244,6 +266,8 @@ pub enum ManualError {
     Stop(#[from] ExecutionStop),
     #[error("cannot replay history to {model}: {reason}")]
     Incompatible { model: String, reason: &'static str },
+    #[error("application abandoned refinement: {0}")]
+    Abandoned(String),
     #[error("application inspector failed: {0}")]
     Inspector(String),
     #[error("application tool hook failed: {0}")]
@@ -554,6 +578,9 @@ pub(super) struct SessionCore<'a> {
     setup_error: Option<ManualError>,
     tool_hook: Option<Box<dyn ToolCallHook + 'a>>,
     compaction: super::CompactionConfig,
+    compaction_configured: bool,
+    observer: Option<Box<dyn crate::inference::observation::InferenceObserver + 'a>>,
+    exploration_turns: Option<usize>,
     resume_pending: bool,
     resume_response: bool,
 }
@@ -657,7 +684,14 @@ impl SessionCore<'_> {
         self.conversation.require_ready()?;
         let positions = self.conversation.model_view()?.original_positions();
         self.check_compatibility(model, &positions)?;
+        let selection = if self.exploration_turns == Some(0) {
+            ToolSelection::None
+        } else {
+            selection
+        };
         let mut request = self.model_request(selection);
+        let application_tools_offered =
+            matches!(selection, ToolSelection::All) && !self.tools.is_empty();
         let tools = request.tools.clone();
         // Reject unsupported main requests before a summary can consume budget
         // or commit a different view. Invocation repeats the same preflight.
@@ -665,13 +699,14 @@ impl SessionCore<'_> {
         model.validate_request(&request, Self::streams_tokens(model, &publisher, true))?;
         let (messages, input, max_tokens) = self.prepare_model_view(model, &tools).await?;
         request.messages = messages;
-        request.max_tokens = Some(max_tokens);
+        request.max_tokens = max_tokens;
         let result = Self::invoke(
             model,
             request,
             self.execution(&input),
             self.progress.publisher(),
             true,
+            self.observations(),
         )
         .await;
         let output = match result {
@@ -690,8 +725,26 @@ impl SessionCore<'_> {
         };
         let result =
             self.conversation
-                .record_response_from(output, tools, Some(model.config().as_str()));
-        self.result(result)
+                .record_response_from(output.output, tools, Some(output.origin));
+        let actions = self.result(result)?;
+        if application_tools_offered
+            && actions.actions.iter().any(|action| {
+                self.conversation
+                    .action(action)
+                    .is_ok_and(|view| view.kind == super::ActionKind::Tool)
+            })
+            && let Some(turns) = &mut self.exploration_turns
+        {
+            *turns = turns.saturating_sub(1);
+        }
+        Ok(actions)
+    }
+
+    fn observations(&self) -> Observations<'_> {
+        self.observer
+            .as_deref()
+            .map(Observations::new)
+            .unwrap_or_default()
     }
 
     fn execution<'s>(&'s self, input: &'s super::RequestInput) -> ExecutionControl<'s> {
@@ -715,14 +768,15 @@ impl SessionCore<'_> {
         execution: ExecutionControl<'_>,
         publisher: super::progress::ProgressPublisher,
         stream: bool,
-    ) -> Result<super::ModelOutput, ModelError> {
+        observations: Observations<'_>,
+    ) -> Result<super::model::InvocationOutput, ModelError> {
         if Self::streams_tokens(model, &publisher, stream) {
             // Drive both futures here: borrowed adapters need no spawned task,
             // and an undrained public receiver cannot backpressure this channel.
             const TOKEN_BUFFER: usize = 16;
             let (tokens, mut receiver) = tokio::sync::mpsc::channel(TOKEN_BUFFER);
             let invocation =
-                model.invoke_controlled(request, Some(tokens), Observations::default(), execution);
+                model.invoke_with_origin(request, Some(tokens), observations, execution);
             tokio::pin!(invocation);
             let emit = |token| {
                 publisher.emit(|| match token {
@@ -759,7 +813,7 @@ impl SessionCore<'_> {
             result
         } else {
             model
-                .invoke_controlled(request, None, Observations::default(), execution)
+                .invoke_with_origin(request, None, observations, execution)
                 .await
         }
     }
@@ -815,19 +869,15 @@ impl SessionCore<'_> {
             if record.origin() == Some(target.as_str()) {
                 continue;
             }
-            for content in &record.output().content {
-                match content {
-                    AssistantContent::Text(_) => {}
-                    AssistantContent::ToolCall(call)
-                        if call.signature.is_none()
-                            && call.additional_params.is_none()
-                            && call.provider.as_ref().is_none_or(|id| id.item_id.is_none()) => {}
-                    _ => {
-                        return Err(incompatible(
-                            "cross-model replay of signed, opaque, dual-ID or multimodal content is unsupported",
-                        ));
-                    }
-                }
+            if !record
+                .output()
+                .content
+                .iter()
+                .all(super::model::portable_assistant_content)
+            {
+                return Err(incompatible(
+                    "cross-model replay of signed, opaque, dual-ID or multimodal content is unsupported",
+                ));
             }
             for action in record.actions() {
                 if action.resolution().is_some_and(|resolution| {

@@ -107,12 +107,16 @@ impl ModelGroup {
             request,
             retry::HistoryOverflow::TruncateOldest,
             execution,
+            retry::FallbackReplay::Configured,
         )
         .await;
         if let Some(report) = report {
             report.finish_inference(&result);
         }
-        result.map(|(content, usage)| ModelResponse { content, usage })
+        result.map(|result| ModelResponse {
+            content: result.output.content,
+            usage: result.output.usage,
+        })
     }
 
     /// Generate without trimming the selected history, using the turn's shared controls.
@@ -127,12 +131,16 @@ impl ModelGroup {
             request,
             retry::HistoryOverflow::Reject,
             execution,
+            retry::FallbackReplay::Configured,
         )
         .await;
         if let Some(report) = report {
             report.finish_inference(&result);
         }
-        result.map(|(content, usage)| ModelResponse { content, usage })
+        result.map(|result| ModelResponse {
+            content: result.output.content,
+            usage: result.output.usage,
+        })
     }
 
     pub async fn structured_inference(

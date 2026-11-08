@@ -13,16 +13,13 @@ use frona_harness::{
 use std::time::Instant;
 
 use async_trait::async_trait;
-use base64::Engine;
-use rig_core::completion::{
-    message::{DocumentSourceKind, Image, ImageMediaType, MimeType, ToolCall},
-    request::ToolDefinition,
-};
+use rig_core::completion::{message::ToolCall, request::ToolDefinition};
 use serde_json::Value;
 
 use super::{
-    InferenceContext, ToolOutput, active_chat, registry::AgentToolRegistry,
-    sdk_adapter::legacy_error,
+    InferenceContext, ToolOutput, active_chat,
+    registry::AgentToolRegistry,
+    sdk_adapter::{content_result, legacy_error},
 };
 use crate::{
     chat::{
@@ -400,27 +397,12 @@ impl Tool for PersistentInvocation<'_, '_> {
             .finish(&mut record, &output, duration.as_millis() as u64)
             .await
             .map_err(|error| ExecutionStop::Storage(Box::new(error)))?;
-        let mut content = vec![harness::ToolContent::text(output.text_content())];
-        for image in output.images() {
-            content.push(harness::ToolContent::Image(Image {
-                data: DocumentSourceKind::Base64(
-                    base64::engine::general_purpose::STANDARD.encode(&image.bytes),
-                ),
-                media_type: ImageMediaType::from_mime_type(&image.media_type),
-                detail: None,
-                additional_params: None,
-            }));
-        }
         *self.returned = Some((
             record.into(),
             output.attachments().to_vec(),
             pending(&output),
         ));
-        if output.is_success() {
-            Ok(harness::ToolOutput::content(content))
-        } else {
-            Err(ToolError::Feedback(harness::ToolOutput::content(content)))
-        }
+        content_result(&output)
     }
 }
 

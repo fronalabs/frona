@@ -176,7 +176,19 @@ pub enum ModelError {
 #[derive(Clone)]
 pub struct Model<'a> {
     config: ModelConfig,
-    adapter: Arc<dyn ModelAdapter + 'a>,
+    backend: ModelBackend<'a>,
+}
+
+#[derive(Clone)]
+enum ModelBackend<'a> {
+    Adapter(Arc<dyn ModelAdapter + 'a>),
+    Group(Arc<crate::inference::ModelGroup>),
+}
+
+/// Internal provenance survives fallback without changing the durable output format.
+pub(super) struct InvocationOutput {
+    pub output: ModelOutput,
+    pub origin: String,
 }
 
 impl<'a> Model<'a> {
@@ -209,13 +221,66 @@ impl<'a> Model<'a> {
                 },
                 request_settings: ModelRequestSettings::default(),
             },
-            adapter: Arc::new(adapter),
+            backend: ModelBackend::Adapter(Arc::new(adapter)),
         })
     }
 
-    pub fn capabilities(&self) -> Capabilities {
-        self.adapter.capabilities()
+    /// Use prepared retry/fallback configuration without rebuilding clients.
+    /// This path supports non-streaming text and tool requests. SDK structured
+    /// runs use submission tools; native structured/streaming APIs are unsupported.
+    /// Every actual candidate attempt shares the run's admission and reporting.
+    pub fn from_group(group: crate::inference::ModelGroup) -> Self {
+        Self {
+            config: group.main.clone(),
+            backend: ModelBackend::Group(Arc::new(group)),
+        }
     }
+
+    pub fn capabilities(&self) -> Capabilities {
+        match &self.backend {
+            ModelBackend::Adapter(adapter) => adapter.capabilities(),
+            ModelBackend::Group(_) => Capabilities {
+                tools: true,
+                ..Default::default()
+            },
+        }
+    }
+
+    pub(super) fn compaction_config(&self) -> super::CompactionConfig {
+        match &self.backend {
+            ModelBackend::Group(group) => super::CompactionConfig {
+                context_window: group.context_window,
+                ..Default::default()
+            },
+            ModelBackend::Adapter(_) => Default::default(),
+        }
+    }
+
+    pub(super) fn output_reservation(&self, override_tokens: Option<u64>) -> (u64, Option<u64>) {
+        if let Some(tokens) = override_tokens {
+            return (tokens, Some(tokens));
+        }
+        match &self.backend {
+            ModelBackend::Adapter(_) => {
+                let tokens = self.config.request_settings.max_tokens.unwrap_or(8192);
+                (tokens, Some(tokens))
+            }
+            ModelBackend::Group(group) => (
+                std::iter::once(&group.main)
+                    .chain(&group.fallbacks)
+                    .map(|model| {
+                        model
+                            .request_settings
+                            .max_tokens
+                            .unwrap_or(group.inference.default_max_tokens)
+                    })
+                    .max()
+                    .unwrap_or(group.inference.default_max_tokens),
+                None,
+            ),
+        }
+    }
+
     pub fn config(&self) -> &ModelConfig {
         &self.config
     }
@@ -259,8 +324,9 @@ impl<'a> Model<'a> {
         }
     }
 
-    /// One provider invocation with optional HSDK-03 telemetry. Shared retry and
-    /// retry orchestration uses `invoke_controlled` to retain its shared budget.
+    /// One logical model invocation with optional telemetry and a fresh default budget.
+    /// Prepared groups may perform several provider attempts through retry/fallback.
+    /// Use `invoke_controlled` to share admission across invocations.
     pub async fn invoke(
         &self,
         request: ModelRequest,
@@ -277,8 +343,9 @@ impl<'a> Model<'a> {
         .await
     }
 
-    /// One invocation using the caller's shared allowance and cancellation.
-    /// Retry drivers must call this entry for every actual attempt.
+    /// One logical invocation using the caller's shared allowance and cancellation.
+    /// Adapters perform one attempt; prepared groups apply their configured retry and
+    /// fallback policy. Every actual attempt is separately admitted and reported.
     pub async fn invoke_controlled(
         &self,
         request: ModelRequest,
@@ -286,14 +353,64 @@ impl<'a> Model<'a> {
         observations: Observations<'_>,
         execution: ExecutionControl<'_>,
     ) -> Result<ModelOutput, ModelError> {
+        self.invoke_with_origin(request, tokens, observations, execution)
+            .await
+            .map(|value| value.output)
+    }
+
+    pub(super) async fn invoke_with_origin(
+        &self,
+        request: ModelRequest,
+        tokens: Option<mpsc::Sender<StreamToken>>,
+        observations: Observations<'_>,
+        execution: ExecutionControl<'_>,
+    ) -> Result<InvocationOutput, ModelError> {
         self.validate_request(&request, tokens.is_some())?;
         let (execution, report) = execution.begin_model_call(&self.config);
+        if let ModelBackend::Group(group) = &self.backend {
+            let result = crate::inference::retry::inference_with_retry_and_fallback(
+                group,
+                crate::inference::ModelRequest {
+                    input_token_estimate: None,
+                    system_prompt: &request.system,
+                    history: request.messages,
+                    tools: request.tools,
+                    observations,
+                    overrides: crate::inference::RequestOverrides {
+                        max_tokens: request.max_tokens,
+                        temperature: request.temperature,
+                    },
+                },
+                crate::inference::retry::HistoryOverflow::Reject,
+                execution,
+                crate::inference::retry::FallbackReplay::PortableOnly,
+            )
+            .await;
+            if let Some(report) = report {
+                report.finish_inference(&result);
+            }
+            return result
+                .map(|result| InvocationOutput {
+                    origin: result.model,
+                    output: ModelOutput {
+                        content: result.output.content,
+                        structured: None,
+                        usage: UsageReport::LegacyNormalized(result.output.usage),
+                        metadata: result.output.metadata,
+                        ttft_ms: result.output.ttft_ms,
+                    },
+                })
+                .map_err(ModelError::Provider);
+        }
+        let ModelBackend::Adapter(adapter) = &self.backend else {
+            unreachable!()
+        };
         let start = std::time::Instant::now();
         let result = execution
             .model_attempt(
                 &self.config,
                 observations,
-                || self.adapter.generate(request, tokens),
+                || adapter.generate(request, tokens),
                 |output| output.usage.clone(),
             )
             .await;
@@ -316,7 +433,12 @@ impl<'a> Model<'a> {
         if let Some(report) = report {
             report.finish(super::report::inference_outcome(&result));
         }
-        result.map_err(ModelError::Provider)
+        result
+            .map(|output| InvocationOutput {
+                output,
+                origin: self.config.as_str(),
+            })
+            .map_err(ModelError::Provider)
     }
 
     /// Preflight the request shape without admitting an attempt or recording usage.
@@ -412,7 +534,7 @@ impl ModelBuilder {
         };
         Ok(Model {
             config: config.clone(),
-            adapter: Arc::new(BuiltinAdapter { client, config }),
+            backend: ModelBackend::Adapter(Arc::new(BuiltinAdapter { client, config })),
         })
     }
 }
@@ -504,4 +626,34 @@ fn from_builtin(output: crate::inference::provider::InferenceOutput) -> ModelOut
         metadata: output.metadata,
         ttft_ms: output.ttft_ms,
     }
+}
+
+/// Conservative native-content compatibility shared with explicit model changes.
+pub(crate) fn portable_assistant_content(content: &AssistantContent) -> bool {
+    matches!(content, AssistantContent::Text(_))
+        || matches!(content, AssistantContent::ToolCall(call)
+        if call.signature.is_none() && call.additional_params.is_none()
+        && call.provider.as_ref().is_none_or(|id| id.item_id.is_none()))
+}
+
+pub(crate) fn portable_fallback_history(messages: &[Message]) -> bool {
+    use rig_core::completion::message::{ToolResultContent, UserContent};
+    messages.iter().all(|message| match message {
+        Message::Assistant { content, .. } => content.iter().all(portable_assistant_content),
+        Message::User { content } => content.iter().all(|item| match item {
+            UserContent::Text(_) => true,
+            UserContent::ToolResult(result) => {
+                result
+                    .provider
+                    .as_ref()
+                    .is_none_or(|id| id.item_id.is_none())
+                    && result
+                        .content
+                        .iter()
+                        .all(|content| matches!(content, ToolResultContent::Text(_)))
+            }
+            _ => false,
+        }),
+        Message::System { .. } => true,
+    })
 }

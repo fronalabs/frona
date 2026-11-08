@@ -12,12 +12,14 @@ impl SessionCore<'_> {
         &mut self,
         model: &Model<'_>,
         tools: &[ToolDefinition],
-    ) -> Result<(Vec<Message>, RequestInput, u64), ManualError> {
-        let config = self.compaction;
-        let max_tokens = config
-            .max_output_tokens
-            .or(model.config().request_settings.max_tokens)
-            .unwrap_or(8192);
+    ) -> Result<(Vec<Message>, RequestInput, Option<u64>), ManualError> {
+        let mut config = self.compaction;
+        if !self.compaction_configured {
+            // A manual call can select a different prepared group. Default
+            // capacity follows that selection; explicit application policy does not.
+            config.context_window = model.compaction_config().context_window;
+        }
+        let (max_tokens, request_max_tokens) = model.output_reservation(config.max_output_tokens);
         let output_tokens = usize::try_from(max_tokens).ok();
         if config.target_percent == 0
             || config.target_percent >= config.trigger_percent
@@ -44,7 +46,7 @@ impl SessionCore<'_> {
             return Ok((
                 view.messages(),
                 self.conversation.request_input(view.original_positions()),
-                max_tokens,
+                request_max_tokens,
             ));
         }
         let plan = match view.plan(
@@ -60,7 +62,7 @@ impl SessionCore<'_> {
                 return Ok((
                     view.messages(),
                     self.conversation.request_input(view.original_positions()),
-                    max_tokens,
+                    request_max_tokens,
                 ));
             }
             Err(error) => return Err(self.fail(error.into())),
@@ -85,17 +87,18 @@ impl SessionCore<'_> {
             messages,
             tools: Vec::new(),
             schema: None,
-            max_tokens: Some(max_tokens),
+            max_tokens: request_max_tokens,
             temperature: None,
         };
         // No application tools are offered or dispatched by this generation.
         // It has its own logical request/attempt, using the same budget object.
-        let output = match Self::invoke(
+        let invocation = match Self::invoke(
             model,
             request,
             self.execution(&input),
             self.progress.publisher(),
             false,
+            self.observations(),
         )
         .await
         {
@@ -109,6 +112,7 @@ impl SessionCore<'_> {
             }
             Err(error) => return Err(self.fail(error.into())),
         };
+        let output = invocation.output;
         if output.structured.is_some()
             || output
                 .content
@@ -135,15 +139,15 @@ impl SessionCore<'_> {
         if after >= before {
             return Err(self.fail(CompactionError::NoReduction { before, after }.into()));
         }
-        let result =
-            self.conversation
-                .commit_compaction(compacted, model.config().as_str(), output);
+        let result = self
+            .conversation
+            .commit_compaction(compacted, invocation.origin, output);
         self.result(result)?;
         // A writer may cancel synchronously. The committed view stays durable,
         // but no main request may follow cancellation or a failed required write.
         self.check_active()?;
         let view = self.conversation.model_view()?;
         let input = self.conversation.request_input(view.original_positions());
-        Ok((view.messages(), input, max_tokens))
+        Ok((view.messages(), input, request_max_tokens))
     }
 }

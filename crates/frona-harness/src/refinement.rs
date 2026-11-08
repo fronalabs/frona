@@ -20,6 +20,10 @@ pub enum Decision<A> {
         feedback: String,
         retained: Option<A>,
     },
+    Abandon {
+        reason: String,
+        retained: Option<A>,
+    },
     Stop {
         reason: String,
         retained: Option<A>,
@@ -48,6 +52,15 @@ impl<A> Decision<A> {
         }
     }
 
+    /// Explicitly abandon this refinement without accepting or discarding retained work.
+    /// Distinct from dropping a future, which reports RunOutcome::Abandoned.
+    pub fn abandon(reason: impl Into<String>) -> Self {
+        Self::Abandon {
+            reason: reason.into(),
+            retained: None,
+        }
+    }
+
     /// Explicitly replace retained progress. Omission preserves the prior value;
     /// ranking is application policy. Retention does not alter the decision.
     /// With `accept`, this value matters only if completion is interrupted.
@@ -60,7 +73,8 @@ impl<A> Decision<A> {
         match self {
             Self::Accept { retained, .. }
             | Self::Revise { retained, .. }
-            | Self::Stop { retained, .. } => retained,
+            | Self::Stop { retained, .. }
+            | Self::Abandon { retained, .. } => retained,
         }
     }
 }
@@ -108,6 +122,7 @@ impl<T: DeserializeOwned + JsonSchema> Run<'_, Structured<T>> {
                     }
                 }
                 Decision::Stop { reason, .. } => break Err(session.stop(reason)),
+                Decision::Abandon { reason, .. } => break Err(ManualError::Abandoned(reason)),
             }
         };
         outcome.map_err(|reason| session.incomplete(reason, retained))

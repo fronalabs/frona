@@ -166,6 +166,7 @@ pub(super) fn failure_kind(error: &ManualError) -> FailureKind {
         ManualError::Compaction(_) => FailureKind::Compaction,
         ManualError::Stop(stop) => stop.failure_kind(),
         ManualError::Inspector(_) => FailureKind::Inspector,
+        ManualError::Abandoned(_) => FailureKind::ApplicationStop,
         ManualError::ToolHook(_) => FailureKind::ToolHook,
         ManualError::Model(_) => FailureKind::Model,
         ManualError::Resume(_) => FailureKind::Setup,

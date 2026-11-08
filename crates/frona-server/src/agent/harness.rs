@@ -392,63 +392,20 @@ impl Harness {
     where
         T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
     {
-        let user_id = &usage_ctx.user_id;
-
-        let agent = self
-            .agent_service
-            .find_by_id(agent_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("Agent not found: {agent_id}")))?;
-
-        let mut tools = self
-            .tool_manager
-            .build_agent_registry(user_id, &agent, &self.policy_service, None)
-            .await;
-        for f in tool_filters {
-            tools.apply_filter(f);
-        }
-        for t in extra_tools {
-            tools.register_required(t.clone())?;
-        }
-
-        let user = self
-            .user_service
-            .find_by_id(user_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("User not found: {user_id}")))?;
-
-        let ctx = match chat_id {
-            Some(chat_id) => {
-                let chat = self
-                    .chat_service
-                    .find_chat(chat_id)
-                    .await?
-                    .ok_or_else(|| AppError::NotFound(format!("Chat not found: {chat_id}")))?;
-                let event_tx = self.broadcast_service.create_event_sender(
-                    user_id,
-                    chat_id,
-                    chat.space_id.clone(),
-                );
-                InferenceContext::new(
-                    user,
-                    agent,
-                    chat,
-                    event_tx,
-                    self.shutdown_token.clone(),
-                    cancel_token.clone(),
-                )
-            }
-            None => InferenceContext::new_detached(
-                user,
-                agent,
-                self.shutdown_token.clone(),
+        let prepared = self
+            .prepare_agent_tools(
+                &usage_ctx.user_id,
+                agent_id,
+                chat_id,
+                tool_filters,
+                extra_tools,
                 cancel_token,
-            ),
-        };
+            )
+            .await?;
         Ok(crate::inference::StructuredConversation::new(
             &self.usage_service,
-            tools,
-            ctx,
+            prepared.registry,
+            prepared.context,
             model_group.clone(),
             system.into(),
             initial.into(),

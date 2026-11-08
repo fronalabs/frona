@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use backon::Retryable;
+use rig_core::completion::Message as RigMessage;
 use rig_core::completion::request::ToolDefinition as RigToolDefinition;
-use rig_core::completion::{AssistantContent, Message as RigMessage};
 
 use crate::inference::context::{estimate_message_tokens, estimate_tokens, truncate_history};
 use crate::inference::error::InferenceError;
@@ -158,12 +158,27 @@ pub(crate) fn completion_history(
     Ok(history.to_vec())
 }
 
+/// Existing runtime callers retain their configured native fallback policy.
+/// SDK conversations conservatively reject nonportable history before fallback.
+#[derive(Clone, Copy)]
+pub(crate) enum FallbackReplay {
+    Configured,
+    PortableOnly,
+}
+
+/// Complete native output and actual successful candidate, before legacy projection.
+pub(crate) struct CompletedInference {
+    pub output: InferenceOutput,
+    pub model: String,
+}
+
 pub(crate) async fn inference_with_retry_and_fallback(
     model_group: &ModelGroup,
     request: ModelRequest<'_>,
     overflow: HistoryOverflow,
     execution: ExecutionControl<'_>,
-) -> Result<(Vec<AssistantContent>, crate::inference::Usage), InferenceError> {
+    fallback_replay: FallbackReplay,
+) -> Result<CompletedInference, InferenceError> {
     let ModelRequest {
         overrides,
         input_token_estimate,
@@ -226,13 +241,7 @@ pub(crate) async fn inference_with_retry_and_fallback(
     .await
     {
         Ok(RetryOutcome {
-            value:
-                InferenceOutput {
-                    content,
-                    usage,
-                    ttft_ms,
-                    ..
-                },
+            value: output,
             retry_count,
             retry_overhead_ms,
         }) => {
@@ -240,15 +249,18 @@ pub(crate) async fn inference_with_retry_and_fallback(
             tracing::debug!(model = %ref_str, "Completion succeeded");
             let latency = LatencyMetrics {
                 duration_ms,
-                ttft_ms,
+                ttft_ms: output.ttft_ms,
                 retry_overhead_ms,
                 retry_count,
             };
             observations
-                .usage(&model_group.main, Some(&usage), 0, latency)
+                .usage(&model_group.main, Some(&output.usage), 0, latency)
                 .await;
             execution.check_cancellation()?;
-            return Ok((content, usage));
+            return Ok(CompletedInference {
+                output,
+                model: model_group.main.as_str(),
+            });
         }
         Err(e) => {
             if e.is_terminal() {
@@ -260,6 +272,17 @@ pub(crate) async fn inference_with_retry_and_fallback(
     }
 
     for (idx, fallback) in model_group.fallbacks.iter().enumerate() {
+        if matches!(fallback_replay, FallbackReplay::PortableOnly)
+            && fallback.as_str() != model_group.main.as_str()
+            && !crate::model::portable_fallback_history(&history)
+        {
+            return Err(InferenceError::Stop(crate::ExecutionStop::Stopped(
+                format!(
+                    "cannot replay signed, opaque, dual-ID or multimodal history to fallback {}",
+                    fallback.as_str()
+                ),
+            )));
+        }
         let max_tokens = overrides
             .max_tokens
             .or(fallback.request_settings.max_tokens);
@@ -304,13 +327,7 @@ pub(crate) async fn inference_with_retry_and_fallback(
         .await
         {
             Ok(RetryOutcome {
-                value:
-                    InferenceOutput {
-                        content,
-                        usage,
-                        ttft_ms,
-                        ..
-                    },
+                value: output,
                 retry_count,
                 retry_overhead_ms,
             }) => {
@@ -318,15 +335,18 @@ pub(crate) async fn inference_with_retry_and_fallback(
                 tracing::info!(model = %ref_str, "Fallback succeeded");
                 let latency = LatencyMetrics {
                     duration_ms,
-                    ttft_ms,
+                    ttft_ms: output.ttft_ms,
                     retry_overhead_ms,
                     retry_count,
                 };
                 observations
-                    .usage(fallback, Some(&usage), (idx + 1) as u8, latency)
+                    .usage(fallback, Some(&output.usage), (idx + 1) as u8, latency)
                     .await;
                 execution.check_cancellation()?;
-                return Ok((content, usage));
+                return Ok(CompletedInference {
+                    output,
+                    model: fallback.as_str(),
+                });
             }
             Err(e) => {
                 if e.is_terminal() {

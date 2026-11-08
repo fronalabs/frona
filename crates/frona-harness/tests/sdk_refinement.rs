@@ -474,7 +474,7 @@ async fn manual_loop_can_reuse_the_same_matchable_inspector_decisions() {
                 }
                 manual.revise(action, feedback).unwrap();
             }
-            Decision::Stop { .. } => panic!("fixture does not stop"),
+            Decision::Stop { .. } | Decision::Abandon { .. } => panic!("fixture does not stop"),
         }
     };
     assert_eq!(accepted.0, 2);

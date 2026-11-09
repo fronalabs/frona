@@ -21,3 +21,18 @@ async fn annotated_function_uses_the_renamed_dependency() {
         1
     );
 }
+
+#[derive(frona_derive::ParameterMetadata)]
+#[parameter(crate = "sdk")]
+#[allow(dead_code)]
+struct Settings {
+    temperature: Option<f64>,
+}
+
+#[test]
+fn parameter_metadata_uses_the_renamed_dependency() {
+    use sdk::inference::protocol::parameters::{ParameterMetadata, WireDialect};
+
+    let bindings = Settings::parameter_bindings(WireDialect::OpenAiChat);
+    assert_eq!(bindings.len(), 1);
+}

@@ -62,3 +62,7 @@ wiremock = "0.6"
 approx = "0.5"
 serde_yaml = "0.9"
 tempfile = "3"
+
+[[example]]
+name = "sdk_jsonl"
+required-features = ["jsonl"]

@@ -1,7 +1,42 @@
-//! Database-independent models, tools, adapters, and shared budget accounting.
+//! Database-independent model/tool runs and application-controlled loops.
 //!
-//! Await configured runs for text or typed output, or use the same configuration
-//! for manual execution. Both drivers share admission, conversation and dispatch.
+//! Prepare a [`Model`](crate::Model) once, then await [`Harness::run`](crate::Harness::run) for text or use
+//! [`Run::structured`](crate::Run::structured) for typed output. Both automatic and manual execution
+//! share admission, conversation state, and dispatch.
+//!
+//! ```no_run
+//! use frona_harness::{Harness, Model};
+//! use schemars::JsonSchema;
+//! use serde::Deserialize;
+//!
+//! #[derive(Deserialize, JsonSchema)]
+//! struct Summary { title: String }
+//!
+//! # async fn example(model: Model<'static>) -> Result<(), Box<dyn std::error::Error>> {
+//! let harness = Harness::new(model);
+//! let summary = harness.run("Give the notes a title").structured::<Summary>().await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! - Register application tools with [`tool`](fn@crate::tool) or [`workspace_read_tools`](crate::workspace_read_tools); none
+//!   are installed by default. [`Run::before_tool`](crate::Run::before_tool) can execute, reject, or stop.
+//! - Use [`Run::inspect`](crate::Run::inspect) for asynchronous application feedback. Only explicit
+//!   [`Decision::accept`](crate::Decision::accept) completes refinement; [`Incomplete`](crate::Incomplete) retention remains
+//!   unfinished and requires application revalidation before any domain commit.
+//! - Use [`Run::manual`](crate::Run::manual) to decide individual actions and select each model call.
+//!   [`ModelAdapter`](crate::ModelAdapter) wraps application-owned clients; tools and inspectors may
+//!   borrow local state. Spawning requires an owned, `Send`, static future.
+//! - Reuse [`DefaultBudget`](crate::DefaultBudget) or implement [`Budget`](crate::Budget) to share allowance across
+//!   runs and nested calls. Admission happens before every actual model/tool call.
+//!   Already-admitted calls may finish after budget exhaustion.
+//! - Compaction is enabled by default; [`Run::disable_compaction`](crate::Run::disable_compaction) suppresses
+//!   summaries while retaining context overflow checks. [`Run::subscribe`](crate::Run::subscribe) adds
+//!   optional bounded progress without changing the final result.
+//! - With `jsonl`, file history can be loaded without execution, then explicitly
+//!   continued through [`Harness::resume`](crate::Harness::resume). Restore application dependencies and
+//!   budget policy first; checkpoints do not restore budget usage or acceptance.
+//!   The caller coordinates writers and makes interrupted tools safe to repeat.
 
 extern crate self as frona_harness;
 

@@ -324,20 +324,6 @@ impl ChatCompactor {
         &self,
         chat_id: &str,
         context: CompactionContext<'_>,
-    ) -> Result<CompactionOutcome, AppError> {
-        let budget = frona_harness::DefaultBudget::default();
-        self.compact_chat_controlled(
-            chat_id,
-            context,
-            frona_harness::ExecutionControl::new(&budget),
-        )
-        .await
-    }
-
-    pub async fn compact_chat_controlled(
-        &self,
-        chat_id: &str,
-        context: CompactionContext<'_>,
         execution: frona_harness::ExecutionControl<'_>,
     ) -> Result<CompactionOutcome, AppError> {
         execution.check_cancellation()?;

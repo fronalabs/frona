@@ -34,7 +34,7 @@ impl Command for CompactCommand {
             .harness
             .chat_service
             .compactor()
-            .compact_chat_controlled(
+            .compact_chat(
                 &ctx.chat.id,
                 crate::chat::compactor::CompactionContext {
                     agent_context: ctx.session.agent_context_scope(),

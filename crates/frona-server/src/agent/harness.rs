@@ -20,14 +20,12 @@ use crate::inference::conversation::{ConversationBuilder, DefaultConversationBui
 use crate::inference::hitl::{HitlOutcome, HitlResponse, ResolveOutcome};
 use crate::inference::request::{InferenceContext, InferenceRequest, InferenceResponse};
 use crate::{
-    inference::{tool_call::ToolStatus, usage::UsageContext},
+    inference::tool_call::ToolStatus,
     memory::service::MemoryService,
     policy::service::PolicyService,
     storage::StorageService,
     tool::{manager::ToolManager, mcp::McpServerService, registry::ToolFilter},
 };
-use frona_harness::inference::ModelGroup;
-use rig_core::completion::Message as RigMessage;
 
 struct CommandPromptOverride {
     request_id: String,
@@ -114,45 +112,6 @@ impl Harness {
         }
     }
 
-    pub async fn structured_inference<T>(
-        &self,
-        model_group: &ModelGroup,
-        system: &str,
-        history: Vec<RigMessage>,
-        usage_ctx: UsageContext,
-    ) -> Result<T, AppError>
-    where
-        T: schemars::JsonSchema + serde::de::DeserializeOwned + Send + 'static,
-    {
-        crate::inference::structured_inference::<T>(
-            model_group,
-            system,
-            history,
-            &self.usage_service,
-            &usage_ctx,
-        )
-        .await
-        .map_err(|e| AppError::Internal(format!("harness structured inference: {e}")))
-    }
-
-    pub async fn text_inference(
-        &self,
-        model_group: &ModelGroup,
-        system: &str,
-        history: Vec<RigMessage>,
-        usage_ctx: UsageContext,
-    ) -> Result<String, AppError> {
-        crate::inference::text_inference(
-            model_group,
-            system,
-            history,
-            &self.usage_service,
-            &usage_ctx,
-        )
-        .await
-        .map_err(|e| AppError::Internal(format!("harness text inference: {e}")))
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub async fn run_turn(
         &self,
@@ -199,31 +158,6 @@ impl Harness {
             tool_filters,
             command_context_registry,
             execution,
-        )
-        .await;
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn run_turn_with_execution(
-        &self,
-        user_id: &str,
-        chat_id: &str,
-        message_id: &str,
-        cancel_token: CancellationToken,
-        builder: Box<dyn ConversationBuilder>,
-        tool_filters: &[ToolFilter],
-        command_context_registry: Option<Arc<CommandRegistry>>,
-        execution: NewExecution,
-    ) {
-        self.run_turn_with_execution_controlled(
-            user_id,
-            chat_id,
-            message_id,
-            cancel_token,
-            builder,
-            tool_filters,
-            command_context_registry,
-            execution,
             Default::default(),
         )
         .await;
@@ -232,7 +166,7 @@ impl Harness {
     /// Runtime-owned execution including final canonical persistence. The report
     /// remains observable through the supplied controls after this method ends.
     #[allow(clippy::too_many_arguments)]
-    pub async fn run_turn_with_execution_controlled(
+    pub async fn run_turn_with_execution(
         &self,
         user_id: &str,
         chat_id: &str,
@@ -288,30 +222,6 @@ impl Harness {
 
     #[allow(clippy::too_many_arguments)]
     pub async fn run_loop(
-        &self,
-        user_id: &str,
-        chat_id: &str,
-        message_id: &str,
-        cancel_token: CancellationToken,
-        builder: Box<dyn ConversationBuilder>,
-        tool_filters: &[ToolFilter],
-        command_context_registry: Option<Arc<CommandRegistry>>,
-    ) -> Result<AgentLoopOutcome, AppError> {
-        self.run_loop_controlled(
-            user_id,
-            chat_id,
-            message_id,
-            cancel_token,
-            builder,
-            tool_filters,
-            command_context_registry,
-            Default::default(),
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn run_loop_controlled(
         &self,
         user_id: &str,
         chat_id: &str,
@@ -415,7 +325,7 @@ impl Harness {
         {
             chat_for_turn.agent_id = target.id;
         }
-        let mut session = ChatSessionContext::build_for_response_controlled(
+        let mut session = ChatSessionContext::build(
             self,
             user_id,
             chat_for_turn,
@@ -720,6 +630,7 @@ impl Harness {
             &[],
             None,
             execution,
+            Default::default(),
         )
         .await;
         self.active_sessions

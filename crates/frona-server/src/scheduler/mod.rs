@@ -528,6 +528,7 @@ async fn execute_heartbeat(
             builder,
             &[],
             None,
+            Default::default(),
         )
         .await;
 

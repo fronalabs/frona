@@ -473,22 +473,6 @@ impl ChatService {
         user_id: &str,
         chat_id: &str,
         req: SendMessageRequest,
-    ) -> Result<Vec<MessageResponse>, AppError> {
-        self.send_message_controlled(
-            user_id,
-            chat_id,
-            req,
-            Default::default(),
-            Default::default(),
-        )
-        .await
-    }
-
-    pub async fn send_message_controlled(
-        &self,
-        user_id: &str,
-        chat_id: &str,
-        req: SendMessageRequest,
         controls: crate::inference::RuntimeControls,
         cancellation: tokio_util::sync::CancellationToken,
     ) -> Result<Vec<MessageResponse>, AppError> {
@@ -601,7 +585,7 @@ impl ChatService {
             .last()
             .and_then(|message| message.agent_context_signature.clone());
         let request = conversation
-            .prepare_controlled(
+            .prepare(
                 &self.compactor,
                 super::conversation::PersistentRequest {
                     agent_context: scope,

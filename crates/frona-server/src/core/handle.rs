@@ -15,10 +15,6 @@ use surrealdb::types::{Error as SurrealError, Kind, SurrealValue, Value};
 
 use crate::core::error::AppError;
 
-pub const fn is_valid_handle_bytes(s: &[u8]) -> bool {
-    frona_harness::handle::is_valid_handle_bytes(s)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Handle(frona_harness::handle::Handle);
 

@@ -118,24 +118,10 @@ impl PersistentConversation {
         &mut self,
         compactor: &ChatCompactor,
         request: PersistentRequest<'_>,
-    ) -> Result<ModelRequest, AppError> {
-        let budget = frona_harness::DefaultBudget::default();
-        self.prepare_controlled(
-            compactor,
-            request,
-            frona_harness::ExecutionControl::new(&budget),
-        )
-        .await
-    }
-
-    pub async fn prepare_controlled(
-        &mut self,
-        compactor: &ChatCompactor,
-        request: PersistentRequest<'_>,
         execution: frona_harness::ExecutionControl<'_>,
     ) -> Result<ModelRequest, AppError> {
         let outcome = compactor
-            .compact_chat_controlled(
+            .compact_chat(
                 &self.chat_id,
                 CompactionContext {
                     agent_context: request.agent_context,

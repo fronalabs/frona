@@ -455,12 +455,6 @@ pub struct RetryConfig {
     pub max_backoff_ms: u64,
 }
 
-impl RetryConfig {
-    pub fn to_backoff(&self) -> backon::ExponentialBuilder {
-        frona_harness::retry_config::RetryConfig::from(self).to_backoff()
-    }
-}
-
 impl Default for RetryConfig {
     fn default() -> Self {
         let policy = frona_harness::retry_config::RetryConfig::default();

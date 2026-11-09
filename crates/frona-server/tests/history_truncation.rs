@@ -401,7 +401,8 @@ async fn streaming_rejects_oversized_input_without_sending_a_truncated_request()
                 overrides: Default::default(),
             },
             &events,
-            &tokio_util::sync::CancellationToken::new(),
+            frona_harness::ExecutionControl::new(&frona_harness::DefaultBudget::default())
+                .with_cancellation(&tokio_util::sync::CancellationToken::new()),
             &mut String::new(),
         )
         .await
@@ -554,7 +555,8 @@ async fn streaming_smaller_fallback_limits_fail_explicitly_without_losing_histor
                     overrides: Default::default(),
                 },
                 &events,
-                &tokio_util::sync::CancellationToken::new(),
+                frona_harness::ExecutionControl::new(&frona_harness::DefaultBudget::default())
+                    .with_cancellation(&tokio_util::sync::CancellationToken::new()),
                 &mut String::new(),
             )
             .await
@@ -605,7 +607,8 @@ async fn streaming_in_flight_cancellation_keeps_the_original_request() {
                 overrides: Default::default(),
             },
             &events,
-            &cancellation,
+            frona_harness::ExecutionControl::new(&frona_harness::DefaultBudget::default())
+                .with_cancellation(&cancellation),
             &mut String::new(),
         )
         .await

@@ -214,6 +214,7 @@ async fn compaction_uses_catalog_budget_and_respects_configured_override() {
                     model_history: &model_history,
                     tools: &[],
                 },
+                frona_harness::ExecutionControl::new(&frona_harness::DefaultBudget::default()),
             )
             .await
             .unwrap();

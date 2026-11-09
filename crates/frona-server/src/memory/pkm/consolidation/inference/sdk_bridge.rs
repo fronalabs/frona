@@ -13,10 +13,7 @@ use crate::{
     inference::usage::{UsageContext, UsageService},
     tool::{ToolOutput, sdk_adapter::content_result},
 };
-use frona_harness::{
-    ExecutionStop, Run, Text,
-    inference::observation::{InferenceObserver, ObservationError, UsageObservation},
-};
+use frona_harness::{ExecutionStop, Run, Text};
 use tokio_util::sync::CancellationToken;
 
 /// Reusable preparation, owned so runs can safely borrow the legacy tool context.
@@ -25,7 +22,8 @@ pub struct PkmHarness {
     harness: frona_harness::Harness<'static>,
     tools: PreparedAgentTools,
     prompts: PromptLoader,
-    usage: PkmUsage,
+    usage_service: UsageService,
+    usage_context: UsageContext,
     cancellation: CancellationToken,
 }
 
@@ -37,10 +35,8 @@ impl PkmHarness {
             )),
             tools,
             prompts: inference.prompts.clone(),
-            usage: PkmUsage {
-                service: inference.harness.usage_service.clone(),
-                context: inference.usage(),
-            },
+            usage_service: inference.harness.usage_service.clone(),
+            usage_context: inference.usage(),
             cancellation: inference.cancel_token.clone(),
         }
     }
@@ -71,20 +67,8 @@ impl PkmHarness {
             .run(rendered.input)
             .instructions(rendered.system)
             .tools(tools)
-            .observer(self.usage.clone())
+            .observer(self.usage_service.scoped(&self.usage_context))
             .cancellation(self.cancellation.clone()))
-    }
-}
-
-#[derive(Clone)]
-struct PkmUsage {
-    service: UsageService,
-    context: UsageContext,
-}
-#[async_trait::async_trait]
-impl InferenceObserver for PkmUsage {
-    async fn usage(&self, observation: UsageObservation<'_>) -> Result<(), ObservationError> {
-        self.service.scoped(&self.context).usage(observation).await
     }
 }
 

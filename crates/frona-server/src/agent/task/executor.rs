@@ -634,7 +634,7 @@ impl TaskExecutor {
             let filters = tool_filters_for_task(&task);
             let result = self
                 .harness
-                .run_loop_controlled(
+                .run_loop(
                     &task.user_id,
                     &chat_id,
                     &agent_msg_id,
@@ -977,6 +977,7 @@ impl TaskExecutor {
                 builder,
                 &filters,
                 None,
+                Default::default(),
             )
             .await;
 

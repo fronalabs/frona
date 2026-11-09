@@ -31,7 +31,7 @@ async fn streaming_refusal_and_partial_output_never_replay() {
         let observer = Observer::default();
         let report = ReportHandle::default();
         let error = group
-            .stream_inference_controlled(
+            .stream_inference(
                 request(Observations::new(&observer)),
                 &EventSender::noop(),
                 ExecutionControl::new(&budget).with_report(&report),
@@ -66,7 +66,7 @@ async fn streaming_cancellation_drains_partial_text_and_never_succeeds() {
     let events = EventSender::noop();
     let mut text = String::new();
     let report = ReportHandle::default();
-    let call = group.stream_inference_controlled(
+    let call = group.stream_inference(
         request(Observations::new(&observer)),
         &events,
         ExecutionControl::new(&budget)
@@ -93,7 +93,7 @@ async fn streaming_cancellation_drains_partial_text_and_never_succeeds() {
     let fake = Arc::new(Fake::new([]));
     let group = self::group(fake.clone());
     let result = group
-        .stream_inference_controlled(
+        .stream_inference(
             request(Observations::default()),
             &events,
             ExecutionControl::new(&budget)
@@ -132,7 +132,7 @@ async fn streaming_report_groups_retry_attempts_and_records_abandonment() {
     let events = EventSender::noop();
     let mut text = String::new();
     let result = group
-        .stream_inference_controlled(
+        .stream_inference(
             request(Observations::default()),
             &events,
             ExecutionControl::new(&budget).with_report(&report),
@@ -157,7 +157,7 @@ async fn streaming_report_groups_retry_attempts_and_records_abandonment() {
     let (started, started_rx) = oneshot::channel();
     let (_release, release_rx) = oneshot::channel();
     let group = self::group(Arc::new(Fake::new([Step::Wait(started, release_rx, 7)])));
-    let mut call = Box::pin(group.stream_inference_controlled(
+    let mut call = Box::pin(group.stream_inference(
         request(Observations::default()),
         &events,
         ExecutionControl::new(&budget).with_report(&report),

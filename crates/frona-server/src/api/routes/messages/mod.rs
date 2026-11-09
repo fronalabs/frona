@@ -59,7 +59,13 @@ async fn send_message(
 ) -> Result<Json<Vec<MessageResponse>>, ApiError> {
     let response = state
         .chat_service
-        .send_message(&auth.user_id, &chat_id, req)
+        .send_message(
+            &auth.user_id,
+            &chat_id,
+            req,
+            Default::default(),
+            Default::default(),
+        )
         .await?;
     Ok(Json(response))
 }

@@ -218,9 +218,11 @@ async fn build_session_for_chat(state: &AppState, chat_id: &str) -> ChatSessionC
         &state.harness,
         "user-1",
         chat,
+        None,
         CancellationToken::new(),
         builder,
         &[],
+        Default::default(),
     )
     .await
     .expect("session builds")

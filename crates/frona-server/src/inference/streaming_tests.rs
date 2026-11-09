@@ -235,7 +235,8 @@ async fn all_execution_modes_share_fallbacks_and_per_request_overrides_are_isola
         .stream_inference(
             request(observations, RequestOverrides::default()),
             &EventSender::noop(),
-            &tokio_util::sync::CancellationToken::new(),
+            frona_harness::ExecutionControl::new(&frona_harness::DefaultBudget::default())
+                .with_cancellation(&tokio_util::sync::CancellationToken::new()),
             &mut accumulated,
         )
         .await

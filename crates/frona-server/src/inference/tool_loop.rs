@@ -258,7 +258,7 @@ pub async fn run_tool_loop_controlled(
             super::usage::UsageContext::new(kind, ctx.user.id.clone(), model_group.name.clone());
         let mut turn_text = String::new();
         let response = model_group
-            .stream_inference_controlled(
+            .stream_inference(
                 frona_harness::inference::ModelRequest {
                     input_token_estimate: input_token_estimate.take(),
                     system_prompt,

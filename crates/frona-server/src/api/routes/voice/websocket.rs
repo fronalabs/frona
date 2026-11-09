@@ -255,6 +255,7 @@ async fn handle_voice_turn(
                 builder,
                 &[],
                 None,
+                Default::default(),
             )
             .await?;
         let mut response = outcome.response;

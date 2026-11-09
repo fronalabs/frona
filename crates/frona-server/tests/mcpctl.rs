@@ -276,6 +276,7 @@ impl Fixture {
             &self.app.state.harness,
             &self.ctx.user.id,
             self.ctx.chat.clone().unwrap(),
+            None,
             tokio_util::sync::CancellationToken::new(),
             Arc::new(frona::inference::conversation::DefaultConversationBuilder {
                 user_service: self.app.state.user_service.clone(),
@@ -283,6 +284,7 @@ impl Fixture {
                 agent_service: self.app.state.agent_service.clone(),
             }),
             filters,
+            Default::default(),
         )
         .await
         .unwrap()

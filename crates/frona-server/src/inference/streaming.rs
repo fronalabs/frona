@@ -10,7 +10,7 @@ use frona_harness::inference::{
     observation::{LatencyMetrics, Observations},
     provider::{InferenceOutput, ModelConfig, StreamToken},
 };
-use frona_harness::{DefaultBudget, ExecutionControl, UsageReport};
+use frona_harness::{ExecutionControl, UsageReport};
 use rig_core::completion::{
     AssistantContent, Message as RigMessage, message::UserContent,
     request::ToolDefinition as RigToolDefinition,
@@ -32,14 +32,6 @@ pub trait ModelGroupStreaming {
         &self,
         request: ModelRequest<'_>,
         events: &EventSender,
-        cancellation: &tokio_util::sync::CancellationToken,
-        accumulated_text: &mut String,
-    ) -> Result<StreamResult, AppError>;
-
-    async fn stream_inference_controlled(
-        &self,
-        request: ModelRequest<'_>,
-        events: &EventSender,
         execution: ExecutionControl<'_>,
         accumulated_text: &mut String,
     ) -> Result<StreamResult, AppError>;
@@ -47,23 +39,6 @@ pub trait ModelGroupStreaming {
 #[async_trait::async_trait]
 impl ModelGroupStreaming for ModelGroup {
     async fn stream_inference(
-        &self,
-        request: ModelRequest<'_>,
-        events: &EventSender,
-        cancellation: &tokio_util::sync::CancellationToken,
-        accumulated_text: &mut String,
-    ) -> Result<StreamResult, AppError> {
-        let budget = DefaultBudget::default();
-        self.stream_inference_controlled(
-            request,
-            events,
-            ExecutionControl::new(&budget).with_cancellation(cancellation),
-            accumulated_text,
-        )
-        .await
-    }
-
-    async fn stream_inference_controlled(
         &self,
         request: ModelRequest<'_>,
         events: &EventSender,

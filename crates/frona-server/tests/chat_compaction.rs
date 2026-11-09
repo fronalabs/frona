@@ -121,6 +121,7 @@ impl TestCompactor {
                     model_history: &model_history,
                     tools: &[],
                 },
+                frona_harness::ExecutionControl::new(&frona_harness::DefaultBudget::default()),
             )
             .await
     }
@@ -427,6 +428,7 @@ impl App {
             &self.harness,
             &self.user.id,
             self.chat.clone(),
+            None,
             CancellationToken::new(),
             Arc::new(DefaultConversationBuilder {
                 user_service: state.user_service.clone(),
@@ -434,6 +436,7 @@ impl App {
                 agent_service: state.agent_service.clone(),
             }),
             &[],
+            Default::default(),
         )
         .await
     }
@@ -994,6 +997,8 @@ async fn text_send_persists_attachments_and_sends_current_request_exactly_once()
                 attachments: vec![attachment.clone()],
                 metadata: None,
             },
+            Default::default(),
+            Default::default(),
         )
         .await
         .unwrap();
@@ -1221,6 +1226,8 @@ async fn agent_model_fallback_covers_api_tasks_and_heartbeats() {
                             attachments: vec![],
                             metadata: None,
                         },
+                        Default::default(),
+                        Default::default(),
                     )
                     .await
                     .map(|_| ())
@@ -1252,6 +1259,7 @@ async fn agent_model_fallback_covers_api_tasks_and_heartbeats() {
                         builder,
                         &[],
                         None,
+                        Default::default(),
                     )
                     .await
                     .map(|_| ())
@@ -1296,6 +1304,7 @@ async fn harness_dispatches_clear_after_normal_session_build() {
             app.builder(),
             &[],
             None,
+            Default::default(),
         )
         .await
         .unwrap();
@@ -1323,6 +1332,7 @@ async fn harness_compacts_before_dispatching_compact_command() {
             app.builder(),
             &[],
             None,
+            Default::default(),
         )
         .await
         .unwrap();
@@ -1377,6 +1387,7 @@ async fn harness_validates_contact_context_after_channel_prompt_is_appended() {
                 builder,
                 &[frona::tool::registry::ToolFilter::AllowList(&[])],
                 None,
+                Default::default(),
             )
             .await;
         if oversized_prompt {
@@ -1426,6 +1437,7 @@ async fn harness_validates_rendered_command_before_inference() {
             app.builder(),
             &[],
             Some(Arc::new(registry)),
+            Default::default(),
         )
         .await;
     assert!(
@@ -1478,6 +1490,7 @@ async fn context_prompt_command_keeps_automatic_compaction_and_session_mutations
             app.builder(),
             &[frona::tool::registry::ToolFilter::AllowList(&[])],
             Some(Arc::new(registry)),
+            Default::default(),
         )
         .await
         .unwrap();
@@ -1506,6 +1519,7 @@ async fn context_prompt_command_keeps_automatic_compaction_and_session_mutations
             app.builder(),
             &[frona::tool::registry::ToolFilter::AllowList(&[])],
             None,
+            Default::default(),
         )
         .await
         .unwrap();
@@ -1576,6 +1590,7 @@ async fn switch_agent_command_compacts_and_keeps_the_target_agent_context() {
             }),
             &[frona::tool::registry::ToolFilter::AllowList(&[])],
             None,
+            Default::default(),
         )
         .await
         .unwrap();
@@ -1700,6 +1715,7 @@ async fn switch_agent_preserves_task_and_heartbeat_builders() {
                 builder,
                 &[frona::tool::registry::ToolFilter::AllowList(&[])],
                 None,
+                Default::default(),
             )
             .await
             .unwrap();
@@ -1834,6 +1850,7 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
                     make_builder(),
                     &[],
                     None,
+                    Default::default(),
                 )
                 .await
                 .unwrap();
@@ -1853,9 +1870,11 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
                 &app.harness,
                 &app.user.id,
                 app.chat.clone(),
+                None,
                 CancellationToken::new(),
                 Arc::from(builder),
                 &[],
+                Default::default(),
             )
             .await
             .unwrap();
@@ -1908,9 +1927,11 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
                 &app.harness,
                 &app.user.id,
                 app.chat.clone(),
+                None,
                 CancellationToken::new(),
                 Arc::from(builder),
                 &[],
+                Default::default(),
             )
             .await
             .unwrap();
@@ -1938,6 +1959,7 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
                     make_builder(),
                     &[],
                     None,
+                    Default::default(),
                 )
                 .await
                 .unwrap();
@@ -1947,9 +1969,11 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
                 &app.harness,
                 &app.user.id,
                 app.chat.clone(),
+                None,
                 CancellationToken::new(),
                 Arc::from(builder),
                 &[],
+                Default::default(),
             )
             .await
             .unwrap();
@@ -1971,9 +1995,11 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
                 &app.harness,
                 &app.user.id,
                 app.chat.clone(),
+                None,
                 CancellationToken::new(),
                 Arc::from(builder),
                 &[],
+                Default::default(),
             )
             .await
             .unwrap();
@@ -2007,9 +2033,11 @@ async fn task_summary_reload_preserves_retained_tool_pairs_and_continuation() {
         &app.harness,
         &app.user.id,
         app.chat.clone(),
+        None,
         CancellationToken::new(),
         Arc::from(builder),
         &[],
+        Default::default(),
     )
     .await
     .unwrap();
@@ -2022,9 +2050,11 @@ async fn task_summary_reload_preserves_retained_tool_pairs_and_continuation() {
         &app.harness,
         &app.user.id,
         app.chat.clone(),
+        None,
         CancellationToken::new(),
         Arc::from(builder),
         &[],
+        Default::default(),
     )
     .await
     .unwrap();
@@ -2351,6 +2381,7 @@ impl App {
                 self.builder(),
                 &[],
                 None,
+                Default::default(),
             )
             .await
     }
@@ -2423,6 +2454,8 @@ async fn nonstream_send_uses_provider_estimate_without_trimming_the_original_his
                 attachments: vec![],
                 metadata: None,
             },
+            Default::default(),
+            Default::default(),
         )
         .await
         .unwrap();
@@ -2717,6 +2750,7 @@ async fn command_history_mutation_invalidates_calibration_before_provider_call()
             app.builder(),
             &[],
             Some(Arc::new(registry)),
+            Default::default(),
         )
         .await;
     assert!(matches!(result, Err(AppError::Validation(_))));
@@ -2777,6 +2811,8 @@ async fn completed_nonstream_response_statistics_anchor_the_next_compaction() {
                 attachments: vec![],
                 metadata: None,
             },
+            Default::default(),
+            Default::default(),
         )
         .await
         .unwrap();
@@ -2800,6 +2836,8 @@ async fn completed_nonstream_response_statistics_anchor_the_next_compaction() {
                 attachments: vec![],
                 metadata: None,
             },
+            Default::default(),
+            Default::default(),
         )
         .await
         .unwrap();
@@ -2893,9 +2931,11 @@ async fn fresh_request_and_injected_continuation_are_never_scaled_by_old_usage()
             &app.harness,
             &app.user.id,
             app.chat.clone(),
+            None,
             CancellationToken::new(),
             Arc::from(builder),
             &[],
+            Default::default(),
         )
         .await;
         assert!(
@@ -2944,6 +2984,7 @@ async fn resumed_response_excludes_later_inputs_and_cannot_compact_their_prefix(
                 }),
                 &[],
                 None,
+                Default::default(),
             )
             .await;
         if needs_compaction {
@@ -3122,6 +3163,7 @@ async fn persistent_request_preserves_native_ids_signatures_system_and_mixed_res
                     model_group: &group,
                     tools: &[],
                 },
+                frona_harness::ExecutionControl::new(&frona_harness::DefaultBudget::default()),
             )
             .await
             .unwrap();
@@ -3192,6 +3234,7 @@ async fn persistent_request_compacts_then_reopens_the_saved_prefix_and_row_mappi
                 model_group: &group,
                 tools: &[],
             },
+            frona_harness::ExecutionControl::new(&frona_harness::DefaultBudget::default()),
         )
         .await
         .unwrap();
@@ -3276,7 +3319,7 @@ async fn persistent_summary_and_main_call_consume_one_shared_allowance() {
         if direct_reply {
             let error = app
                 .chat_service
-                .send_message_controlled(
+                .send_message(
                     &app.user.id,
                     &app.chat.id,
                     frona::chat::message::models::SendMessageRequest {
@@ -3299,7 +3342,7 @@ async fn persistent_summary_and_main_call_consume_one_shared_allowance() {
         } else {
             let outcome = app
                 .harness
-                .run_loop_controlled(
+                .run_loop(
                     &app.user.id,
                     "chat",
                     "placeholder",
@@ -3364,7 +3407,7 @@ async fn required_summary_and_reply_writes_report_storage_stops() {
         let report = controls.report();
         let error = if summary {
             app.harness
-                .run_loop_controlled(
+                .run_loop(
                     &app.user.id,
                     "chat",
                     "placeholder",
@@ -3379,7 +3422,7 @@ async fn required_summary_and_reply_writes_report_storage_stops() {
                 .unwrap()
         } else {
             app.chat_service
-                .send_message_controlled(
+                .send_message(
                     &app.user.id,
                     "chat",
                     frona::chat::message::models::SendMessageRequest {
@@ -3437,6 +3480,7 @@ async fn switched_agent_tools_use_the_persisted_executing_owner() {
             app.builder(),
             &[],
             None,
+            Default::default(),
         )
         .await
         .unwrap();
@@ -3520,7 +3564,7 @@ async fn cancellation_during_final_runtime_write_keeps_durable_evidence_but_repo
         if direct_reply {
             let error = app
                 .chat_service
-                .send_message_controlled(
+                .send_message(
                     &app.user.id,
                     "chat",
                     frona::chat::message::models::SendMessageRequest {
@@ -3537,7 +3581,7 @@ async fn cancellation_during_final_runtime_write_keeps_durable_evidence_but_repo
         } else {
             app.next_request().await;
             app.harness
-                .run_turn_with_execution_controlled(
+                .run_turn_with_execution(
                     &app.user.id,
                     "chat",
                     "new-response",

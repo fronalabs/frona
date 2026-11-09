@@ -30,11 +30,7 @@ use crate::core::error::AppError;
 
 use self::usage::UsageService;
 
-pub async fn inference(request: InferenceRequest) -> Result<InferenceResponse, AppError> {
-    inference_controlled(request, &RuntimeControls::default()).await
-}
-
-pub async fn inference_controlled(
+pub async fn inference(
     request: InferenceRequest,
     controls: &RuntimeControls,
 ) -> Result<InferenceResponse, AppError> {

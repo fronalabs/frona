@@ -40,7 +40,8 @@ async fn streaming_failure_reports_retries_and_fallback_context() {
                 overrides: Default::default(),
             },
             &events,
-            &CancellationToken::new(),
+            frona_harness::ExecutionControl::new(&frona_harness::DefaultBudget::default())
+                .with_cancellation(&CancellationToken::new()),
             &mut String::new(),
         )
         .await
@@ -86,7 +87,8 @@ async fn streaming_skips_unavailable_primary_and_uses_fallback_without_catalogs(
             overrides: Default::default(),
         },
         &events,
-        &CancellationToken::new(),
+        frona_harness::ExecutionControl::new(&frona_harness::DefaultBudget::default())
+            .with_cancellation(&CancellationToken::new()),
         &mut text,
     )
     .await
@@ -1630,7 +1632,7 @@ async fn tool_instructions_leave_system_stable_and_replay_the_exact_live_tail() 
 async fn persistent_calls_share_admission_and_report_each_proposal() {
     use frona::inference::InferenceRequest;
     use frona::inference::RuntimeControls;
-    use frona::inference::inference_controlled;
+    use frona::inference::inference;
     use frona_harness::BudgetLimits;
     use frona_harness::DefaultBudget;
     use frona_harness::ExecutionStop;
@@ -1663,7 +1665,7 @@ async fn persistent_calls_share_admission_and_report_each_proposal() {
             vec!["first".into(), "second".into()],
         )));
         let service = test_chat_service_for_turn("test-msg").await;
-        let outcome = inference_controlled(
+        let outcome = inference(
             InferenceRequest {
                 input_token_estimate: None,
                 model_group,
@@ -1771,7 +1773,7 @@ async fn persistent_turn_cap_is_incomplete_but_does_not_disable_no_tool_requests
 async fn unexpected_submit_is_paired_without_acceptance_or_tool_allowance() {
     use frona::inference::InferenceRequest;
     use frona::inference::RuntimeControls;
-    use frona::inference::inference_controlled;
+    use frona::inference::inference;
     use frona_harness::ActionKind;
     use frona_harness::ActionOutcome;
     use frona_harness::BudgetLimits;
@@ -1803,7 +1805,7 @@ async fn unexpected_submit_is_paired_without_acceptance_or_tool_allowance() {
         let controls = RuntimeControls::new(budget.clone());
         let report = controls.report();
         let service = test_chat_service_for_turn("test-msg").await;
-        let result = inference_controlled(
+        let result = inference(
             InferenceRequest {
                 input_token_estimate: None,
                 model_group: frona_harness::inference::ModelGroup {

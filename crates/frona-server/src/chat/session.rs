@@ -37,51 +37,10 @@ impl ChatSessionContext {
         self.tool_ctx.agent_context_scope()
     }
 
-    pub async fn build(
-        harness: &Harness,
-        user_id: &str,
-        chat: Chat,
-        cancel_token: CancellationToken,
-        builder: Arc<dyn ConversationBuilder>,
-        tool_filters: &[ToolFilter],
-    ) -> Result<Self, AppError> {
-        Self::build_for_response(
-            harness,
-            user_id,
-            chat,
-            None,
-            cancel_token,
-            builder,
-            tool_filters,
-        )
-        .await
-    }
-
-    /// Agent switches reuse the already-initialized turn.
-    pub(crate) async fn build_for_response(
-        harness: &Harness,
-        user_id: &str,
-        chat: Chat,
-        response_id: Option<&str>,
-        cancel_token: CancellationToken,
-        builder: Arc<dyn ConversationBuilder>,
-        tool_filters: &[ToolFilter],
-    ) -> Result<Self, AppError> {
-        Self::build_for_response_controlled(
-            harness,
-            user_id,
-            chat,
-            response_id,
-            cancel_token,
-            builder,
-            tool_filters,
-            Default::default(),
-        )
-        .await
-    }
-
+    /// Build with the turn's shared controls. A response ID lets agent switches
+    /// reuse the already-initialized turn; `None` prepares a fresh response.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn build_for_response_controlled(
+    pub async fn build(
         harness: &Harness,
         user_id: &str,
         chat: Chat,
@@ -245,7 +204,7 @@ impl ChatSessionContext {
             tool_registry.mcp_bridge_mode(),
         );
         let request = conversation
-            .prepare_controlled(
+            .prepare(
                 harness.chat_service.compactor(),
                 super::conversation::PersistentRequest {
                     agent_context: tool_ctx.agent_context_scope(),

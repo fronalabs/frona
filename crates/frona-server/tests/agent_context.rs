@@ -769,7 +769,16 @@ async fn compaction_prepends_summary_and_live_context_and_preserves_retained_mes
         .unwrap()
         .agent_context_state;
     app.source.fail.store(true, Ordering::SeqCst);
-    assert!(compactor.compact_chat("test-chat", context).await.is_err());
+    assert!(
+        compactor
+            .compact_chat(
+                "test-chat",
+                context,
+                frona_harness::ExecutionControl::new(&frona_harness::DefaultBudget::default()),
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(summary.0.load(Ordering::SeqCst), 0);
     assert!(
         app.summaries()
@@ -789,7 +798,14 @@ async fn compaction_prepends_summary_and_live_context_and_preserves_retained_mes
     );
     app.source.fail.store(false, Ordering::SeqCst);
     *app.source.text.lock().unwrap() = "C".into();
-    let result = compactor.compact_chat("test-chat", context).await.unwrap();
+    let result = compactor
+        .compact_chat(
+            "test-chat",
+            context,
+            frona_harness::ExecutionControl::new(&frona_harness::DefaultBudget::default()),
+        )
+        .await
+        .unwrap();
     assert!(result.compacted);
     assert_eq!(
         chats
@@ -898,6 +914,7 @@ async fn compaction_prepends_summary_and_live_context_and_preserves_retained_mes
                 model_history: &history,
                 tools: &[],
             },
+            frona_harness::ExecutionControl::new(&frona_harness::DefaultBudget::default()),
         )
         .await
         .unwrap();
@@ -1605,6 +1622,8 @@ async fn nonstream_source_failure_does_not_persist_input_or_advance_state() {
                 attachments: vec![],
                 metadata: None,
             },
+            Default::default(),
+            Default::default(),
         )
         .await
         .unwrap_err();

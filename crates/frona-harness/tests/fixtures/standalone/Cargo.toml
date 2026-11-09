@@ -20,6 +20,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt", "sync"] }
 tempfile = "3"
+tokio-util = { version = "0.7", features = ["rt"] }
 
 [[bin]]
 name = "sdk_tools"
@@ -53,3 +54,11 @@ path = "../../../examples/sdk_progress.rs"
 name = "sdk_jsonl"
 path = "../../../examples/sdk_jsonl.rs"
 required-features = ["jsonl"]
+
+[[test]]
+name = "ownership"
+path = "../../ownership.rs"
+
+[[test]]
+name = "portable_dtos"
+path = "../../portable_dtos.rs"

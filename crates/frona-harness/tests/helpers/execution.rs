@@ -27,26 +27,26 @@ use std::{
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-pub(super) fn usage(tokens: u64) -> Usage {
+pub(crate) fn usage(tokens: u64) -> Usage {
     Usage {
         total_tokens: tokens,
         ..Usage::new()
     }
 }
 
-pub(super) enum Step {
+pub(crate) enum Step {
     Ok(u64),
     Fail(InferenceError),
     Partial(InferenceError),
     Wait(oneshot::Sender<()>, oneshot::Receiver<()>, u64),
     Cancel(CancellationToken),
 }
-pub(super) struct Fake {
+pub(crate) struct Fake {
     steps: Mutex<VecDeque<Step>>,
-    pub(super) calls: Mutex<Vec<String>>,
+    pub(crate) calls: Mutex<Vec<String>>,
 }
 impl Fake {
-    pub(super) fn new(steps: impl IntoIterator<Item = Step>) -> Self {
+    pub(crate) fn new(steps: impl IntoIterator<Item = Step>) -> Self {
         Self {
             steps: Mutex::new(steps.into_iter().collect()),
             calls: Mutex::new(Vec::new()),
@@ -99,7 +99,7 @@ impl Fake {
         Ok(output)
     }
 }
-pub(super) struct FakeAdapter(pub(super) Arc<Fake>);
+pub(crate) struct FakeAdapter(pub(crate) Arc<Fake>);
 #[async_trait]
 impl ModelAdapter for FakeAdapter {
     fn capabilities(&self) -> Capabilities {
@@ -175,7 +175,7 @@ impl ModelProvider for Fake {
         })
     }
 }
-pub(super) fn group(fake: Arc<Fake>) -> ModelGroup {
+pub(crate) fn group(fake: Arc<Fake>) -> ModelGroup {
     let config = |name: &str| ModelConfig {
         catalog_provider: "fake".into(),
         provider_handle: Handle::const_validated("fake"),
@@ -203,7 +203,7 @@ pub(super) fn group(fake: Arc<Fake>) -> ModelGroup {
     }
 }
 #[derive(Default)]
-pub(super) struct Observer(pub(super) Mutex<Vec<AttemptOutcome>>);
+pub(crate) struct Observer(pub(crate) Mutex<Vec<AttemptOutcome>>);
 #[async_trait]
 impl InferenceObserver for Observer {
     async fn attempt(&self, observation: AttemptObservation<'_>) -> Result<(), ObservationError> {
@@ -212,7 +212,7 @@ impl InferenceObserver for Observer {
         Err("telemetry unavailable".into())
     }
 }
-pub(super) fn request(
+pub(crate) fn request(
     observations: Observations<'_>,
 ) -> frona_harness::inference::ModelRequest<'_> {
     frona_harness::inference::ModelRequest {
@@ -224,19 +224,19 @@ pub(super) fn request(
         overrides: Default::default(),
     }
 }
-pub(super) fn limited(attempts: u64) -> DefaultBudget {
+pub(crate) fn limited(attempts: u64) -> DefaultBudget {
     DefaultBudget::new(BudgetLimits {
         model_attempts: Some(attempts),
         uncertain_usage: UncertainUsagePolicy::KnownOnly,
         ..Default::default()
     })
 }
-pub(super) fn rate() -> InferenceError {
+pub(crate) fn rate() -> InferenceError {
     InferenceError::RateLimited {
         retry_after_secs: 0,
     }
 }
-pub(super) async fn run(
+pub(crate) async fn run(
     group: &ModelGroup,
     structured: bool,
     control: ExecutionControl<'_>,

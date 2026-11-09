@@ -1,4 +1,4 @@
-#[path = "../../frona-harness/tests/common/execution_support.rs"]
+#[path = "../../frona-harness/tests/helpers/execution.rs"]
 mod support;
 use support::*;
 

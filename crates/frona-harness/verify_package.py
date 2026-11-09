@@ -91,7 +91,7 @@ def main():
             assert "version" in dependency and "path" not in dependency, dependency
 
         consumer = temp / "consumer"
-        (consumer / "tests").mkdir(parents=True)
+        (consumer / "tests/helpers").mkdir(parents=True)
         (consumer / "src/bin/support").mkdir(parents=True)
         manifest = '''[package]
 name = "frona-packaged-consumer"
@@ -135,10 +135,12 @@ tempfile = "3"
         for recipe in RECIPES:
             copy_rust(f"examples/{recipe}.rs", f"src/bin/{recipe}.rs")
         copy_rust("examples/support/mod.rs", "src/bin/support/mod.rs")
-        copy_rust("tests/common/portable_dtos.rs", "tests/portable_dtos.rs")
-        copy_rust("tests/common/ownership.rs", "src/lib.rs")
-        copy_rust("tests/common/ownership_tests.rs", "tests/ownership.rs")
-        annotated = (packaged / "tests/sdk_annotated_tools.rs").read_text()
+        copy_rust("tests/portable_dtos.rs", "tests/portable_dtos.rs")
+        copy_rust("tests/helpers/ownership.rs", "src/lib.rs")
+        copy_rust("tests/ownership.rs", "tests/ownership.rs")
+        for helper in ("mod.rs", "execution.rs", "ownership.rs"):
+            copy_rust(f"tests/helpers/{helper}", f"tests/helpers/{helper}")
+        annotated = (packaged / "tests/annotated_tools.rs").read_text()
         annotated = annotated.replace("frona_harness::", "sdk::").replace("../examples/support/mod.rs", "../src/bin/support/mod.rs")
         (consumer / "tests/annotated.rs").write_text(annotated)
         renamed = (packaged / "tests/renamed.rs").read_text().replace("use frona_harness as sdk;", "")

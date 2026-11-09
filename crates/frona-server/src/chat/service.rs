@@ -1832,13 +1832,11 @@ impl ChatService {
             .db()
             .query(query)
             .bind(("status", MessageStatus::Executing))
-            .await;
+            .await
+            .and_then(|mut response| response.take(0));
 
         match result {
-            Ok(mut r) => {
-                let messages: Vec<Message> = r.take(0).unwrap_or_default();
-                messages
-            }
+            Ok(messages) => messages,
             Err(e) => {
                 tracing::error!(error = %e, "Failed to find executing chat messages");
                 vec![]

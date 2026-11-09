@@ -1161,3 +1161,93 @@ async fn resume_all_marks_only_in_progress_cron_runs_failed() {
          resume_in_flight_crons running after spawn, catching just-spawned runs"
     );
 }
+
+#[tokio::test]
+async fn resume_all_waits_for_required_orphan_recovery_before_spawning_tasks() {
+    let (state, _tmp) = test_app_state().await;
+    let executor = make_executor(&state);
+    let mut orphan = make_task(TaskKind::CronRun {
+        source_cron_id: "prior-template".into(),
+        source_chat_id: None,
+        source_agent_id: None,
+        fire_at: Utc::now(),
+        sequence_num: 1,
+    });
+    orphan.status = TaskStatus::InProgress;
+    let pending = make_task(TaskKind::Direct {
+        source_chat_id: None,
+    });
+    let repo: SurrealRepo<Task> = SurrealRepo::new(state.db.clone());
+    repo.create(&orphan).await.unwrap();
+    repo.create(&pending).await.unwrap();
+    state
+        .db
+        .query(
+            "DEFINE EVENT refuse_orphan_recovery ON TABLE task \
+         WHEN $event = 'UPDATE' AND $before.kind.CronRun IS NOT NONE \
+         AND $after.status.Failed IS NOT NONE \
+         THEN { THROW 'orphan recovery storage unavailable'; };",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+    executor.resume_all().await;
+    // Give any incorrectly spawned worker a chance to cross its first durable
+    // boundary. The second half proves the same fixture can execute after repair.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let unchanged = state
+        .task_service
+        .find_by_id(&pending.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged.status, TaskStatus::Pending);
+    assert!(unchanged.chat_id.is_none());
+    assert_eq!(
+        state
+            .task_service
+            .find_by_id(&orphan.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::InProgress
+    );
+
+    state
+        .db
+        .query("REMOVE EVENT refuse_orphan_recovery ON TABLE task;")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    executor.resume_all().await;
+    assert_eq!(
+        state
+            .task_service
+            .find_by_id(&orphan.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Failed
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let resumed = state
+                .task_service
+                .find_by_id(&pending.id)
+                .await
+                .unwrap()
+                .unwrap();
+            if resumed.status != TaskStatus::Pending {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("successful orphan recovery must allow pending work to resume");
+}

@@ -56,24 +56,28 @@ use crate::db::repo::spaces::SurrealSpaceRepo;
 
 #[derive(Clone, Default)]
 pub struct ActiveSessions {
-    inner: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    inner: Arc<Mutex<HashMap<String, (u64, CancellationToken)>>>,
+    sequence: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl ActiveSessions {
     pub async fn register(&self, chat_id: &str) -> CancellationToken {
         let mut map = self.inner.lock().await;
         if let Some(existing) = map.get(chat_id) {
-            existing.cancel();
+            existing.1.cancel();
         }
         let token = CancellationToken::new();
-        map.insert(chat_id.to_string(), token.clone());
+        let generation = self
+            .sequence
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        map.insert(chat_id.to_string(), (generation, token.clone()));
         token
     }
 
     pub async fn cancel(&self, chat_id: &str) -> bool {
         let map = self.inner.lock().await;
         if let Some(token) = map.get(chat_id) {
-            token.cancel();
+            token.1.cancel();
             true
         } else {
             false
@@ -82,6 +86,24 @@ impl ActiveSessions {
 
     pub async fn remove(&self, chat_id: &str) {
         self.inner.lock().await.remove(chat_id);
+    }
+
+    /// Capture only the generation owned by this token. A worker may start
+    /// after a replacement has already registered, so reading by chat alone
+    /// would let the old worker unregister its replacement.
+    pub async fn generation(&self, chat_id: &str, token: &CancellationToken) -> Option<u64> {
+        self.inner
+            .lock()
+            .await
+            .get(chat_id)
+            .filter(|(_, registered)| registered == token)
+            .map(|(generation, _)| *generation)
+    }
+    pub async fn remove_generation(&self, chat_id: &str, generation: Option<u64>) {
+        let mut map = self.inner.lock().await;
+        if map.get(chat_id).map(|(current, _)| *current) == generation {
+            map.remove(chat_id);
+        }
     }
 
     pub async fn count(&self) -> usize {
@@ -838,6 +860,41 @@ mod tests {
     async fn test_cancel_returns_false_for_missing() {
         let sessions = ActiveSessions::default();
         assert!(!sessions.cancel("nonexistent").await);
+    }
+
+    #[tokio::test]
+    async fn finished_worker_cannot_unregister_its_continuation() {
+        let sessions = ActiveSessions::default();
+        let first = sessions.register("chat").await;
+        let generation = sessions.generation("chat", &first).await;
+        let next = sessions.register("chat").await;
+        assert!(first.is_cancelled());
+        sessions.remove_generation("chat", generation).await;
+        assert!(sessions.cancel("chat").await);
+        assert!(next.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn replaced_worker_cannot_capture_the_new_workers_generation() {
+        let sessions = ActiveSessions::default();
+        let first = sessions.register("chat").await;
+        let next = sessions.register("chat").await;
+        // The replacement can register before the original worker even starts.
+        let stale = sessions.generation("chat", &first).await;
+        assert_eq!(stale, None);
+        sessions.remove_generation("chat", stale).await;
+        let foreign = sessions.generation("chat", &CancellationToken::new()).await;
+        assert_eq!(foreign, None);
+        sessions.remove_generation("chat", foreign).await;
+        assert_eq!(sessions.count().await, 1);
+        assert!(!next.is_cancelled());
+        assert!(sessions.cancel("chat").await);
+        assert!(next.is_cancelled());
+        // Clones retain the registration identity and can clean up normally.
+        let current = sessions.generation("chat", &next.clone()).await;
+        assert!(current.is_some());
+        sessions.remove_generation("chat", current).await;
+        assert_eq!(sessions.count().await, 0);
     }
 
     #[test]

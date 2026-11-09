@@ -352,3 +352,89 @@ async fn execute_cron_does_not_stamp_chat_id_on_template() {
         reloaded.chat_id
     );
 }
+
+async fn assert_cron_read_failure_prevents_spawn(active: bool) {
+    let (state, _tmp) = test_app_state().await;
+    let executor = install_executor(&state);
+    let template = make_template(&state, CronMode::Singleton, CronConcurrency::Replace).await;
+    let (run, cancellation) = arrange_in_flight_run(&state, &executor, &template, 1).await;
+    if !active {
+        state
+            .task_service
+            .mark_completed(&run.id, None)
+            .await
+            .unwrap();
+    }
+    // Both queries deserialize durable Task records. A malformed existing row
+    // exercises their independent error boundaries without disabling new writes.
+    state
+        .db
+        .query("UPDATE $record SET title = 42;")
+        .bind((
+            "record",
+            surrealdb::types::RecordId::new("task", run.id.clone()),
+        ))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    if active {
+        assert!(
+            state
+                .task_service
+                .find_active_runs_by_cron(&template.id)
+                .await
+                .is_err()
+        );
+    } else {
+        assert!(
+            state
+                .task_service
+                .find_active_runs_by_cron(&template.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            state
+                .task_service
+                .find_runs_by_cron(&template.id)
+                .await
+                .is_err()
+        );
+    }
+
+    assert!(execute_cron(&state, &template).await.is_err());
+    assert!(
+        !cancellation.is_cancelled(),
+        "a failed read must not replace the existing run"
+    );
+    state
+        .db
+        .query("UPDATE $record SET title = 'repaired';")
+        .bind((
+            "record",
+            surrealdb::types::RecordId::new("task", run.id.clone()),
+        ))
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let runs = state
+        .task_service
+        .find_runs_by_cron(&template.id)
+        .await
+        .unwrap();
+    assert_eq!(runs.len(), 1, "a failed read must not create a new CronRun");
+    assert_eq!(runs[0].id, run.id);
+}
+
+#[tokio::test]
+async fn execute_cron_propagates_active_run_read_failure_before_effects() {
+    assert_cron_read_failure_prevents_spawn(true).await;
+}
+
+#[tokio::test]
+async fn execute_cron_propagates_sequence_read_failure_before_spawning() {
+    assert_cron_read_failure_prevents_spawn(false).await;
+}

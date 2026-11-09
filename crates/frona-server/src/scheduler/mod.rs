@@ -406,8 +406,7 @@ pub async fn execute_cron(
     let active = state
         .task_service
         .find_active_runs_by_cron(&template.id)
-        .await
-        .unwrap_or_default();
+        .await?;
 
     if !active.is_empty() {
         match concurrency {
@@ -431,9 +430,9 @@ pub async fn execute_cron(
     let next_sequence = state
         .task_service
         .find_runs_by_cron(&template.id)
-        .await
-        .map(|runs| runs.len() as u64 + 1)
-        .unwrap_or(1);
+        .await?
+        .len() as u64
+        + 1;
 
     let run = state
         .task_service

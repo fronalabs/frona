@@ -669,6 +669,10 @@ impl Harness {
         message_id: &str,
         cancel_token: CancellationToken,
     ) -> Result<(), AppError> {
+        let generation = self
+            .active_sessions
+            .generation(chat_id, &cancel_token)
+            .await;
         let builder = Box::new(DefaultConversationBuilder {
             user_service: self.user_service.clone(),
             storage_service: self.storage_service.clone(),
@@ -684,7 +688,9 @@ impl Harness {
             None,
         )
         .await;
-        self.active_sessions.remove(chat_id).await;
+        self.active_sessions
+            .remove_generation(chat_id, generation)
+            .await;
         Ok(())
     }
 
@@ -696,6 +702,10 @@ impl Harness {
         execution: NewExecution,
     ) -> Result<(), AppError> {
         let cancel_token = self.active_sessions.register(chat_id).await;
+        let generation = self
+            .active_sessions
+            .generation(chat_id, &cancel_token)
+            .await;
         let builder = Box::new(DefaultConversationBuilder {
             user_service: self.user_service.clone(),
             storage_service: self.storage_service.clone(),
@@ -712,7 +722,9 @@ impl Harness {
             execution,
         )
         .await;
-        self.active_sessions.remove(chat_id).await;
+        self.active_sessions
+            .remove_generation(chat_id, generation)
+            .await;
         Ok(())
     }
 

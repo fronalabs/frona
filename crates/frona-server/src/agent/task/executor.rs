@@ -256,7 +256,10 @@ impl TaskExecutor {
         // the freshly-spawned InProgress CronRuns would themselves be matched
         // by the orphan query and flipped to Failed mid-turn, yanking
         // `complete_task` out of the agent's registry on the next session build.
-        self.resume_in_flight_crons().await;
+        if let Err(error) = self.resume_in_flight_crons().await {
+            tracing::error!(%error, "Failed to recover cron runs");
+            return;
+        }
 
         let tasks = match self.harness.task_service.find_resumable().await {
             Ok(tasks) => tasks,
@@ -288,34 +291,18 @@ impl TaskExecutor {
 
     /// Marks crash-interrupted CronRuns Failed instead of restarting them.
     /// The next scheduled tick fires fresh if the cron's concurrency allows.
-    async fn resume_in_flight_crons(&self) {
-        let orphans = match self.harness.task_service.find_orphaned_cron_runs().await {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to query orphaned CronRuns");
-                return;
-            }
-        };
-
-        if orphans.is_empty() {
-            return;
-        }
-
-        tracing::info!(count = orphans.len(), "Marking orphaned CronRuns as Failed");
-
+    async fn resume_in_flight_crons(&self) -> Result<(), AppError> {
+        let orphans = self.harness.task_service.find_orphaned_cron_runs().await?;
         for run in orphans {
-            if let Err(e) = self
-                .harness
+            self.harness
                 .task_service
                 .mark_failed(
                     &run.id,
-                    "Server restarted while CronRun was in flight".to_string(),
+                    "Server restarted while CronRun was in flight".to_owned(),
                 )
-                .await
-            {
-                tracing::warn!(error = %e, task_id = %run.id, "Failed to mark orphan CronRun");
-            }
+                .await?;
         }
+        Ok(())
     }
 
     pub async fn run_task_by_id(&self, task_id: &str) -> Result<(), AppError> {

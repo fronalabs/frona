@@ -167,6 +167,9 @@ pub(crate) async fn stream_message(
             agent_service: state.agent_service.clone(),
         });
         let active_sessions = state.active_sessions.clone();
+        let generation = active_sessions
+            .generation(&chat_id_clone, &cancel_token)
+            .await;
         tokio::spawn(async move {
             harness
                 .run_turn(
@@ -179,7 +182,9 @@ pub(crate) async fn stream_message(
                     None,
                 )
                 .await;
-            active_sessions.remove(&chat_id_clone).await;
+            active_sessions
+                .remove_generation(&chat_id_clone, generation)
+                .await;
         });
 
         Ok(Json(user_response))

@@ -697,7 +697,6 @@ async fn ontology_cas_writes_and_rejects_stale() {
 async fn ontology_cas_allows_only_one_concurrent_writer() {
     let r = std::sync::Arc::new(repo().await);
     let writers = 32;
-    let mut largest_success_count = 0;
     for round in 0..4 {
         let user_id = format!("u-{round}");
         assert_eq!(
@@ -714,31 +713,31 @@ async fn ontology_cas_allows_only_one_concurrent_writer() {
             let user_id = user_id.clone();
             tasks.spawn(async move {
                 start.wait().await;
-                r.ontology_upsert_cas(
-                    &user_id,
-                    &format!("Ontology(Declaration(Class(:Writer{writer})))"),
-                    "ofn",
-                    1,
-                )
-                .await
-                .unwrap()
+                let owl = format!("Ontology(Declaration(Class(:Writer{writer})))");
+                let version = r
+                    .ontology_upsert_cas(&user_id, &owl, "ofn", 1)
+                    .await
+                    .unwrap();
+                version.map(|version| (version, owl))
             });
         }
 
-        let mut successful_writers = 0;
+        let mut successful_writers = Vec::new();
         while let Some(result) = tasks.join_next().await {
-            if result.unwrap().is_some() {
-                successful_writers += 1;
+            if let Some(winner) = result.unwrap() {
+                successful_writers.push(winner);
             }
         }
-        largest_success_count = largest_success_count.max(successful_writers);
-        assert_eq!(r.ontology_get(&user_id).await.unwrap().unwrap().version, 2);
+        assert_eq!(
+            successful_writers.len(),
+            1,
+            "a version can be consumed by only one concurrent writer (round {round})",
+        );
+        let (version, owl) = successful_writers.pop().unwrap();
+        assert_eq!(version, 2);
+        let stored = r.ontology_get(&user_id).await.unwrap().unwrap();
+        assert_eq!((stored.version, stored.owl), (version, owl));
     }
-
-    assert_eq!(
-        largest_success_count, 1,
-        "a version can be consumed by only one concurrent writer",
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -752,30 +751,30 @@ async fn ontology_cas_allows_only_one_concurrent_initial_writer() {
         let start = start.clone();
         tasks.spawn(async move {
             start.wait().await;
-            r.ontology_upsert_cas(
-                "new-user",
-                &format!("Ontology(Declaration(Class(:Writer{writer})))"),
-                "ofn",
-                0,
-            )
-            .await
+            let owl = format!("Ontology(Declaration(Class(:Writer{writer})))");
+            let version = r
+                .ontology_upsert_cas("new-user", &owl, "ofn", 0)
+                .await
+                .unwrap();
+            version.map(|version| (version, owl))
         });
     }
 
-    let mut successful_writers = 0;
+    let mut successful_writers = Vec::new();
     while let Some(result) = tasks.join_next().await {
-        if result.unwrap().unwrap().is_some() {
-            successful_writers += 1;
+        if let Some(winner) = result.unwrap() {
+            successful_writers.push(winner);
         }
     }
     assert_eq!(
-        successful_writers, 1,
+        successful_writers.len(),
+        1,
         "an absent version can be consumed only once"
     );
-    assert_eq!(
-        r.ontology_get("new-user").await.unwrap().unwrap().version,
-        1
-    );
+    let (version, owl) = successful_writers.pop().unwrap();
+    assert_eq!(version, 1);
+    let stored = r.ontology_get("new-user").await.unwrap().unwrap();
+    assert_eq!((stored.version, stored.owl), (version, owl));
 }
 
 #[tokio::test]

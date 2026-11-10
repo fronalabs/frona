@@ -193,7 +193,8 @@ impl PkmService {
             self.messages.clone(),
             self.user_service.clone(),
         );
-        match consolidator.run().await {
+        // Keep the large stage future out of the enclosing sweep futures.
+        match Box::pin(consolidator.run()).await {
             // Every transition persisted on its way through, `Done` included, so there is
             // nothing left to write - only to report.
             Ok(()) => Ok(ctx.record().await.stats),

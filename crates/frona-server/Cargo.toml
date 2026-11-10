@@ -65,9 +65,8 @@ xml-rs = "1"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7", features = ["cors", "fs", "trace", "set-header", "timeout"] }
 tower_governor = "0.8"
-# 3.3.0 overflows the default test-thread stack during indexed inserts.
-# Keep the SDK and its internal crates locked together at 3.2.4.
-surrealdb = { version = "=3.2.4", features = ["kv-rocksdb"] }
+# 3.3 includes the in-memory engine's concurrent-write isolation fix.
+surrealdb = { version = "=3.3.5", features = ["kv-rocksdb"] }
 futures = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
 frona-derive = { path = "../frona-derive" }
@@ -193,7 +192,7 @@ aws-smithy-eventstream = "0.61"
 aws-smithy-async = "1"
 aws-runtime = "1"
 approx = "0.5"
-surrealdb = { version = "=3.2.4", features = ["kv-mem"] }
+surrealdb = { version = "=3.3.5", features = ["kv-mem"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

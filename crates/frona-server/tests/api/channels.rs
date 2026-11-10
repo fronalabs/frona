@@ -134,6 +134,7 @@ async fn telegram_webhook_creates_entities_with_metadata() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
+    wait_for_inbound_message(&state, &user_id, "dm:12345").await;
     let app = build_app(state.clone());
     let resp = app
         .oneshot(auth_get(&format!("/api/spaces/{space_id}/chats"), &token))
@@ -268,6 +269,7 @@ async fn telegram_webhook_persists_when_channel_is_signal_mode() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
+    wait_for_inbound_message(&state, &user_id, "dm:77777").await;
     let app = build_app(state.clone());
     let resp = app.oneshot(auth_get("/api/chats", &token)).await.unwrap();
     let chats = body_json(resp).await;
@@ -996,6 +998,27 @@ where
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     panic!("timeout waiting for: {label}");
+}
+
+async fn wait_for_inbound_message(state: &AppState, user_id: &str, external_chat_id: &str) {
+    // Webhooks acknowledge enqueueing; the inbound pipeline persists separately.
+    poll_until("inbound message persisted", || async {
+        let chats = state.chat_service.list_chats(user_id).await.unwrap();
+        let Some(chat) = chats
+            .iter()
+            .find(|chat| chat.channel_external_id.as_deref() == Some(external_chat_id))
+        else {
+            return false;
+        };
+        state
+            .chat_service
+            .get_stored_messages(&chat.id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|message| message.role == frona::chat::message::models::MessageRole::User)
+    })
+    .await;
 }
 
 #[tokio::test]

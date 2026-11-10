@@ -4,3 +4,14 @@ debug = "line-tables-only"
 
 [profile.test]
 debug = "line-tables-only"
+
+# SurrealDB's unoptimized embedded query frames can exhaust the default thread
+# stack beneath application futures. Tests inherit these dependency overrides.
+[profile.dev.package.surrealdb-core]
+opt-level = 1
+
+[profile.dev.package.surrealdb-datastore]
+opt-level = 1
+
+[profile.dev.package.surrealdb-idx]
+opt-level = 1

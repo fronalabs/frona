@@ -16,7 +16,8 @@ use crate::{
         error::InferenceError,
         observation::{LatencyMetrics, Observations},
         provider::{
-            InferenceCounter, ModelConfig, ModelProvider, ModelRequestSettings, StreamToken,
+            InferenceCounter, ModelConfig, ModelProvider, ModelRequestSettings, ResolvedModel,
+            RigModelAdapter, StreamToken,
             platform::{ProviderPlatform, build_provider},
         },
     },
@@ -79,7 +80,7 @@ pub enum UsageReport {
 }
 
 impl UsageReport {
-    pub(super) fn observed(&self) -> Option<&Usage> {
+    pub fn observed(&self) -> Option<&Usage> {
         match self {
             Self::Reported(usage) | Self::LegacyNormalized(usage) => Some(usage),
             Self::Unavailable => None,
@@ -131,6 +132,60 @@ pub struct ModelOutput {
 }
 
 impl ModelOutput {
+    pub(crate) fn from_response(response: rig_core::completion::CompletionResponse) -> Self {
+        let mut metadata = serde_json::to_value(&response).unwrap_or_default();
+        metadata["response_id"] = serde_json::json!(response.origin.response_id);
+        let stop = response.stop();
+        Self {
+            origin: Some(response.origin),
+            stop: Some(stop),
+            content: response.choice,
+            structured: None,
+            usage: UsageReport::Reported(response.usage),
+            metadata,
+            ttft_ms: None,
+        }
+    }
+
+    /// Validate only after admission/accounting has recorded the returned usage.
+    /// Failure retains the original content, provenance, usage and metadata.
+    pub fn ensure_complete(&self) -> Result<(), InferenceError> {
+        use rig_core::message::StopReason;
+        let message = match &self.stop {
+            Some(StopReason::Length) => {
+                Some("provider output-token limit interrupted the response")
+            }
+            Some(StopReason::Error(reason) | StopReason::Aborted(reason)) => Some(reason.as_str()),
+            _ => None,
+        };
+        match message {
+            Some(message) => Err(self.invalid(format!("Incomplete provider response: {message}"))),
+            None => Ok(()),
+        }
+    }
+
+    pub fn validate(&self, schema: Option<&serde_json::Value>) -> Result<(), InferenceError> {
+        self.ensure_complete()?;
+        if let Some(schema) = schema {
+            let value = self.structured.as_ref().ok_or_else(|| {
+                self.invalid("model did not return a valid structured submission")
+            })?;
+            let validator = jsonschema::validator_for(schema)
+                .map_err(|error| self.invalid(error.to_string()))?;
+            if let Err(error) = validator.validate(value) {
+                return Err(self.invalid(error.to_string()));
+            }
+        }
+        Ok(())
+    }
+
+    fn invalid(&self, message: impl Into<String>) -> InferenceError {
+        InferenceError::InvalidOutput {
+            message: message.into(),
+            output: Box::new(self.clone()),
+        }
+    }
+
     pub fn new(content: Vec<AssistantContent>, usage: UsageReport) -> Self {
         Self {
             origin: None,
@@ -207,6 +262,39 @@ impl<'a> Model<'a> {
             connection: ModelProviderConfig::default(),
             api: None,
         }
+    }
+
+    /// Embed a configured Rig model without rebuilding its transport or credentials.
+    /// Frona final-wire extras require a Frona-owned transport and are not applied
+    /// to externally supplied models.
+    pub fn from_rig(
+        model: impl Into<rig_core::DynModel<rig_core::operation::Completion>>,
+    ) -> Result<Model<'static>, ModelError> {
+        let native = model.into();
+        let provider = native.name().replace('.', "-");
+        let id = native
+            .id()
+            .ok_or_else(|| {
+                InferenceError::ConfigError("Rig completion model must name a model ID".into())
+            })?
+            .to_owned();
+        let handle = Handle::try_new(&provider)
+            .map_err(|error| InferenceError::ConfigError(error.to_string()))?;
+        validate_model(&id)?;
+        let config = ModelConfig {
+            catalog_provider: native.name().into(),
+            provider_handle: handle,
+            model_id: id,
+            provider: ProviderModel::Custom {
+                name: native.name().into(),
+            },
+            request_settings: ModelRequestSettings::default(),
+        };
+        let client: Arc<dyn ModelProvider> = Arc::new(SuppliedRigModel(native));
+        Ok(Model {
+            config: config.clone(),
+            backend: ModelBackend::Adapter(Arc::new(RigModelAdapter::new(client, config))),
+        })
     }
 
     pub fn from_adapter(
@@ -399,15 +487,7 @@ impl<'a> Model<'a> {
             return result
                 .map(|result| InvocationOutput {
                     origin: result.model,
-                    output: ModelOutput {
-                        usage: result.output.usage_report(),
-                        origin: result.output.origin,
-                        stop: result.output.stop,
-                        content: result.output.content,
-                        structured: None,
-                        metadata: result.output.metadata,
-                        ttft_ms: result.output.ttft_ms,
-                    },
+                    output: result.output,
                 })
                 .map_err(ModelError::Provider);
         }
@@ -415,6 +495,7 @@ impl<'a> Model<'a> {
             unreachable!()
         };
         let start = std::time::Instant::now();
+        let schema = request.schema.clone();
         let result = execution
             .model_attempt(
                 &self.config,
@@ -442,16 +523,7 @@ impl<'a> Model<'a> {
             .check_cancellation()
             .and(result)
             .and_then(|output| {
-                if let Some(
-                    stop @ (rig_core::message::StopReason::Length
-                    | rig_core::message::StopReason::Error(_)
-                    | rig_core::message::StopReason::Aborted(_)),
-                ) = &output.stop
-                {
-                    return Err(InferenceError::InferenceFailed(format!(
-                        "Model returned an incomplete turn: {stop:?}"
-                    )));
-                }
+                output.validate(schema.as_ref())?;
                 Ok(output)
             });
         if let Some(report) = report {
@@ -462,7 +534,16 @@ impl<'a> Model<'a> {
                 output,
                 origin: self.config.as_str(),
             })
-            .map_err(ModelError::Provider)
+            .map_err(|error| match error {
+                InferenceError::InvalidOutput { message, output } if schema.is_some() => {
+                    ModelError::Structured {
+                        model: self.config.as_str(),
+                        message,
+                        response: output,
+                    }
+                }
+                error => ModelError::Provider(error),
+            })
     }
 
     /// Preflight the request shape without admitting an attempt or recording usage.
@@ -558,99 +639,17 @@ impl ModelBuilder {
         };
         Ok(Model {
             config: config.clone(),
-            backend: ModelBackend::Adapter(Arc::new(BuiltinAdapter { client, config })),
+            backend: ModelBackend::Adapter(Arc::new(RigModelAdapter::new(client, config))),
         })
     }
 }
 
-struct BuiltinAdapter {
-    client: Arc<dyn ModelProvider>,
-    config: ModelConfig,
-}
+struct SuppliedRigModel(rig_core::DynModel<rig_core::operation::Completion>);
 
 #[async_trait]
-impl ModelAdapter for BuiltinAdapter {
-    fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            text: true,
-            tools: true,
-            streaming: true,
-            structured: true,
-            structured_streaming: false,
-            structured_tools: false,
-        }
-    }
-
-    async fn generate(
-        &self,
-        request: ModelRequest,
-        tokens: Option<mpsc::Sender<StreamToken>>,
-    ) -> Result<ModelOutput, InferenceError> {
-        self.client.ensure_usable(&self.config).await?;
-        let ModelRequest {
-            system,
-            messages,
-            tools,
-            schema,
-            max_tokens,
-            temperature,
-        } = request;
-        if let Some(schema) = schema {
-            let result = self
-                .client
-                .structured_output(
-                    &self.config,
-                    &system,
-                    messages,
-                    schema,
-                    max_tokens,
-                    temperature,
-                )
-                .await?;
-            let mut output = match result.response {
-                Some(response) => from_builtin(response),
-                None => ModelOutput::new(Vec::new(), UsageReport::Unavailable),
-            };
-            output.structured = Some(result.value);
-            return Ok(output);
-        }
-        let output = if let Some(tokens) = tokens {
-            self.client
-                .stream_inference(
-                    &self.config,
-                    &system,
-                    messages,
-                    tools,
-                    tokens,
-                    max_tokens,
-                    temperature,
-                )
-                .await?
-        } else {
-            self.client
-                .inference(
-                    &self.config,
-                    &system,
-                    messages,
-                    tools,
-                    max_tokens,
-                    temperature,
-                )
-                .await?
-        };
-        Ok(from_builtin(output))
-    }
-}
-
-fn from_builtin(output: crate::inference::provider::InferenceOutput) -> ModelOutput {
-    ModelOutput {
-        usage: output.usage_report(),
-        origin: output.origin,
-        stop: output.stop,
-        content: output.content,
-        structured: None,
-        metadata: output.metadata,
-        ttft_ms: output.ttft_ms,
+impl ModelProvider for SuppliedRigModel {
+    async fn resolve(&self, _model: &ModelConfig) -> Result<ResolvedModel, InferenceError> {
+        Ok(ResolvedModel::new(self.0.clone()))
     }
 }
 

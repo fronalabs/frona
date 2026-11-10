@@ -204,6 +204,36 @@ use helpers::{MockModelProvider, MockResponse};
 use rig_core::completion::message::{DocumentSourceKind, UserContent};
 use rig_core::completion::{AssistantContent, Message as RigMessage};
 
+// Compare provider capture against Rig's independently prepared wire view while
+// keeping assertions about the persisted/canonical conversation separate.
+fn native_history(
+    history: &[RigMessage],
+    system: &str,
+    model: &str,
+    tools: &[rig_core::completion::ToolDefinition],
+) -> Vec<RigMessage> {
+    use rig_core::{
+        operation::Completion,
+        test_utils::MockScript,
+        wire::{Operation, Wire},
+    };
+    let mut request = rig_core::completion::CompletionRequest::new("");
+    request.chat_history = std::iter::once(Arc::new(RigMessage::system(system)))
+        .chain(history.iter().cloned().map(Arc::new))
+        .collect();
+    request.tools = tools.iter().cloned().map(Arc::new).collect();
+    Completion::prepare(
+        request,
+        &MockScript::new("fixture").with_id(model).describe(),
+    )
+    .unwrap()
+    .chat_history
+    .into_iter()
+    .skip(1)
+    .map(Arc::unwrap_or_clone)
+    .collect()
+}
+
 struct App {
     db: Surreal<Db>,
     fixture: helpers::app_state::Fixture,
@@ -553,6 +583,8 @@ impl App {
         assert_eq!(reloaded.messages, retained);
         // Cross the actual inference boundary, including its history truncation.
         let history = session.rig_history;
+        let canonical = serde_json::to_value(&history).unwrap();
+        let expected = native_history(&history, &session.system_prompt, "conversation-model", &[]);
         frona::inference::text_inference(
             &session.model_group,
             &session.system_prompt,
@@ -563,10 +595,8 @@ impl App {
         .await
         .unwrap();
         let actual = self.model.last_history();
-        assert_eq!(
-            serde_json::to_value(&actual).unwrap(),
-            serde_json::to_value(&history).unwrap()
-        );
+        assert_eq!(actual, expected);
+        assert_eq!(serde_json::to_value(&history).unwrap(), canonical);
         let active = &retained[0];
         let texts: Vec<&str> = actual
             .iter()
@@ -616,12 +646,14 @@ impl App {
             images[0].data,
             DocumentSourceKind::Base64("ZXhhY3QtaW1hZ2UtY29udGVudA==".into())
         );
-        let call_at = actual.iter().position(|m| matches!(m, RigMessage::Assistant(rig_core::message::AssistantMessage { content, .. }) if content.iter().any(|c| matches!(c, AssistantContent::ToolCall(call) if call.function.name == "read_file")))).unwrap();
+        // Text-only inference projects tool pairs to text; the canonical
+        // conversation must still retain the exact callable pair and order.
+        let call_at = history.iter().position(|m| matches!(m, RigMessage::Assistant(rig_core::message::AssistantMessage { content, .. }) if content.iter().any(|c| matches!(c, AssistantContent::ToolCall(call) if call.function.name == "read_file")))).unwrap();
         assert!(
-            matches!(&actual[call_at + 1], RigMessage::User { content } if content.iter().any(|c| matches!(c, UserContent::ToolResult(_))))
+            matches!(&history[call_at + 1], RigMessage::User { content } if content.iter().any(|c| matches!(c, UserContent::ToolResult(_))))
         );
         assert!(
-            matches!(&actual[call_at + 2], RigMessage::Assistant(rig_core::message::AssistantMessage { content, .. }) if content.iter().any(|c| matches!(c, AssistantContent::Text(t) if t.text == "Following assistant text")))
+            matches!(&history[call_at + 2], RigMessage::Assistant(rig_core::message::AssistantMessage { content, .. }) if content.iter().any(|c| matches!(c, AssistantContent::Text(t) if t.text == "Following assistant text")))
         );
     }
 }
@@ -1731,18 +1763,15 @@ async fn switch_agent_preserves_task_and_heartbeat_builders() {
         assert!(history.iter().any(|m| matches!(m, RigMessage::Assistant(rig_core::message::AssistantMessage { content, .. }) if content.iter().any(|c| matches!(c, AssistantContent::Text(t) if t.text == "Target prior response")))));
         let user_texts: Vec<_> = history
             .iter()
-            .filter_map(|message| match message {
-                RigMessage::User { content } => Some(
-                    content
-                        .iter()
-                        .filter_map(|c| match c {
-                            UserContent::Text(text) => Some(text.text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join(""),
-                ),
-                _ => None,
+            .flat_map(|message| match message {
+                RigMessage::User { content } => content
+                    .iter()
+                    .filter_map(|c| match c {
+                        UserContent::Text(text) => Some(text.text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                _ => vec![],
             })
             .collect();
         let saved = app.messages().find_by_id("command").await.unwrap().unwrap();
@@ -1754,7 +1783,7 @@ async fn switch_agent_preserves_task_and_heartbeat_builders() {
         assert_eq!(
             user_texts
                 .iter()
-                .filter(|text| text.as_str() == saved.inference_content())
+                .filter(|text| **text == saved.inference_content())
                 .count(),
             1
         );
@@ -1772,8 +1801,8 @@ async fn switch_agent_preserves_task_and_heartbeat_builders() {
                     .contains("Original heartbeat checklist")
             );
         } else {
-            assert!(user_texts.contains(&"<task>\nOriginal task intent\n</task>".to_string()));
-            assert_eq!(user_texts.last().unwrap(), "/other-agent");
+            assert!(user_texts.contains(&"<task>\nOriginal task intent\n</task>"));
+            assert_eq!(*user_texts.last().unwrap(), "/other-agent");
         }
         assert_eq!(
             app.messages()
@@ -1864,7 +1893,18 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
                 .provider_turns
                 .insert(
                     "0".into(),
-                    serde_json::json!({"content":[{"type":"text","text":"default response"}]}),
+                    serde_json::to_value(
+                        rig_core::message::AssistantMessage::new(vec![AssistantContent::text(
+                            "default response",
+                        )])
+                        .with_origin(Some(rig_core::message::Origin::new(
+                            rig_core::test_utils::MOCK_API,
+                            "fixture",
+                            "conversation-model",
+                        )))
+                        .with_stop(Some(rig_core::message::StopReason::Stop)),
+                    )
+                    .unwrap(),
                 );
             let normal_history = app.model.last_history();
             let normal_system = app.model.system_prompts().last().unwrap().clone();
@@ -1890,8 +1930,19 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
             )
             .await
             .unwrap();
+            let canonical = serde_json::to_string(&session.rig_history).unwrap();
+            assert!(canonical.contains("opaque signature"));
             session.model_group.context_window = 18_000;
             app.manual(&mut session).await.unwrap();
+            assert_eq!(
+                app.messages()
+                    .find_by_id(&old_assistant.id)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                old_assistant,
+                "compaction must not rewrite the signed source turn",
+            );
             let provider = &app.model;
             let compact_history = provider.last_history();
             let prefix = &compact_history[..compact_history.len() - 1];
@@ -1910,13 +1961,15 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
             for exact in [
                 "call-historical-tools-0",
                 "EXACT HISTORICAL TOOL RESULT",
-                "opaque signature",
                 "historical reasoning",
                 "report.txt",
                 "ZXhhY3QtaW1hZ2UtY29udGVudA==",
             ] {
                 assert!(native.contains(exact), "missing {exact}: {native}");
             }
+            // The fixture uses a different dialect than the historical
+            // Anthropic turn: Rig projects its reasoning text, not its signature.
+            assert!(!native.contains("opaque signature"));
             assert!(!native.contains("EXACT ACTIVE REQUEST"));
             let instruction = serde_json::to_string(compact_history.last().unwrap()).unwrap();
             assert!(instruction.contains("preceding conversation"));
@@ -1989,14 +2042,21 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
             )
             .await
             .unwrap();
+            let previous_summary =
+                frona_harness::inference::compaction::summary_message("default response", None);
+            assert_eq!(later.rig_history[0], previous_summary);
             later.model_group.context_window = 18_000;
             app.manual(&mut later).await.unwrap();
             let compact = provider.last_history();
             assert_eq!(&compact[..compact.len() - 1], &normal[..compact.len() - 1]);
-            assert_eq!(
-                compact[0],
-                frona_harness::inference::compaction::summary_message("default response", None)
-            );
+            let RigMessage::User {
+                content: summary_content,
+            } = previous_summary
+            else {
+                panic!("summary must be a user message");
+            };
+            assert!(matches!(&compact[0], RigMessage::User { content }
+                if content.starts_with(&summary_content)));
             assert!(
                 !serde_json::to_string(&compact)
                     .unwrap()
@@ -2186,7 +2246,17 @@ async fn compaction_candidates_never_truncate_and_fallback_preserves_usage_scope
         );
         if fallback_fits {
             assert_eq!(result.unwrap(), "default response");
-            assert_eq!(fallback.last_history(), history);
+            assert_eq!(
+                fallback.last_history(),
+                native_history(&history, "Exact system", "fallback-model", &tools),
+            );
+            assert_eq!(
+                history,
+                vec![
+                    RigMessage::user("Keep exact history ".repeat(100)),
+                    RigMessage::user("Summarize preceding conversation"),
+                ]
+            );
             assert_eq!(fallback.tool_histories(), vec![tools]);
             assert_eq!(fallback.system_prompts(), vec!["Exact system"]);
             let rows: Vec<serde_json::Value> = db

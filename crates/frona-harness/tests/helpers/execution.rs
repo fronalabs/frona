@@ -12,14 +12,19 @@ use frona_harness::{
         observation::{
             AttemptObservation, AttemptOutcome, InferenceObserver, ObservationError, Observations,
         },
-        provider::{
-            InferenceOutput, ModelConfig, ModelProvider, ModelRequestSettings, StreamToken,
-            StructuredOutput,
-        },
+        provider::{ModelConfig, ModelProvider, ModelRequestSettings, ResolvedModel, StreamToken},
     },
     retry_config::RetryConfig,
 };
-use rig_core::completion::{AssistantContent, Message, request::ToolDefinition};
+use futures::StreamExt;
+use rig_core::completion::{AssistantContent, Message};
+use rig_core::{
+    driver::{Opened, Opening},
+    test_utils::{MockFrame, MockStreamEvent},
+    wire::Mode,
+};
+#[path = "rig.rs"]
+mod rig;
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
@@ -31,6 +36,10 @@ pub(crate) fn usage(tokens: u64) -> Usage {
     Usage::new().total_tokens(tokens)
 }
 
+// Native streams buffer their first 64 characters while detecting textual tool calls.
+pub(crate) const NATIVE_PARTIAL: &str =
+    "This partial answer exceeds the initial sixty-four character detection buffer.";
+
 pub(crate) enum Step {
     Ok(u64),
     Fail(InferenceError),
@@ -39,14 +48,14 @@ pub(crate) enum Step {
     Cancel(CancellationToken),
 }
 pub(crate) struct Fake {
-    steps: Mutex<VecDeque<Step>>,
-    pub(crate) calls: Mutex<Vec<String>>,
+    steps: Arc<Mutex<VecDeque<Step>>>,
+    pub(crate) calls: Arc<Mutex<Vec<String>>>,
 }
 impl Fake {
     pub(crate) fn new(steps: impl IntoIterator<Item = Step>) -> Self {
         Self {
-            steps: Mutex::new(steps.into_iter().collect()),
-            calls: Mutex::new(Vec::new()),
+            steps: Arc::new(Mutex::new(steps.into_iter().collect())),
+            calls: Arc::new(Mutex::new(Vec::new())),
         }
     }
     async fn call(
@@ -114,62 +123,79 @@ impl ModelAdapter for FakeAdapter {
         self.0.call("sdk", tokens).await
     }
 }
-fn legacy(output: ModelOutput) -> InferenceOutput {
-    let UsageReport::Reported(usage) = output.usage else {
-        unreachable!()
-    };
-    InferenceOutput::new(output.content, usage)
-}
 #[async_trait]
 impl ModelProvider for Fake {
-    async fn inference(
-        &self,
-        model: &ModelConfig,
-        _: &str,
-        _: Vec<Message>,
-        _: Vec<ToolDefinition>,
-        _: Option<u64>,
-        _: Option<f64>,
-    ) -> Result<InferenceOutput, InferenceError> {
-        self.call(&model.model_id, None).await.map(legacy)
-    }
-    async fn stream_inference(
-        &self,
-        model: &ModelConfig,
-        _: &str,
-        _: Vec<Message>,
-        _: Vec<ToolDefinition>,
-        tokens: mpsc::Sender<StreamToken>,
-        _: Option<u64>,
-        _: Option<f64>,
-    ) -> Result<InferenceOutput, InferenceError> {
-        self.call(&model.model_id, Some(tokens)).await.map(legacy)
-    }
-    async fn structured_inference(
-        &self,
-        _: &ModelConfig,
-        _: &str,
-        _: Vec<Message>,
-        _: serde_json::Value,
-        _: Option<u64>,
-        _: Option<f64>,
-    ) -> Result<serde_json::Value, InferenceError> {
-        panic!("the richer structured hook must be used")
-    }
-    async fn structured_output(
-        &self,
-        model: &ModelConfig,
-        _: &str,
-        _: Vec<Message>,
-        _: serde_json::Value,
-        _: Option<u64>,
-        _: Option<f64>,
-    ) -> Result<StructuredOutput, InferenceError> {
-        let mut output = self.call(&model.model_id, None).await?;
-        Ok(StructuredOutput {
-            value: output.structured.take().unwrap(),
-            response: Some(legacy(output)),
-        })
+    async fn resolve(&self, model: &ModelConfig) -> Result<ResolvedModel, InferenceError> {
+        self.calls.lock().unwrap().push(model.model_id.clone());
+        let step = self
+            .steps
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("unexpected provider attempt");
+        if let Step::Fail(error) = step {
+            return Err(error);
+        }
+        let step = Mutex::new(Some(step));
+        Ok(ResolvedModel::new(rig::model(
+            model.model_id.clone(),
+            move |request, mode| {
+                let step = step
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("one invocation per resolution");
+                let structured = request.tools.iter().any(|tool| tool.name == "submit");
+                let output = move |tokens| {
+                    let content = if structured {
+                        vec![AssistantContent::ToolCall(
+                            rig_core::message::ToolCall::from_wire(
+                                "submission",
+                                rig_core::message::ToolFunction::new(
+                                    "submit".try_into().unwrap(),
+                                    serde_json::json!({"answer":"ok"}),
+                                ),
+                            ),
+                        )]
+                    } else {
+                        vec![AssistantContent::text("ok")]
+                    };
+                    ModelOutput::new(content, UsageReport::Reported(usage(tokens)))
+                };
+                match step {
+                    Step::Ok(tokens) => rig::reply(output(tokens)),
+                    Step::Partial(error) => Opening::ready(Opened::new(futures::stream::iter([
+                        Ok(MockFrame::Event(MockStreamEvent::Text(
+                            NATIVE_PARTIAL.into(),
+                        ))),
+                        Err(rig::error(error)),
+                    ]))),
+                    Step::Wait(started, release, tokens) => {
+                        let prefix = if matches!(mode, Mode::Streaming) {
+                            vec![Ok(MockFrame::Event(MockStreamEvent::Text(
+                                NATIVE_PARTIAL.into(),
+                            )))]
+                        } else {
+                            vec![]
+                        };
+                        Opening::ready(Opened::new(futures::stream::iter(prefix).chain(
+                            futures::stream::once(async move {
+                                let _ = started.send(());
+                                let _ = release.await;
+                                Ok(MockFrame::Response(Box::new(rig::response(output(tokens)))))
+                            }),
+                        )))
+                    }
+                    Step::Cancel(token) => Opening::new(async move {
+                        token.cancel();
+                        Ok(Opened::new(futures::stream::iter([Ok(
+                            MockFrame::Response(Box::new(rig::response(output(9)))),
+                        )])))
+                    }),
+                    Step::Fail(_) => unreachable!(),
+                }
+            },
+        )))
     }
 }
 pub(crate) fn group(fake: Arc<Fake>) -> ModelGroup {

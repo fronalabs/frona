@@ -19,10 +19,10 @@ use frona_harness::{
     config::{ProviderModel, RetryConfig},
     inference::{
         InferenceError, ModelConfig, Usage,
-        provider::{InferenceOutput, ModelProvider, StreamToken, group::ModelGroup},
+        provider::{ModelProvider, group::ModelGroup},
     },
 };
-use rig_core::completion::{AssistantContent, Message, request::ToolDefinition};
+use rig_core::completion::AssistantContent;
 use std::{
     collections::VecDeque,
     sync::{
@@ -37,19 +37,20 @@ use surrealdb::{
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
+#[derive(Clone)]
 struct Script {
-    outputs: Mutex<VecDeque<Result<Vec<AssistantContent>, InferenceError>>>,
-    calls: AtomicUsize,
-    entered: Semaphore,
-    release: Vec<Semaphore>,
+    outputs: Arc<Mutex<VecDeque<Result<Vec<AssistantContent>, InferenceError>>>>,
+    calls: Arc<AtomicUsize>,
+    entered: Arc<Semaphore>,
+    release: Vec<Arc<Semaphore>>,
 }
 impl Script {
     fn new(outputs: Vec<Result<Vec<AssistantContent>, InferenceError>>, gated: usize) -> Arc<Self> {
         Arc::new(Self {
-            outputs: Mutex::new(outputs.into()),
-            calls: AtomicUsize::new(0),
-            entered: Semaphore::new(0),
-            release: (0..gated).map(|_| Semaphore::new(0)).collect(),
+            outputs: Arc::new(Mutex::new(outputs.into())),
+            calls: Arc::new(AtomicUsize::new(0)),
+            entered: Arc::new(Semaphore::new(0)),
+            release: (0..gated).map(|_| Arc::new(Semaphore::new(0))).collect(),
         })
     }
 }
@@ -64,59 +65,59 @@ impl ModelProvider for Script {
         Ok(())
     }
 
-    async fn inference(
+    async fn resolve(
         &self,
-        _: &ModelConfig,
-        _: &str,
-        _: Vec<Message>,
-        tools: Vec<ToolDefinition>,
-        _: Option<u64>,
-        _: Option<f64>,
-    ) -> Result<InferenceOutput, InferenceError> {
-        assert_eq!(tools.len(), 2);
-        assert!(tools.iter().any(|tool| tool.name == "search_entities"));
-        assert!(tools.iter().any(|tool| tool.name == "read_entity"));
-        let call = self.calls.fetch_add(1, Ordering::SeqCst);
-        let output = self
-            .outputs
-            .lock()
-            .unwrap()
-            .pop_front()
-            .expect("unexpected model call");
-        self.entered.add_permits(1);
-        if let Some(gate) = self.release.get(call) {
-            gate.acquire().await.unwrap().forget();
+        model: &ModelConfig,
+    ) -> Result<frona_harness::inference::provider::ResolvedModel, InferenceError> {
+        let mut outputs = self.outputs.lock().unwrap();
+        if outputs
+            .front()
+            .is_some_and(|output| output.as_ref().is_err_and(InferenceError::is_terminal))
+        {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.entered.add_permits(1);
+            return Err(outputs.pop_front().unwrap().unwrap_err());
         }
-        Ok(InferenceOutput::new(
-            output?,
-            Usage::new()
-                .input_tokens(Some(10))
-                .output_tokens(Some(5))
-                .total_tokens(Some(15)),
+        drop(outputs);
+        let script = self.clone();
+        Ok(frona_harness::inference::provider::ResolvedModel::new(
+            crate::rig_fixture::model(model.model_id.clone(), move |request, mode| {
+                let script = script.clone();
+                rig_core::driver::Opening::new(async move {
+                    assert!(matches!(mode, rig_core::wire::Mode::Unary));
+                    assert_eq!(request.tools.len(), 2);
+                    assert!(
+                        request
+                            .tools
+                            .iter()
+                            .any(|tool| tool.name == "search_entities")
+                    );
+                    assert!(request.tools.iter().any(|tool| tool.name == "read_entity"));
+                    let call = script.calls.fetch_add(1, Ordering::SeqCst);
+                    let output = script
+                        .outputs
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .expect("unexpected model call");
+                    script.entered.add_permits(1);
+                    if let Some(gate) = script.release.get(call) {
+                        gate.acquire().await.unwrap().forget();
+                    }
+                    let content = output.map_err(crate::rig_fixture::error)?;
+                    crate::rig_fixture::reply(frona_harness::ModelOutput::new(
+                        content,
+                        frona_harness::UsageReport::Reported(
+                            Usage::new()
+                                .input_tokens(Some(10))
+                                .output_tokens(Some(5))
+                                .total_tokens(Some(15)),
+                        ),
+                    ))
+                    .await
+                })
+            }),
         ))
-    }
-    async fn stream_inference(
-        &self,
-        _: &ModelConfig,
-        _: &str,
-        _: Vec<Message>,
-        _: Vec<ToolDefinition>,
-        _: tokio::sync::mpsc::Sender<StreamToken>,
-        _: Option<u64>,
-        _: Option<f64>,
-    ) -> Result<InferenceOutput, InferenceError> {
-        unreachable!()
-    }
-    async fn structured_inference(
-        &self,
-        _: &ModelConfig,
-        _: &str,
-        _: Vec<Message>,
-        _: serde_json::Value,
-        _: Option<u64>,
-        _: Option<f64>,
-    ) -> Result<serde_json::Value, InferenceError> {
-        unreachable!()
     }
 }
 fn article() -> Result<Vec<AssistantContent>, InferenceError> {
@@ -321,7 +322,7 @@ async fn concurrent_pages_share_admission_and_retry_only_unfinished_pages() {
     }
     let budget = Arc::new(ObservedBudget {
         inner: DefaultBudget::new(BudgetLimits {
-            tokens: Some(4096),
+            tokens: Some(15),
             ..Default::default()
         }),
         refused: Notify::new(),
@@ -346,9 +347,9 @@ async fn concurrent_pages_share_admission_and_retry_only_unfinished_pages() {
     .unwrap();
     assert_eq!(stats.pages_built, 2);
     assert_eq!(budget.inner.snapshot().model_attempts, 2);
-    // ModelGroup retains LegacyNormalized provenance, so default policy charges
-    // its conservative minimum even when the provider supplies nonzero usage.
-    assert_eq!(budget.inner.snapshot().tokens, 8192);
+    // Each native response reports 15 tokens. Both admitted calls finish even
+    // though the first exhausts the shared allowance and blocks the third.
+    assert_eq!(budget.inner.snapshot().tokens, 30);
     let dirty = f.dirty().await;
     assert_eq!(dirty, ["three"]);
     f.assert_unwritten("three").await;

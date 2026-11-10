@@ -18,16 +18,15 @@ use aws_smithy_runtime_api::{
     },
 };
 use aws_smithy_types::{body::SdkBody, config_bag::ConfigBag};
-use rig_core::completion::{Message, request::ToolDefinition};
-use tokio::sync::{OnceCell, mpsc};
+use tokio::sync::OnceCell;
 
 use crate::config::ModelProviderConfig;
 use crate::inference::{
     error::InferenceError,
     provider::{
-        CredentialValidation, CredentialValidationError, InferenceCounter, InferenceOutput,
-        ModelConfig, ModelListError, ModelProvider, ProviderModelList, ProviderModelListSource,
-        RigProvider, StreamToken,
+        CredentialValidation, CredentialValidationError, InferenceCounter, ModelConfig,
+        ModelListError, ModelProvider, ProviderModelList, ProviderModelListSource, ResolvedModel,
+        RigProvider,
     },
 };
 
@@ -310,53 +309,8 @@ impl ModelProvider for BedrockProvider {
         }
     }
 
-    async fn inference(
-        &self,
-        model: &ModelConfig,
-        system: &str,
-        history: Vec<Message>,
-        tools: Vec<ToolDefinition>,
-        max_tokens: Option<u64>,
-        temperature: Option<f64>,
-    ) -> Result<InferenceOutput, InferenceError> {
-        self.connection()
-            .await?
-            .provider
-            .inference(model, system, history, tools, max_tokens, temperature)
-            .await
-    }
-
-    async fn stream_inference(
-        &self,
-        model: &ModelConfig,
-        system: &str,
-        history: Vec<Message>,
-        tools: Vec<ToolDefinition>,
-        tx: mpsc::Sender<StreamToken>,
-        max_tokens: Option<u64>,
-        temperature: Option<f64>,
-    ) -> Result<InferenceOutput, InferenceError> {
-        self.connection()
-            .await?
-            .provider
-            .stream_inference(model, system, history, tools, tx, max_tokens, temperature)
-            .await
-    }
-
-    async fn structured_inference(
-        &self,
-        model: &ModelConfig,
-        system: &str,
-        history: Vec<Message>,
-        schema: serde_json::Value,
-        max_tokens: Option<u64>,
-        temperature: Option<f64>,
-    ) -> Result<serde_json::Value, InferenceError> {
-        self.connection()
-            .await?
-            .provider
-            .structured_inference(model, system, history, schema, max_tokens, temperature)
-            .await
+    async fn resolve(&self, model: &ModelConfig) -> Result<ResolvedModel, InferenceError> {
+        self.connection().await?.provider.resolve(model).await
     }
 }
 
@@ -373,6 +327,7 @@ mod tests {
     use crate::Handle;
     use crate::config::InferenceConfig;
     use crate::config::ModelGroupConfig;
+    use crate::inference::provider::StreamToken;
     use crate::inference::{
         config::ModelRegistryConfig,
         provider::{
@@ -385,6 +340,7 @@ mod tests {
         provider::{ProvideCredentials, error::CredentialsError, future},
     };
     use aws_smithy_types::event_stream::{Header, HeaderValue, Message as EventMessage};
+    use rig_core::completion::{Message, request::ToolDefinition};
     use serde_json::{Value, json};
     use std::{
         sync::{
@@ -393,10 +349,23 @@ mod tests {
         },
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
+    use tokio::sync::mpsc;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
     };
+
+    async fn invoke(
+        provider: Arc<dyn ModelProvider>,
+        model: &ModelConfig,
+        request: crate::ModelRequest,
+        tokens: Option<tokio::sync::mpsc::Sender<StreamToken>>,
+    ) -> Result<crate::ModelOutput, InferenceError> {
+        use crate::ModelAdapter;
+        crate::inference::provider::RigModelAdapter::new(provider, model.clone())
+            .generate(request, tokens)
+            .await
+    }
 
     fn counter() -> InferenceCounter {
         InferenceCounter::default()
@@ -602,10 +571,10 @@ mod tests {
                 )
                 .mount(&server)
                 .await;
-            let provider = BedrockProvider::from_sdk(
+            let provider = Arc::new(BedrockProvider::from_sdk(
                 Client::from_conf(sdk_builder(&server.uri(), key).build()),
                 counter(),
-            );
+            ));
             let model = model(
                 json!({"inferenceConfig":{"topP":0.9},"additionalModelRequestFields":{"top_k":20,"nullable":null},"literal.dot":true}),
             );
@@ -615,32 +584,39 @@ mod tests {
                 description: "fixture".into(),
                 parameters: json!({"type":"object","properties":{}}),
             }];
-            let normal = provider
-                .inference(
-                    &model,
-                    "system",
-                    vec![Message::user("hello")],
-                    tools.clone(),
-                    None,
-                    None,
-                )
-                .await
-                .unwrap();
-            assert_eq!(normal.usage.input_tokens, Some(3));
+            let normal = invoke(
+                provider.clone(),
+                &model,
+                crate::ModelRequest {
+                    system: ("system").into(),
+                    messages: vec![Message::user("hello")],
+                    tools: tools.clone(),
+                    schema: None,
+                    max_tokens: None,
+                    temperature: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(normal.usage.observed().unwrap().input_tokens, Some(3));
             let (tx, mut rx) = mpsc::channel(8);
-            let stream = provider
-                .stream_inference(
-                    &model,
-                    "system",
-                    vec![Message::user("hello")],
-                    tools,
-                    tx,
-                    None,
-                    None,
-                )
-                .await
-                .unwrap();
-            assert_eq!(stream.usage.output_tokens, Some(2));
+            let stream = invoke(
+                provider.clone(),
+                &model,
+                crate::ModelRequest {
+                    system: ("system").into(),
+                    messages: vec![Message::user("hello")],
+                    tools: tools,
+                    schema: None,
+                    max_tokens: None,
+                    temperature: None,
+                },
+                Some(tx),
+            )
+            .await
+            .unwrap();
+            assert_eq!(stream.usage.observed().unwrap().output_tokens, Some(2));
             assert!(
                 matches!(rx.recv().await, Some(StreamToken::Text(text)) if text == "fixture reply")
             );
@@ -690,22 +666,17 @@ mod tests {
             )))
             .mount(&server)
             .await;
-        let provider = BedrockProvider::from_sdk(
+        let provider = Arc::new(BedrockProvider::from_sdk(
             Client::from_conf(sdk_builder(&server.uri(), true).build()),
             counter(),
-        );
-        let output = provider
-            .structured_inference(
-                &model(json!({"additionalModelRequestFields":{"top_k":3}})),
-                "system",
-                vec![Message::user("hello")],
-                json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}),
-                None,
-                None,
-            )
+        ));
+        let output = invoke(provider.clone(), &model(json!({"additionalModelRequestFields":{"top_k":3}})), crate::ModelRequest { system: ("system").into(), messages: vec![Message::user("hello")], tools: vec![], schema: Some(json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]})), max_tokens: None, temperature: None }, None)
             .await
             .unwrap();
-        assert_eq!(output, json!({"ok":true}));
+        assert_eq!(output.structured, Some(json!({"ok":true})));
+        assert_eq!(output.usage.observed().unwrap().input_tokens, Some(3));
+        assert!(output.origin.is_some());
+        assert!(!output.metadata.is_null());
         let requests = server.received_requests().await.unwrap();
         let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
         assert_eq!(body["toolConfig"]["tools"][0]["toolSpec"]["name"], "submit");
@@ -722,20 +693,76 @@ mod tests {
                 .extra_params
                 .insert(key.into(), Value::Null);
             assert!(
-                provider
-                    .structured_inference(
-                        &bad,
-                        "",
-                        vec![Message::user("hello")],
-                        json!({"type":"object"}),
-                        None,
-                        None
-                    )
-                    .await
-                    .is_err()
+                invoke(
+                    provider.clone(),
+                    &bad,
+                    crate::ModelRequest {
+                        system: ("").into(),
+                        messages: vec![Message::user("hello")],
+                        tools: vec![],
+                        schema: Some(json!({"type":"object"})),
+                        max_tokens: None,
+                        temperature: None
+                    },
+                    None
+                )
+                .await
+                .is_err()
             );
         }
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rejected_structured_bedrock_outputs_keep_native_response_and_usage() {
+        for (content, stop) in [
+            (json!([{"text":"no submission"}]), "end_turn"),
+            (
+                json!([{"toolUse":{"toolUseId":"invalid","name":"submit","input":{"ok":"wrong"}}}]),
+                "tool_use",
+            ),
+            (
+                json!([{"toolUse":{"toolUseId":"partial","name":"submit","input":{"ok":true}}}]),
+                "max_tokens",
+            ),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(response(content, stop)))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let provider = Arc::new(BedrockProvider::from_sdk(
+                Client::from_conf(sdk_builder(&server.uri(), true).build()),
+                counter(),
+            ));
+            let adapter =
+                crate::inference::provider::RigModelAdapter::new(provider, model(json!({})));
+            let model =
+                crate::Model::from_adapter("bedrock", "fixture.model-v1:0", adapter).unwrap();
+            let budget = crate::DefaultBudget::default();
+            let mut request = crate::ModelRequest::new("submit a result");
+            request.schema = Some(
+                json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}),
+            );
+            let error = model
+                .invoke_controlled(
+                    request,
+                    None,
+                    crate::inference::observation::Observations::default(),
+                    crate::ExecutionControl::new(&budget),
+                )
+                .await
+                .unwrap_err();
+            let crate::ModelError::Structured { response, .. } = error else {
+                panic!("expected retained structured failure: {error:?}");
+            };
+            assert_eq!(budget.snapshot().tokens, 5);
+            assert_eq!(response.usage.observed().unwrap().input_tokens, Some(3));
+            assert!(response.origin.is_some());
+            assert!(!response.metadata["raw"].is_null());
+            assert!(!response.content.is_empty());
+        }
     }
 
     #[tokio::test]

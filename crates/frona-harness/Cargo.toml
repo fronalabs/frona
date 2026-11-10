@@ -54,6 +54,7 @@ infer = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 
 [dev-dependencies]
+rig-core = { workspace = true, features = ["test-utils"] }
 tracing-subscriber.workspace = true
 aws-smithy-eventstream = "0.61"
 aws-credential-types = "1"

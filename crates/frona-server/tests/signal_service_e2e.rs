@@ -313,19 +313,20 @@ async fn signal_service(state: &AppState) -> Arc<SignalService> {
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[derive(Clone)]
 struct ForbidToolsProvider {
-    structured_calls: AtomicUsize,
-    inference_calls: AtomicUsize,
-    stream_calls: AtomicUsize,
+    structured_calls: Arc<AtomicUsize>,
+    inference_calls: Arc<AtomicUsize>,
+    stream_calls: Arc<AtomicUsize>,
     canned_extract: serde_json::Value,
 }
 
 impl ForbidToolsProvider {
     fn new(canned: serde_json::Value) -> Self {
         Self {
-            structured_calls: AtomicUsize::new(0),
-            inference_calls: AtomicUsize::new(0),
-            stream_calls: AtomicUsize::new(0),
+            structured_calls: Arc::new(AtomicUsize::new(0)),
+            inference_calls: Arc::new(AtomicUsize::new(0)),
+            stream_calls: Arc::new(AtomicUsize::new(0)),
             canned_extract: canned,
         }
     }
@@ -333,52 +334,39 @@ impl ForbidToolsProvider {
 
 #[async_trait::async_trait]
 impl frona_harness::inference::provider::ModelProvider for ForbidToolsProvider {
-    async fn inference(
+    async fn resolve(
         &self,
-        _model: &frona_harness::inference::ModelConfig,
-        _system_prompt: &str,
-        _chat_history: Vec<rig_core::completion::Message>,
-        _tools: Vec<rig_core::completion::request::ToolDefinition>,
-        _max_tokens: Option<u64>,
-        _temperature: Option<f64>,
+        model: &frona_harness::inference::ModelConfig,
     ) -> Result<
-        frona_harness::inference::provider::InferenceOutput,
+        frona_harness::inference::provider::ResolvedModel,
         frona_harness::inference::InferenceError,
     > {
-        self.inference_calls.fetch_add(1, Ordering::SeqCst);
-        panic!(
-            "ForbidToolsProvider::inference invoked — Signal mode must not enter the agentic tool loop"
-        );
-    }
-
-    async fn stream_inference(
-        &self,
-        _model: &frona_harness::inference::ModelConfig,
-        _system_prompt: &str,
-        _chat_history: Vec<rig_core::completion::Message>,
-        _tools: Vec<rig_core::completion::request::ToolDefinition>,
-        _token_tx: tokio::sync::mpsc::Sender<frona_harness::inference::provider::StreamToken>,
-        _max_tokens: Option<u64>,
-        _temperature: Option<f64>,
-    ) -> Result<
-        frona_harness::inference::provider::InferenceOutput,
-        frona_harness::inference::InferenceError,
-    > {
-        self.stream_calls.fetch_add(1, Ordering::SeqCst);
-        panic!("ForbidToolsProvider::stream_inference invoked — Signal mode must not stream");
-    }
-
-    async fn structured_inference(
-        &self,
-        _model: &frona_harness::inference::ModelConfig,
-        _system_prompt: &str,
-        _chat_history: Vec<rig_core::completion::Message>,
-        _schema: serde_json::Value,
-        _max_tokens: Option<u64>,
-        _temperature: Option<f64>,
-    ) -> Result<serde_json::Value, frona_harness::inference::InferenceError> {
-        self.structured_calls.fetch_add(1, Ordering::SeqCst);
-        Ok(self.canned_extract.clone())
+        let script = self.clone();
+        Ok(frona_harness::inference::provider::ResolvedModel::new(
+            helpers::rig::model(model.model_id.clone(), move |request, mode| {
+                if matches!(mode, rig_core::wire::Mode::Streaming) {
+                    script.stream_calls.fetch_add(1, Ordering::SeqCst);
+                    panic!("Signal mode must not stream");
+                }
+                if !request.tools.iter().any(|tool| tool.name == "submit") {
+                    script.inference_calls.fetch_add(1, Ordering::SeqCst);
+                    panic!("Signal mode must not enter the agentic tool loop");
+                }
+                script.structured_calls.fetch_add(1, Ordering::SeqCst);
+                helpers::rig::reply(frona_harness::ModelOutput::new(
+                    vec![rig_core::message::AssistantContent::ToolCall(
+                        rig_core::message::ToolCall::from_wire(
+                            "extract",
+                            rig_core::message::ToolFunction::new(
+                                "submit".try_into().unwrap(),
+                                script.canned_extract.clone(),
+                            ),
+                        ),
+                    )],
+                    frona_harness::UsageReport::Reported(Default::default()),
+                ))
+            }),
+        ))
     }
 }
 

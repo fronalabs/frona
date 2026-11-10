@@ -10,18 +10,15 @@ use frona_harness::{
         error::InferenceError,
         protocol::http::WireClient,
         provider::{
-            CredentialValidation, CredentialValidationError, InferenceCounter, InferenceOutput,
-            ModelConfig, ModelListError, ModelProvider, ProviderModelList, RigProvider,
-            StreamToken, platform::ResolvedConnection,
+            CredentialValidation, CredentialValidationError, InferenceCounter, ModelConfig,
+            ModelListError, ModelProvider, ProviderModelList, RigProvider,
+            platform::ResolvedConnection,
         },
     },
 };
-use rig_core::{
-    completion::{Message, ToolDefinition},
-    providers::copilot,
-};
+use rig_core::providers::copilot;
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::Mutex;
 
 use frona_harness::inference::provider::adapter::copilot::ENDPOINT;
 #[cfg(test)]
@@ -197,50 +194,11 @@ impl ModelProvider for SuppliedTokenProvider {
             .await
     }
 
-    async fn inference(
+    async fn resolve(
         &self,
         model: &ModelConfig,
-        system: &str,
-        history: Vec<Message>,
-        tools: Vec<ToolDefinition>,
-        max: Option<u64>,
-        temperature: Option<f64>,
-    ) -> Result<InferenceOutput, InferenceError> {
-        self.inference_provider()
-            .await?
-            .inference(model, system, history, tools, max, temperature)
-            .await
-    }
-
-    async fn stream_inference(
-        &self,
-        model: &ModelConfig,
-        system: &str,
-        history: Vec<Message>,
-        tools: Vec<ToolDefinition>,
-        tx: mpsc::Sender<StreamToken>,
-        max: Option<u64>,
-        temperature: Option<f64>,
-    ) -> Result<InferenceOutput, InferenceError> {
-        self.inference_provider()
-            .await?
-            .stream_inference(model, system, history, tools, tx, max, temperature)
-            .await
-    }
-
-    async fn structured_inference(
-        &self,
-        model: &ModelConfig,
-        system: &str,
-        history: Vec<Message>,
-        schema: serde_json::Value,
-        max: Option<u64>,
-        temperature: Option<f64>,
-    ) -> Result<serde_json::Value, InferenceError> {
-        self.inference_provider()
-            .await?
-            .structured_inference(model, system, history, schema, max, temperature)
-            .await
+    ) -> Result<frona_harness::inference::provider::ResolvedModel, InferenceError> {
+        self.inference_provider().await?.resolve(model).await
     }
 }
 
@@ -253,7 +211,9 @@ mod tests {
     };
     use frona_harness::config::{InferenceConfig, ModelGroupConfig};
     use rig_core::completion::AssistantContent;
+    use rig_core::completion::{Message, ToolDefinition};
     use serde_json::{Value, json};
+    use tokio::sync::mpsc;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{header, method, path},
@@ -368,6 +328,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn supplied_token_structured_results_keep_native_evidence_on_both_routes() {
+        use frona_harness::inference::{observation::Observations, provider::RigModelAdapter};
+        use frona_harness::{DefaultBudget, ExecutionControl, ModelAdapter, ModelRequest};
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/exchange"))
+            .and(header("authorization", "token fixture-github-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"token":"fixture-chat-token","expires_at":(Utc::now()+chrono::Duration::hours(1)).timestamp()})))
+            .expect(1).mount(&server).await;
+        let mut config = config();
+        config.api_key = Some("fixture-github-token".into());
+        let mut provider = SuppliedTokenProvider::new(&config, &server.uri(), counter()).unwrap();
+        provider.driver = integration(&server);
+        let provider = Arc::new(provider);
+        let schema =
+            json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]});
+        for id in ["fixture-chat", "fixture-codex"] {
+            let responses = id == "fixture-codex";
+            let model = model(id);
+            let adapter = RigModelAdapter::new(provider.clone(), model.clone());
+            for (name, arguments, incomplete, valid) in [
+                ("submit", "{\"ok\":true}", false, true),
+                ("submit", "{broken", false, false),
+                ("submit", "{\"ok\":1}", false, false),
+                ("not_submit", "{\"ok\":true}", false, false),
+                ("submit", "{\"ok\":true}", true, false),
+            ] {
+                let mut body = response(responses, name);
+                if responses {
+                    body["output"][0]["arguments"] = json!(arguments);
+                    if incomplete {
+                        body["status"] = json!("incomplete");
+                        body["incomplete_details"] = json!({"reason":"max_output_tokens"});
+                    }
+                } else {
+                    body["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] =
+                        json!(arguments);
+                    if incomplete {
+                        body["choices"][0]["finish_reason"] = json!("length");
+                    }
+                }
+                let scoped = Mock::given(method("POST"))
+                    .and(path(if responses {
+                        "/responses"
+                    } else {
+                        "/chat/completions"
+                    }))
+                    .and(header("authorization", "Bearer fixture-chat-token"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                    .expect(1)
+                    .mount_as_scoped(&server)
+                    .await;
+                let budget = DefaultBudget::default();
+                let output = ExecutionControl::new(&budget)
+                    .model_attempt(
+                        &model,
+                        Observations::default(),
+                        || {
+                            adapter.generate(
+                                ModelRequest {
+                                    system: "system".into(),
+                                    messages: vec![Message::user("answer")],
+                                    tools: vec![],
+                                    schema: Some(schema.clone()),
+                                    max_tokens: None,
+                                    temperature: None,
+                                },
+                                None,
+                            )
+                        },
+                        |output| output.usage.clone(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(budget.snapshot().tokens, 5);
+                assert_eq!(output.usage.observed().unwrap().total_tokens, Some(5));
+                assert_eq!(
+                    output.metadata["response_id"],
+                    if responses { "response1" } else { "chat1" }
+                );
+                assert!(output.origin.is_some());
+                assert!(
+                    output
+                        .content
+                        .iter()
+                        .any(|part| matches!(part, AssistantContent::ToolCall(_)))
+                );
+                match output.validate(Some(&schema)) {
+                    Ok(()) => {
+                        assert!(valid);
+                        assert_eq!(output.structured, Some(json!({"ok":true})));
+                    }
+                    Err(InferenceError::InvalidOutput { output: failed, .. }) => {
+                        assert!(!valid);
+                        assert_eq!(
+                            serde_json::to_value(&*failed).unwrap(),
+                            serde_json::to_value(&output).unwrap()
+                        );
+                    }
+                    result => panic!("unexpected {id} validation: {result:?}"),
+                }
+                drop(scoped);
+            }
+        }
+        server.verify().await;
+    }
+
+    #[tokio::test]
     async fn both_rig_routes_preserve_streams_tools_structured_calls_and_custom_parameters() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -413,20 +480,42 @@ mod tests {
                 }];
                 let output = if streaming {
                     let (tx, _rx) = mpsc::channel(16);
-                    provider
-                        .stream_inference(&model, "system", tool_history(), tools, tx, None, None)
-                        .await
+                    crate::provider_fixture::invoke(
+                        provider.clone(),
+                        &model,
+                        frona_harness::ModelRequest {
+                            system: ("system").into(),
+                            messages: tool_history(),
+                            tools: tools,
+                            schema: None,
+                            max_tokens: None,
+                            temperature: None,
+                        },
+                        Some(tx),
+                    )
+                    .await
                 } else {
-                    provider
-                        .inference(&model, "system", tool_history(), tools, None, None)
-                        .await
+                    crate::provider_fixture::invoke(
+                        provider.clone(),
+                        &model,
+                        frona_harness::ModelRequest {
+                            system: ("system").into(),
+                            messages: tool_history(),
+                            tools: tools,
+                            schema: None,
+                            max_tokens: None,
+                            temperature: None,
+                        },
+                        None,
+                    )
+                    .await
                 }
                 .unwrap();
-                assert_eq!(output.usage.input_tokens, Some(2));
-                assert_eq!(output.usage.output_tokens, Some(3));
+                assert_eq!(output.usage.observed().unwrap().input_tokens, Some(2));
+                assert_eq!(output.usage.observed().unwrap().output_tokens, Some(3));
                 assert!(output.content.iter().any(|content|matches!(content,AssistantContent::ToolCall(call) if call.function.name=="lookup" && serde_json::Value::Object(call.function.arguments.clone())==json!({"ok":true}))));
             }
-            assert_eq!(provider.structured_inference(&model,"system",vec![Message::user("hello")],json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}),None,None).await.unwrap(),json!({"ok":true}));
+            assert_eq!(crate::provider_fixture::invoke(provider.clone(), &model, frona_harness::ModelRequest { system: ("system").into(), messages: vec![Message::user("hello")], tools: vec![], schema: Some(json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]})), max_tokens: None, temperature: None }, None).await.map(|output| output.structured.expect("validated structured output")).unwrap(),json!({"ok":true}));
         }
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 6);

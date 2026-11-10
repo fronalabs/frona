@@ -548,74 +548,14 @@ impl ModelProvider for PreparedProvider {
             .await
     }
 
-    async fn inference(
+    async fn resolve(
         &self,
         model: &ModelConfig,
-        system_prompt: &str,
-        chat_history: Vec<rig_core::completion::Message>,
-        tools: Vec<rig_core::completion::request::ToolDefinition>,
-        max_tokens: Option<u64>,
-        temperature: Option<f64>,
-    ) -> Result<frona_harness::inference::provider::InferenceOutput, InferenceError> {
+    ) -> Result<frona_harness::inference::provider::ResolvedModel, InferenceError> {
         self.resolve_selected(model, true)
             .await?
             .client
-            .inference(
-                model,
-                system_prompt,
-                chat_history,
-                tools,
-                max_tokens,
-                temperature,
-            )
-            .await
-    }
-
-    async fn stream_inference(
-        &self,
-        model: &ModelConfig,
-        system_prompt: &str,
-        chat_history: Vec<rig_core::completion::Message>,
-        tools: Vec<rig_core::completion::request::ToolDefinition>,
-        token_tx: tokio::sync::mpsc::Sender<frona_harness::inference::provider::StreamToken>,
-        max_tokens: Option<u64>,
-        temperature: Option<f64>,
-    ) -> Result<frona_harness::inference::provider::InferenceOutput, InferenceError> {
-        self.resolve_selected(model, true)
-            .await?
-            .client
-            .stream_inference(
-                model,
-                system_prompt,
-                chat_history,
-                tools,
-                token_tx,
-                max_tokens,
-                temperature,
-            )
-            .await
-    }
-
-    async fn structured_inference(
-        &self,
-        model: &ModelConfig,
-        system_prompt: &str,
-        chat_history: Vec<rig_core::completion::Message>,
-        schema: serde_json::Value,
-        max_tokens: Option<u64>,
-        temperature: Option<f64>,
-    ) -> Result<serde_json::Value, InferenceError> {
-        self.resolve_selected(model, true)
-            .await?
-            .client
-            .structured_inference(
-                model,
-                system_prompt,
-                chat_history,
-                schema,
-                max_tokens,
-                temperature,
-            )
+            .resolve(model)
             .await
     }
 }
@@ -643,6 +583,419 @@ fn model_protocol(model: &ModelConfig) -> ApiSurface {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn group_retry_rechecks_rotated_identity_and_protocol_after_admission() {
+        use frona_harness::inference::observation::{
+            AttemptObservation, InferenceObserver, ObservationError, Observations,
+        };
+        use frona_harness::inference::{ModelGroup, ModelRequest, RequestOverrides};
+        use serde_json::json;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{header, method},
+        };
+        struct Rotate {
+            store: ProviderCredentials,
+            item: uuid::Uuid,
+            version: uuid::Uuid,
+            incompatible: bool,
+            changed: AtomicBool,
+        }
+        #[async_trait::async_trait]
+        impl InferenceObserver for Rotate {
+            async fn attempt(&self, _: AttemptObservation<'_>) -> Result<(), ObservationError> {
+                if !self.changed.swap(true, Ordering::SeqCst) {
+                    let (integration, secret) = if self.incompatible {
+                        (
+                            "openai_codex",
+                            json!({"access_token":"subscription-token","refresh_token":"renewable","expires_at":chrono::Utc::now()+chrono::Duration::hours(1),"account_id":"account","scopes":[]}),
+                        )
+                    } else {
+                        ("static", json!({"API_KEY":"rotated-key"}))
+                    };
+                    self.store
+                        .vault()
+                        .replace_by_id(self.item, self.version, integration, json!({}), secret)
+                        .await
+                        .unwrap();
+                }
+                Ok(())
+            }
+        }
+        struct ResponsesOnlyAtFixture;
+        #[async_trait::async_trait]
+        impl CredentialMethodDriver for ResponsesOnlyAtFixture {
+            fn method(&self) -> CredentialMethod {
+                CredentialMethod::Oauth
+            }
+            fn accepts(
+                &self,
+                connection: &frona_harness::inference::provider::platform::ResolvedConnection,
+            ) -> bool {
+                connection.brand == "openai"
+            }
+            fn protocols(&self) -> &[ApiSurface] {
+                &[ApiSurface::Responses]
+            }
+            fn build(
+                &self,
+                _: &frona_harness::inference::provider::platform::ResolvedConnection,
+                _: &ModelProviderConfig,
+                _: &crate::credential::managed::integration::ErasedSecret,
+                _: &InferenceCounter,
+            ) -> Result<Arc<dyn ModelProvider>, InferenceError> {
+                panic!("incompatible chat protocol must be rejected before client construction")
+            }
+        }
+        for incompatible in [false, true] {
+            let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+                .await
+                .unwrap();
+            crate::db::init::setup_schema(&db).await.unwrap();
+            let store =
+                crate::credential::managed::test_support::credentials(db, "test-secret").await;
+            let credential = store
+                .vault()
+                .create("static", json!({}), json!({"API_KEY":"initial-key"}))
+                .await
+                .unwrap();
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(header("authorization", "Bearer initial-key"))
+                .respond_with(
+                    ResponseTemplate::new(429).set_body_json(
+                        json!({"error":{"message":"retry","type":"rate_limit_error"}}),
+                    ),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            if !incompatible {
+                Mock::given(method("POST")).and(header("authorization", "Bearer rotated-key"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id":"second","object":"chat.completion","created":0,"model":"manual-model","choices":[{"index":0,"message":{"role":"assistant","content":"rotated account"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}))).expect(1).mount(&server).await;
+            }
+            let handle = Handle::const_validated("managed");
+            let runtime = RuntimeCredentials::new(
+                [(
+                    handle.clone(),
+                    ModelProviderConfig {
+                        provider: Some("openai".into()),
+                        credential_id: Some(credential.item_id),
+                        base_url: Some(server.uri()),
+                        ..Default::default()
+                    },
+                )]
+                .into(),
+                store.clone(),
+                InferenceCounter::default(),
+            )
+            .with_method_driver(Arc::new(ResponsesOnlyAtFixture));
+            let model = ModelConfig {
+                provider_handle: handle.into(),
+                model_id: "manual-model".into(),
+                catalog_provider: String::new(),
+                provider: ProviderModel::from_name("openai"),
+                request_settings: frona_harness::inference::provider::ModelRequestSettings {
+                    max_tokens: Some(100),
+                    ..Default::default()
+                },
+            };
+            let group = ModelGroup {
+                name: "retry".into(),
+                main: model,
+                fallbacks: vec![],
+                max_tokens: Some(100),
+                temperature: None,
+                context_window: 4096,
+                retry: frona_harness::config::RetryConfig {
+                    max_retries: 1,
+                    initial_backoff_ms: 0,
+                    max_backoff_ms: 0,
+                    ..Default::default()
+                },
+                inference: Default::default(),
+                providers: Arc::new(runtime.providers()),
+            };
+            let observer = Rotate {
+                store,
+                item: credential.item_id,
+                version: credential.version,
+                incompatible,
+                changed: AtomicBool::new(false),
+            };
+            let result = group
+                .inference(ModelRequest {
+                    system_prompt: "system",
+                    history: vec![rig_core::message::Message::user("answer")],
+                    tools: vec![],
+                    input_token_estimate: None,
+                    observations: Observations::new(&observer),
+                    overrides: RequestOverrides::default(),
+                })
+                .await;
+            assert!(
+                observer.changed.load(Ordering::SeqCst),
+                "request never reached its first attempt: {result:?}"
+            );
+            if incompatible {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("unsupported_protocol_for_auth_method")
+                );
+            } else {
+                assert!(result.is_ok(), "{result:?}");
+            }
+            assert_eq!(
+                server.received_requests().await.unwrap().len(),
+                if incompatible { 1 } else { 2 }
+            );
+            server.verify().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_structured_attempts_preserve_response_and_charge_before_validation() {
+        use frona_harness::inference::{observation::Observations, provider::RigModelAdapter};
+        use frona_harness::{DefaultBudget, ExecutionControl, ModelAdapter, ModelRequest};
+        use rig_core::message::Message;
+        use serde_json::json;
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{header, method},
+        };
+
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .unwrap();
+        crate::db::init::setup_schema(&db).await.unwrap();
+        let store = crate::credential::managed::test_support::credentials(db, "test-secret").await;
+        let credential = store
+            .vault()
+            .create("static", json!({}), json!({"API_KEY":"managed-key"}))
+            .await
+            .unwrap();
+        let server = MockServer::start().await;
+        let handle = Handle::const_validated("managed");
+        let runtime = RuntimeCredentials::new(
+            [(
+                handle.clone(),
+                ModelProviderConfig {
+                    provider: Some("openai".into()),
+                    credential_id: Some(credential.item_id),
+                    base_url: Some(server.uri()),
+                    ..Default::default()
+                },
+            )]
+            .into(),
+            store,
+            InferenceCounter::default(),
+        );
+        let model = ModelConfig {
+            provider_handle: handle.clone().into(),
+            model_id: "manual-model".into(),
+            catalog_provider: String::new(),
+            provider: ProviderModel::from_name("openai"),
+            request_settings: Default::default(),
+        };
+        let provider = runtime.provider(&handle).unwrap();
+        provider.ensure_usable(&model).await.unwrap();
+        let adapter = RigModelAdapter::new(provider, model.clone());
+        let schema = json!({"type":"object","properties":{"answer":{"type":"integer"}},"required":["answer"]});
+        for (name, arguments, stop, valid) in [
+            ("accepted", Some("{\"answer\":42}"), "tool_calls", true),
+            ("invalid-json", Some("{broken"), "tool_calls", false),
+            (
+                "invalid-schema",
+                Some("{\"answer\":true}"),
+                "tool_calls",
+                false,
+            ),
+            ("missing-submit", None, "stop", false),
+            ("incomplete", Some("{\"answer\":42}"), "length", false),
+        ] {
+            server.reset().await;
+            let message = match arguments {
+                Some(arguments) => {
+                    json!({"role":"assistant","content":"native preamble","tool_calls":[{"id":"call_submit","type":"function","function":{"name":"submit","arguments":arguments}}]})
+                }
+                None => json!({"role":"assistant","content":"native answer without submit"}),
+            };
+            Mock::given(method("POST"))
+                .and(header("authorization", "Bearer managed-key"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "id":name,"object":"chat.completion","created":0,"model":"manual-model",
+                    "choices":[{"index":0,"message":message,"finish_reason":stop}],
+                    "usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let budget = DefaultBudget::default();
+            let output = ExecutionControl::new(&budget)
+                .model_attempt(
+                    &model,
+                    Observations::default(),
+                    || {
+                        adapter.generate(
+                            ModelRequest {
+                                system: "system".into(),
+                                messages: vec![Message::user("answer")],
+                                tools: vec![],
+                                schema: Some(schema.clone()),
+                                max_tokens: Some(100),
+                                temperature: None,
+                            },
+                            None,
+                        )
+                    },
+                    |output| output.usage.clone(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(budget.snapshot().tokens, 7, "{name}");
+            assert_eq!(budget.snapshot().model_attempts, 1, "{name}");
+            assert_eq!(output.usage.observed().unwrap().total_tokens, Some(7));
+            assert_eq!(output.metadata["response_id"], name);
+            assert_eq!(
+                output.origin.as_ref().unwrap().response_id.as_deref(),
+                Some(name)
+            );
+            assert!(!output.content.is_empty());
+            match output.validate(Some(&schema)) {
+                Ok(()) => {
+                    assert!(valid, "{name}");
+                    assert_eq!(output.structured, Some(json!({"answer":42})));
+                }
+                Err(InferenceError::InvalidOutput { output: failed, .. }) => {
+                    assert!(!valid, "{name}");
+                    assert_eq!(
+                        serde_json::to_value(&*failed).unwrap(),
+                        serde_json::to_value(&output).unwrap(),
+                        "{name}"
+                    );
+                }
+                result => panic!("unexpected validation result for {name}: {result:?}"),
+            }
+            server.verify().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn admitted_attempt_refreshes_selected_identity_and_denial_does_not_resolve() {
+        use frona_harness::inference::{observation::Observations, provider::RigModelAdapter};
+        use frona_harness::{
+            BudgetLimits, DefaultBudget, ExecutionControl, ModelAdapter, ModelRequest,
+        };
+        use serde_json::json;
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{header, method},
+        };
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .unwrap();
+        crate::db::init::setup_schema(&db).await.unwrap();
+        let store = crate::credential::managed::test_support::credentials(db, "test-secret").await;
+        let credential = store
+            .vault()
+            .create("static", json!({}), json!({"API_KEY":"before-preflight"}))
+            .await
+            .unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(header("authorization", "Bearer after-preflight"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id":"response","object":"chat.completion","created":0,"model":"manual-model",
+                "choices":[{"index":0,"message":{"role":"assistant","content":"current account"},"finish_reason":"stop"}],
+                "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+            }))).expect(1).mount(&server).await;
+        let handle = Handle::const_validated("managed");
+        let runtime = RuntimeCredentials::new(
+            [(
+                handle.clone(),
+                ModelProviderConfig {
+                    provider: Some("openai".into()),
+                    credential_id: Some(credential.item_id),
+                    base_url: Some(server.uri()),
+                    ..Default::default()
+                },
+            )]
+            .into(),
+            store.clone(),
+            InferenceCounter::default(),
+        );
+        let model = ModelConfig {
+            provider_handle: handle.clone().into(),
+            model_id: "manual-model".into(),
+            catalog_provider: String::new(),
+            provider: ProviderModel::from_name("openai"),
+            request_settings: Default::default(),
+        };
+        let provider = runtime.provider(&handle).unwrap();
+        provider.ensure_usable(&model).await.unwrap();
+        let adapter = RigModelAdapter::new(provider, model.clone());
+        let updated = store
+            .vault()
+            .replace_by_id(
+                credential.item_id,
+                credential.version,
+                "static",
+                json!({}),
+                json!({"API_KEY":"after-preflight"}),
+            )
+            .await
+            .unwrap();
+        let budget = DefaultBudget::default();
+        let output = ExecutionControl::new(&budget)
+            .model_attempt(
+                &model,
+                Observations::default(),
+                || adapter.generate(ModelRequest::new("hello"), None),
+                |output| output.usage.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(output.content.iter().any(|part| matches!(part, rig_core::message::AssistantContent::Text(text) if text.text == "current account")));
+        store
+            .vault()
+            .delete_by_id(credential.item_id, updated.version)
+            .await
+            .unwrap();
+        let denied = DefaultBudget::new(BudgetLimits {
+            model_attempts: Some(0),
+            ..BudgetLimits::unlimited()
+        });
+        let error = ExecutionControl::new(&denied)
+            .model_attempt(
+                &model,
+                Observations::default(),
+                || adapter.generate(ModelRequest::new("denied"), None),
+                |output| output.usage.clone(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            InferenceError::Stop(frona_harness::ExecutionStop::BudgetExhausted(_))
+        ));
+        assert_eq!(denied.snapshot().model_attempts, 0);
+        // With admission allowed the same prepared adapter observes deletion.
+        assert!(
+            ExecutionControl::new(&budget)
+                .model_attempt(
+                    &model,
+                    Observations::default(),
+                    || adapter.generate(ModelRequest::new("deleted"), None),
+                    |output| output.usage.clone()
+                )
+                .await
+                .is_err()
+        );
+        server.verify().await;
+    }
+
     #[tokio::test]
     async fn explicit_credential_replacement_is_live_and_deleted_ids_never_fall_back() {
         use super::*;
@@ -981,10 +1334,21 @@ mod tests {
             let provider = resolver
                 .provider(&model.provider_handle.clone().into())
                 .unwrap();
-            let output = provider
-                .inference(&model, "test", vec![], vec![], Some(10), None)
-                .await
-                .unwrap();
+            let output = crate::provider_fixture::invoke(
+                provider.clone(),
+                &model,
+                frona_harness::ModelRequest {
+                    system: ("test").into(),
+                    messages: vec![],
+                    tools: vec![],
+                    schema: None,
+                    max_tokens: Some(10),
+                    temperature: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
             assert_eq!(output.content.len(), 1);
         }
         for server in servers {

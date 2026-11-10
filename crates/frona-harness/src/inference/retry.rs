@@ -7,13 +7,14 @@ use backon::Retryable;
 use rig_core::completion::Message as RigMessage;
 use rig_core::completion::request::ToolDefinition as RigToolDefinition;
 
+use crate::ExecutionControl;
 use crate::inference::context::{estimate_message_tokens, estimate_tokens, truncate_history};
 use crate::inference::error::InferenceError;
 use crate::inference::observation::{LatencyMetrics, Observations};
 use crate::inference::provider::ModelProvider;
-use crate::inference::provider::{InferenceOutput, ModelConfig};
+use crate::inference::provider::{ModelConfig, RigModelAdapter};
 use crate::inference::{ModelGroup, ModelRequest, config::RetryConfig};
-use crate::{ExecutionControl, UsageReport};
+use crate::{ModelAdapter, ModelOutput};
 use std::collections::HashMap;
 
 /// Result of a retried operation with retry instrumentation. `retry_count` is
@@ -168,7 +169,7 @@ pub(crate) enum FallbackReplay {
 
 /// Complete native output and actual successful candidate, before legacy projection.
 pub(crate) struct CompletedInference {
-    pub output: InferenceOutput,
+    pub output: ModelOutput,
     pub model: String,
 }
 
@@ -218,27 +219,40 @@ pub(crate) async fn inference_with_retry_and_fallback(
             let request_history = candidate_history
                 .as_ref()
                 .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
-            let provider = provider_for(&model_group.providers, &model_group.main)?;
+            let adapter = RigModelAdapter::new(
+                provider_for(&model_group.providers, &model_group.main)?,
+                model_group.main.clone(),
+            );
             let attempt_start = Instant::now();
             let output = execution
                 .model_attempt(
                     &model_group.main,
                     observations,
                     || {
-                        provider.inference(
-                            &model_group.main,
-                            system_prompt,
-                            request_history.clone(),
-                            tools.clone(),
-                            max_tokens,
-                            temperature,
+                        adapter.generate(
+                            crate::ModelRequest {
+                                system: system_prompt.into(),
+                                messages: request_history.clone(),
+                                tools: tools.clone(),
+                                schema: None,
+                                max_tokens,
+                                temperature,
+                            },
+                            None,
                         )
                     },
-                    |output| output.usage_report(),
+                    |output| output.usage.clone(),
                 )
                 .await?;
-            ensure_complete_observed(&output, observations, &model_group.main, 0, attempt_start)
-                .await?;
+            validate_output_observed(
+                &output,
+                None,
+                observations,
+                &model_group.main,
+                0,
+                attempt_start,
+            )
+            .await?;
             Ok(output)
         },
     )
@@ -258,7 +272,7 @@ pub(crate) async fn inference_with_retry_and_fallback(
                 retry_count,
             };
             observations
-                .usage(&model_group.main, Some(&output.usage), 0, latency)
+                .usage(&model_group.main, output.usage.observed(), 0, latency)
                 .await;
             execution.check_cancellation()?;
             return Ok(CompletedInference {
@@ -309,27 +323,34 @@ pub(crate) async fn inference_with_retry_and_fallback(
             let request_history = candidate_history
                 .as_ref()
                 .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
-            let provider = provider_for(&model_group.providers, fallback)?;
+            let adapter = RigModelAdapter::new(
+                provider_for(&model_group.providers, fallback)?,
+                fallback.clone(),
+            );
             let attempt_start = Instant::now();
             let output = execution
                 .model_attempt(
                     fallback,
                     observations,
                     || {
-                        provider.inference(
-                            fallback,
-                            system_prompt,
-                            request_history.clone(),
-                            tools.clone(),
-                            max_tokens,
-                            temperature,
+                        adapter.generate(
+                            crate::ModelRequest {
+                                system: system_prompt.into(),
+                                messages: request_history.clone(),
+                                tools: tools.clone(),
+                                schema: None,
+                                max_tokens,
+                                temperature,
+                            },
+                            None,
                         )
                     },
-                    |output| output.usage_report(),
+                    |output| output.usage.clone(),
                 )
                 .await?;
-            ensure_complete_observed(
+            validate_output_observed(
                 &output,
+                None,
                 observations,
                 fallback,
                 (idx + 1) as u8,
@@ -354,7 +375,7 @@ pub(crate) async fn inference_with_retry_and_fallback(
                     retry_count,
                 };
                 observations
-                    .usage(fallback, Some(&output.usage), (idx + 1) as u8, latency)
+                    .usage(fallback, output.usage.observed(), (idx + 1) as u8, latency)
                     .await;
                 execution.check_cancellation()?;
                 return Ok(CompletedInference {
@@ -418,40 +439,40 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
             let request_history = truncated
                 .as_ref()
                 .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
-            let provider = provider_for(&model_group.providers, &model_group.main)?;
+            let adapter = RigModelAdapter::new(
+                provider_for(&model_group.providers, &model_group.main)?,
+                model_group.main.clone(),
+            );
             let attempt_start = Instant::now();
             let output = execution
                 .model_attempt(
                     &model_group.main,
                     observations,
                     || {
-                        provider.structured_output(
-                            &model_group.main,
-                            system_prompt,
-                            request_history.clone(),
-                            schema.clone(),
-                            max_tokens,
-                            temperature,
+                        adapter.generate(
+                            crate::ModelRequest {
+                                system: system_prompt.into(),
+                                messages: request_history.clone(),
+                                tools: Vec::new(),
+                                schema: Some(schema.clone()),
+                                max_tokens,
+                                temperature,
+                            },
+                            None,
                         )
                     },
-                    |output| {
-                        output
-                            .response
-                            .as_ref()
-                            .map_or(UsageReport::Unavailable, |response| response.usage_report())
-                    },
+                    |output| output.usage.clone(),
                 )
                 .await?;
-            if let Some(response) = &output.response {
-                ensure_complete_observed(
-                    response,
-                    observations,
-                    &model_group.main,
-                    0,
-                    attempt_start,
-                )
-                .await?;
-            }
+            validate_output_observed(
+                &output,
+                Some(&schema),
+                observations,
+                &model_group.main,
+                0,
+                attempt_start,
+            )
+            .await?;
             Ok(output)
         },
     )
@@ -473,15 +494,10 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
                 retry_count,
             };
             observations
-                .usage(
-                    &model_group.main,
-                    value.response.as_ref().map(|r| &r.usage),
-                    0,
-                    latency,
-                )
+                .usage(&model_group.main, value.usage.observed(), 0, latency)
                 .await;
             execution.check_cancellation()?;
-            return Ok(value.value);
+            return Ok(value.structured.expect("structured response validated"));
         }
         Err(e) => {
             if e.is_terminal() {
@@ -513,40 +529,40 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
             let request_history = truncated_fb
                 .as_ref()
                 .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
-            let provider = provider_for(&model_group.providers, fallback)?;
+            let adapter = RigModelAdapter::new(
+                provider_for(&model_group.providers, fallback)?,
+                fallback.clone(),
+            );
             let attempt_start = Instant::now();
             let output = execution
                 .model_attempt(
                     fallback,
                     observations,
                     || {
-                        provider.structured_output(
-                            fallback,
-                            system_prompt,
-                            request_history.clone(),
-                            schema.clone(),
-                            max_tokens,
-                            temperature,
+                        adapter.generate(
+                            crate::ModelRequest {
+                                system: system_prompt.into(),
+                                messages: request_history.clone(),
+                                tools: Vec::new(),
+                                schema: Some(schema.clone()),
+                                max_tokens,
+                                temperature,
+                            },
+                            None,
                         )
                     },
-                    |output| {
-                        output
-                            .response
-                            .as_ref()
-                            .map_or(UsageReport::Unavailable, |response| response.usage_report())
-                    },
+                    |output| output.usage.clone(),
                 )
                 .await?;
-            if let Some(response) = &output.response {
-                ensure_complete_observed(
-                    response,
-                    observations,
-                    fallback,
-                    (idx + 1) as u8,
-                    attempt_start,
-                )
-                .await?;
-            }
+            validate_output_observed(
+                &output,
+                Some(&schema),
+                observations,
+                fallback,
+                (idx + 1) as u8,
+                attempt_start,
+            )
+            .await?;
             Ok(output)
         })
         .await
@@ -565,15 +581,10 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
                     retry_count,
                 };
                 observations
-                    .usage(
-                        fallback,
-                        value.response.as_ref().map(|r| &r.usage),
-                        (idx + 1) as u8,
-                        latency,
-                    )
+                    .usage(fallback, value.usage.observed(), (idx + 1) as u8, latency)
                     .await;
                 execution.check_cancellation()?;
-                return Ok(value.value);
+                return Ok(value.structured.expect("structured response validated"));
             }
             Err(e) => {
                 if e.is_terminal() {
@@ -591,18 +602,19 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
 // The provider call has already charged its actual usage. A rejected partial
 // output is also billable telemetry, although it cannot become a completed turn.
 // Successful operations retain the existing aggregate retry timing callback.
-async fn ensure_complete_observed(
-    output: &InferenceOutput,
+async fn validate_output_observed(
+    output: &ModelOutput,
+    schema: Option<&serde_json::Value>,
     observations: Observations<'_>,
     model: &ModelConfig,
     fallback_index: u8,
     attempt_start: Instant,
 ) -> Result<(), InferenceError> {
-    if let Err(error) = output.ensure_complete() {
+    if let Err(error) = output.validate(schema) {
         observations
             .usage(
                 model,
-                Some(&output.usage),
+                output.usage.observed(),
                 fallback_index,
                 LatencyMetrics {
                     duration_ms: attempt_start.elapsed().as_millis() as u64,

@@ -7,14 +7,12 @@ use frona_harness::config::ProviderModel;
 use frona_harness::inference::InferenceError;
 use frona_harness::inference::ModelConfig;
 use frona_harness::inference::ModelGroup;
-use frona_harness::inference::provider::InferenceOutput;
 use frona_harness::inference::provider::ModelProvider;
 use frona_harness::inference::provider::ModelRequestSettings;
-use frona_harness::inference::provider::StreamToken;
 use rig_core::completion::{
     AssistantContent, Message,
     message::{CallId, ToolCall, ToolFunction},
-    request::{ToolDefinition, Usage},
+    request::Usage,
 };
 use std::{
     collections::VecDeque,
@@ -22,68 +20,62 @@ use std::{
 };
 use surrealdb::{Surreal, engine::local::Db};
 
+#[derive(Clone)]
 struct Script {
-    turns: Mutex<VecDeque<Vec<AssistantContent>>>,
-    history: Mutex<Vec<Vec<Message>>>,
+    turns: Arc<Mutex<VecDeque<Vec<AssistantContent>>>>,
+    history: Arc<Mutex<Vec<Vec<Message>>>>,
 }
 impl Script {
     fn new(turns: Vec<Vec<AssistantContent>>) -> Arc<Self> {
         Arc::new(Self {
-            turns: Mutex::new(turns.into()),
-            history: Mutex::new(Vec::new()),
+            turns: Arc::new(Mutex::new(turns.into())),
+            history: Arc::new(Mutex::new(Vec::new())),
         })
     }
 }
 #[async_trait::async_trait]
 impl ModelProvider for Script {
-    async fn inference(
+    async fn resolve(
         &self,
-        _: &ModelConfig,
-        _: &str,
-        _: Vec<Message>,
-        _: Vec<ToolDefinition>,
-        _: Option<u64>,
-        _: Option<f64>,
-    ) -> Result<InferenceOutput, InferenceError> {
-        Ok(InferenceOutput::new(
-            vec![AssistantContent::text(
-                "Earlier work: created note.txt and asked the user.",
-            )],
-            Usage::default(),
+        model: &ModelConfig,
+    ) -> Result<frona_harness::inference::provider::ResolvedModel, InferenceError> {
+        let script = self.clone();
+        Ok(frona_harness::inference::provider::ResolvedModel::new(
+            helpers::rig::model(model.model_id.clone(), move |request, mode| {
+                let content = if matches!(mode, rig_core::wire::Mode::Streaming) {
+                    script.history.lock().unwrap().push(
+                        request
+                            .chat_history
+                            .iter()
+                            .skip(1)
+                            .map(|message| (**message).clone())
+                            .collect(),
+                    );
+                    script
+                        .turns
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .expect("unexpected inference turn")
+                } else if request.tools.iter().any(|tool| tool.name == "submit") {
+                    vec![AssistantContent::ToolCall(ToolCall::from_wire(
+                        "summary",
+                        ToolFunction::new(
+                            "submit".try_into().unwrap(),
+                            serde_json::json!({"summary":"Earlier work"}),
+                        ),
+                    ))]
+                } else {
+                    vec![AssistantContent::text(
+                        "Earlier work: created note.txt and asked the user.",
+                    )]
+                };
+                helpers::rig::reply(frona_harness::ModelOutput::new(
+                    content,
+                    frona_harness::UsageReport::Reported(Usage::default()),
+                ))
+            }),
         ))
-    }
-    async fn stream_inference(
-        &self,
-        _: &ModelConfig,
-        _: &str,
-        history: Vec<Message>,
-        _: Vec<ToolDefinition>,
-        tokens: tokio::sync::mpsc::Sender<StreamToken>,
-        _: Option<u64>,
-        _: Option<f64>,
-    ) -> Result<InferenceOutput, InferenceError> {
-        self.history.lock().unwrap().push(history);
-        let content =
-            self.turns.lock().unwrap().pop_front().ok_or_else(|| {
-                InferenceError::InferenceFailed("Unexpected inference turn".into())
-            })?;
-        for item in &content {
-            if let AssistantContent::Text(text) = item {
-                let _ = tokens.send(StreamToken::Text(text.text.clone())).await;
-            }
-        }
-        Ok(InferenceOutput::new(content, Usage::default()))
-    }
-    async fn structured_inference(
-        &self,
-        _: &ModelConfig,
-        _: &str,
-        _: Vec<Message>,
-        _: serde_json::Value,
-        _: Option<u64>,
-        _: Option<f64>,
-    ) -> Result<serde_json::Value, InferenceError> {
-        Ok(serde_json::json!({"summary":"Earlier work"}))
     }
 }
 fn group(provider: Arc<Script>) -> ModelGroup {

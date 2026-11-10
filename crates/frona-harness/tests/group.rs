@@ -1,20 +1,19 @@
-//! Prepared model groups must use the same SDK admission and conversation machinery.
+mod helpers;
+// Prepared model groups must use the same SDK admission and conversation machinery.
 use async_trait::async_trait;
 use frona_harness::{
-    BudgetLimits, DefaultBudget, ExecutionStop, Handle, Harness, ManualError, Model, UsageReport,
+    BudgetLimits, DefaultBudget, ExecutionStop, Handle, Harness, ManualError, Model, ModelOutput,
+    UsageReport,
     config::{ProviderModel, RetryConfig},
     inference::{
         InferenceError, ModelConfig, Usage,
         observation::{InferenceObserver, ObservationError, UsageObservation},
-        provider::{
-            InferenceOutput, ModelProvider, ModelRequestSettings, StreamToken, group::ModelGroup,
-        },
+        provider::{ModelProvider, ModelRequestSettings, ResolvedModel, group::ModelGroup},
     },
 };
 use rig_core::completion::{
     AssistantContent, Message,
     message::{ToolCall, ToolFunction},
-    request::ToolDefinition,
 };
 use serde_json::json;
 use std::{
@@ -24,58 +23,45 @@ use std::{
 
 type Calls = Arc<Mutex<Vec<(String, Option<u64>, Option<f64>, Vec<Message>)>>>;
 struct Script {
-    outputs: Mutex<VecDeque<Result<InferenceOutput, InferenceError>>>,
+    outputs: Arc<Mutex<VecDeque<Result<ModelOutput, InferenceError>>>>,
     calls: Calls,
 }
 #[async_trait]
 impl ModelProvider for Script {
-    async fn inference(
-        &self,
-        model: &ModelConfig,
-        _: &str,
-        messages: Vec<Message>,
-        _: Vec<ToolDefinition>,
-        max: Option<u64>,
-        temperature: Option<f64>,
-    ) -> Result<InferenceOutput, InferenceError> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push((model.as_str(), max, temperature, messages));
-        self.outputs
-            .lock()
-            .unwrap()
-            .pop_front()
-            .expect("unexpected attempt")
-    }
-    async fn stream_inference(
-        &self,
-        _: &ModelConfig,
-        _: &str,
-        _: Vec<Message>,
-        _: Vec<ToolDefinition>,
-        _: tokio::sync::mpsc::Sender<StreamToken>,
-        _: Option<u64>,
-        _: Option<f64>,
-    ) -> Result<InferenceOutput, InferenceError> {
-        unreachable!()
-    }
-    async fn structured_inference(
-        &self,
-        _: &ModelConfig,
-        _: &str,
-        _: Vec<Message>,
-        _: serde_json::Value,
-        _: Option<u64>,
-        _: Option<f64>,
-    ) -> Result<serde_json::Value, InferenceError> {
-        unreachable!()
+    async fn resolve(&self, model: &ModelConfig) -> Result<ResolvedModel, InferenceError> {
+        let calls = self.calls.clone();
+        let outputs = self.outputs.clone();
+        let name = model.as_str();
+        Ok(ResolvedModel::new(helpers::rig::model(
+            model.model_id.clone(),
+            move |request, _| {
+                calls.lock().unwrap().push((
+                    name.clone(),
+                    request.max_tokens,
+                    request.temperature,
+                    request
+                        .chat_history
+                        .iter()
+                        .map(|message| (**message).clone())
+                        .collect(),
+                ));
+                match outputs
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .expect("unexpected attempt")
+                {
+                    Ok(output) => helpers::rig::reply(output),
+                    Err(error) => rig_core::driver::Opening::failed(helpers::rig::error(error)),
+                }
+            },
+        )))
     }
 }
-fn group(outputs: Vec<Result<InferenceOutput, InferenceError>>) -> (ModelGroup, Calls) {
+fn group(outputs: Vec<Result<ModelOutput, InferenceError>>) -> (ModelGroup, Calls) {
     let calls = Arc::new(Mutex::new(vec![]));
     let provider = Arc::new(Script {
-        outputs: Mutex::new(outputs.into()),
+        outputs: Arc::new(Mutex::new(outputs.into())),
         calls: calls.clone(),
     });
     let model = |id: &str, max, temperature| ModelConfig {
@@ -109,12 +95,12 @@ fn group(outputs: Vec<Result<InferenceOutput, InferenceError>>) -> (ModelGroup, 
         calls,
     )
 }
-fn output(content: Vec<AssistantContent>) -> Result<InferenceOutput, InferenceError> {
-    Ok(InferenceOutput::new(content, Usage::new().total_tokens(7))
-        .with_metadata(json!({"raw":"preserved"}))
-        .with_ttft(Some(23)))
+fn output(content: Vec<AssistantContent>) -> Result<ModelOutput, InferenceError> {
+    let mut output = ModelOutput::new(content, UsageReport::Reported(Usage::new().total_tokens(7)));
+    output.metadata = json!({"raw":"preserved"});
+    Ok(output)
 }
-fn failed() -> Result<InferenceOutput, InferenceError> {
+fn failed() -> Result<ModelOutput, InferenceError> {
     Err(InferenceError::InferenceFailed("fixture failure".into()))
 }
 fn signed() -> AssistantContent {
@@ -162,11 +148,9 @@ async fn prepared_group_preserves_retries_settings_source_and_optional_observati
     let response = &session.conversation().responses()[0];
     assert_eq!(response.origin(), Some("fixture/backup"));
     assert_eq!(response.output().metadata["raw"], "preserved");
-    assert_eq!(response.output().ttft_ms, Some(23));
-    assert!(matches!(
-        response.output().usage,
-        UsageReport::LegacyNormalized(_)
-    ));
+    // Unary native replies do not invent a first-token timing.
+    assert_eq!(response.output().ttft_ms, None);
+    assert!(matches!(response.output().usage, UsageReport::Reported(_)));
     assert_eq!(session.finish().unwrap(), "done");
     let report = report.snapshot();
     assert_eq!(report.requests.len(), 1);
@@ -277,7 +261,7 @@ async fn group_compaction_uses_prepared_window_and_keeps_summary_fallback_proven
         .expect("the prepared 1400-token window should trigger compaction");
     assert_eq!(compacted.0, "fixture/backup");
     assert_eq!(compacted.1.metadata["raw"], "preserved");
-    assert_eq!(compacted.1.ttft_ms, Some(23));
+    assert_eq!(compacted.1.ttft_ms, None);
     assert_eq!(session.finish().unwrap(), "done");
     assert_eq!(report.snapshot().requests.len(), 2);
     assert_eq!(report.snapshot().attempts.len(), 3);
@@ -563,7 +547,7 @@ async fn incomplete_main_usage_is_observed_once_before_successful_fallback() {
     assert_eq!(report.attempts.len(), 2);
     for attempt in &report.attempts {
         assert!(
-            matches!(&attempt.usage, Some(UsageReport::LegacyNormalized(usage)) if usage.total_tokens == Some(7))
+            matches!(&attempt.usage, Some(UsageReport::Reported(usage)) if usage.total_tokens == Some(7))
         );
     }
 }

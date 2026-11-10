@@ -5,12 +5,12 @@ use crate::{
     inference::tool_loop::{InferenceEvent, InferenceEventKind},
 };
 use backon::Retryable;
-use frona_harness::ExecutionControl;
 use frona_harness::inference::{
     InferenceError, ModelGroup, ModelRequest, RequestOverrides,
     observation::{LatencyMetrics, Observations},
-    provider::{InferenceOutput, ModelConfig, StreamToken},
+    provider::{ModelConfig, RigModelAdapter, StreamToken},
 };
+use frona_harness::{ExecutionControl, ModelAdapter, ModelOutput};
 use rig_core::completion::{
     Message as RigMessage, message::UserContent, request::ToolDefinition as RigToolDefinition,
 };
@@ -70,7 +70,7 @@ impl ModelGroupStreaming for ModelGroup {
 }
 
 pub enum StreamResult {
-    Contents(Box<InferenceOutput>),
+    Contents(Box<ModelOutput>),
     Cancelled,
 }
 
@@ -213,21 +213,28 @@ async fn stream_one_model(
         });
 
         let attempt_start = Instant::now();
-        let contents_result = execution.model_attempt(model_config, observations, || provider.stream_inference(
-            model_config, system_prompt, chat_history.to_vec(), tools.to_vec(), text_tx,
-            overrides.max_tokens, overrides.temperature,
-        ), |output| output.usage_report()).await;
+        let adapter = RigModelAdapter::new(provider.clone(), model_config.clone());
+        let contents_result = execution.model_attempt(model_config, observations, || adapter.generate(
+            frona_harness::ModelRequest {
+                system: system_prompt.into(),
+                messages: chat_history.to_vec(),
+                tools: tools.to_vec(),
+                schema: None,
+                max_tokens: overrides.max_tokens,
+                temperature: overrides.temperature,
+            }, Some(text_tx),
+        ), |output| output.usage.clone()).await;
         let duration_ms = attempt_start.elapsed().as_millis() as u64;
 
         let turn_text = forward_handle.await.unwrap_or_default();
         let contents_result = match contents_result {
             Ok(output) => {
-                let usage = output.usage;
+                let usage = output.usage.clone();
                 let ttft_ms = output.ttft_ms;
                 match output.ensure_complete() {
                     Ok(()) => Ok(output),
                     Err(error) => {
-                        observations.usage(model_config, Some(&usage), fallback_index, LatencyMetrics {
+                        observations.usage(model_config, usage.observed(), fallback_index, LatencyMetrics {
                             duration_ms,
                             ttft_ms,
                             retry_overhead_ms: outer_start.elapsed().as_millis() as u64 - duration_ms,
@@ -260,7 +267,7 @@ async fn stream_one_model(
                         retry_count: retries.load(Ordering::Relaxed),
                     };
                     observations
-                        .usage(model_config, Some(&output.usage), fallback_index, latency)
+                        .usage(model_config, output.usage.observed(), fallback_index, latency)
                         .await;
                     Ok((output, turn_text))
                 } else {
@@ -276,7 +283,7 @@ async fn stream_one_model(
                     retry_count: retries.load(Ordering::Relaxed),
                 };
                 observations
-                    .usage(model_config, Some(&output.usage), fallback_index, latency)
+                    .usage(model_config, output.usage.observed(), fallback_index, latency)
                     .await;
                 Ok((output, turn_text))
             }

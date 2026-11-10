@@ -105,7 +105,6 @@ use frona::tool::registry::AgentToolRegistry;
 use frona_harness::inference::error::InferenceError;
 use helpers::*;
 use rig_core::completion::Message as RigMessage;
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
@@ -631,8 +630,15 @@ async fn test_tool_loop_rate_limit_exhausted() {
 
     assert!(result.is_err());
     match result.unwrap_err() {
-        AppError::Inference(msg) => {
-            assert!(msg.to_string().contains("Rate limited"), "Got: {msg}");
+        AppError::Inference(error) => {
+            let InferenceError::AllFallbacksFailed(errors) = *error else {
+                panic!("Expected exhausted rate limit attempts, got {error:?}");
+            };
+            assert_eq!(errors.len(), 1);
+            assert!(
+                errors.iter().all(InferenceError::is_rate_limited),
+                "Got: {errors:?}"
+            );
         }
         other => panic!("Expected AppError::Inference, got {other:?}"),
     }
@@ -994,10 +1000,11 @@ async fn test_fallback_multiple_fallbacks_order() {
 
 /// A mock provider that sends tokens one-by-one with a delay between each,
 /// simulating realistic LLM streaming behavior.
+#[derive(Clone)]
 struct StreamingMockProvider {
     tokens: Vec<String>,
     delay_between: std::time::Duration,
-    call_count: std::sync::Mutex<usize>,
+    call_count: Arc<std::sync::Mutex<usize>>,
 }
 
 impl StreamingMockProvider {
@@ -1005,62 +1012,42 @@ impl StreamingMockProvider {
         Self {
             tokens: tokens.into_iter().map(String::from).collect(),
             delay_between: delay,
-            call_count: std::sync::Mutex::new(0),
+            call_count: Arc::new(std::sync::Mutex::new(0)),
         }
     }
 }
 
 #[async_trait::async_trait]
 impl frona_harness::inference::provider::ModelProvider for StreamingMockProvider {
-    async fn inference(
+    async fn resolve(
         &self,
-        _model: &frona_harness::inference::ModelConfig,
-        _system_prompt: &str,
-        _chat_history: Vec<rig_core::completion::Message>,
-        _tools: Vec<rig_core::completion::request::ToolDefinition>,
-        _max_tokens: Option<u64>,
-        _temperature: Option<f64>,
-    ) -> Result<frona_harness::inference::provider::InferenceOutput, InferenceError> {
-        unreachable!("streaming test should not call non-streaming inference");
-    }
-
-    async fn stream_inference(
-        &self,
-        _model: &frona_harness::inference::ModelConfig,
-        _system_prompt: &str,
-        _chat_history: Vec<rig_core::completion::Message>,
-        _tools: Vec<rig_core::completion::request::ToolDefinition>,
-        token_tx: mpsc::Sender<frona_harness::inference::provider::StreamToken>,
-        _max_tokens: Option<u64>,
-        _temperature: Option<f64>,
-    ) -> Result<frona_harness::inference::provider::InferenceOutput, InferenceError> {
-        *self.call_count.lock().unwrap() += 1;
-        let mut full_text = String::new();
-        for token in &self.tokens {
-            full_text.push_str(token);
-            let _ = token_tx
-                .send(frona_harness::inference::provider::StreamToken::Text(
-                    token.clone(),
+        model: &frona_harness::inference::ModelConfig,
+    ) -> Result<frona_harness::inference::provider::ResolvedModel, InferenceError> {
+        use futures::StreamExt;
+        use rig_core::test_utils::{MockFrame, MockStreamEvent};
+        let script = self.clone();
+        Ok(frona_harness::inference::provider::ResolvedModel::new(
+            helpers::rig::model(model.model_id.clone(), move |_, mode| {
+                assert!(matches!(mode, rig_core::wire::Mode::Streaming));
+                *script.call_count.lock().unwrap() += 1;
+                let delay = script.delay_between;
+                let tokens = futures::stream::iter(script.tokens.clone().into_iter().enumerate())
+                    .then(move |(index, token)| async move {
+                        if index != 0 {
+                            tokio::time::sleep(delay).await;
+                        }
+                        Ok(MockFrame::Event(MockStreamEvent::text(token)))
+                    });
+                let final_frame = futures::stream::once(async {
+                    Ok(MockFrame::Event(MockStreamEvent::final_response(
+                        Default::default(),
+                    )))
+                });
+                rig_core::driver::Opening::ready(rig_core::driver::Opened::new(
+                    tokens.chain(final_frame),
                 ))
-                .await;
-            tokio::time::sleep(self.delay_between).await;
-        }
-        Ok(frona_harness::inference::provider::InferenceOutput::new(
-            vec![rig_core::completion::AssistantContent::text(full_text)],
-            frona_harness::inference::Usage::default(),
+            }),
         ))
-    }
-
-    async fn structured_inference(
-        &self,
-        _model: &frona_harness::inference::ModelConfig,
-        _system_prompt: &str,
-        _chat_history: Vec<rig_core::completion::Message>,
-        _schema: serde_json::Value,
-        _max_tokens: Option<u64>,
-        _temperature: Option<f64>,
-    ) -> Result<serde_json::Value, InferenceError> {
-        unreachable!("streaming test should not call structured_inference");
     }
 }
 
@@ -1069,7 +1056,9 @@ async fn test_streaming_tokens_arrive_individually() {
     init_metrics();
 
     let tokens: Vec<&str> = vec![
-        "Hello",
+        // Pass the adapter's initial tool-call detection buffer in the first
+        // chunk, then verify every subsequent token reaches SSE incrementally.
+        "This opening sentence is deliberately longer than sixty-four characters. Hello",
         " ",
         "world",
         ",",
@@ -1503,7 +1492,6 @@ async fn test_tool_loop_deduplicates_attachments_before_lifecycle_return() {
 
 #[tokio::test]
 async fn tool_instructions_leave_system_stable_and_replay_the_exact_live_tail() {
-    use frona::chat::message::models::{Message, MessageRole, MessageStatus};
     use frona::inference::conversation::{
         ConversationBuilder, ConversationContext, DefaultConversationBuilder,
     };
@@ -1591,14 +1579,12 @@ async fn tool_instructions_leave_system_stable_and_replay_the_exact_live_tail() 
         .get_tool_calls_by_message("response")
         .await
         .unwrap();
-    let message = Message::builder("test-chat", MessageRole::Agent, String::new())
-        .agent_id("test-agent".into())
-        .status(MessageStatus::Executing)
-        .build();
-    let message = Message {
-        id: "response".into(),
-        ..message
-    };
+    let message = state
+        .chat_service
+        .find_message("response")
+        .await
+        .unwrap()
+        .unwrap();
     let replay = DefaultConversationBuilder {
         user_service: state.user_service.clone(),
         agent_service: state.agent_service.clone(),
@@ -1610,12 +1596,32 @@ async fn tool_instructions_leave_system_stable_and_replay_the_exact_live_tail() 
         &ConversationContext {
             agent_id: "test-agent".into(),
             user_id: "test-user".into(),
-            model_config: group.main,
+            model_config: group.main.clone(),
         },
         None,
     )
     .await;
-    assert_eq!(&provider.histories()[1][1..], replay.history);
+    let live = provider.histories()[1].clone();
+    let mut replay_request = vec![RigMessage::user("input")];
+    replay_request.extend(replay.history.clone());
+    helpers::provider::invoke(
+        provider.clone(),
+        &group.main,
+        frona_harness::ModelRequest {
+            system: "standing system".into(),
+            messages: replay_request,
+            tools: provider.tool_histories()[1].clone(),
+            schema: None,
+            max_tokens: None,
+            temperature: None,
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    // Compare both requests at the same native boundary, including the stored
+    // assistant origin, stop reason, tool IDs, and ordered instruction content.
+    assert_eq!(provider.last_history(), live);
     assert_eq!(
         replay.history[2],
         RigMessage::user("instructions for first")

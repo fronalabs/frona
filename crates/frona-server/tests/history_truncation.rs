@@ -23,6 +23,49 @@ fn cost(history: &[Message]) -> usize {
     history.iter().map(estimate_message_tokens).sum()
 }
 
+// Provider capture now happens after Rig's wire preparation. Keep canonical
+// truncation expectations separate from that provider-facing normalization.
+fn native_history(history: &[Message], model: &str, has_tools: bool) -> Vec<Message> {
+    use rig_core::{
+        operation::Completion,
+        test_utils::MockScript,
+        wire::{Operation, Wire},
+    };
+    let mut request = rig_core::completion::CompletionRequest::new("");
+    request.chat_history = std::iter::once(Arc::new(Message::system(SYSTEM)))
+        .chain(history.iter().cloned().map(Arc::new))
+        .collect();
+    if has_tools {
+        request
+            .tools
+            .push(Arc::new(rig_core::completion::ToolDefinition {
+                name: "read".try_into().unwrap(),
+                description: "Read".into(),
+                parameters: serde_json::json!({"type":"object"}),
+                annotations: Default::default(),
+            }));
+    }
+    let wire = MockScript::new("fixture").with_id(model);
+    let prepared = Completion::prepare(request, &wire.describe()).unwrap();
+    prepared
+        .chat_history
+        .into_iter()
+        .skip(1)
+        .map(Arc::unwrap_or_clone)
+        .collect()
+}
+
+fn selected_history(history: &[Message], budget: usize) -> Vec<Message> {
+    frona_harness::inference::context::truncate_history(
+        history.to_vec(),
+        SYSTEM,
+        budget + estimate_tokens(SYSTEM) + OUTPUT,
+        OUTPUT,
+        100,
+    )
+    .unwrap()
+}
+
 fn provider(mut responses: Vec<MockResponse>) -> Arc<MockModelProvider> {
     responses.push(MockResponse::ToolCalls(vec![(
         "submit".into(),
@@ -136,10 +179,11 @@ async fn nonstreaming_preserves_summary_and_complete_tool_groups_at_smaller_budg
                 outcome.unwrap();
                 assert_eq!(
                     provider.histories(),
-                    vec![expected],
+                    vec![native_history(&expected, "test-model", structured)],
                     "structured={structured}, budget={budget}"
                 );
-                assert!(cost(&provider.last_history()) <= budget);
+                assert_eq!(selected_history(&history, budget), expected);
+                assert!(cost(&expected) <= budget);
             } else {
                 assert!(outcome.is_err(), "must reject losing the active user input");
                 assert_eq!(provider.calls(), 0);
@@ -167,7 +211,10 @@ async fn nonstreaming_removes_invalid_openers_even_when_within_budget() {
             send(&group(provider.clone(), 1000), &history, structured)
                 .await
                 .unwrap();
-            assert_eq!(provider.histories(), vec![expected]);
+            assert_eq!(
+                provider.histories(),
+                vec![native_history(&expected, "test-model", structured)]
+            );
         }
     }
 }
@@ -222,7 +269,10 @@ async fn nonstreaming_supports_empty_history_and_an_exactly_fitting_summary() {
             )
             .await
             .unwrap();
-            assert_eq!(provider.histories(), vec![history]);
+            assert_eq!(
+                provider.histories(),
+                vec![native_history(&history, "test-model", structured)]
+            );
         }
     }
 }
@@ -251,9 +301,9 @@ async fn nonstreaming_retries_and_fallbacks_rebuild_from_the_unchanged_source() 
         assert_eq!(
             provider.histories(),
             vec![
-                first_expected.clone(),
-                first_expected.clone(),
-                last_expected.clone()
+                native_history(&first_expected, "test-model", structured),
+                native_history(&first_expected, "test-model", structured),
+                native_history(&last_expected, "fallback", structured)
             ]
         );
         assert_eq!(
@@ -275,7 +325,10 @@ async fn nonstreaming_local_budget_failure_still_allows_a_larger_fallback_budget
         fallback.request_settings.max_tokens = Some((OUTPUT - 1) as u64);
         group.fallbacks.push(fallback);
         send(&group, &history, structured).await.unwrap();
-        assert_eq!(provider.histories(), vec![history]);
+        assert_eq!(
+            provider.histories(),
+            vec![native_history(&history, "fallback", structured)]
+        );
         assert_eq!(provider.model_names(), vec!["fallback"]);
     }
 }
@@ -331,7 +384,10 @@ async fn nonstreaming_retains_mixed_tool_results_only_with_their_calls() {
             send(&group(provider.clone(), budget), &history, structured)
                 .await
                 .unwrap();
-            assert_eq!(provider.histories(), vec![expected]);
+            assert_eq!(
+                provider.histories(),
+                vec![native_history(&expected, "test-model", structured)]
+            );
         }
     }
 }
@@ -373,7 +429,10 @@ async fn nonstreaming_keeps_a_text_assistant_followup_with_its_user_input() {
         )
         .await
         .unwrap();
-        assert_eq!(provider.histories(), vec![history.clone()]);
+        assert_eq!(
+            provider.histories(),
+            vec![native_history(&history, "test-model", structured)]
+        );
     }
 }
 
@@ -491,13 +550,15 @@ async fn streaming_tool_result_retries_and_fallback_preserve_the_complete_active
     );
     let requests = primary.histories();
     assert_eq!(requests.len(), 3);
-    assert_eq!(requests[0], history);
-    assert_eq!(requests[1][..history.len()], history);
-    assert_eq!(requests[1].len(), history.len() + 2);
+    let prefix = native_history(&history, "test-model", true);
+    assert_eq!(requests[0], prefix);
+    assert_eq!(requests[1][..prefix.len()], prefix);
+    assert_eq!(requests[1].len(), prefix.len() + 2);
+    assert_eq!(history, active_history());
     assert_eq!(requests[1], requests[2]);
     assert_eq!(fallback.histories(), vec![requests[1].clone()]);
     let Message::Assistant(rig_core::message::AssistantMessage { content, .. }) =
-        &requests[1][history.len()]
+        &requests[1][prefix.len()]
     else {
         panic!("tool call must precede its result")
     };
@@ -556,7 +617,10 @@ async fn streaming_smaller_fallback_limits_fail_explicitly_without_losing_histor
             .await
             .err()
             .expect("context limit must surface");
-        assert_eq!(primary.histories(), vec![history.clone()]);
+        assert_eq!(
+            primary.histories(),
+            vec![native_history(&history, "test-model", false)]
+        );
         if local_limit {
             assert!(fallback.histories().is_empty());
             assert!(
@@ -565,7 +629,10 @@ async fn streaming_smaller_fallback_limits_fail_explicitly_without_losing_histor
                     .contains("Complete input exceeds context limit")
             );
         } else {
-            assert_eq!(fallback.histories(), vec![history]);
+            assert_eq!(
+                fallback.histories(),
+                vec![native_history(&history, "small-context-model", false)]
+            );
             assert!(error.to_string().contains("400 context limit exceeded"));
         }
         assert!(error.to_string().contains("backup/small-context-model"));
@@ -612,7 +679,11 @@ async fn streaming_in_flight_cancellation_keeps_the_original_request() {
         result,
         frona::inference::streaming::StreamResult::Cancelled
     ));
-    assert_eq!(provider.histories(), vec![history]);
+    assert_eq!(
+        provider.histories(),
+        vec![native_history(&history, "test-model", false)]
+    );
+    assert_eq!(history, active_history());
 }
 
 #[tokio::test]
@@ -633,7 +704,11 @@ async fn nonstreaming_cannot_use_text_mixed_with_orphan_results_as_an_opening() 
                 outcome.unwrap();
                 assert_eq!(
                     provider.histories(),
-                    vec![vec![history[0].clone(), history[2].clone()]]
+                    vec![native_history(
+                        &[history[0].clone(), history[2].clone()],
+                        "test-model",
+                        structured
+                    )]
                 );
             } else {
                 assert!(outcome.is_err());
@@ -661,8 +736,70 @@ async fn repeatedly_truncated_requests_keep_one_summary_and_stable_order() {
             )
             .await
             .unwrap();
-            assert_eq!(provider.histories(), vec![expected]);
-            history = provider.last_history();
+            assert_eq!(
+                provider.histories(),
+                vec![native_history(&expected, "test-model", structured)]
+            );
+            assert_eq!(selected_history(&history, cost(&expected)), expected);
+            // The next call starts from canonical conversation state, never the
+            // provider-specific request view.
+            history = expected;
         }
     }
+}
+
+#[tokio::test]
+async fn canonical_truncation_preserves_signed_reasoning_for_the_same_provider_wire() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    let history = active_history()[..8].to_vec();
+    let original = history.clone();
+    let retained = selected_history(&history, cost(&history));
+    assert_eq!(retained, history);
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id":"reply", "type":"message", "role":"assistant", "model":"fixture",
+            "content":[{"type":"text","text":"done"}], "stop_reason":"end_turn",
+            "usage":{"input_tokens":3,"output_tokens":2}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let model = frona_harness::Model::builder("anthropic", "fixture")
+        .api_key("fixture")
+        .base_url(server.uri())
+        .build()
+        .unwrap();
+    let mut request = frona_harness::ModelRequest::new("unused");
+    request.system = SYSTEM.into();
+    request.messages = retained;
+    request.max_tokens = Some(100);
+    request.tools = vec![rig_core::completion::ToolDefinition {
+        name: "read".try_into().unwrap(),
+        description: "Read".into(),
+        parameters: serde_json::json!({"type":"object"}),
+        annotations: Default::default(),
+    }];
+    model.complete(request).await.unwrap();
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = requests[0].body_json().unwrap();
+    let thinking = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|message| message["content"].as_array())
+        .flatten()
+        .find(|part| part["type"] == "thinking")
+        .expect("same-provider signed reasoning must reach the native wire");
+    assert_eq!(
+        thinking,
+        &serde_json::json!({
+            "type":"thinking", "thinking":"Original reasoning", "signature":"opaque-signature+/="
+        })
+    );
+    assert_eq!(
+        history, original,
+        "native preparation cannot rewrite the archive"
+    );
 }

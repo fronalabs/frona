@@ -316,6 +316,7 @@ fn provider_replacement_allowed(error: &InferenceError) -> bool {
         InferenceError::ProviderNotConfigured(_)
         | InferenceError::ModelGroupNotFound(_)
         | InferenceError::ConfigError(_)
+        | InferenceError::InvalidOutput { .. }
         | InferenceError::Stop(_)
         | InferenceError::Cancelled(_) => false,
     }

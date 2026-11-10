@@ -9,7 +9,7 @@ use crate::config::{AdapterId, ApiSurface, ModelProviderConfig};
 use crate::inference::error::InferenceError;
 use crate::inference::protocol::hooks;
 use crate::inference::provider::{
-    CredentialValidationError, InferenceCounter, ModelProvider, OpenAiProvider, RigProvider,
+    CredentialValidationError, InferenceCounter, ModelProvider, ResolvedModel, RigProvider,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -680,12 +680,37 @@ pub fn build_provider(
             if let Some(url) = endpoint {
                 connection = connection.with_base_url(url);
             }
+            let client =
+                connection.connect(crate::inference::protocol::http::WireClient::default());
+            let discovery = client.clone();
             Ok(Arc::new(
-                OpenAiProvider::new(
-                    connection.connect(crate::inference::protocol::http::WireClient::default()),
+                RigProvider::from_model_factory(
+                    move |model| {
+                        if matches!(
+                            model.provider,
+                            crate::config::ProviderModel::OpenAI {
+                                api: Some(crate::config::OpenAiApi::Responses),
+                                ..
+                            }
+                        ) {
+                            ResolvedModel::new(client.responses(&model.model_id))
+                        } else {
+                            ResolvedModel::new(client.chat(&model.model_id))
+                                .with_hook(crate::inference::protocol::hooks::openai)
+                        }
+                    },
                     counter.clone(),
                 )
-                .with_wire_transport(),
+                .with_wire_transport()
+                .with_live_check(move || {
+                    let client = discovery.clone();
+                    async move {
+                        client
+                            .list_models()
+                            .await
+                            .map_err(CredentialValidationError::from)
+                    }
+                }),
             ))
         }
         FactoryKind::Anthropic => {

@@ -187,6 +187,7 @@ required-features = ["__test-bins"]
 __test-bins = []
 
 [dev-dependencies]
+rig-core = { workspace = true, features = ["test-utils"] }
 aws-credential-types = "1"
 aws-smithy-eventstream = "0.61"
 aws-smithy-async = "1"

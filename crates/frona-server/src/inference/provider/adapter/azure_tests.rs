@@ -102,32 +102,39 @@ async fn deployment_paths_api_key_and_native_parameters_survive_normal_stream_an
         for streaming in [false, true] {
             let output = if streaming {
                 let (tx, _rx) = tokio::sync::mpsc::channel(16);
-                provider
-                    .stream_inference(
-                        &model,
-                        "system",
-                        vec![Message::user("hi")],
-                        tools(),
-                        tx,
-                        None,
-                        None,
-                    )
-                    .await
+                crate::provider_fixture::invoke(
+                    provider.clone(),
+                    &model,
+                    frona_harness::ModelRequest {
+                        system: ("system").into(),
+                        messages: vec![Message::user("hi")],
+                        tools: tools(),
+                        schema: None,
+                        max_tokens: None,
+                        temperature: None,
+                    },
+                    Some(tx),
+                )
+                .await
             } else {
-                provider
-                    .inference(
-                        &model,
-                        "system",
-                        vec![Message::user("hi")],
-                        tools(),
-                        None,
-                        None,
-                    )
-                    .await
+                crate::provider_fixture::invoke(
+                    provider.clone(),
+                    &model,
+                    frona_harness::ModelRequest {
+                        system: ("system").into(),
+                        messages: vec![Message::user("hi")],
+                        tools: tools(),
+                        schema: None,
+                        max_tokens: None,
+                        temperature: None,
+                    },
+                    None,
+                )
+                .await
             }
             .unwrap();
-            assert_eq!(output.usage.input_tokens, Some(2));
-            assert_eq!(output.usage.output_tokens, Some(3));
+            assert_eq!(output.usage.observed().unwrap().input_tokens, Some(2));
+            assert_eq!(output.usage.observed().unwrap().output_tokens, Some(3));
             assert!(output.content.iter().any(|content| matches!(content, AssistantContent::ToolCall(call) if call.function.name == "lookup" && serde_json::Value::Object(call.function.arguments.clone()) == json!({"q":"value"}))));
         }
     }
@@ -198,17 +205,24 @@ async fn structured_calls_keep_custom_data_and_reject_envelope_overrides() {
     let config = config(&server.uri());
     let provider = provider(&config);
     let mut model = model(&config, "structured-deployment");
-    let value = provider
-        .structured_inference(
-            &model,
-            "system",
-            vec![Message::user("hi")],
-            json!({"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}),
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+    let value = crate::provider_fixture::invoke(
+        provider.clone(),
+        &model,
+        frona_harness::ModelRequest {
+            system: ("system").into(),
+            messages: vec![Message::user("hi")],
+            tools: vec![],
+            schema: Some(
+                json!({"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}),
+            ),
+            max_tokens: None,
+            temperature: None,
+        },
+        None,
+    )
+    .await
+    .map(|output| output.structured.expect("validated structured output"))
+    .unwrap();
     assert_eq!(value, json!({"q":"value"}));
     let requests = server.received_requests().await.unwrap();
     let body: Value = requests[0].body_json().unwrap();
@@ -222,19 +236,23 @@ async fn structured_calls_keep_custom_data_and_reject_envelope_overrides() {
     ] {
         model.request_settings.extra_params = extra.as_object().unwrap().clone();
         assert!(
-            provider
-                .inference(
-                    &model,
-                    "system",
-                    vec![Message::user("hi")],
-                    vec![],
-                    None,
-                    None
-                )
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("reserved")
+            crate::provider_fixture::invoke(
+                provider.clone(),
+                &model,
+                frona_harness::ModelRequest {
+                    system: ("system").into(),
+                    messages: vec![Message::user("hi")],
+                    tools: vec![],
+                    schema: None,
+                    max_tokens: None,
+                    temperature: None
+                },
+                None
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("reserved")
         );
     }
     assert_eq!(server.received_requests().await.unwrap().len(), 1);

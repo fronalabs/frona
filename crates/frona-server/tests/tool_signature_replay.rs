@@ -384,10 +384,21 @@ async fn reasoning_metadata_replays_through_native_anthropic_and_openai_requests
         // The HTTP error is deliberate: capture the native outbound body without
         // requiring an unrelated response fixture for each provider dialect.
         assert!(
-            group.providers["fixture"]
-                .inference(&model, "system", history, replay_tools(), Some(4096), None)
-                .await
-                .is_err()
+            helpers::provider::invoke(
+                group.providers["fixture"].clone(),
+                &model,
+                frona_harness::ModelRequest {
+                    system: ("system").into(),
+                    messages: history,
+                    tools: replay_tools(),
+                    schema: None,
+                    max_tokens: Some(4096),
+                    temperature: None
+                },
+                None
+            )
+            .await
+            .is_err()
         );
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 1, "{brand}");
@@ -634,17 +645,21 @@ async fn assert_tool_call_replay_matches_live_request(dual_id: bool, snapshot: b
         let mut input = vec![RigMessage::user("Look up the value.")];
         input.extend(history);
         assert!(
-            group.providers["fixture"]
-                .inference(
-                    &group.main,
-                    "system",
-                    input,
-                    replay_tools(),
-                    Some(4096),
-                    None,
-                )
-                .await
-                .is_err()
+            helpers::provider::invoke(
+                group.providers["fixture"].clone(),
+                &group.main,
+                frona_harness::ModelRequest {
+                    system: ("system").into(),
+                    messages: input,
+                    tools: replay_tools(),
+                    schema: None,
+                    max_tokens: Some(4096),
+                    temperature: None
+                },
+                None
+            )
+            .await
+            .is_err()
         );
     }
     let requests = server.received_requests().await.unwrap();

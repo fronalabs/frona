@@ -351,3 +351,230 @@ async fn owned_application_task_is_spawnable() {
     .unwrap();
     assert_eq!(output.metadata["request_id"], "application-original");
 }
+
+#[tokio::test]
+async fn supplied_rig_model_uses_its_transport_and_preserves_native_response() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(chat_response(
+            json!({"role":"assistant","content":"from Rig"}),
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let native = rig_core::providers::openai::OpenAIConfig::new("fixture")
+        .with_base_url(server.uri())
+        .client()
+        .chat("unlisted-private-model");
+    let model = Model::from_rig(native).unwrap();
+    let mut request = ModelRequest::new("hi");
+    request.max_tokens = Some(123);
+    request.temperature = Some(0.4);
+    let output = model.complete(request).await.unwrap();
+    assert_eq!(model.config().model_id, "unlisted-private-model");
+    assert_eq!(output.metadata["response_id"], "chat-original");
+    assert!(output.origin.is_some());
+    assert!(matches!(
+        output.usage,
+        UsageReport::Reported(Usage {
+            total_tokens: Some(0),
+            ..
+        })
+    ));
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = requests[0].body_json().unwrap();
+    assert_eq!(body["model"], "unlisted-private-model");
+    // The supplied Rig transport keeps its own mapping for unknown model IDs.
+    assert_eq!(body["max_tokens"], 123);
+    assert!(body.get("max_completion_tokens").is_none());
+    assert_eq!(body["temperature"], 0.4);
+}
+
+#[tokio::test]
+async fn invalid_native_submissions_keep_response_and_charge_usage_before_rejection() {
+    use frona_harness::inference::observation::Observations;
+    use frona_harness::{BudgetLimits, DefaultBudget, ExecutionControl, ReportHandle};
+    for (message, stop) in [
+        (
+            json!({"role":"assistant","content":null,"tool_calls":[{"id":"bad-json","type":"function","function":{"name":"submit","arguments":"{broken"}}]}),
+            "tool_calls",
+        ),
+        (
+            json!({"role":"assistant","content":"no submission"}),
+            "stop",
+        ),
+        (
+            json!({"role":"assistant","content":null,"tool_calls":[{"id":"bad-schema","type":"function","function":{"name":"submit","arguments":"{\"value\":\"wrong type\"}"}}]}),
+            "tool_calls",
+        ),
+        (
+            json!({"role":"assistant","content":null,"tool_calls":[{"id":"unfinished","type":"function","function":{"name":"submit","arguments":"{\"value\":9}"}}]}),
+            "length",
+        ),
+    ] {
+        let server = MockServer::start().await;
+        let mut native = chat_response(message.clone());
+        native["choices"][0]["finish_reason"] = json!(stop);
+        native["usage"] = json!({"prompt_tokens":5,"completion_tokens":2,"total_tokens":7});
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(native.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let model = Model::builder("openai", "mock-model")
+            .api_key("fixture-key")
+            .base_url(server.uri())
+            .api(ApiSurface::Completions)
+            .build()
+            .unwrap();
+        let budget = DefaultBudget::new(BudgetLimits {
+            model_attempts: Some(1),
+            ..Default::default()
+        });
+        let report = ReportHandle::default();
+        let mut request = ModelRequest::new("plan");
+        request.schema = Some(schemars::schema_for!(Answer).to_value());
+        let error = model
+            .invoke_controlled(
+                request,
+                None,
+                Observations::default(),
+                ExecutionControl::new(&budget).with_report(&report),
+            )
+            .await
+            .unwrap_err();
+        let ModelError::Structured { response, .. } = error else {
+            panic!("expected failure retaining structured response: {error:?}");
+        };
+        assert_eq!(budget.snapshot().tokens, 7);
+        assert_eq!(budget.snapshot().model_attempts, 1);
+        assert_eq!(budget.snapshot().in_flight, 0);
+        assert_eq!(report.snapshot().attempts.len(), 1);
+        assert_eq!(response.metadata["raw"], native);
+        assert_eq!(response.metadata["response_id"], "chat-original");
+        assert!(response.origin.is_some());
+        assert!(!response.content.is_empty());
+        assert!(matches!(
+            response.usage,
+            UsageReport::Reported(Usage {
+                total_tokens: Some(7),
+                ..
+            })
+        ));
+        if stop == "length" {
+            assert!(matches!(
+                response.stop,
+                Some(rig_core::message::StopReason::Length)
+            ));
+        }
+    }
+}
+
+#[tokio::test]
+async fn supplied_rig_stream_retains_final_usage_and_measures_first_token() {
+    let server = MockServer::start().await;
+    let chunk = |delta: serde_json::Value, finish: serde_json::Value, usage: serde_json::Value| json!({"id":"stream-original","object":"chat.completion.chunk","created":0,"model":"mock-model","choices":[{"index":0,"delta":delta,"finish_reason":finish}],"usage":usage});
+    let body = format!(
+        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+        chunk(
+            json!({"role":"assistant","content":"hello"}),
+            json!(null),
+            json!(null)
+        ),
+        chunk(
+            json!({}),
+            json!("stop"),
+            json!({"prompt_tokens":5,"completion_tokens":2,"total_tokens":7})
+        ),
+    );
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let native = rig_core::providers::openai::OpenAIConfig::new("fixture")
+        .with_base_url(server.uri())
+        .client()
+        .chat("mock-model");
+    let model = Model::from_rig(native).unwrap();
+    let (tx, mut rx) = mpsc::channel(8);
+    let output = model.stream(ModelRequest::new("hi"), tx).await.unwrap();
+    assert!(matches!(rx.recv().await, Some(StreamToken::Text(text)) if text == "hello"));
+    assert!(output.ttft_ms.is_some());
+    assert_eq!(output.metadata["response_id"], "stream-original");
+    assert!(matches!(
+        output.usage,
+        UsageReport::Reported(Usage {
+            total_tokens: Some(7),
+            ..
+        })
+    ));
+    assert!(output.origin.is_some());
+}
+
+#[tokio::test]
+async fn denied_standalone_attempt_does_not_preflight_or_resolve_credentials() {
+    use frona_harness::inference::{
+        observation::Observations,
+        provider::{ModelConfig, ModelProvider, ResolvedModel, RigModelAdapter},
+    };
+    use frona_harness::{BudgetLimits, DefaultBudget, ExecutionControl, Handle};
+    use std::sync::Arc;
+
+    struct Credentials {
+        preflights: Arc<AtomicUsize>,
+        resolutions: Arc<AtomicUsize>,
+    }
+    #[async_trait]
+    impl ModelProvider for Credentials {
+        async fn ensure_usable(&self, _: &ModelConfig) -> Result<(), InferenceError> {
+            self.preflights.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        async fn resolve(&self, _: &ModelConfig) -> Result<ResolvedModel, InferenceError> {
+            self.resolutions.fetch_add(1, Ordering::SeqCst);
+            Err(InferenceError::InferenceFailed(
+                "credential resolution reached".into(),
+            ))
+        }
+    }
+    let preflights = Arc::new(AtomicUsize::new(0));
+    let resolutions = Arc::new(AtomicUsize::new(0));
+    let config = ModelConfig {
+        catalog_provider: "fixture".into(),
+        provider_handle: Handle::const_validated("fixture"),
+        model_id: "model".into(),
+        provider: frona_harness::config::ProviderModel::Generic,
+        request_settings: Default::default(),
+    };
+    let adapter = RigModelAdapter::new(
+        Arc::new(Credentials {
+            preflights: preflights.clone(),
+            resolutions: resolutions.clone(),
+        }),
+        config,
+    );
+    let model = Model::from_adapter("fixture", "model", adapter).unwrap();
+    let budget = DefaultBudget::new(BudgetLimits {
+        model_attempts: Some(0),
+        ..Default::default()
+    });
+    let error = model
+        .invoke_controlled(
+            ModelRequest::new("hello"),
+            None,
+            Observations::default(),
+            ExecutionControl::new(&budget),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ModelError::Provider(InferenceError::Stop(
+            frona_harness::ExecutionStop::BudgetExhausted(_)
+        ))
+    ));
+    assert_eq!(preflights.load(Ordering::SeqCst), 0);
+    assert_eq!(resolutions.load(Ordering::SeqCst), 0);
+}

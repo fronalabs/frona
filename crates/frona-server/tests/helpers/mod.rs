@@ -1,7 +1,11 @@
+#![allow(dead_code)]
+pub mod provider;
+#[path = "../../../frona-harness/tests/helpers/rig.rs"]
+pub mod rig;
+
 // Each integration test file compiles as its own binary and pulls in this
 // helpers module; helpers used only by other test files surface as dead-code
 // warnings in every binary that doesn't reference them. Silencing module-wide.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -17,7 +21,7 @@ use frona_harness::{
     inference::{
         ModelGroup, Usage,
         error::InferenceError,
-        provider::{ModelConfig, ModelProvider, SUBMIT_TOOL_NAME},
+        provider::{ModelConfig, ModelProvider},
     },
 };
 use surrealdb::{Surreal, engine::local::Db};
@@ -235,38 +239,39 @@ pub enum MockResponse {
     },
 }
 
+#[derive(Clone)]
 pub struct MockModelProvider {
-    responses: Mutex<Vec<MockResponse>>,
-    pub call_count: Mutex<usize>,
+    responses: Arc<Mutex<Vec<MockResponse>>>,
+    pub call_count: Arc<Mutex<usize>>,
     /// The `chat_history` of the most recent call, which is what the conversation sent
     /// back, which is the only way to assert on messages a loop appends internally
     /// (tool results, feedback) rather than returns.
-    last_history: Mutex<Vec<RigMessage>>,
-    histories: Mutex<Vec<Vec<RigMessage>>>,
-    tool_histories: Mutex<Vec<Vec<RigToolDefinition>>>,
-    system_prompts: Mutex<Vec<String>>,
-    model_names: Mutex<Vec<String>>,
-    request_settings: Mutex<Vec<(Option<u64>, Option<f64>)>>,
-    usage: Mutex<Usage>,
+    last_history: Arc<Mutex<Vec<RigMessage>>>,
+    histories: Arc<Mutex<Vec<Vec<RigMessage>>>>,
+    tool_histories: Arc<Mutex<Vec<Vec<RigToolDefinition>>>>,
+    system_prompts: Arc<Mutex<Vec<String>>>,
+    model_names: Arc<Mutex<Vec<String>>>,
+    request_settings: Arc<Mutex<Vec<(Option<u64>, Option<f64>)>>>,
+    usage: Arc<Mutex<Usage>>,
 }
 
 impl MockModelProvider {
     pub fn new(responses: Vec<MockResponse>) -> Self {
         Self {
-            responses: Mutex::new(responses),
-            call_count: Mutex::new(0),
-            last_history: Mutex::new(Vec::new()),
-            histories: Mutex::new(Vec::new()),
-            tool_histories: Mutex::new(Vec::new()),
-            system_prompts: Mutex::new(Vec::new()),
-            model_names: Mutex::new(Vec::new()),
-            request_settings: Mutex::new(Vec::new()),
-            usage: Mutex::new(
+            responses: Arc::new(Mutex::new(responses)),
+            call_count: Arc::new(Mutex::new(0)),
+            last_history: Arc::new(Mutex::new(Vec::new())),
+            histories: Arc::new(Mutex::new(Vec::new())),
+            tool_histories: Arc::new(Mutex::new(Vec::new())),
+            system_prompts: Arc::new(Mutex::new(Vec::new())),
+            model_names: Arc::new(Mutex::new(Vec::new())),
+            request_settings: Arc::new(Mutex::new(Vec::new())),
+            usage: Arc::new(Mutex::new(
                 Usage::new()
                     .input_tokens(Some(10))
                     .output_tokens(Some(5))
                     .total_tokens(Some(15)),
-            ),
+            )),
         }
     }
 
@@ -357,224 +362,111 @@ impl MockModelProvider {
 
 #[async_trait]
 impl ModelProvider for MockModelProvider {
-    async fn inference(
+    async fn resolve(
         &self,
-        _model: &ModelConfig,
-        _system_prompt: &str,
-        chat_history: Vec<RigMessage>,
-        tools: Vec<RigToolDefinition>,
-        _max_tokens: Option<u64>,
-        _temperature: Option<f64>,
-    ) -> Result<frona_harness::inference::provider::InferenceOutput, InferenceError> {
-        self.system_prompts
-            .lock()
-            .unwrap()
-            .push(_system_prompt.to_string());
-        self.model_names
-            .lock()
-            .unwrap()
-            .push(_model.model_id.clone());
-        self.request_settings
-            .lock()
-            .unwrap()
-            .push((_max_tokens, _temperature));
-        *self.last_history.lock().unwrap() = chat_history.clone();
-        self.histories.lock().unwrap().push(chat_history.clone());
-        self.tool_histories.lock().unwrap().push(tools);
-        let usage = self.usage.lock().unwrap().clone();
-        let response = match self.next_response_for_history(&chat_history) {
-            MockResponse::Barrier(barrier, response) => {
-                barrier.wait().await;
-                *response
-            }
-            response => response,
-        };
-        let content = match response {
-            MockResponse::Content(content) => content,
-            MockResponse::Text(t) => vec![AssistantContent::text(&t)],
-            MockResponse::TextWithReasoning(text, reasoning) => vec![
-                AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(
-                    &reasoning,
-                )),
-                AssistantContent::text(&text),
-            ],
-            MockResponse::ToolCalls(calls) => calls
-                .into_iter()
-                .map(|(id, name, args)| {
-                    AssistantContent::ToolCall(ToolCall::new(
-                        rig_core::completion::message::CallId::from_wire(id),
-                        ToolFunction::new(name.try_into().expect("test tool name"), args),
-                    ))
-                })
-                .collect(),
-            MockResponse::Error(e) => return Err(e),
-            MockResponse::Pending => std::future::pending().await,
-            MockResponse::PendingWithDropDelay(delay) => pending_with_drop_delay(delay).await,
-            MockResponse::Barrier(_, _) => unreachable!("nested mock barriers are unsupported"),
-            MockResponse::ForUserText { .. } => {
-                unreachable!("history-routed responses are unwrapped before execution")
-            }
-        };
-        Ok(frona_harness::inference::provider::InferenceOutput::new(
-            content, usage,
-        ))
-    }
-
-    async fn stream_inference(
-        &self,
-        _model: &ModelConfig,
-        _system_prompt: &str,
-        _chat_history: Vec<RigMessage>,
-        _tools: Vec<RigToolDefinition>,
-        token_tx: mpsc::Sender<frona_harness::inference::provider::StreamToken>,
-        _max_tokens: Option<u64>,
-        _temperature: Option<f64>,
-    ) -> Result<frona_harness::inference::provider::InferenceOutput, InferenceError> {
-        self.system_prompts
-            .lock()
-            .unwrap()
-            .push(_system_prompt.to_string());
-        self.model_names
-            .lock()
-            .unwrap()
-            .push(_model.model_id.clone());
-        self.request_settings
-            .lock()
-            .unwrap()
-            .push((_max_tokens, _temperature));
-        *self.last_history.lock().unwrap() = _chat_history.clone();
-        self.histories.lock().unwrap().push(_chat_history);
-        self.tool_histories.lock().unwrap().push(_tools);
-        let usage = self.usage.lock().unwrap().clone();
-        let response = match self.next_response() {
-            MockResponse::Barrier(barrier, response) => {
-                barrier.wait().await;
-                *response
-            }
-            response => response,
-        };
-        let content = match response {
-            MockResponse::Content(content) => {
-                for item in &content {
-                    if let AssistantContent::Text(text) = item {
-                        let _ = token_tx
-                            .send(frona_harness::inference::provider::StreamToken::Text(
-                                text.text.clone(),
-                            ))
-                            .await;
-                    }
-                }
-                content
-            }
-            MockResponse::Text(t) => {
-                let _ = token_tx
-                    .send(frona_harness::inference::provider::StreamToken::Text(
-                        t.clone(),
-                    ))
-                    .await;
-                vec![AssistantContent::text(t)]
-            }
-            MockResponse::TextWithReasoning(text, reasoning) => {
-                let _ = token_tx
-                    .send(frona_harness::inference::provider::StreamToken::Reasoning(
-                        reasoning.clone(),
-                    ))
-                    .await;
-                let _ = token_tx
-                    .send(frona_harness::inference::provider::StreamToken::Text(
-                        text.clone(),
-                    ))
-                    .await;
-                vec![
-                    AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(
-                        &reasoning,
-                    )),
-                    AssistantContent::text(text),
-                ]
-            }
-            MockResponse::ToolCalls(calls) => calls
-                .into_iter()
-                .map(|(id, name, args)| {
-                    AssistantContent::ToolCall(ToolCall::new(
-                        rig_core::completion::message::CallId::from_wire(id),
-                        ToolFunction::new(name.try_into().expect("test tool name"), args),
-                    ))
-                })
-                .collect(),
-            MockResponse::Error(e) => return Err(e),
-            MockResponse::Pending => std::future::pending().await,
-            MockResponse::PendingWithDropDelay(delay) => pending_with_drop_delay(delay).await,
-            MockResponse::Barrier(_, _) => unreachable!("nested mock barriers are unsupported"),
-            MockResponse::ForUserText { .. } => {
-                unreachable!("history-routed responses require non-streaming inference")
-            }
-        };
-        Ok(frona_harness::inference::provider::InferenceOutput::new(
-            content, usage,
-        ))
-    }
-
-    async fn structured_inference(
-        &self,
-        _model: &ModelConfig,
-        _system_prompt: &str,
-        _chat_history: Vec<RigMessage>,
-        _schema: serde_json::Value,
-        _max_tokens: Option<u64>,
-        _temperature: Option<f64>,
-    ) -> Result<serde_json::Value, InferenceError> {
-        self.system_prompts
-            .lock()
-            .unwrap()
-            .push(_system_prompt.into());
-        self.model_names
-            .lock()
-            .unwrap()
-            .push(_model.model_id.clone());
-        self.request_settings
-            .lock()
-            .unwrap()
-            .push((_max_tokens, _temperature));
-        *self.last_history.lock().unwrap() = _chat_history.clone();
-        self.histories.lock().unwrap().push(_chat_history);
-        let response = match self.next_response() {
-            MockResponse::Barrier(barrier, response) => {
-                barrier.wait().await;
-                *response
-            }
-            response => response,
-        };
-        match response {
-            MockResponse::ToolCalls(mut calls) => {
-                let (_id, name, args) = calls.pop().ok_or_else(|| {
-                    InferenceError::InferenceFailed("mock: empty ToolCalls".into())
-                })?;
-                // Structured output arrives as a call to the submit tool. Enforced here
-                // even though this path could ignore the name, because the REAL tool loop
-                // (`structured_inference_with_tools` / `structured_conversation`)
-                // dispatches on it: a test encoding the wrong name passes here and fails
-                // there, silently. That divergence is how the playbook capture path went
-                // untested.
-                if name != SUBMIT_TOOL_NAME {
-                    return Err(InferenceError::InferenceFailed(format!(
-                        "mock structured_inference: tool call named `{name}`, but structured \
-                         output must use `{SUBMIT_TOOL_NAME}` — the real tool loop dispatches \
-                         on this name, so any other value only works on this path"
-                    )));
-                }
-                Ok(args)
-            }
-            MockResponse::Error(e) => Err(e),
-            MockResponse::Pending => std::future::pending().await,
-            MockResponse::PendingWithDropDelay(delay) => pending_with_drop_delay(delay).await,
-            MockResponse::Barrier(_, _) => unreachable!("nested mock barriers are unsupported"),
-            MockResponse::ForUserText { .. } => {
-                unreachable!("history-routed responses require conversation inference")
-            }
-            _ => Err(InferenceError::InferenceFailed(
-                "mock structured_inference: queue head is not a ToolCalls response".into(),
-            )),
+        model: &ModelConfig,
+    ) -> Result<frona_harness::inference::provider::ResolvedModel, InferenceError> {
+        // Typed application stops originate at the resolver boundary, not in a
+        // provider wire error. Preserve them without converting controls to text.
+        if self.responses.lock().unwrap().first().is_some_and(
+            |response| matches!(response, MockResponse::Error(error) if error.is_terminal()),
+        ) {
+            let MockResponse::Error(error) = self.next_response() else {
+                unreachable!()
+            };
+            return Err(error);
         }
+        let provider = self.clone();
+        let id = model.model_id.clone();
+        Ok(frona_harness::inference::provider::ResolvedModel::new(
+            rig::model(id.clone(), move |request, mode| {
+                let provider = provider.clone();
+                let id = id.clone();
+                rig_core::driver::Opening::new(async move {
+                    let mut messages = request
+                        .chat_history
+                        .into_iter()
+                        .map(|message| (*message).clone())
+                        .collect::<Vec<_>>();
+                    let system = if matches!(messages.first(), Some(RigMessage::System { .. })) {
+                        match messages.remove(0) {
+                            RigMessage::System { content } => content,
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        String::new()
+                    };
+                    provider.system_prompts.lock().unwrap().push(system);
+                    provider.model_names.lock().unwrap().push(id);
+                    provider
+                        .request_settings
+                        .lock()
+                        .unwrap()
+                        .push((request.max_tokens, request.temperature));
+                    *provider.last_history.lock().unwrap() = messages.clone();
+                    provider.histories.lock().unwrap().push(messages.clone());
+                    provider.tool_histories.lock().unwrap().push(
+                        request
+                            .tools
+                            .into_iter()
+                            .map(|tool| (*tool).clone())
+                            .collect(),
+                    );
+                    let response = match mode {
+                        rig_core::wire::Mode::Unary => {
+                            provider.next_response_for_history(&messages)
+                        }
+                        rig_core::wire::Mode::Streaming => provider.next_response(),
+                    };
+                    let response = match response {
+                        MockResponse::Barrier(barrier, response) => {
+                            barrier.wait().await;
+                            *response
+                        }
+                        response => response,
+                    };
+                    let content = match response {
+                        MockResponse::Content(content) => content,
+                        MockResponse::Text(text) => vec![AssistantContent::text(text)],
+                        MockResponse::TextWithReasoning(text, reasoning) => vec![
+                            AssistantContent::Reasoning(rig_core::message::Reasoning::new(
+                                reasoning,
+                            )),
+                            AssistantContent::text(text),
+                        ],
+                        MockResponse::ToolCalls(calls) => calls
+                            .into_iter()
+                            .map(|(id, name, args)| {
+                                AssistantContent::ToolCall(ToolCall::new(
+                                    rig_core::message::CallId::from_wire(id),
+                                    ToolFunction::new(
+                                        name.try_into().expect("test tool name"),
+                                        args,
+                                    ),
+                                ))
+                            })
+                            .collect(),
+                        MockResponse::Error(error) => return Err(rig::error(error)),
+                        MockResponse::Pending => std::future::pending().await,
+                        MockResponse::PendingWithDropDelay(delay) => {
+                            pending_with_drop_delay(delay).await
+                        }
+                        MockResponse::Barrier(_, _) => {
+                            unreachable!("nested mock barriers are unsupported")
+                        }
+                        MockResponse::ForUserText { .. } => {
+                            unreachable!("history-routed responses require non-streaming inference")
+                        }
+                    };
+                    let usage = *provider.usage.lock().unwrap();
+                    rig::reply(frona_harness::ModelOutput::new(
+                        content,
+                        frona_harness::UsageReport::Reported(usage),
+                    ))
+                    .await
+                })
+            }),
+        ))
     }
 }
 

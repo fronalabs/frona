@@ -98,7 +98,7 @@ async fn ordinary_retry_and_fallback_keep_accounting_and_rich_structured_usage()
             assert_eq!(report.attempts[0].usage, Some(UsageReport::Unavailable));
             assert_eq!(
                 report.attempts[1].usage,
-                Some(UsageReport::LegacyNormalized(usage(7)))
+                Some(UsageReport::Reported(usage(7)))
             );
             assert!(report.attempts[1].model.contains(if retryable {
                 "primary"

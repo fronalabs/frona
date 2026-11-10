@@ -221,7 +221,7 @@ pub async fn run_tool_loop_controlled(
     use crate::tool::persistent_dispatch::{
         PersistentToolDispatcher, PersistentToolOutcome, project_messages,
     };
-    use frona_harness::{Conversation, ExecutionStop, ModelOutput, UsageReport};
+    use frona_harness::{Conversation, ExecutionStop};
     let rig_tools =
         to_rig_tool_definitions(tool_registry.definitions(), tool_registry.mcp_bridge_mode());
     let mut conversation = Conversation::from_execution(execution);
@@ -291,10 +291,8 @@ pub async fn run_tool_loop_controlled(
                 &mut turn_text,
             )
             .await;
-        let (contents, usage, origin, stop) = match response {
-            Ok(StreamResult::Contents(output)) => {
-                (output.content, output.usage, output.origin, output.stop)
-            }
+        let output = match response {
+            Ok(StreamResult::Contents(output)) => *output,
             Ok(StreamResult::Cancelled) => {
                 return stopped(
                     &mut conversation,
@@ -325,28 +323,16 @@ pub async fn run_tool_loop_controlled(
                 }
             },
         };
-        let assistant = rig_core::message::AssistantMessage::new(contents.clone())
-            .with_origin(origin.clone())
-            .with_stop(stop.clone());
+        let assistant = rig_core::message::AssistantMessage::new(output.content.clone())
+            .with_origin(output.origin.clone())
+            .with_stop(output.stop.clone());
         chat_service
             .record_provider_turn(message_id, persisted_turn, &assistant)
             .await?;
-        last_reasoning = extract_reasoning(&contents);
+        last_reasoning = extract_reasoning(&output.content);
         last_text = turn_text.clone();
-        let usage = if origin.is_some() {
-            UsageReport::Reported(usage)
-        } else {
-            UsageReport::LegacyNormalized(usage)
-        };
         let actions = conversation
-            .record_response(
-                ModelOutput {
-                    origin,
-                    stop,
-                    ..ModelOutput::new(contents, usage)
-                },
-                rig_tools.clone(),
-            )
+            .record_response(output, rig_tools.clone())
             .map_err(protocol_error)?;
         if ctx.shutdown_token.is_cancelled() {
             return shutdown(

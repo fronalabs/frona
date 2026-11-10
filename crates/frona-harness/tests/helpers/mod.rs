@@ -2,3 +2,5 @@
 
 pub mod execution;
 pub mod ownership;
+
+pub mod rig;

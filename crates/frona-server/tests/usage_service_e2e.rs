@@ -435,9 +435,9 @@ async fn structured_inference_records_row() {
 
     let rows = list_all_rows(&db).await;
     assert_eq!(rows.len(), 1);
-    // structured_inference doesn't get a Usage from rig, so we record zeros.
-    assert_eq!(rows[0].input_tokens, 0);
-    assert_eq!(rows[0].output_tokens, 0);
+    // Structured submission retains the native response usage.
+    assert_eq!(rows[0].input_tokens, 10);
+    assert_eq!(rows[0].output_tokens, 5);
 }
 
 #[tokio::test]

@@ -14,6 +14,12 @@ pub enum InferenceError {
     #[error("Inference failed: {0}")]
     InferenceFailed(String),
 
+    #[error("Invalid model output: {message}")]
+    InvalidOutput {
+        message: String,
+        output: Box<crate::ModelOutput>,
+    },
+
     #[error("Streaming failed: {0}")]
     StreamingFailed(String),
 

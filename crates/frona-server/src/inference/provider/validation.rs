@@ -510,10 +510,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
-    use rig_core::completion::Message as RigMessage;
     use surrealdb::Surreal;
     use surrealdb::engine::local::{Db, Mem};
-    use tokio::sync::mpsc;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -521,7 +519,7 @@ mod tests {
     use crate::chat::broadcast::BroadcastService;
     use frona_harness::inference::{
         error::InferenceError,
-        provider::{CredentialValidation, InferenceOutput, ModelConfig, StreamToken},
+        provider::{CredentialValidation, ModelConfig},
     };
 
     #[derive(Clone)]
@@ -547,41 +545,11 @@ mod tests {
             }
         }
 
-        async fn inference(
+        async fn resolve(
             &self,
             _: &ModelConfig,
-            _: &str,
-            _: Vec<RigMessage>,
-            _: Vec<rig_core::completion::request::ToolDefinition>,
-            _: Option<u64>,
-            _: Option<f64>,
-        ) -> Result<InferenceOutput, InferenceError> {
-            unreachable!()
-        }
-
-        async fn stream_inference(
-            &self,
-            _: &ModelConfig,
-            _: &str,
-            _: Vec<RigMessage>,
-            _: Vec<rig_core::completion::request::ToolDefinition>,
-            _: mpsc::Sender<StreamToken>,
-            _: Option<u64>,
-            _: Option<f64>,
-        ) -> Result<InferenceOutput, InferenceError> {
-            unreachable!()
-        }
-
-        async fn structured_inference(
-            &self,
-            _: &ModelConfig,
-            _: &str,
-            _: Vec<RigMessage>,
-            _: serde_json::Value,
-            _: Option<u64>,
-            _: Option<f64>,
-        ) -> Result<serde_json::Value, InferenceError> {
-            unreachable!()
+        ) -> Result<frona_harness::inference::provider::ResolvedModel, InferenceError> {
+            unreachable!("validation does not execute a model")
         }
     }
 

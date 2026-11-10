@@ -115,7 +115,7 @@ impl ModelGroup {
         }
         result.map(|result| ModelResponse {
             content: result.output.content,
-            usage: result.output.usage,
+            usage: result.output.usage.observed().copied().unwrap_or_default(),
         })
     }
 
@@ -139,7 +139,7 @@ impl ModelGroup {
         }
         result.map(|result| ModelResponse {
             content: result.output.content,
-            usage: result.output.usage,
+            usage: result.output.usage.observed().copied().unwrap_or_default(),
         })
     }
 

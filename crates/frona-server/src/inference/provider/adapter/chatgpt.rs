@@ -719,30 +719,43 @@ mod tests {
             }];
             let result = if streaming {
                 let (tx, _rx) = tokio::sync::mpsc::channel(16);
-                provider
-                    .stream_inference(&model, "system", history(), tools, tx, None, None)
-                    .await
+                crate::provider_fixture::invoke(
+                    provider.clone(),
+                    &model,
+                    frona_harness::ModelRequest {
+                        system: ("system").into(),
+                        messages: history(),
+                        tools: tools,
+                        schema: None,
+                        max_tokens: None,
+                        temperature: None,
+                    },
+                    Some(tx),
+                )
+                .await
             } else {
-                provider
-                    .inference(&model, "system", history(), tools, None, None)
-                    .await
+                crate::provider_fixture::invoke(
+                    provider.clone(),
+                    &model,
+                    frona_harness::ModelRequest {
+                        system: ("system").into(),
+                        messages: history(),
+                        tools: tools,
+                        schema: None,
+                        max_tokens: None,
+                        temperature: None,
+                    },
+                    None,
+                )
+                .await
             }
             .unwrap();
-            assert_eq!(result.usage.input_tokens, Some(2));
-            assert_eq!(result.usage.output_tokens, Some(3));
+            assert_eq!(result.usage.observed().unwrap().input_tokens, Some(2));
+            assert_eq!(result.usage.observed().unwrap().output_tokens, Some(3));
             assert!(result.content.iter().any(|item|matches!(item,AssistantContent::ToolCall(call) if call.function.name=="lookup" && serde_json::Value::Object(call.function.arguments.clone())==json!({"ok":true}))));
         }
         assert_eq!(
-            provider
-                .structured_inference(
-                    &model,
-                    "system",
-                    history(),
-                    json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}),
-                    None,
-                    None
-                )
-                .await
+            crate::provider_fixture::invoke(provider.clone(), &model, frona_harness::ModelRequest { system: ("system").into(), messages: history(), tools: vec![], schema: Some(json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]})), max_tokens: None, temperature: None }, None).await.map(|output| output.structured.expect("validated structured output"))
                 .unwrap(),
             json!({"ok":true})
         );
@@ -768,17 +781,22 @@ mod tests {
         let mut explicit = model.clone();
         explicit.request_settings.max_tokens = Some(42);
         explicit.request_settings.temperature = Some(0.2);
-        provider
-            .structured_inference(
-                &explicit,
-                "system",
-                history(),
-                json!({"type":"object"}),
-                None,
-                None,
-            )
-            .await
-            .unwrap();
+        crate::provider_fixture::invoke(
+            provider.clone(),
+            &explicit,
+            frona_harness::ModelRequest {
+                system: ("system").into(),
+                messages: history(),
+                tools: vec![],
+                schema: Some(json!({"type":"object"})),
+                max_tokens: None,
+                temperature: None,
+            },
+            None,
+        )
+        .await
+        .map(|output| output.structured.expect("validated structured output"))
+        .unwrap();
         let requests = server.received_requests().await.unwrap();
         let body: Value = requests.last().unwrap().body_json().unwrap();
         assert!(body.get("max_output_tokens").is_none());
@@ -792,38 +810,57 @@ mod tests {
             }];
             match mode {
                 0 => {
-                    provider
-                        .inference(&explicit, "system", history(), tools, Some(1024), Some(0.0))
-                        .await
-                        .unwrap();
+                    crate::provider_fixture::invoke(
+                        provider.clone(),
+                        &explicit,
+                        frona_harness::ModelRequest {
+                            system: ("system").into(),
+                            messages: history(),
+                            tools: tools,
+                            schema: None,
+                            max_tokens: Some(1024),
+                            temperature: Some(0.0),
+                        },
+                        None,
+                    )
+                    .await
+                    .unwrap();
                 }
                 1 => {
                     let (tx, _rx) = tokio::sync::mpsc::channel(16);
-                    provider
-                        .stream_inference(
-                            &explicit,
-                            "system",
-                            history(),
-                            tools,
-                            tx,
-                            Some(1024),
-                            Some(0.0),
-                        )
-                        .await
-                        .unwrap();
+                    crate::provider_fixture::invoke(
+                        provider.clone(),
+                        &explicit,
+                        frona_harness::ModelRequest {
+                            system: ("system").into(),
+                            messages: history(),
+                            tools: tools,
+                            schema: None,
+                            max_tokens: Some(1024),
+                            temperature: Some(0.0),
+                        },
+                        Some(tx),
+                    )
+                    .await
+                    .unwrap();
                 }
                 _ => {
-                    provider
-                        .structured_inference(
-                            &explicit,
-                            "system",
-                            history(),
-                            json!({"type":"object"}),
-                            Some(1024),
-                            Some(0.0),
-                        )
-                        .await
-                        .unwrap();
+                    crate::provider_fixture::invoke(
+                        provider.clone(),
+                        &explicit,
+                        frona_harness::ModelRequest {
+                            system: ("system").into(),
+                            messages: history(),
+                            tools: vec![],
+                            schema: Some(json!({"type":"object"})),
+                            max_tokens: Some(1024),
+                            temperature: Some(0.0),
+                        },
+                        None,
+                    )
+                    .await
+                    .map(|output| output.structured.expect("validated structured output"))
+                    .unwrap();
                 }
             }
             let requests = server.received_requests().await.unwrap();
@@ -837,10 +874,21 @@ mod tests {
             .extra_params
             .insert("stream".into(), json!(false));
         assert!(
-            provider
-                .inference(&reserved, "system", history(), vec![], None, None)
-                .await
-                .is_err()
+            crate::provider_fixture::invoke(
+                provider.clone(),
+                &reserved,
+                frona_harness::ModelRequest {
+                    system: ("system").into(),
+                    messages: history(),
+                    tools: vec![],
+                    schema: None,
+                    max_tokens: None,
+                    temperature: None
+                },
+                None
+            )
+            .await
+            .is_err()
         );
         assert_eq!(server.received_requests().await.unwrap().len(), 7);
     }

@@ -43,35 +43,54 @@ fn setup(brand: &str, endpoint: &str, settings: Value) -> (Arc<dyn ModelProvider
     (provider, groups["test"].main.clone())
 }
 
-async fn capture(provider: &dyn ModelProvider, model: &ModelConfig, stream: bool) {
+async fn invoke(
+    provider: Arc<dyn ModelProvider>,
+    model: &ModelConfig,
+    request: crate::ModelRequest,
+    tokens: Option<tokio::sync::mpsc::Sender<crate::inference::provider::StreamToken>>,
+) -> Result<crate::ModelOutput, crate::inference::InferenceError> {
+    use crate::ModelAdapter;
+    crate::inference::provider::RigModelAdapter::new(provider, model.clone())
+        .generate(request, tokens)
+        .await
+}
+
+async fn capture(provider: Arc<dyn ModelProvider>, model: &ModelConfig, stream: bool) {
     // A deliberate HTTP error lets every native serializer be exercised without
     // inventing a shared response dialect. The server still captures the body.
     let max_tokens = model.request_settings.max_tokens.or(Some(123));
     let temperature = model.request_settings.temperature.or(Some(0.2));
     let result = if stream {
         let (tx, _rx) = tokio::sync::mpsc::channel(16);
-        provider
-            .stream_inference(
-                model,
-                "system",
-                vec![Message::user("hello")],
-                vec![],
-                tx,
-                max_tokens,
-                temperature,
-            )
-            .await
+        invoke(
+            provider.clone(),
+            model,
+            crate::ModelRequest {
+                system: ("system").into(),
+                messages: vec![Message::user("hello")],
+                tools: vec![],
+                schema: None,
+                max_tokens: max_tokens,
+                temperature: temperature,
+            },
+            Some(tx),
+        )
+        .await
     } else {
-        provider
-            .inference(
-                model,
-                "system",
-                vec![Message::user("hello")],
-                vec![],
-                max_tokens,
-                temperature,
-            )
-            .await
+        invoke(
+            provider.clone(),
+            model,
+            crate::ModelRequest {
+                system: ("system").into(),
+                messages: vec![Message::user("hello")],
+                tools: vec![],
+                schema: None,
+                max_tokens: max_tokens,
+                temperature: temperature,
+            },
+            None,
+        )
+        .await
     };
     assert!(result.is_err(), "fixture intentionally returns HTTP 502");
 }
@@ -98,13 +117,35 @@ async fn openai_defaults_to_responses_with_reasoning_and_tools() {
         let history = vec![Message::user("hello")];
         let result = if stream {
             let (tx, _rx) = tokio::sync::mpsc::channel(16);
-            provider
-                .stream_inference(&model, "system", history, tools, tx, None, None)
-                .await
+            invoke(
+                provider.clone(),
+                &model,
+                crate::ModelRequest {
+                    system: ("system").into(),
+                    messages: history,
+                    tools: tools,
+                    schema: None,
+                    max_tokens: None,
+                    temperature: None,
+                },
+                Some(tx),
+            )
+            .await
         } else {
-            provider
-                .inference(&model, "system", history, tools, None, None)
-                .await
+            invoke(
+                provider.clone(),
+                &model,
+                crate::ModelRequest {
+                    system: ("system").into(),
+                    messages: history,
+                    tools: tools,
+                    schema: None,
+                    max_tokens: None,
+                    temperature: None,
+                },
+                None,
+            )
+            .await
         };
         assert!(result.is_err(), "fixture intentionally returns HTTP 502");
     }
@@ -132,31 +173,45 @@ async fn request_overrides_reach_normal_streaming_and_structured_wire_bodies() {
         &server.uri(),
         json!({"api":"completions","max_tokens":8192,"temperature":0.7}),
     );
-    let normal = provider.inference(
+    let normal = invoke(
+        provider.clone(),
         &model,
-        "system",
-        vec![Message::user("title")],
-        vec![],
-        Some(1024),
-        Some(0.0),
+        crate::ModelRequest {
+            system: ("system").into(),
+            messages: vec![Message::user("title")],
+            tools: vec![],
+            schema: None,
+            max_tokens: Some(1024),
+            temperature: Some(0.0),
+        },
+        None,
     );
-    let structured = provider.structured_inference(
+    let structured = invoke(
+        provider.clone(),
         &model,
-        "system",
-        vec![Message::user("title")],
-        json!({"type":"object","properties":{"title":{"type":"string"}}}),
-        Some(1024),
-        Some(0.0),
+        crate::ModelRequest {
+            system: ("system").into(),
+            messages: vec![Message::user("title")],
+            tools: vec![],
+            schema: Some(json!({"type":"object","properties":{"title":{"type":"string"}}})),
+            max_tokens: Some(1024),
+            temperature: Some(0.0),
+        },
+        None,
     );
     let (tx, _rx) = tokio::sync::mpsc::channel(16);
-    let streaming = provider.stream_inference(
+    let streaming = invoke(
+        provider.clone(),
         &model,
-        "system",
-        vec![Message::user("title")],
-        vec![],
-        tx,
-        Some(1024),
-        Some(0.0),
+        crate::ModelRequest {
+            system: ("system").into(),
+            messages: vec![Message::user("title")],
+            tools: vec![],
+            schema: None,
+            max_tokens: Some(1024),
+            temperature: Some(0.0),
+        },
+        Some(tx),
     );
     let _ = tokio::join!(normal, structured, streaming);
     let requests = server.received_requests().await.unwrap();
@@ -166,16 +221,20 @@ async fn request_overrides_reach_normal_streaming_and_structured_wire_bodies() {
         assert_eq!(body["max_completion_tokens"], 1024);
         assert_eq!(body["temperature"], 0.0);
     }
-    let _ = provider
-        .inference(
-            &model,
-            "system",
-            vec![Message::user("later")],
-            vec![],
-            None,
-            None,
-        )
-        .await;
+    let _ = invoke(
+        provider.clone(),
+        &model,
+        crate::ModelRequest {
+            system: ("system").into(),
+            messages: vec![Message::user("later")],
+            tools: vec![],
+            schema: None,
+            max_tokens: None,
+            temperature: None,
+        },
+        None,
+    )
+    .await;
     let requests = server.received_requests().await.unwrap();
     let body: Value = requests.last().unwrap().body_json().unwrap();
     assert_eq!(body["max_completion_tokens"], 8192);
@@ -216,7 +275,7 @@ async fn final_http_bodies_all_existing_adapters_normal_and_streaming() {
             json!({"max_tokens":321,"temperature":0.3,"extra_params":{"fixture":{"nullable":null,"array":[1,"x",false]},"literal.dot":true}}),
         );
         for stream in [false, true] {
-            capture(provider.as_ref(), &model, stream).await;
+            capture(provider.clone(), &model, stream).await;
         }
         let requests = server.received_requests().await.unwrap();
         assert_eq!(
@@ -284,7 +343,7 @@ async fn responses_typed_nested_merge_overrides_and_explicit_null_reach_http() {
                 && entry.wire_path == ["temperature"])
     );
     for stream in [false, true] {
-        capture(provider.as_ref(), &model, stream).await;
+        capture(provider.clone(), &model, stream).await;
     }
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2);
@@ -356,7 +415,7 @@ async fn responses_preserve_native_aliases_and_unrecognized_reasoning_values() {
         }),
     );
     for stream in [false, true] {
-        capture(provider.as_ref(), &model, stream).await;
+        capture(provider.clone(), &model, stream).await;
     }
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2);
@@ -416,11 +475,22 @@ async fn reserved_fields_and_structured_ancestors_reject_before_http() {
         for extra in extras {
             let mut model = model.clone();
             model.request_settings.extra_params = extra.as_object().unwrap().clone();
-            let err = provider
-                .inference(&model, "sys", vec![Message::user("hi")], vec![], None, None)
-                .await
-                .unwrap_err()
-                .to_string();
+            let err = invoke(
+                provider.clone(),
+                &model,
+                crate::ModelRequest {
+                    system: ("sys").into(),
+                    messages: vec![Message::user("hi")],
+                    tools: vec![],
+                    schema: None,
+                    max_tokens: None,
+                    temperature: None,
+                },
+                None,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
             assert!(
                 err.contains("extra_params.") && err.contains("reserved"),
                 "{err}"
@@ -435,18 +505,22 @@ async fn reserved_fields_and_structured_ancestors_reject_before_http() {
     ] {
         let (provider, mut model) = setup(brand, &server.uri(), settings);
         model.request_settings.extra_params = extra.as_object().unwrap().clone();
-        let err = provider
-            .structured_inference(
-                &model,
-                "sys",
-                vec![Message::user("hi")],
-                json!({"type":"object"}),
-                None,
-                None,
-            )
-            .await
-            .unwrap_err()
-            .to_string();
+        let err = invoke(
+            provider.clone(),
+            &model,
+            crate::ModelRequest {
+                system: ("sys").into(),
+                messages: vec![Message::user("hi")],
+                tools: vec![],
+                schema: Some(json!({"type":"object"})),
+                max_tokens: None,
+                temperature: None,
+            },
+            None,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("reserved"), "{err}");
     }
     assert!(server.received_requests().await.unwrap().is_empty());
@@ -478,7 +552,7 @@ async fn native_typed_settings_survive_rig_serialization() {
             .await;
         let (provider, model) = setup(brand, &server.uri(), settings);
         for stream in [false, true] {
-            capture(provider.as_ref(), &model, stream).await;
+            capture(provider.clone(), &model, stream).await;
         }
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 2);
@@ -549,28 +623,43 @@ async fn structured_and_tool_calls_keep_envelope_and_custom_body() {
         json!({"api":"completions","extra_params":{"service_tier":"priority"}}),
     );
     let schema = json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]});
-    let result = provider
-        .structured_inference(
-            &model,
-            "sys",
-            vec![Message::user("hi")],
-            schema.clone(),
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-    assert_eq!(result, json!({"ok":true}));
+    let result = invoke(
+        provider.clone(),
+        &model,
+        crate::ModelRequest {
+            system: ("sys").into(),
+            messages: vec![Message::user("hi")],
+            tools: vec![],
+            schema: Some(schema.clone()),
+            max_tokens: None,
+            temperature: None,
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.structured, Some(json!({"ok":true})));
     let tools = vec![ToolDefinition {
         annotations: Default::default(),
         name: "lookup".try_into().unwrap(),
         description: "Lookup".into(),
         parameters: schema.clone(),
     }];
-    provider
-        .inference(&model, "sys", vec![Message::user("hi")], tools, None, None)
-        .await
-        .unwrap();
+    invoke(
+        provider.clone(),
+        &model,
+        crate::ModelRequest {
+            system: ("sys").into(),
+            messages: vec![Message::user("hi")],
+            tools: tools,
+            schema: None,
+            max_tokens: None,
+            temperature: None,
+        },
+        None,
+    )
+    .await
+    .unwrap();
     let requests = server.received_requests().await.unwrap();
     let structured: Value = requests[0].body_json().unwrap();
     assert_eq!(structured["tools"][0]["function"]["parameters"], schema);
@@ -659,8 +748,8 @@ async fn concurrent_calls_on_cached_client_do_not_leak_custom_parameters() {
     two.model_id = "second".into();
     two.request_settings.extra_params = json!({"fixture":"two"}).as_object().unwrap().clone();
     tokio::join!(
-        capture(provider.as_ref(), &one, false),
-        capture(provider.as_ref(), &two, true)
+        capture(provider.clone(), &one, false),
+        capture(provider.clone(), &two, true)
     );
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2);
@@ -806,7 +895,7 @@ async fn anthropic_activates_automatic_cache_in_both_native_request_paths() {
         .await;
     let (provider, model) = setup("anthropic", &server.uri(), json!({}));
     for stream in [false, true] {
-        capture(provider.as_ref(), &model, stream).await;
+        capture(provider.clone(), &model, stream).await;
     }
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2);
@@ -814,4 +903,26 @@ async fn anthropic_activates_automatic_cache_in_both_native_request_paths() {
         let body: Value = request.body_json().unwrap();
         assert_eq!(body["cache_control"], json!({"type":"ephemeral"}));
     }
+}
+
+#[tokio::test]
+async fn external_rig_transport_rejects_final_wire_extras_before_sending() {
+    let server = MockServer::start().await;
+    let client = rig_core::providers::openai::OpenAIConfig::new("fixture")
+        .with_base_url(server.uri())
+        .client();
+    let provider = Arc::new(crate::inference::provider::RigProvider::new(
+        move |id| client.chat(id).erase(),
+        InferenceCounter::default(),
+    ));
+    let (_, mut model) = setup("openai", &server.uri(), json!({"api":"completions"}));
+    model
+        .request_settings
+        .extra_params
+        .insert("custom_wire_field".into(), json!(true));
+    let error = invoke(provider, &model, crate::ModelRequest::new("hello"), None)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("extra_params"));
+    assert!(server.received_requests().await.unwrap().is_empty());
 }

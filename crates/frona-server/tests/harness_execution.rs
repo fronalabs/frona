@@ -80,7 +80,7 @@ async fn streaming_cancellation_drains_partial_text_and_never_succeeds() {
     };
     let (result, ()) = tokio::join!(call, cancel);
     assert!(matches!(result.unwrap(), StreamResult::Cancelled));
-    assert_eq!(text, "partial");
+    assert_eq!(text, NATIVE_PARTIAL);
     assert_eq!(fake.calls.lock().unwrap().len(), 1);
     assert_eq!(*observer.0.lock().unwrap(), [AttemptOutcome::Cancelled]);
     assert_eq!(budget.snapshot().in_flight, 0);

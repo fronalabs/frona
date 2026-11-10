@@ -4,6 +4,14 @@ extern crate self as frona;
 #[path = "../tests/helpers/app_state.rs"]
 mod app_state_fixture;
 
+#[cfg(test)]
+#[path = "../../frona-harness/tests/helpers/rig.rs"]
+mod rig_fixture;
+
+#[cfg(test)]
+#[path = "../tests/helpers/provider.rs"]
+mod provider_fixture;
+
 pub mod agent;
 pub mod api;
 pub mod app;

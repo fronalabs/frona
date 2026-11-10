@@ -15,6 +15,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _prepared = Model::builder("openai", "application-model")
         .api_key("fixture-key")
         .build()?;
+    let rig_client = rig_core::providers::openai::OpenAI::new("fixture-key");
+    let _existing_rig_model = Model::from_rig(rig_client.chat("application-model"))?;
     let application_state = String::from("application response");
     let model = Model::from_adapter(
         "application",

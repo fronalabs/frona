@@ -13,9 +13,7 @@ use frona_harness::{
     config::{ProviderModel, RetryConfig},
     inference::{
         InferenceError, ModelConfig, Usage,
-        provider::{
-            InferenceOutput, ModelProvider, ModelRequestSettings, StreamToken, group::ModelGroup,
-        },
+        provider::{ModelProvider, ModelRequestSettings, group::ModelGroup},
     },
 };
 use rig_core::completion::{
@@ -36,67 +34,60 @@ use surrealdb::{
     engine::local::{Db, Mem},
 };
 
+#[derive(Clone)]
 struct Script {
-    outputs: Mutex<VecDeque<Vec<AssistantContent>>>,
-    requests: Mutex<Vec<(String, Vec<Message>, Vec<Definition>)>>,
+    outputs: Arc<Mutex<VecDeque<Vec<AssistantContent>>>>,
+    requests: Arc<Mutex<Vec<(String, Vec<Message>, Vec<Definition>)>>>,
 }
 impl Script {
     fn new(outputs: Vec<Vec<AssistantContent>>) -> Arc<Self> {
         Arc::new(Self {
-            outputs: Mutex::new(outputs.into()),
-            requests: Mutex::new(vec![]),
+            outputs: Arc::new(Mutex::new(outputs.into())),
+            requests: Arc::new(Mutex::new(vec![])),
         })
     }
 }
 #[async_trait::async_trait]
 impl ModelProvider for Script {
-    async fn inference(
+    async fn resolve(
         &self,
-        _: &ModelConfig,
-        system: &str,
-        messages: Vec<Message>,
-        tools: Vec<Definition>,
-        _: Option<u64>,
-        _: Option<f64>,
-    ) -> Result<InferenceOutput, InferenceError> {
-        self.requests
-            .lock()
-            .unwrap()
-            .push((system.into(), messages, tools));
-        Ok(InferenceOutput::new(
-            self.outputs
-                .lock()
-                .unwrap()
-                .pop_front()
-                .expect("unexpected model call"),
-            Usage::default()
-                .input_tokens(Some(10))
-                .output_tokens(Some(5))
-                .total_tokens(Some(15)),
+        model: &ModelConfig,
+    ) -> Result<frona_harness::inference::provider::ResolvedModel, InferenceError> {
+        let script = self.clone();
+        Ok(frona_harness::inference::provider::ResolvedModel::new(
+            crate::rig_fixture::model(model.model_id.clone(), move |request, mode| {
+                assert!(matches!(mode, rig_core::wire::Mode::Unary));
+                let mut messages = request
+                    .chat_history
+                    .iter()
+                    .map(|message| (**message).clone())
+                    .collect::<Vec<_>>();
+                let system = match messages.remove(0) {
+                    Message::System { content } => content,
+                    _ => panic!("expected system prompt"),
+                };
+                script.requests.lock().unwrap().push((
+                    system,
+                    messages,
+                    request.tools.iter().map(|tool| (**tool).clone()).collect(),
+                ));
+                let content = script
+                    .outputs
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .expect("unexpected model call");
+                crate::rig_fixture::reply(frona_harness::ModelOutput::new(
+                    content,
+                    frona_harness::UsageReport::Reported(
+                        Usage::new()
+                            .input_tokens(Some(10))
+                            .output_tokens(Some(5))
+                            .total_tokens(Some(15)),
+                    ),
+                ))
+            }),
         ))
-    }
-    async fn stream_inference(
-        &self,
-        _: &ModelConfig,
-        _: &str,
-        _: Vec<Message>,
-        _: Vec<Definition>,
-        _: tokio::sync::mpsc::Sender<StreamToken>,
-        _: Option<u64>,
-        _: Option<f64>,
-    ) -> Result<InferenceOutput, InferenceError> {
-        unreachable!()
-    }
-    async fn structured_inference(
-        &self,
-        _: &ModelConfig,
-        _: &str,
-        _: Vec<Message>,
-        _: serde_json::Value,
-        _: Option<u64>,
-        _: Option<f64>,
-    ) -> Result<serde_json::Value, InferenceError> {
-        unreachable!()
     }
 }
 struct Read(AtomicUsize);

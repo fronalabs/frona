@@ -13,10 +13,10 @@ use frona_harness::{
             AttemptObservation, AttemptOutcome, InferenceObserver, ObservationError, Observations,
             UsageObservation,
         },
-        provider::{InferenceOutput, ModelProvider, ModelRequestSettings, StreamToken},
+        provider::{ModelProvider, ModelRequestSettings},
     },
 };
-use rig_core::completion::{AssistantContent, Message, request::ToolDefinition};
+use rig_core::completion::{AssistantContent, Message};
 
 use crate::{
     chat::broadcast::EventSender,
@@ -24,10 +24,10 @@ use crate::{
 };
 
 type RecordedCall = (String, Option<u64>, Option<f64>);
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct RecordingProvider {
-    calls: Mutex<Vec<RecordedCall>>,
-    retry_failures: AtomicUsize,
+    calls: Arc<Mutex<Vec<RecordedCall>>>,
+    retry_failures: Arc<AtomicUsize>,
 }
 
 impl RecordingProvider {
@@ -60,57 +60,41 @@ impl RecordingProvider {
 
 #[async_trait::async_trait]
 impl ModelProvider for RecordingProvider {
-    async fn inference(
+    async fn resolve(
         &self,
         model: &ModelConfig,
-        _: &str,
-        _: Vec<Message>,
-        _: Vec<ToolDefinition>,
-        max: Option<u64>,
-        temperature: Option<f64>,
-    ) -> Result<InferenceOutput, InferenceError> {
-        self.record(model, max, temperature)?;
-        Ok(InferenceOutput::new(
-            vec![AssistantContent::text("ok")],
-            Usage::new()
-                .input_tokens(Some(2))
-                .output_tokens(Some(1))
-                .total_tokens(Some(3)),
+    ) -> Result<frona_harness::inference::provider::ResolvedModel, InferenceError> {
+        let script = self.clone();
+        let model = model.clone();
+        Ok(frona_harness::inference::provider::ResolvedModel::new(
+            crate::rig_fixture::model(model.model_id.clone(), move |request, _| {
+                if let Err(error) = script.record(&model, request.max_tokens, request.temperature) {
+                    return rig_core::driver::Opening::failed(crate::rig_fixture::error(error));
+                }
+                let content = if request.tools.iter().any(|tool| tool.name == "submit") {
+                    vec![AssistantContent::ToolCall(
+                        rig_core::message::ToolCall::from_wire(
+                            "answer",
+                            rig_core::message::ToolFunction::new(
+                                "submit".try_into().unwrap(),
+                                serde_json::json!({"answer":"ok"}),
+                            ),
+                        ),
+                    )]
+                } else {
+                    vec![AssistantContent::text("ok")]
+                };
+                crate::rig_fixture::reply(frona_harness::ModelOutput::new(
+                    content,
+                    frona_harness::UsageReport::Reported(
+                        Usage::new()
+                            .input_tokens(Some(2))
+                            .output_tokens(Some(1))
+                            .total_tokens(Some(3)),
+                    ),
+                ))
+            }),
         ))
-    }
-
-    async fn stream_inference(
-        &self,
-        model: &ModelConfig,
-        _: &str,
-        _: Vec<Message>,
-        _: Vec<ToolDefinition>,
-        tokens: tokio::sync::mpsc::Sender<StreamToken>,
-        max: Option<u64>,
-        temperature: Option<f64>,
-    ) -> Result<InferenceOutput, InferenceError> {
-        self.record(model, max, temperature)?;
-        tokens.send(StreamToken::Text("ok".into())).await.unwrap();
-        Ok(InferenceOutput::new(
-            vec![AssistantContent::text("ok")],
-            Usage::new()
-                .input_tokens(Some(2))
-                .output_tokens(Some(1))
-                .total_tokens(Some(3)),
-        ))
-    }
-
-    async fn structured_inference(
-        &self,
-        model: &ModelConfig,
-        _: &str,
-        _: Vec<Message>,
-        _: serde_json::Value,
-        max: Option<u64>,
-        temperature: Option<f64>,
-    ) -> Result<serde_json::Value, InferenceError> {
-        self.record(model, max, temperature)?;
-        Ok(serde_json::json!({"answer": "ok"}))
     }
 }
 
@@ -269,11 +253,11 @@ async fn all_execution_modes_share_fallbacks_and_per_request_overrides_are_isola
             .iter()
             .filter(|usage| usage.tokens == Some(3))
             .count(),
-        3
+        4
     );
     assert_eq!(
         usages.iter().filter(|usage| usage.tokens.is_none()).count(),
-        1
+        0
     );
     assert!(
         usages

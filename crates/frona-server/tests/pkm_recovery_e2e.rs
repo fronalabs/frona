@@ -1334,16 +1334,25 @@ async fn resume_banked_classification(change_graph: bool) {
             )
             .await
             .unwrap();
-        mock.prepend(MockResponse::Error(
-            frona_harness::inference::InferenceError::Cancelled(
-                "stop after stale checkpoint rejection".into(),
-            ),
-        ));
-        ctx.consolidate()
-            .await
-            .expect_err("interrupted revalidation must remain retryable");
-        let histories = mock.histories();
-        let first_resumed = format!("{:?}", histories[calls_at_interruption]);
+        // Reach the native request boundary before simulating another process loss.
+        // A resolver cancellation happens before request preparation, so it cannot
+        // prove the rejected checkpoint feedback reaches the model.
+        mock.prepend(MockResponse::Pending);
+        let first_resumed = tokio::select! {
+            biased;
+            history = async {
+                for _ in 0..100_000 {
+                    if let Some(history) = mock.histories().get(calls_at_interruption) {
+                        return Some(format!("{history:?}"));
+                    }
+                    tokio::task::yield_now().await;
+                }
+                None
+            } => history.expect("revalidation did not reach the native request boundary"),
+            result = ctx.consolidate() => {
+                panic!("pending revalidation unexpectedly finished: {result:?}");
+            },
+        };
         assert!(
             first_resumed.contains("previously accepted checkpoint proposal is no longer valid"),
             "{first_resumed}"

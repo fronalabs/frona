@@ -773,7 +773,7 @@ mod tests {
             assert_eq!(body["model"], "manual-model");
             assert_eq!(body["stream"], true);
             assert_eq!(body["store"], false);
-            assert_eq!(body["reasoning"]["effort"], "low");
+            assert_eq!(body["reasoning"], json!({"effort": "low"}));
             assert_eq!(body["fixture"], json!({"array":[1,null],"nullable":null}));
             assert!(body["input"].to_string().contains("external-result"));
             assert!(body["input"].to_string().contains("call_old"));

@@ -1,4 +1,4 @@
 //! Production API ownership witnesses shared with archive-only consumers.
 #[path = "../../../helpers/ownership.rs"]
-mod ownership;
-pub use ownership::*;
+mod witnesses;
+pub use witnesses::*;

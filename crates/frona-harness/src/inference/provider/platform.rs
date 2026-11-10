@@ -11,7 +11,6 @@ use crate::config::CredentialMethod;
 use crate::config::{AdapterId, ApiSurface, ModelProviderConfig};
 
 use crate::inference::error::InferenceError;
-use crate::inference::protocol::hooks;
 use crate::inference::provider::{
     CredentialValidationError, InferenceCounter, ProviderAdmin, ProviderConnection, ResolvedModel,
     RigProvider,
@@ -665,8 +664,7 @@ pub fn build_provider(
                     move |id| client.native_completion(id).erase(),
                     counter.clone(),
                 )
-                .with_wire_transport()
-                .with_hook(hooks::ollama),
+                .with_wire_transport(),
             ),
             admin: ProviderAdmin::default().with_live_check(move || {
                 let client = discovery.clone();
@@ -752,7 +750,6 @@ pub fn build_provider(
     let selectable_route = resolved.adapter == AdapterId::Openai
         && rig.vendor() == "openai"
         && !matches!(resolved.brand.as_str(), "xai" | "galadriel");
-    let hook = (rig.vendor() == "openai").then_some(hooks::openai as hooks::RequestHook);
     Ok(ProviderConnection {
         model: Arc::new(
             RigProvider::from_model_factory(
@@ -769,15 +766,11 @@ pub fn build_provider(
                     if responses && let ProviderConfig::OpenAi(config) = &mut connection {
                         config.route = Some(openai::Route::Responses);
                     }
-                    let mut resolved = ResolvedModel::new(connection.completion_model(
+                    ResolvedModel::new(connection.completion_model(
                         &model.model_id,
                         http.clone(),
                         Default::default(),
-                    ));
-                    if !responses && let Some(hook) = hook {
-                        resolved = resolved.with_hook(hook);
-                    }
-                    resolved
+                    ))
                 },
                 counter.clone(),
             )

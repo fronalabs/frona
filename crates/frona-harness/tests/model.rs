@@ -578,3 +578,49 @@ async fn denied_standalone_attempt_does_not_preflight_or_resolve_credentials() {
     assert_eq!(preflights.load(Ordering::SeqCst), 0);
     assert_eq!(resolutions.load(Ordering::SeqCst), 0);
 }
+
+#[tokio::test]
+async fn supplied_custom_gateway_keeps_native_output_cap_on_both_call_modes() {
+    use rig_core::{completion::CompletionRequest, providers::openai};
+    const GATEWAY: openai::wire::Dialect =
+        openai::wire::Dialect::gateway("galadriel", "https://gateway.invalid", "UNUSED_KEY");
+    for streaming in [false, true] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(502))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let native = openai::OpenAIConfig::with_key(&GATEWAY, "fixture")
+            .with_base_url(server.uri())
+            .client()
+            .chat("private-model")
+            .erase();
+        let baseline = CompletionRequest::new("hi")
+            .max_tokens(123)
+            .temperature(0.4);
+        if streaming {
+            assert!(native.stream(baseline).unwrap().finish().await.is_err());
+        } else {
+            assert!(native.call(baseline).await.is_err());
+        }
+        let model = Model::from_rig(native).unwrap();
+        let mut request = ModelRequest::new("hi");
+        request.max_tokens = Some(123);
+        request.temperature = Some(0.4);
+        if streaming {
+            assert!(model.stream(request, mpsc::channel(8).0).await.is_err());
+        } else {
+            assert!(model.complete(request).await.is_err());
+        }
+        let captured = server.received_requests().await.unwrap();
+        assert_eq!(captured.len(), 2);
+        let baseline: serde_json::Value = captured[0].body_json().unwrap();
+        let wrapped: serde_json::Value = captured[1].body_json().unwrap();
+        assert_eq!(baseline["max_tokens"], 123);
+        assert!(baseline.get("max_completion_tokens").is_none());
+        assert_eq!(wrapped["max_tokens"], baseline["max_tokens"]);
+        assert!(wrapped.get("max_completion_tokens").is_none());
+        assert_eq!(wrapped["temperature"], baseline["temperature"]);
+    }
+}

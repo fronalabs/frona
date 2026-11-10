@@ -80,19 +80,8 @@ impl aws_sdk_bedrockruntime::config::auth::ResolveAuthScheme for SelectedAuth {
 #[derive(Debug)]
 struct ConverseParameters;
 
-/// Rig exposes only max_tokens/temperature through the typed AWS configuration.
-/// Keep the unsupported standard settings here until its builder exposes them.
-pub(crate) fn inference_settings(params: &crate::config::BedrockParams) -> serde_json::Value {
-    let mut settings = serde_json::Map::new();
-    if let Some(value) = params.top_p {
-        settings.insert("topP".into(), serde_json::json!(value));
-    }
-    if let Some(value) = &params.stop_sequences {
-        settings.insert("stopSequences".into(), serde_json::json!(value));
-    }
-    serde_json::json!({"inferenceConfig": settings})
-}
-
+/// Apply raw overrides and preserve numeric precision and empty lists before
+/// AWS signs the final request body.
 impl Intercept for ConverseParameters {
     fn name(&self) -> &'static str {
         "FronaConverseParameters"

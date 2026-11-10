@@ -1,4 +1,3 @@
-pub mod hooks;
 pub mod http;
 pub mod parameters;
 

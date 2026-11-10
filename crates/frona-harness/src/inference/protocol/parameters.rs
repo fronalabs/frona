@@ -225,10 +225,9 @@ fn request_parameters(
     model: &ModelConfig,
     max_tokens: Option<u64>,
     temperature: Option<f64>,
-) -> Result<(super::hooks::RequestParams, Value), InferenceError> {
+) -> Result<rig_core::completion::CompletionRequest, InferenceError> {
     let mut max_tokens = max_tokens.or(model.request_settings.max_tokens);
     let temperature = temperature.or(model.request_settings.temperature);
-    let mut compatibility = json!({});
     let additional = match &model.provider {
         ProviderModel::Gemini { params } => {
             let mut config = Map::new();
@@ -281,13 +280,11 @@ fn request_parameters(
             }
             additional
         }
-        ProviderModel::Bedrock { params } => {
+        ProviderModel::Bedrock { .. } => {
             // Rig narrows this common value to i32 in the AWS SDK builder.
             if let Some(value) = max_tokens {
                 let _: i32 = checked_integer(value, "max_tokens")?;
             }
-            compatibility =
-                crate::inference::provider::adapter::bedrock::inference_settings(params);
             json!({})
         }
         // These settings already have Rig's native additional-parameter shape.
@@ -310,17 +307,14 @@ fn request_parameters(
         | ProviderModel::Hyperbolic { params } => serialize(params)?,
         ProviderModel::Generic | ProviderModel::Custom { .. } => json!({}),
     };
-    Ok((
-        super::hooks::RequestParams {
-            max_tokens,
-            temperature,
-            additional_params: additional
-                .as_object()
-                .filter(|map| !map.is_empty())
-                .map(|_| additional.clone()),
-        },
-        compatibility,
-    ))
+    let mut request = rig_core::completion::CompletionRequest::new("");
+    request.max_tokens = max_tokens;
+    request.temperature = temperature;
+    request.additional_params = additional
+        .as_object()
+        .filter(|map| !map.is_empty())
+        .map(|_| additional.clone());
+    Ok(request)
 }
 
 fn serialize(value: &impl Serialize) -> Result<Value, InferenceError> {
@@ -338,9 +332,12 @@ fn checked_integer<T: TryFrom<u64>>(value: u64, field: &str) -> Result<T, Infere
 #[derive(Clone)]
 pub struct WireParameters {
     pub dialect: WireDialect,
-    pub request: super::hooks::RequestParams,
+    pub request: rig_core::completion::CompletionRequest,
     /// Only settings that Rig cannot express, never a second serialized request.
     compatibility: Value,
+    fallback: Value,
+    fallback_wire: Value,
+    extension: Option<&'static str>,
     pub extra: Value,
     pub overrides: Vec<ParameterOverride>,
 }
@@ -398,14 +395,20 @@ impl WireParameters {
                 });
             }
         }
-        let (request, compatibility) =
+        let mut request =
             request_parameters(model, max_tokens, temperature).map_err(|error| match error {
                 InferenceError::ConfigError(message) => {
                     InferenceError::ConfigError(format!("{path}.{message}"))
                 }
                 error => error,
             })?;
+        let mut compatibility = json!({});
+        let (fallback, fallback_wire, extension) =
+            native_options(&model.provider, &mut request, &mut compatibility);
         Ok(Self {
+            fallback,
+            fallback_wire,
+            extension,
             dialect: WireDialect::for_model(&model.provider),
             request,
             compatibility,
@@ -414,14 +417,312 @@ impl WireParameters {
         })
     }
 
-    pub fn apply(&self, body: &mut Value) {
-        if self.dialect == WireDialect::OpenAiChat
-            && let Some(root) = body.as_object_mut()
-            && let Some(value) = root.remove("max_tokens")
+    /// Rig's native checks choose a representation, never a new Frona model
+    /// allowlist. A catalog or dialect refusal restores only migrated fields.
+    pub fn configure_native(
+        &mut self,
+        request: &mut rig_core::completion::CompletionRequest,
+        model: &rig_core::DynModel<rig_core::operation::Completion>,
+        wire_transport: bool,
+    ) {
+        // The platform promises this cap spelling even for manual Chat models.
+        // Supplied native models retain their own dialect's common cap mapping.
+        if wire_transport
+            && self.dialect == WireDialect::OpenAiChat
+            && let Some(value) = request.max_tokens.take()
         {
-            root.entry("max_completion_tokens").or_insert(value);
+            request
+                .additional_params
+                .get_or_insert_with(|| json!({}))
+                .as_object_mut()
+                .expect("settings object")
+                .entry("max_completion_tokens")
+                .or_insert(json!(value));
         }
+        if request.options.is_default() && request.provider_options.is_empty() {
+            return;
+        }
+        let foreign_extension = self
+            .extension
+            .is_some_and(|provider| provider != model.name());
+        // Only OpenAI effort strings are promoted below. Compatible dialects
+        // can accept that option with different semantics (Codex adds a summary).
+        let foreign_reasoning = request.options.reasoning.is_some()
+            && model.name() != rig_core::providers::openai::PROVIDER_NAME;
+        if foreign_extension
+            || foreign_reasoning
+            || matches!(
+                model.check(request),
+                Err(rig_core::completion::CheckError::Unsupported(_))
+            )
+        {
+            request.options = Default::default();
+            request.provider_options = Default::default();
+            let mut raw = self.fallback.clone();
+            merge_json(
+                &mut raw,
+                request
+                    .additional_params
+                    .take()
+                    .unwrap_or_else(|| json!({})),
+            );
+            request.additional_params = raw
+                .as_object()
+                .filter(|map| !map.is_empty())
+                .map(|_| raw.clone());
+            merge_json(&mut self.compatibility, self.fallback_wire.clone());
+        }
+    }
+
+    pub fn requires_wire_transport(&self) -> bool {
+        [&self.compatibility, &self.extra]
+            .iter()
+            .any(|value| value.as_object().is_some_and(|map| !map.is_empty()))
+    }
+
+    pub fn apply(&self, body: &mut Value) {
         merge_json(body, self.compatibility.clone());
         merge_json(body, self.extra.clone());
     }
+}
+
+/// Move a proven native field out of the raw layer, retaining its exact spelling
+/// only for a wire/catalog refusal. Paths are segments, never dotted-key syntax.
+fn migrate(raw: &mut Value, fallback: &mut Value, path: &[&str]) {
+    let Some((first, rest)) = path.split_first() else {
+        return;
+    };
+    if rest.is_empty() {
+        if let Some(value) = raw.as_object_mut().and_then(|map| map.remove(*first)) {
+            fallback[*first] = value;
+        }
+    } else if let Some(child) = raw.get_mut(*first) {
+        let mut saved = json!({});
+        migrate(child, &mut saved, rest);
+        if saved.as_object().is_some_and(|map| !map.is_empty()) {
+            merge_json(fallback, json!({*first: saved}));
+        }
+        if child.as_object().is_some_and(Map::is_empty) {
+            raw.as_object_mut().unwrap().remove(*first);
+        }
+    }
+}
+
+/// Native options are candidates, not new admission rules. Frona's configured
+/// ranges/forward values remain valid even when Rig's catalog is more restrictive.
+fn native_options(
+    model: &ProviderModel,
+    request: &mut rig_core::completion::CompletionRequest,
+    compatibility: &mut Value,
+) -> (Value, Value, Option<&'static str>) {
+    use rig_core::completion::{CacheRetention, Effort, Reasoning};
+    use rig_core::providers::{anthropic, gemini, ollama, openai};
+    let mut raw = request
+        .additional_params
+        .take()
+        .unwrap_or_else(|| json!({}));
+    let mut fallback = json!({});
+    let mut fallback_wire = json!({});
+    let mut extension = None;
+    let options = &mut request.options;
+    let (top_p, seed, stop, top_path, stop_path) = match model {
+        ProviderModel::OpenAI { params, .. }
+        | ProviderModel::Groq { params }
+        | ProviderModel::OpenRouter { params }
+        | ProviderModel::DeepSeek { params }
+        | ProviderModel::XAI { params }
+        | ProviderModel::Together { params }
+        | ProviderModel::Hyperbolic { params } => (
+            params.top_p,
+            params.seed,
+            params.stop.as_deref(),
+            &["top_p"][..],
+            &["stop"][..],
+        ),
+        ProviderModel::Anthropic { params } => (
+            params.top_p,
+            None,
+            params.stop_sequences.as_deref(),
+            &["top_p"][..],
+            &["stop_sequences"][..],
+        ),
+        ProviderModel::Gemini { params } => (
+            params.top_p,
+            None,
+            params.stop_sequences.as_deref(),
+            &["generationConfig", "topP"][..],
+            &["generationConfig", "stopSequences"][..],
+        ),
+        ProviderModel::Ollama { params } => (
+            params.top_p,
+            params.seed,
+            params.stop.as_deref(),
+            &["top_p"][..],
+            &["stop"][..],
+        ),
+        _ => (None, None, None, &[][..], &[][..]),
+    };
+    if let Some(value) = top_p {
+        options.top_p = Some(value);
+        migrate(&mut raw, &mut fallback, top_path);
+    }
+    if let Some(value) = seed.and_then(|value| u64::try_from(value).ok()) {
+        options.seed = Some(value);
+        migrate(&mut raw, &mut fallback, &["seed"]);
+    }
+    if let Some(value) = stop.filter(|value| !value.is_empty()) {
+        options.stop = value.to_vec();
+        migrate(&mut raw, &mut fallback, stop_path);
+    }
+    match model {
+        ProviderModel::OpenAI { api, params } => {
+            if let Some(effort) = params
+                .reasoning_effort
+                .as_deref()
+                .and_then(|value| serde_json::from_value::<Effort>(json!(value)).ok())
+            {
+                options.reasoning = Some(Reasoning::Effort(effort));
+                let path = if *api == Some(OpenAiApi::Responses) {
+                    &["reasoning", "effort"][..]
+                } else {
+                    &["reasoning_effort"][..]
+                };
+                migrate(&mut raw, &mut fallback, path);
+            }
+            let mut typed = openai::extension::OpenAiOptions::default();
+            if *api == Some(OpenAiApi::Responses) {
+                if let Some(value) = params
+                    .top_logprobs
+                    .and_then(|value| u8::try_from(value).ok())
+                {
+                    typed.responses.top_logprobs = Some(value);
+                    migrate(&mut raw, &mut fallback, &["top_logprobs"]);
+                }
+            } else {
+                typed.chat.frequency_penalty = params.frequency_penalty;
+                typed.chat.presence_penalty = params.presence_penalty;
+                typed.chat.logprobs = params.logprobs;
+                for key in ["frequency_penalty", "presence_penalty", "logprobs"] {
+                    migrate(&mut raw, &mut fallback, &[key]);
+                }
+                if let Some(value) = params
+                    .top_logprobs
+                    .and_then(|value| u8::try_from(value).ok())
+                {
+                    typed.chat.top_logprobs = Some(value);
+                    migrate(&mut raw, &mut fallback, &["top_logprobs"]);
+                }
+            }
+            if typed != Default::default() {
+                request.provider_options = std::mem::take(&mut request.provider_options).set(typed);
+                extension = Some(openai::PROVIDER_NAME);
+            }
+        }
+        ProviderModel::Anthropic { params } => {
+            // Short retention is exactly the existing top-level ephemeral cache.
+            // Thinking stays raw: native effort/budget mapping may choose adaptive
+            // thinking or omit disabled settings on known model families.
+            options.cache = Some(CacheRetention::Short);
+            migrate(&mut raw, &mut fallback, &["cache_control"]);
+            if let Some(value) = params.top_k.and_then(|value| u32::try_from(value).ok()) {
+                request.provider_options = std::mem::take(&mut request.provider_options)
+                    .set(anthropic::extension::AnthropicOptions::default().top_k(value));
+                migrate(&mut raw, &mut fallback, &["top_k"]);
+                extension = Some(anthropic::PROVIDER_NAME);
+            }
+        }
+        ProviderModel::Gemini { params } => {
+            let mut typed = gemini::extension::GeminiOptions::default();
+            if let Some(value) = params.top_k {
+                typed = typed.top_k(value as u32); // Checked by the settings compiler.
+                migrate(&mut raw, &mut fallback, &["generationConfig", "topK"]);
+            }
+            if let Some(value) = params
+                .thinking_config
+                .as_ref()
+                .and_then(|value| value.include_thoughts)
+            {
+                typed = typed.include_thoughts(value);
+                migrate(
+                    &mut raw,
+                    &mut fallback,
+                    &["generationConfig", "thinkingConfig", "includeThoughts"],
+                );
+            }
+            if params.candidate_count == Some(1) {
+                typed = typed.candidate_count(gemini::extension::CandidateCount::One);
+                migrate(
+                    &mut raw,
+                    &mut fallback,
+                    &["generationConfig", "candidateCount"],
+                );
+            }
+            if typed != Default::default() {
+                request.provider_options = std::mem::take(&mut request.provider_options).set(typed);
+                extension = Some(gemini::PROVIDER_NAME);
+            }
+        }
+        ProviderModel::Ollama { params } => {
+            let mut typed = ollama::extension::OllamaOptions::default();
+            macro_rules! option {
+                ($field:ident, $ty:ty) => {
+                    if let Some(value) = params.$field.and_then(|value| <$ty>::try_from(value).ok())
+                    {
+                        typed.chat.options.$field = Some(value);
+                        migrate(&mut raw, &mut fallback, &[stringify!($field)]);
+                    }
+                };
+            }
+            option!(num_ctx, u32);
+            option!(num_keep, u32);
+            option!(top_k, u32);
+            option!(repeat_last_n, i32);
+            option!(num_gpu, i32);
+            option!(num_thread, u32);
+            typed.chat.options.min_p = params.min_p;
+            typed.chat.options.repeat_penalty = params.repeat_penalty;
+            for key in ["min_p", "repeat_penalty"] {
+                migrate(&mut raw, &mut fallback, &[key]);
+            }
+            if typed != Default::default() {
+                request.provider_options = std::mem::take(&mut request.provider_options).set(typed);
+                extension = Some(ollama::PROVIDER_NAME);
+            }
+        }
+        ProviderModel::Bedrock { params } => {
+            // The AWS SDK narrows topP to f32. Keep final-wire compatibility for
+            // values that would lose precision through that SDK conversion.
+            if let Some(value) = params.top_p {
+                if (value as f32) as f64 == value {
+                    options.top_p = Some(value);
+                    fallback_wire["inferenceConfig"] = json!({"topP": value});
+                } else {
+                    compatibility["inferenceConfig"] = json!({"topP": value});
+                }
+            }
+            if let Some(value) = &params.stop_sequences {
+                if value.is_empty() {
+                    merge_json(
+                        compatibility,
+                        json!({"inferenceConfig": {"stopSequences": value}}),
+                    );
+                } else {
+                    options.stop = value.clone();
+                    merge_json(
+                        &mut fallback_wire,
+                        json!({"inferenceConfig": {"stopSequences": value}}),
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+    request.additional_params = raw
+        .as_object()
+        .filter(|map| !map.is_empty())
+        .map(|_| raw.clone());
+    if request.provider_options.is_empty() {
+        extension = None;
+    }
+    (fallback, fallback_wire, extension)
 }

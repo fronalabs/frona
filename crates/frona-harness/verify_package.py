@@ -138,8 +138,7 @@ tempfile = "3"
         copy_rust("tests/portable_dtos.rs", "tests/portable_dtos.rs")
         copy_rust("tests/helpers/ownership.rs", "src/lib.rs")
         copy_rust("tests/ownership.rs", "tests/ownership.rs")
-        for helper in ("mod.rs", "execution.rs", "ownership.rs"):
-            copy_rust(f"tests/helpers/{helper}", f"tests/helpers/{helper}")
+        copy_rust("tests/helpers/ownership.rs", "tests/helpers/ownership.rs")
         annotated = (packaged / "tests/annotated_tools.rs").read_text()
         annotated = annotated.replace("frona_harness::", "sdk::").replace("../examples/support/mod.rs", "../src/bin/support/mod.rs")
         (consumer / "tests/annotated.rs").write_text(annotated)

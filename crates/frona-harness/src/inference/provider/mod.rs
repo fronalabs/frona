@@ -191,7 +191,6 @@ pub trait ModelProvider: Send + Sync {
 pub struct ResolvedModel {
     pub model: rig_core::DynModel<rig_core::operation::Completion>,
     wire_transport: bool,
-    hook: Option<crate::inference::protocol::hooks::RequestHook>,
     counter: InferenceCounter,
 }
 
@@ -200,18 +199,12 @@ impl ResolvedModel {
         Self {
             model: model.into(),
             wire_transport: false,
-            hook: None,
             counter: InferenceCounter::default(),
         }
     }
 
     pub fn with_wire_transport(mut self) -> Self {
         self.wire_transport = true;
-        self
-    }
-
-    pub fn with_hook(mut self, hook: crate::inference::protocol::hooks::RequestHook) -> Self {
-        self.hook = Some(hook);
         self
     }
 
@@ -228,7 +221,6 @@ type CompletionModelFactory = dyn Fn(&ModelConfig) -> ResolvedModel + Send + Syn
 pub struct RigProvider {
     model: Arc<CompletionModelFactory>,
     counter: InferenceCounter,
-    hook: Option<crate::inference::protocol::hooks::RequestHook>,
     wire_transport: bool,
 }
 
@@ -253,14 +245,8 @@ impl RigProvider {
         Self {
             model: Arc::new(model),
             counter,
-            hook: None,
             wire_transport: false,
         }
-    }
-
-    pub fn with_hook(mut self, hook: crate::inference::protocol::hooks::RequestHook) -> Self {
-        self.hook = Some(hook);
-        self
     }
 
     pub fn with_wire_transport(mut self) -> Self {
@@ -274,9 +260,6 @@ impl ModelProvider for RigProvider {
     async fn resolve(&self, model: &ModelConfig) -> Result<ResolvedModel, InferenceError> {
         let mut resolved = (self.model)(model);
         resolved.wire_transport |= self.wire_transport;
-        if let Some(hook) = self.hook {
-            resolved.hook = Some(hook);
-        }
         resolved.counter = self.counter.clone();
         Ok(resolved)
     }
@@ -318,7 +301,7 @@ impl crate::ModelAdapter for RigModelAdapter {
         let resolved = self.provider.resolve(&self.config).await?;
         let _guard = resolved.counter.guard();
         let structured = request.schema.is_some();
-        let wire = crate::inference::protocol::parameters::WireParameters::prepare(
+        let mut wire = crate::inference::protocol::parameters::WireParameters::prepare(
             &self.config,
             request.max_tokens,
             request.temperature,
@@ -333,10 +316,6 @@ impl crate::ModelAdapter for RigModelAdapter {
                 "extra_params requires the provider platform's native HTTP transport".into(),
             ));
         }
-        let params = match (resolved.wire_transport, resolved.hook) {
-            (false, Some(hook)) => hook(wire.request.clone()),
-            _ => wire.request.clone(),
-        };
         for override_ in &wire.overrides {
             tracing::warn!(config_path = %override_.config_path, wire_path = ?override_.wire_path, "Custom parameter overrides a typed setting");
         }
@@ -364,12 +343,15 @@ impl crate::ModelAdapter for RigModelAdapter {
         tracing::debug!(model = %model_id, messages = ?messages, tool_count = tools.len(), "LLM request");
         let tool_names: Vec<String> = tools.iter().map(|tool| tool.name.to_string()).collect();
         let traced = crate::inference::trace::enabled().then(|| (messages.clone(), tools.clone()));
-        let mut native = completion_request(&system, messages, tools);
-        native.max_tokens = params.max_tokens;
-        native.temperature = params.temperature;
-        native.additional_params = params.additional_params;
+        let mut native = completion_request(wire.request.clone(), &system, messages, tools);
         if structured {
             native.tool_choice = Some(ToolChoice::Required);
+        }
+        wire.configure_native(&mut native, &resolved.model, resolved.wire_transport);
+        if !resolved.wire_transport && wire.requires_wire_transport() {
+            return Err(InferenceError::ConfigError(
+                "Configured final-wire settings require the provider platform's native HTTP transport".into(),
+            ));
         }
         let mut output = crate::inference::protocol::http::scope(wire, async {
             if let Some(tokens) = tokens {
@@ -443,6 +425,7 @@ impl crate::ModelAdapter for RigModelAdapter {
 }
 
 fn completion_request(
+    mut request: CompletionRequest,
     system: &str,
     mut history: Vec<RigMessage>,
     tools: Vec<RigToolDefinition>,
@@ -467,7 +450,6 @@ fn completion_request(
             }
         }
     }
-    let mut request = CompletionRequest::new("");
     request.chat_history = std::iter::once(Arc::new(RigMessage::system(system)))
         .chain(history.into_iter().map(Arc::new))
         .collect();
@@ -792,9 +774,10 @@ mod tests {
             serde_json::to_value(AnthropicParams::default()).unwrap(),
             serde_json::json!({})
         );
+        assert_eq!(plan.request.additional_params, None);
         assert_eq!(
-            plan.request.additional_params,
-            Some(serde_json::json!({"cache_control": {"type": "ephemeral"}}))
+            plan.request.options.cache,
+            Some(rig_core::completion::CacheRetention::Short)
         );
         model.provider = ProviderModel::Gemini {
             params: GeminiParams::default(),
@@ -808,9 +791,60 @@ mod tests {
             },
         };
         let plan = WireParameters::prepare(&model, None, None, false).unwrap();
+        assert_eq!(plan.request.additional_params, None);
+        assert_eq!(plan.request.options.top_p, Some(0.5));
+    }
+
+    #[test]
+    fn supported_native_options_survive_check_and_foreign_extensions_restore_raw_fields() {
+        use rig_core::{completion::GenerationOptions, providers::openai};
+        let model = openai_model(
+            OpenAiApi::ChatCompletions,
+            OpenAICompatParams {
+                top_p: Some(0.75),
+                seed: Some(7),
+                stop: Some(vec!["done".into()]),
+                logprobs: Some(false),
+                ..Default::default()
+            },
+        );
+        let native = openai::OpenAIConfig::new("fixture-key")
+            .client()
+            .chat("private-model")
+            .erase();
+        let mut plan = WireParameters::prepare(&model, None, None, false).unwrap();
+        let mut request = plan.request.clone();
+        plan.configure_native(&mut request, &native, false);
         assert_eq!(
-            plan.request.additional_params,
-            Some(serde_json::json!({"generationConfig": {"topP": 0.5}}))
+            request.options,
+            GenerationOptions::default()
+                .top_p(0.75)
+                .seed(7)
+                .stop(["done"])
+        );
+        assert!(
+            request
+                .provider_options
+                .contains::<openai::extension::OpenAiExt>()
+        );
+        assert_eq!(request.additional_params, None);
+
+        // A typed OpenAI extension must never silently disappear on another
+        // vendor's otherwise compatible wire.
+        let foreign = openai::OpenAIConfig::with_key(&openai::wire::GROQ, "fixture-key")
+            .client()
+            .chat("private-model")
+            .erase();
+        let mut plan = WireParameters::prepare(&model, None, None, false).unwrap();
+        let mut request = plan.request.clone();
+        plan.configure_native(&mut request, &foreign, false);
+        assert!(request.options.is_default());
+        assert!(request.provider_options.is_empty());
+        assert_eq!(
+            request.additional_params,
+            Some(serde_json::json!({
+                "top_p": 0.75, "seed": 7, "stop": ["done"], "logprobs": false,
+            }))
         );
     }
 
@@ -847,15 +881,23 @@ mod tests {
                 ..Default::default()
             },
         );
-        let plan = WireParameters::prepare(&model, Some(456), None, false).unwrap();
-        let params = crate::inference::protocol::hooks::openai(plan.request);
+        let mut plan = WireParameters::prepare(&model, Some(456), None, false).unwrap();
+        let native = rig_core::providers::openai::OpenAIConfig::new("fixture-key")
+            .client()
+            .chat("test-model")
+            .erase();
+        let mut params = plan.request.clone();
+        plan.configure_native(&mut params, &native, true);
         assert_eq!(params.max_tokens, None);
         assert_eq!(
+            params.options.reasoning,
+            Some(rig_core::completion::Reasoning::Effort(
+                rig_core::completion::Effort::High
+            ))
+        );
+        assert_eq!(
             params.additional_params,
-            Some(serde_json::json!({
-                "max_completion_tokens": 123,
-                "reasoning_effort": "high"
-            }))
+            Some(serde_json::json!({"max_completion_tokens": 123}))
         );
     }
 
@@ -873,12 +915,22 @@ mod tests {
         let plan = WireParameters::prepare(&model, Some(456), None, false).unwrap();
         let params = &plan.request;
         assert_eq!(params.max_tokens, Some(123));
+        assert_eq!(params.additional_params, None);
         assert_eq!(
-            params.additional_params,
-            Some(serde_json::json!({
-                "reasoning": {"effort": "high"},
-                "top_logprobs": 5
-            }))
+            params.options.reasoning,
+            Some(rig_core::completion::Reasoning::Effort(
+                rig_core::completion::Effort::High
+            ))
+        );
+        assert_eq!(
+            serde_json::to_value(
+                params
+                    .provider_options
+                    .get::<rig_core::providers::openai::extension::OpenAiExt>()
+                    .unwrap()
+            )
+            .unwrap(),
+            serde_json::json!({"openai.responses": {"top_logprobs": 5}}),
         );
     }
 

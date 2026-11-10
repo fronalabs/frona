@@ -51,7 +51,7 @@ pub(crate) fn compile_request(
         &config.provider,
         connection,
     )?;
-    if resolved.factory == crate::inference::provider::platform::FactoryKind::Azure {
+    if resolved.brand == "azure" {
         crate::inference::provider::adapter::azure::validate_deployment(&config.common.model)?;
     }
     let adapter = resolved.request_adapter_name();

@@ -1,9 +1,8 @@
 use crate::core::config::ModelProviderConfig;
 use frona_harness::inference::{
     error::InferenceError,
-    provider::{CredentialValidationError, InferenceCounter, ModelProvider},
+    provider::{CredentialValidationError, InferenceCounter, ProviderConnection},
 };
-use std::sync::Arc;
 
 use std::time::Duration;
 
@@ -49,7 +48,7 @@ fn candidate(handle: &str, endpoint: &str, key: &str) -> ValidationCandidate {
     }
 }
 
-fn provider(endpoint: &str, key: &str) -> Result<Arc<dyn ModelProvider>, InferenceError> {
+fn provider(endpoint: &str, key: &str) -> Result<ProviderConnection, InferenceError> {
     let mut candidate = candidate("router-work", endpoint, key);
     candidate.config.api_key = Some(key.into());
     let connection =
@@ -138,10 +137,11 @@ async fn named_connections_validate_current_key_and_list_models_independently() 
     // Listing stays available even with a rejected key: the directory is public.
     let invalid = provider(&endpoint, "invalid-key").unwrap();
     assert!(matches!(
-        invalid.validate_credentials().await,
+        invalid.admin.validate_credentials().await,
         Err(CredentialValidationError::AuthenticationRejected)
     ));
-    let ProviderModelList::Listed { models, .. } = invalid.list_models().await.unwrap() else {
+    let ProviderModelList::Listed { models, .. } = invalid.admin.list_models().await.unwrap()
+    else {
         panic!("expected the native OpenRouter model list")
     };
     assert_eq!(models.data[0].id, "vendor/model");
@@ -290,6 +290,7 @@ async fn redirects_never_receive_authorization_or_establish_validation() {
             .await;
         let error = provider(&server.uri(), KEY)
             .unwrap()
+            .admin
             .validate_credentials()
             .await
             .unwrap_err();
@@ -354,6 +355,7 @@ async fn malformed_responses_and_unreachable_endpoints_do_not_expose_secrets() {
             .await;
         let error = provider(&server.uri(), KEY)
             .unwrap()
+            .admin
             .validate_credentials()
             .await
             .unwrap_err();

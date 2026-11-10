@@ -1,16 +1,11 @@
 //! Together returns a native array, not an OpenAI data envelope.
 use crate::config::ModelProviderConfig;
 use crate::inference::error::InferenceError;
-use crate::inference::protocol::http::WireClient;
 use crate::inference::provider::CredentialValidationError;
-use crate::inference::provider::InferenceCounter;
-use crate::inference::provider::ModelProvider;
-use crate::inference::provider::RigProvider;
+use crate::inference::provider::ProviderAdmin;
 use crate::inference::provider::platform::ResolvedConnection;
 use crate::inference::provider::platform::require_api_key;
 use rig_core::model::{ModelInfo, ModelList};
-use rig_core::providers::openai;
-use std::sync::Arc;
 
 async fn list_models(
     client: &reqwest::Client,
@@ -27,33 +22,21 @@ async fn list_models(
     ))
 }
 
-pub(crate) fn build(
+pub(crate) fn admin(
     connection: &ResolvedConnection,
     config: &ModelProviderConfig,
-    counter: &InferenceCounter,
-) -> Result<Arc<dyn ModelProvider>, InferenceError> {
+) -> Result<ProviderAdmin, InferenceError> {
     let key = require_api_key(connection.handle.as_str(), config)?;
     let endpoint = connection
         .effective_base_url
         .clone()
         .expect("Together endpoint");
-    let client = openai::OpenAIConfig::with_key(&openai::wire::TOGETHER, key.clone())
-        .with_base_url(endpoint.clone())
-        .with_route(openai::Route::Chat)
-        .connect(WireClient::default());
     let discovery = super::discovery::client(&key)?;
-    Ok(Arc::new(
-        RigProvider::new(
-            move |id: &str| client.completion(id).erase(),
-            counter.clone(),
-        )
-        .with_wire_transport()
-        .with_live_check(move || {
-            let discovery = discovery.clone();
-            let endpoint = endpoint.clone();
-            async move { list_models(&discovery, &endpoint).await }
-        }),
-    ))
+    Ok(ProviderAdmin::default().with_live_check(move || {
+        let discovery = discovery.clone();
+        let endpoint = endpoint.clone();
+        async move { list_models(&discovery, &endpoint).await }
+    }))
 }
 
 #[cfg(test)]

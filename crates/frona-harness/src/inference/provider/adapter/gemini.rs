@@ -1,21 +1,16 @@
 //! Gemini credential validation recognizes structured invalid-key responses.
-use std::sync::Arc;
 
 use crate::config::ModelProviderConfig;
 use crate::inference::error::InferenceError;
-use crate::inference::protocol::http::WireClient;
 use crate::inference::provider::CredentialValidationError;
-use crate::inference::provider::InferenceCounter;
-use crate::inference::provider::ModelProvider;
-use crate::inference::provider::RigProvider;
+use crate::inference::provider::ProviderAdmin;
 use crate::inference::provider::platform::ResolvedConnection;
 use crate::inference::provider::platform::require_api_key;
 
-pub(crate) fn build(
+pub(crate) fn admin(
     connection: &ResolvedConnection,
     config: &ModelProviderConfig,
-    counter: &InferenceCounter,
-) -> Result<Arc<dyn ModelProvider>, InferenceError> {
+) -> Result<ProviderAdmin, InferenceError> {
     let key = require_api_key(connection.handle.as_str(), config)?;
     let endpoint = connection
         .effective_base_url
@@ -33,14 +28,9 @@ pub(crate) fn build(
         .map_err(|_| InferenceError::ConfigError("Cannot build Gemini validation client".into()))?;
     let client = rig_core::providers::gemini::GeminiConfig::new(key.clone())
         .with_base_url(endpoint)
-        .connect(WireClient::default());
+        .connect(super::discovery::http_client()?);
     let discovery_client = client.clone();
-    Ok(Arc::new(
-        RigProvider::new(
-            move |id: &str| client.completion(id).erase(),
-            counter.clone(),
-        )
-        .with_wire_transport()
+    Ok(ProviderAdmin::default()
         .with_live_check(move || {
             let client = discovery_client.clone();
             async move {
@@ -107,6 +97,5 @@ pub(crate) fn build(
                 }
                 Ok(())
             }
-        }),
-    ))
+        }))
 }

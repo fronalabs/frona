@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use rig_core::providers::{anthropic, ollama, openai};
+use rig_core::http_client::DynHttpClient;
+use rig_core::providers::{
+    anthropic, ollama, openai,
+    registry::{ProviderConfig, ProviderId},
+};
 
 use crate::Handle;
 use crate::config::CredentialMethod;
@@ -9,7 +13,8 @@ use crate::config::{AdapterId, ApiSurface, ModelProviderConfig};
 use crate::inference::error::InferenceError;
 use crate::inference::protocol::hooks;
 use crate::inference::provider::{
-    CredentialValidationError, InferenceCounter, ModelProvider, ResolvedModel, RigProvider,
+    CredentialValidationError, InferenceCounter, ProviderAdmin, ProviderConnection, ResolvedModel,
+    RigProvider,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -18,31 +23,6 @@ pub struct AuthMethodDescriptor {
     pub method: CredentialMethod,
     pub priority: u16,
     pub protocols: &'static [ApiSurface],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FactoryKind {
-    Copilot,
-    Azure,
-    Bedrock,
-    OpenAi,
-    Anthropic,
-    Ollama,
-    Groq,
-    OpenRouter,
-    DeepSeek,
-    Gemini,
-    Cohere,
-    Mistral,
-    Perplexity,
-    Together,
-    Xai,
-    Hyperbolic,
-    Moonshot,
-    Mira,
-    Galadriel,
-    HuggingFace,
-    GenericOpenAi,
 }
 
 #[derive(Debug, Clone)]
@@ -54,18 +34,18 @@ pub struct ResolvedConnection {
     pub protocols: &'static [ApiSurface],
     pub auth_methods: &'static [AuthMethodDescriptor],
     pub effective_base_url: Option<String>,
-    pub factory: FactoryKind,
+    pub rig_provider: Option<ProviderId>,
 }
 
 impl ResolvedConnection {
     pub fn supports_model_protocol(&self, model: &str, api: ApiSurface) -> bool {
         self.protocols.contains(&api)
-            && (self.factory != FactoryKind::Copilot
+            && (self.brand != "github-copilot"
                 || crate::inference::provider::adapter::copilot::protocol(model) == api)
     }
 
     pub fn supports_catalog_route(&self, model: &frona_model_catalog::catalog::ModelEntry) -> bool {
-        self.factory != FactoryKind::Azure
+        self.brand != "azure"
             || model.provider.as_ref().is_none_or(|route| {
                 route
                     .npm
@@ -96,28 +76,19 @@ impl ResolvedConnection {
         }
     }
 
-    pub const fn request_adapter_name(&self) -> &'static str {
-        match self.factory {
-            FactoryKind::Copilot => "openai",
-            FactoryKind::Azure => "openai",
-            FactoryKind::Bedrock => "bedrock",
-            FactoryKind::OpenAi | FactoryKind::GenericOpenAi => "openai",
-            FactoryKind::Anthropic => "anthropic",
-            FactoryKind::Ollama => "ollama",
-            FactoryKind::Groq => "groq",
-            FactoryKind::OpenRouter => "openrouter",
-            FactoryKind::DeepSeek => "deepseek",
-            FactoryKind::Gemini => "gemini",
-            FactoryKind::Cohere => "cohere",
-            FactoryKind::Mistral => "mistral",
-            FactoryKind::Perplexity => "perplexity",
-            FactoryKind::Together => "together",
-            FactoryKind::Xai => "xai",
-            FactoryKind::Hyperbolic => "hyperbolic",
-            FactoryKind::Moonshot => "moonshot",
-            FactoryKind::Mira => "mira",
-            FactoryKind::Galadriel => "galadriel",
-            FactoryKind::HuggingFace => "huggingface",
+    pub fn request_adapter_name(&self) -> &'static str {
+        if self.adapter == AdapterId::Gemini {
+            return "gemini";
+        }
+        match self.brand.as_str() {
+            "github-copilot" | "azure" => "openai",
+            // These recipes intentionally use generic OpenAI wire behavior.
+            "xai" => "xai",
+            "galadriel" => "galadriel",
+            _ => self
+                .rig_provider
+                .as_ref()
+                .map_or("bedrock", ProviderId::vendor),
         }
     }
 }
@@ -277,13 +248,14 @@ impl ProviderPlatform {
     }
 
     pub fn has_validator(connection: &ResolvedConnection, method: CredentialMethod) -> bool {
-        !matches!(
-            connection.factory,
-            FactoryKind::Perplexity | FactoryKind::HuggingFace
-        ) && connection
-            .auth_methods
-            .iter()
-            .any(|entry| entry.method == method && !entry.protocols.is_empty())
+        !connection
+            .rig_provider
+            .as_ref()
+            .is_some_and(|id| matches!(id.vendor(), "perplexity" | "huggingface"))
+            && connection
+                .auth_methods
+                .iter()
+                .any(|entry| entry.method == method && !entry.protocols.is_empty())
     }
 
     pub fn resolve(
@@ -296,7 +268,7 @@ impl ProviderPlatform {
             .clone()
             .unwrap_or_else(|| compatibility_brand(handle.as_str()).to_string());
         let recipe = recipe(&brand);
-        let (adapter, factory, protocols, auth_methods, default_base_url) = match recipe {
+        let (adapter, rig_provider, protocols, auth_methods, default_base_url) = match recipe {
             Some(recipe) => {
                 if let Some(explicit) = config.adapter
                     && explicit != recipe.adapter
@@ -308,7 +280,7 @@ impl ProviderPlatform {
                 }
                 (
                     recipe.adapter,
-                    recipe.factory,
+                    recipe.rig_provider,
                     recipe.protocols,
                     recipe.auth_methods,
                     recipe.default_base_url,
@@ -330,10 +302,10 @@ impl ProviderPlatform {
             }
         };
         let endpoint = config.base_url.as_deref().or(default_base_url);
-        let auth_methods = if (factory == FactoryKind::OpenAi
+        let auth_methods = if (brand == "openai"
             && endpoint.map(|url| url.trim().trim_end_matches('/'))
                 != Some("https://api.openai.com/v1"))
-            || (factory == FactoryKind::Copilot
+            || (brand == "github-copilot"
                 && endpoint.map(|url| url.trim().trim_end_matches('/'))
                     != Some(crate::inference::provider::adapter::copilot::ENDPOINT))
         {
@@ -365,136 +337,152 @@ impl ProviderPlatform {
             protocols,
             auth_methods,
             effective_base_url: endpoint.map(|url| normalize_endpoint(adapter, url)),
-            factory,
+            rig_provider,
         })
     }
 }
 
 struct Recipe {
     adapter: AdapterId,
-    factory: FactoryKind,
+    rig_provider: Option<ProviderId>,
     protocols: &'static [ApiSurface],
     auth_methods: &'static [AuthMethodDescriptor],
     default_base_url: Option<&'static str>,
 }
 
+fn rig(selection: &str) -> Option<ProviderId> {
+    Some(ProviderId::resolve(selection).expect("compiled Rig provider selection"))
+}
+
 fn recipe(brand: &str) -> Option<Recipe> {
-    let recipe =
-        match brand {
-            "github-copilot" => Recipe::new(
-                AdapterId::Openai,
-                FactoryKind::Copilot,
-                OPENAI_PROTOCOLS,
-                COPILOT_AUTH,
-            )
-            .endpoint(crate::inference::provider::adapter::copilot::ENDPOINT),
-            "azure" => Recipe::new(
-                AdapterId::Openai,
-                FactoryKind::Azure,
-                COMPLETIONS,
-                API_KEY_COMPLETIONS,
+    let recipe = match brand {
+        "github-copilot" => Recipe::new(
+            AdapterId::Openai,
+            rig(rig_core::providers::openai::PROVIDER_NAME),
+            OPENAI_PROTOCOLS,
+            COPILOT_AUTH,
+        )
+        .endpoint(crate::inference::provider::adapter::copilot::ENDPOINT),
+        "azure" => Recipe::new(
+            AdapterId::Openai,
+            rig(rig_core::providers::azure::PROVIDER_NAME),
+            COMPLETIONS,
+            API_KEY_COMPLETIONS,
+        ),
+        "amazon-bedrock" => Recipe::new(AdapterId::Bedrock, None, BEDROCK_PROTOCOLS, BEDROCK_AUTH),
+        "openai" => Recipe::new(
+            AdapterId::Openai,
+            rig(rig_core::providers::openai::PROVIDER_NAME),
+            OPENAI_PREFERRED_PROTOCOLS,
+            OPENAI_AUTH,
+        )
+        .endpoint("https://api.openai.com/v1"),
+        "anthropic" => Recipe::new(
+            AdapterId::Anthropic,
+            rig(rig_core::providers::anthropic::PROVIDER_NAME),
+            ANTHROPIC_PROTOCOLS,
+            API_KEY_ANTHROPIC,
+        )
+        .endpoint("https://api.anthropic.com"),
+        "kimi-for-coding" => Recipe::new(
+            AdapterId::Anthropic,
+            rig(rig_core::providers::anthropic::PROVIDER_NAME),
+            ANTHROPIC_PROTOCOLS,
+            API_KEY_ANTHROPIC,
+        )
+        .endpoint("https://api.kimi.com/coding"),
+        "ollama" => Recipe::new(
+            AdapterId::Ollama,
+            ProviderId::new(
+                rig_core::providers::ollama::PROVIDER_NAME,
+                rig_core::providers::registry::Format::OpenAi,
             ),
-            "amazon-bedrock" => Recipe::new(
-                AdapterId::Bedrock,
-                FactoryKind::Bedrock,
-                BEDROCK_PROTOCOLS,
-                BEDROCK_AUTH,
-            ),
-            "openai" => Recipe::new(
-                AdapterId::Openai,
-                FactoryKind::OpenAi,
-                OPENAI_PREFERRED_PROTOCOLS,
-                OPENAI_AUTH,
-            )
-            .endpoint("https://api.openai.com/v1"),
-            "anthropic" => Recipe::new(
-                AdapterId::Anthropic,
-                FactoryKind::Anthropic,
-                ANTHROPIC_PROTOCOLS,
-                API_KEY_ANTHROPIC,
-            )
-            .endpoint("https://api.anthropic.com"),
-            "kimi-for-coding" => Recipe::new(
-                AdapterId::Anthropic,
-                FactoryKind::Anthropic,
-                ANTHROPIC_PROTOCOLS,
-                API_KEY_ANTHROPIC,
-            )
-            .endpoint("https://api.kimi.com/coding"),
-            "ollama" => Recipe::new(
-                AdapterId::Ollama,
-                FactoryKind::Ollama,
-                OLLAMA_PROTOCOLS,
-                ANONYMOUS_OLLAMA,
-            )
-            .endpoint("http://localhost:11434"),
-            "groq" => Recipe::openai_compatible(FactoryKind::Groq)
-                .endpoint("https://api.groq.com/openai/v1"),
-            "openrouter" => Recipe::openai_compatible(FactoryKind::OpenRouter)
-                .endpoint("https://openrouter.ai/api/v1"),
-            "deepseek" => Recipe::openai_compatible(FactoryKind::DeepSeek)
-                .endpoint("https://api.deepseek.com"),
-            "google" => Recipe::new(
-                AdapterId::Gemini,
-                FactoryKind::Gemini,
-                GEMINI_PROTOCOLS,
-                API_KEY_GEMINI,
-            )
-            .endpoint("https://generativelanguage.googleapis.com"),
-            "cohere" => Recipe::new(
-                AdapterId::Cohere,
-                FactoryKind::Cohere,
-                COHERE_PROTOCOLS,
-                API_KEY_COHERE,
-            )
-            .endpoint("https://api.cohere.ai"),
-            "mistral" => {
-                Recipe::openai_compatible(FactoryKind::Mistral).endpoint("https://api.mistral.ai")
-            }
-            "perplexity" => Recipe::openai_compatible(FactoryKind::Perplexity)
-                .endpoint("https://api.perplexity.ai"),
-            "togetherai" => Recipe::openai_compatible(FactoryKind::Together)
-                .endpoint("https://api.together.xyz"),
-            "xai" => Recipe::openai_compatible(FactoryKind::Xai).endpoint("https://api.x.ai/v1"),
-            "hyperbolic" => Recipe::openai_compatible(FactoryKind::Hyperbolic)
-                .endpoint("https://api.hyperbolic.xyz"),
-            "moonshotai" => Recipe::openai_compatible(FactoryKind::Moonshot)
-                .endpoint("https://api.moonshot.ai/v1"),
-            "mira" => {
-                Recipe::openai_compatible(FactoryKind::Mira).endpoint("https://api.mira.network")
-            }
-            "galadriel" => Recipe::openai_compatible(FactoryKind::Galadriel)
-                .endpoint("https://api.galadriel.com/v1/verified"),
-            "huggingface" => Recipe::new(
-                AdapterId::Huggingface,
-                FactoryKind::HuggingFace,
-                HUGGINGFACE_PROTOCOLS,
-                API_KEY_HUGGINGFACE,
-            )
-            .endpoint("https://router.huggingface.co"),
-            _ => return None,
-        };
+            OLLAMA_PROTOCOLS,
+            ANONYMOUS_OLLAMA,
+        )
+        .endpoint("http://localhost:11434"),
+        "groq" => Recipe::openai_compatible(rig(rig_core::providers::groq::PROVIDER_NAME))
+            .endpoint("https://api.groq.com/openai/v1"),
+        "openrouter" => {
+            Recipe::openai_compatible(rig(rig_core::providers::openrouter::PROVIDER_NAME))
+                .endpoint("https://openrouter.ai/api/v1")
+        }
+        "deepseek" => Recipe::openai_compatible(rig(rig_core::providers::deepseek::PROVIDER_NAME))
+            .endpoint("https://api.deepseek.com"),
+        "google" => Recipe::new(
+            AdapterId::Gemini,
+            rig(rig_core::providers::gemini::PROVIDER_NAME),
+            GEMINI_PROTOCOLS,
+            API_KEY_GEMINI,
+        )
+        .endpoint("https://generativelanguage.googleapis.com"),
+        "cohere" => Recipe::new(
+            AdapterId::Cohere,
+            rig(rig_core::providers::cohere::PROVIDER_NAME),
+            COHERE_PROTOCOLS,
+            API_KEY_COHERE,
+        )
+        .endpoint("https://api.cohere.ai"),
+        "mistral" => Recipe::openai_compatible(rig(rig_core::providers::mistral::PROVIDER_NAME))
+            .endpoint("https://api.mistral.ai"),
+        "perplexity" => {
+            Recipe::openai_compatible(rig(rig_core::providers::perplexity::PROVIDER_NAME))
+                .endpoint("https://api.perplexity.ai")
+        }
+        "togetherai" => {
+            Recipe::openai_compatible(rig(rig_core::providers::together::PROVIDER_NAME))
+                .endpoint("https://api.together.xyz")
+        }
+        "xai" => Recipe::openai_compatible(rig(rig_core::providers::openai::PROVIDER_NAME))
+            .endpoint("https://api.x.ai/v1"),
+        "hyperbolic" => {
+            Recipe::openai_compatible(rig(rig_core::providers::hyperbolic::PROVIDER_NAME))
+                .endpoint("https://api.hyperbolic.xyz")
+        }
+        "moonshotai" => Recipe::openai_compatible(ProviderId::new(
+            rig_core::providers::moonshot::PROVIDER_NAME,
+            rig_core::providers::registry::Format::OpenAi,
+        ))
+        .endpoint("https://api.moonshot.ai/v1"),
+        "mira" => Recipe::openai_compatible(rig(rig_core::providers::mira::PROVIDER_NAME))
+            .endpoint("https://api.mira.network"),
+        "galadriel" => Recipe::openai_compatible(rig(rig_core::providers::openai::PROVIDER_NAME))
+            .endpoint("https://api.galadriel.com/v1/verified"),
+        "huggingface" => Recipe::new(
+            AdapterId::Huggingface,
+            rig(rig_core::providers::huggingface::PROVIDER_NAME),
+            HUGGINGFACE_PROTOCOLS,
+            API_KEY_HUGGINGFACE,
+        )
+        .endpoint("https://router.huggingface.co"),
+        _ => return None,
+    };
     Some(recipe)
 }
 
 impl Recipe {
-    const fn new(
+    fn new(
         adapter: AdapterId,
-        factory: FactoryKind,
+        rig_provider: Option<ProviderId>,
         protocols: &'static [ApiSurface],
         auth_methods: &'static [AuthMethodDescriptor],
     ) -> Self {
         Self {
             adapter,
-            factory,
+            rig_provider,
             protocols,
             auth_methods,
             default_base_url: None,
         }
     }
 
-    const fn openai_compatible(factory: FactoryKind) -> Self {
-        Self::new(AdapterId::Openai, factory, COMPLETIONS, API_KEY_COMPLETIONS)
+    fn openai_compatible(rig_provider: Option<ProviderId>) -> Self {
+        Self::new(
+            AdapterId::Openai,
+            rig_provider,
+            COMPLETIONS,
+            API_KEY_COMPLETIONS,
+        )
     }
 
     const fn endpoint(mut self, endpoint: &'static str) -> Self {
@@ -507,7 +495,7 @@ fn dynamic_recipe(
     adapter: AdapterId,
 ) -> (
     AdapterId,
-    FactoryKind,
+    Option<ProviderId>,
     &'static [ApiSurface],
     &'static [AuthMethodDescriptor],
     Option<&'static str>,
@@ -515,53 +503,50 @@ fn dynamic_recipe(
     match adapter {
         AdapterId::Openai => (
             adapter,
-            FactoryKind::GenericOpenAi,
+            rig(rig_core::providers::openai::PROVIDER_NAME),
             OPENAI_PROTOCOLS,
             API_KEY_OPENAI,
             None,
         ),
         AdapterId::Anthropic => (
             adapter,
-            FactoryKind::Anthropic,
+            rig(rig_core::providers::anthropic::PROVIDER_NAME),
             ANTHROPIC_PROTOCOLS,
             API_KEY_ANTHROPIC,
             None,
         ),
         AdapterId::Gemini => (
             adapter,
-            FactoryKind::Gemini,
+            rig(rig_core::providers::gemini::PROVIDER_NAME),
             GEMINI_PROTOCOLS,
             API_KEY_GEMINI,
             None,
         ),
         AdapterId::Cohere => (
             adapter,
-            FactoryKind::Cohere,
+            rig(rig_core::providers::cohere::PROVIDER_NAME),
             COHERE_PROTOCOLS,
             API_KEY_COHERE,
             None,
         ),
         AdapterId::Ollama => (
             adapter,
-            FactoryKind::Ollama,
+            ProviderId::new(
+                rig_core::providers::ollama::PROVIDER_NAME,
+                rig_core::providers::registry::Format::OpenAi,
+            ),
             OLLAMA_PROTOCOLS,
             ANONYMOUS_OLLAMA,
             Some("http://localhost:11434"),
         ),
         AdapterId::Huggingface => (
             adapter,
-            FactoryKind::HuggingFace,
+            rig(rig_core::providers::huggingface::PROVIDER_NAME),
             HUGGINGFACE_PROTOCOLS,
             API_KEY_HUGGINGFACE,
             None,
         ),
-        AdapterId::Bedrock => (
-            adapter,
-            FactoryKind::Bedrock,
-            BEDROCK_PROTOCOLS,
-            BEDROCK_AUTH,
-            None,
-        ),
+        AdapterId::Bedrock => (adapter, None, BEDROCK_PROTOCOLS, BEDROCK_AUTH, None),
     }
 }
 
@@ -631,18 +616,60 @@ pub fn normalize_endpoint(adapter: AdapterId, input: &str) -> String {
     }
 }
 
-macro_rules! listable_client {
-    ($client:expr, $counter:expr) => {{
-        let client = $client;
-        let validation_client = client.clone();
-        Ok(Arc::new(
-            RigProvider::new(
-                move |id: &str| client.completion(id).erase(),
-                $counter.clone(),
-            )
-            .with_wire_transport()
-            .with_live_check(move || {
-                let client = validation_client.clone();
+/// Compile an explicit connection without consulting environment credentials or
+/// restricting model IDs to either catalog. Rig facts only guide serialization.
+pub fn build_provider(
+    resolved: &ResolvedConnection,
+    config: &ModelProviderConfig,
+    counter: &InferenceCounter,
+) -> Result<ProviderConnection, InferenceError> {
+    use crate::inference::protocol::http::WireClient;
+    use crate::inference::provider::adapter;
+    if resolved.brand == "github-copilot" {
+        return Err(InferenceError::ConfigError(
+            "Copilot requires a registered credential-refresh provider".into(),
+        ));
+    }
+    if resolved.adapter == AdapterId::Bedrock {
+        let provider = Arc::new(adapter::bedrock::BedrockProvider::new(
+            config.clone(),
+            counter.clone(),
+        ));
+        let discovery = provider.clone();
+        let validation = provider.clone();
+        return Ok(ProviderConnection {
+            model: provider,
+            admin: ProviderAdmin::default()
+                .with_listing_check(move || {
+                    let provider = discovery.clone();
+                    async move { provider.list_models().await }
+                })
+                .with_validation(move || {
+                    let provider = validation.clone();
+                    async move { provider.validate_credentials().await }
+                }),
+        });
+    }
+    if resolved.adapter == AdapterId::Ollama {
+        let connection = ollama::OllamaConfig::new().with_base_url(
+            resolved
+                .effective_base_url
+                .as_deref()
+                .expect("Ollama endpoint"),
+        );
+        let client = connection.clone().connect(WireClient::default());
+        let discovery = connection.connect(adapter::discovery::http_client()?);
+        return Ok(ProviderConnection {
+            model: Arc::new(
+                RigProvider::new(
+                    move |id| client.native_completion(id).erase(),
+                    counter.clone(),
+                )
+                .with_wire_transport()
+                .with_hook(hooks::ollama),
+            ),
+            admin: ProviderAdmin::default().with_live_check(move || {
+                let client = discovery.clone();
                 async move {
                     client
                         .list_models()
@@ -650,174 +677,147 @@ macro_rules! listable_client {
                         .map_err(CredentialValidationError::from)
                 }
             }),
-        ) as Arc<dyn ModelProvider>)
-    }};
-}
-
-pub fn build_provider(
-    resolved: &ResolvedConnection,
-    config: &ModelProviderConfig,
-    counter: &InferenceCounter,
-) -> Result<Arc<dyn ModelProvider>, InferenceError> {
-    let name = resolved.handle.as_str();
-    let endpoint = resolved.effective_base_url.as_deref();
-    match resolved.factory {
-        FactoryKind::Copilot => Err(InferenceError::ConfigError(
-            "Copilot requires a registered credential-refresh provider".into(),
-        )),
-        FactoryKind::Azure => {
-            crate::inference::provider::adapter::azure::build(resolved, config, counter)
-        }
-        FactoryKind::Bedrock => Ok(Arc::new(
-            crate::inference::provider::adapter::bedrock::BedrockProvider::new(
-                config.clone(),
-                counter.clone(),
-            ),
-        )),
-        FactoryKind::OpenAi | FactoryKind::GenericOpenAi => {
-            let key = require_api_key(name, config)?;
-            let mut connection = openai::OpenAIConfig::new(key);
-            if let Some(url) = endpoint {
-                connection = connection.with_base_url(url);
+        });
+    }
+    let key = require_api_key(resolved.handle.as_str(), config)?;
+    let mut rig = resolved
+        .rig_provider
+        .as_ref()
+        .and_then(|id| id.config(key))
+        .expect("compiled recipe names a registered Rig provider");
+    if let Some(endpoint) = &resolved.effective_base_url {
+        rig = rig.with_base_url(endpoint);
+    }
+    if let ProviderConfig::OpenAi(connection) = &mut rig {
+        connection.route = Some(openai::Route::Chat);
+        if resolved.brand == "azure" {
+            if resolved.effective_base_url.is_none() {
+                return Err(InferenceError::ConfigError(
+                    "Azure requires base_url for the resource endpoint".into(),
+                ));
             }
-            let client =
-                connection.connect(crate::inference::protocol::http::WireClient::default());
-            let discovery = client.clone();
-            Ok(Arc::new(
-                RigProvider::from_model_factory(
-                    move |model| {
-                        if matches!(
+            *connection = connection.clone().with_api_version(
+                config
+                    .attributes
+                    .get("azure_api_version")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(adapter::azure::DEFAULT_API_VERSION),
+            );
+        }
+        if resolved.adapter == AdapterId::Cohere {
+            // CohereConfig::completion uses this compatibility root too.
+            *connection = connection.clone().with_base_url(format!(
+                "{}/compatibility/v1",
+                connection.base_url.trim_end_matches('/')
+            ));
+        }
+    }
+    let admin = match resolved.rig_provider.as_ref().map(ProviderId::vendor) {
+        Some(rig_core::providers::azure::PROVIDER_NAME) => adapter::azure::admin(resolved, config)?,
+        Some(rig_core::providers::gemini::PROVIDER_NAME) => {
+            adapter::gemini::admin(resolved, config)?
+        }
+        Some("openrouter") => adapter::openrouter::admin(resolved, config)?,
+        Some("cohere") => adapter::cohere::admin(resolved, config)?,
+        Some("together") => adapter::together::admin(resolved, config)?,
+        Some("hyperbolic" | "huggingface") => {
+            let directory = ProviderConfig::OpenAi(
+                openai::OpenAIConfig::new(require_api_key(resolved.handle.as_str(), config)?)
+                    .with_base_url(format!(
+                        "{}/v1",
+                        resolved
+                            .effective_base_url
+                            .as_deref()
+                            .expect("provider endpoint")
+                    )),
+            );
+            let admin = listing_admin(&directory)?;
+            if resolved.adapter == AdapterId::Huggingface {
+                // This public directory does not prove token validity.
+                admin
+                    .with_validation_check(|| async { Err(CredentialValidationError::Unsupported) })
+            } else {
+                admin
+            }
+        }
+        Some("perplexity") => ProviderAdmin::default(),
+        _ => listing_admin(&rig)?,
+    };
+    let http = DynHttpClient::new(if resolved.brand == "azure" {
+        WireClient::without_redirects()
+            .map_err(|_| InferenceError::ConfigError("Cannot build Azure HTTP client".into()))?
+    } else {
+        WireClient::default()
+    });
+    let selectable_route = resolved.adapter == AdapterId::Openai
+        && rig.vendor() == "openai"
+        && !matches!(resolved.brand.as_str(), "xai" | "galadriel");
+    let hook = (rig.vendor() == "openai").then_some(hooks::openai as hooks::RequestHook);
+    Ok(ProviderConnection {
+        model: Arc::new(
+            RigProvider::from_model_factory(
+                move |model| {
+                    let mut connection = rig.clone();
+                    let responses = selectable_route
+                        && matches!(
                             model.provider,
                             crate::config::ProviderModel::OpenAI {
                                 api: Some(crate::config::OpenAiApi::Responses),
                                 ..
                             }
-                        ) {
-                            ResolvedModel::new(client.responses(&model.model_id))
-                        } else {
-                            ResolvedModel::new(client.chat(&model.model_id))
-                                .with_hook(crate::inference::protocol::hooks::openai)
-                        }
-                    },
-                    counter.clone(),
-                )
-                .with_wire_transport()
-                .with_live_check(move || {
-                    let client = discovery.clone();
-                    async move {
-                        client
-                            .list_models()
-                            .await
-                            .map_err(CredentialValidationError::from)
+                        );
+                    if responses && let ProviderConfig::OpenAi(config) = &mut connection {
+                        config.route = Some(openai::Route::Responses);
                     }
-                }),
-            ))
-        }
-        FactoryKind::Anthropic => {
-            let key = require_api_key(name, config)?;
-            let mut connection = anthropic::AnthropicConfig::new(key);
-            if let Some(url) = endpoint {
-                connection = connection.with_base_url(url);
-            }
-            listable_client!(
-                connection.connect(crate::inference::protocol::http::WireClient::default()),
-                counter
-            )
-        }
-        FactoryKind::Groq
-        | FactoryKind::DeepSeek
-        | FactoryKind::Mistral
-        | FactoryKind::Moonshot
-        | FactoryKind::Mira => {
-            let key = require_api_key(name, config)?;
-            let dialect = match resolved.factory {
-                FactoryKind::Groq => &openai::wire::GROQ,
-                FactoryKind::DeepSeek => &openai::wire::DEEPSEEK,
-                FactoryKind::Mistral => &openai::wire::MISTRAL,
-                FactoryKind::Moonshot => &openai::wire::MOONSHOT,
-                FactoryKind::Mira => &openai::wire::MIRA,
-                _ => unreachable!(),
-            };
-            let mut connection =
-                openai::OpenAIConfig::with_key(dialect, key).with_route(openai::Route::Chat);
-            if let Some(url) = endpoint {
-                connection = connection.with_base_url(url);
-            }
-            listable_client!(
-                connection.connect(crate::inference::protocol::http::WireClient::default()),
-                counter
-            )
-        }
-        FactoryKind::OpenRouter => {
-            crate::inference::provider::adapter::openrouter::build(resolved, config, counter)
-        }
-        FactoryKind::Gemini => {
-            crate::inference::provider::adapter::gemini::build(resolved, config, counter)
-        }
-        FactoryKind::Cohere => {
-            crate::inference::provider::adapter::cohere::build(resolved, config, counter)
-        }
-        FactoryKind::Perplexity => {
-            crate::inference::provider::adapter::perplexity::build(resolved, config, counter)
-        }
-        FactoryKind::Together => {
-            crate::inference::provider::adapter::together::build(resolved, config, counter)
-        }
-        FactoryKind::Hyperbolic => {
-            crate::inference::provider::adapter::hyperbolic::build(resolved, config, counter)
-        }
-        FactoryKind::HuggingFace => {
-            crate::inference::provider::adapter::huggingface::build(resolved, config, counter)
-        }
-        FactoryKind::Galadriel | FactoryKind::Xai => {
-            let key = require_api_key(name, config)?;
-            let client = openai::OpenAIConfig::new(key)
-                .with_base_url(endpoint.expect("provider recipe has an endpoint"))
-                .with_route(openai::Route::Chat)
-                .connect(crate::inference::protocol::http::WireClient::default());
-            let validation_client = client.clone();
-            Ok(Arc::new(
-                RigProvider::new(move |id: &str| client.chat(id).erase(), counter.clone())
-                    .with_wire_transport()
-                    .with_live_check(move || {
-                        let client = validation_client.clone();
-                        async move {
-                            client
-                                .list_models()
-                                .await
-                                .map_err(CredentialValidationError::from)
-                        }
-                    })
-                    .with_hook(hooks::openai),
-            ))
-        }
-        FactoryKind::Ollama => {
-            let mut connection = ollama::OllamaConfig::new();
-            if let Some(url) = endpoint {
-                connection = connection.with_base_url(url);
-            }
-            let client =
-                connection.connect(crate::inference::protocol::http::WireClient::default());
-            let validation_client = client.clone();
-            Ok(Arc::new(
-                RigProvider::new(
-                    move |id: &str| client.native_completion(id).erase(),
-                    counter.clone(),
-                )
-                .with_wire_transport()
-                .with_live_check(move || {
-                    let client = validation_client.clone();
-                    async move {
-                        client
-                            .list_models()
-                            .await
-                            .map_err(CredentialValidationError::from)
+                    let mut resolved = ResolvedModel::new(connection.completion_model(
+                        &model.model_id,
+                        http.clone(),
+                        Default::default(),
+                    ));
+                    if !responses && let Some(hook) = hook {
+                        resolved = resolved.with_hook(hook);
                     }
-                })
-                .with_hook(hooks::ollama),
-            ))
+                    resolved
+                },
+                counter.clone(),
+            )
+            .with_wire_transport(),
+        ),
+        admin,
+    })
+}
+
+fn listing_admin(config: &ProviderConfig) -> Result<ProviderAdmin, InferenceError> {
+    let http = crate::inference::provider::adapter::discovery::http_client()?;
+    // Listing remains a concrete provider operation; no callable model or
+    // application catalog is used to infer account inventory.
+    Ok(match config {
+        ProviderConfig::OpenAi(config) => {
+            let client = config.clone().connect(http);
+            ProviderAdmin::default().with_live_check(move || {
+                let client = client.clone();
+                async move {
+                    client
+                        .list_models()
+                        .await
+                        .map_err(CredentialValidationError::from)
+                }
+            })
         }
-    }
+        ProviderConfig::Anthropic(config) => {
+            let client = config.clone().connect(http);
+            ProviderAdmin::default().with_live_check(move || {
+                let client = client.clone();
+                async move {
+                    client
+                        .list_models()
+                        .await
+                        .map_err(CredentialValidationError::from)
+                }
+            })
+        }
+        ProviderConfig::Gemini(_) => unreachable!("Gemini has a distinct invalid-key probe"),
+    })
 }
 
 pub fn require_api_key(
@@ -837,7 +837,7 @@ pub fn require_api_key(
 
 pub fn accepts_openrouter(connection: &ResolvedConnection) -> bool {
     connection.brand == "openrouter"
-        && connection.factory == FactoryKind::OpenRouter
+        && connection.rig_provider == rig(rig_core::providers::openrouter::PROVIDER_NAME)
         && connection.effective_base_url.as_deref() == Some("https://openrouter.ai/api/v1")
 }
 
@@ -847,6 +847,71 @@ mod tests {
 
     fn handle(value: &str) -> Handle {
         Handle::try_new(value).unwrap()
+    }
+
+    #[test]
+    fn every_recipe_resolves_registered_identity_and_keeps_frona_adapter_names() {
+        let expected = [
+            ("github-copilot", "openai"),
+            ("azure", "openai"),
+            ("amazon-bedrock", "bedrock"),
+            ("openai", "openai"),
+            ("anthropic", "anthropic"),
+            ("kimi-for-coding", "anthropic"),
+            ("ollama", "ollama"),
+            ("groq", "groq"),
+            ("openrouter", "openrouter"),
+            ("deepseek", "deepseek"),
+            ("google", "gemini"),
+            ("cohere", "cohere"),
+            ("mistral", "mistral"),
+            ("perplexity", "perplexity"),
+            ("togetherai", "together"),
+            ("xai", "xai"),
+            ("hyperbolic", "hyperbolic"),
+            ("moonshotai", "moonshot"),
+            ("mira", "mira"),
+            ("galadriel", "galadriel"),
+            ("huggingface", "huggingface"),
+        ];
+        assert_eq!(
+            expected.iter().map(|(brand, _)| *brand).collect::<Vec<_>>(),
+            ProviderPlatform::built_in_brands()
+        );
+        for (brand, adapter) in expected {
+            let config = ModelProviderConfig {
+                provider: Some(brand.into()),
+                ..Default::default()
+            };
+            let resolved = ProviderPlatform::resolve(&handle("named-account"), &config).unwrap();
+            assert_eq!(resolved.handle.as_str(), "named-account");
+            assert_eq!(resolved.brand, brand);
+            assert_eq!(resolved.request_adapter_name(), adapter, "{brand}");
+            if brand == "amazon-bedrock" {
+                assert!(resolved.rig_provider.is_none());
+            } else {
+                let selection = resolved.rig_provider.unwrap();
+                let native = selection
+                    .config("fixture-key")
+                    .expect("registered configuration");
+                assert_eq!(native.id(), Some(selection), "{brand}");
+            }
+        }
+        let custom = ProviderPlatform::resolve(
+            &handle("custom-google"),
+            &ModelProviderConfig {
+                provider: Some("private-gateway".into()),
+                adapter: Some(AdapterId::Gemini),
+                base_url: Some("https://example.test/gateway".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(custom.request_adapter_name(), "gemini");
+        assert_eq!(
+            custom.rig_provider.unwrap().vendor(),
+            rig_core::providers::gemini::PROVIDER_NAME
+        );
     }
 
     #[test]
@@ -861,7 +926,10 @@ mod tests {
             )
             .unwrap();
             assert_eq!(resolved.adapter, AdapterId::Openai);
-            assert_eq!(resolved.factory, FactoryKind::OpenAi);
+            assert_eq!(
+                resolved.rig_provider,
+                rig(rig_core::providers::openai::PROVIDER_NAME)
+            );
         }
     }
 
@@ -894,7 +962,10 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(resolved.factory, FactoryKind::GenericOpenAi);
+        assert_eq!(
+            resolved.rig_provider,
+            rig(rig_core::providers::openai::PROVIDER_NAME)
+        );
         assert_eq!(
             resolved.effective_base_url.as_deref(),
             Some("https://models.example/v1")

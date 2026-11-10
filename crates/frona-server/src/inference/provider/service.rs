@@ -517,7 +517,7 @@ impl ModelProviderService {
             .map_err(invalid)?;
         let provider = self
             .validator
-            .draft_provider(
+            .draft_admin(
                 draft.validation_id,
                 handle,
                 &draft.config,
@@ -526,7 +526,7 @@ impl ModelProviderService {
             )
             .await
             .map_err(validation_error)?;
-        let inventory = self.directory.draft_inventory(provider.as_ref()).await;
+        let inventory = self.directory.draft_inventory(&provider).await;
         let eligible: Vec<_> = connection
             .auth_methods
             .iter()
@@ -561,10 +561,7 @@ impl ModelProviderService {
             .resolve_config_for_listing(handle, request.config)
             .await
             .map_err(invalid)?;
-        let inventory = self
-            .directory
-            .draft_inventory(resolved.client.as_ref())
-            .await;
+        let inventory = self.directory.draft_inventory(&resolved.client.admin).await;
         self.finish_listing(self.directory.listing(
             &connection,
             Some(resolved.method),

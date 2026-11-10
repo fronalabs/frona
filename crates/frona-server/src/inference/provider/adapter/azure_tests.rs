@@ -1,8 +1,7 @@
 use crate::core::{config::ModelProviderConfig, handle::Handle};
 use frona_harness::inference::provider::{
-    InferenceCounter, ModelProvider, adapter::azure::validate_deployment,
+    InferenceCounter, ProviderConnection, adapter::azure::validate_deployment,
 };
-use std::sync::Arc;
 
 use crate::{
     chat::broadcast::BroadcastService,
@@ -35,7 +34,7 @@ fn config(endpoint: &str) -> ModelProviderConfig {
     serde_json::from_value(json!({"provider":"azure","base_url":endpoint,"api_key":"fixture-key","azure_api_version":"2024-10-21"})).unwrap()
 }
 
-fn provider(config: &ModelProviderConfig) -> Arc<dyn ModelProvider> {
+fn provider(config: &ModelProviderConfig) -> ProviderConnection {
     let resolved =
         crate::inference::provider::resolve_connection(&Handle::const_validated("account"), config)
             .unwrap();
@@ -103,7 +102,7 @@ async fn deployment_paths_api_key_and_native_parameters_survive_normal_stream_an
             let output = if streaming {
                 let (tx, _rx) = tokio::sync::mpsc::channel(16);
                 crate::provider_fixture::invoke(
-                    provider.clone(),
+                    provider.model.clone(),
                     &model,
                     frona_harness::ModelRequest {
                         system: ("system").into(),
@@ -118,7 +117,7 @@ async fn deployment_paths_api_key_and_native_parameters_survive_normal_stream_an
                 .await
             } else {
                 crate::provider_fixture::invoke(
-                    provider.clone(),
+                    provider.model.clone(),
                     &model,
                     frona_harness::ModelRequest {
                         system: ("system").into(),
@@ -182,14 +181,14 @@ async fn read_only_validation_is_not_deployment_inventory_and_errors_are_sanitiz
             .mount(&server)
             .await;
         let provider = provider(&config(&server.uri()));
-        let result = provider.validate_credentials().await;
+        let result = provider.admin.validate_credentials().await;
         assert_eq!(result.is_ok(), succeeds);
         if let Ok(check) = result {
             assert!(check.models.is_none());
         } else {
             assert!(!result.unwrap_err().to_string().contains("fixture-key"));
         }
-        assert!(provider.list_models().await.is_err());
+        assert!(provider.admin.list_models().await.is_err());
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 }
@@ -206,7 +205,7 @@ async fn structured_calls_keep_custom_data_and_reject_envelope_overrides() {
     let provider = provider(&config);
     let mut model = model(&config, "structured-deployment");
     let value = crate::provider_fixture::invoke(
-        provider.clone(),
+        provider.model.clone(),
         &model,
         frona_harness::ModelRequest {
             system: ("system").into(),
@@ -237,7 +236,7 @@ async fn structured_calls_keep_custom_data_and_reject_envelope_overrides() {
         model.request_settings.extra_params = extra.as_object().unwrap().clone();
         assert!(
             crate::provider_fixture::invoke(
-                provider.clone(),
+                provider.model.clone(),
                 &model,
                 frona_harness::ModelRequest {
                     system: ("system").into(),

@@ -1,8 +1,8 @@
 pub mod adapter;
+mod admin;
+pub use admin::{ProviderAdmin, ProviderConnection};
 pub mod group;
 pub mod platform;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -181,16 +181,6 @@ pub trait ModelProvider: Send + Sync {
         Ok(())
     }
 
-    async fn validate_credentials(
-        &self,
-    ) -> Result<CredentialValidation, CredentialValidationError> {
-        Err(CredentialValidationError::Unsupported)
-    }
-
-    async fn list_models(&self) -> Result<ProviderModelList, ModelListError> {
-        Ok(ProviderModelList::CatalogFallback)
-    }
-
     /// Resolve the current credential, route and transport for one admitted attempt.
     async fn resolve(&self, model: &ModelConfig) -> Result<ResolvedModel, InferenceError>;
 }
@@ -239,19 +229,8 @@ pub struct RigProvider {
     model: Arc<CompletionModelFactory>,
     counter: InferenceCounter,
     hook: Option<crate::inference::protocol::hooks::RequestHook>,
-    live_check: Option<LiveCheck>,
-    validation_check: Option<ValidationCheck>,
     wire_transport: bool,
 }
-
-type LiveCheckFuture =
-    Pin<Box<dyn Future<Output = Result<ModelList, CredentialValidationError>> + Send + 'static>>;
-type LiveCheck = Arc<dyn Fn() -> LiveCheckFuture + Send + Sync>;
-type ValidationCheck = Arc<
-    dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), CredentialValidationError>> + Send>>
-        + Send
-        + Sync,
->;
 
 impl RigProvider {
     pub fn new(
@@ -275,8 +254,6 @@ impl RigProvider {
             model: Arc::new(model),
             counter,
             hook: None,
-            live_check: None,
-            validation_check: None,
             wire_transport: false,
         }
     }
@@ -290,65 +267,10 @@ impl RigProvider {
         self.wire_transport = true;
         self
     }
-
-    pub fn with_live_check<F, Fut>(mut self, check: F) -> Self
-    where
-        F: Fn() -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<ModelList, CredentialValidationError>> + Send + 'static,
-    {
-        self.live_check = Some(Arc::new(move || Box::pin(check())));
-        self
-    }
-
-    /// A read-only authentication check that does not return model inventory.
-    pub fn with_validation_check<F, Fut>(mut self, check: F) -> Self
-    where
-        F: Fn() -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<(), CredentialValidationError>> + Send + 'static,
-    {
-        self.validation_check = Some(Arc::new(move || Box::pin(check())));
-        self
-    }
 }
 
 #[async_trait]
 impl ModelProvider for RigProvider {
-    async fn validate_credentials(
-        &self,
-    ) -> Result<CredentialValidation, CredentialValidationError> {
-        if let Some(check) = &self.validation_check {
-            check().await?;
-            return Ok(CredentialValidation { models: None });
-        }
-        let check = self
-            .live_check
-            .as_ref()
-            .ok_or(CredentialValidationError::Unsupported)?;
-        let models = check().await?;
-        Ok(CredentialValidation {
-            models: Some(ProviderModelList::Listed {
-                source: ProviderModelListSource::Account,
-                models,
-            }),
-        })
-    }
-
-    async fn list_models(&self) -> Result<ProviderModelList, ModelListError> {
-        let Some(check) = &self.live_check else {
-            return Err(ModelListError(
-                "Live model discovery is unavailable for this adapter and authentication method"
-                    .into(),
-            ));
-        };
-        check()
-            .await
-            .map(|models| ProviderModelList::Listed {
-                source: ProviderModelListSource::Account,
-                models,
-            })
-            .map_err(|error| ModelListError(error.to_string()))
-    }
-
     async fn resolve(&self, model: &ModelConfig) -> Result<ResolvedModel, InferenceError> {
         let mut resolved = (self.model)(model);
         resolved.wire_transport |= self.wire_transport;

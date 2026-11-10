@@ -1,18 +1,10 @@
 //! Deployment-scoped Azure OpenAI with explicit API-key authentication.
 
-use std::sync::Arc;
-
-use rig_core::providers::openai::{OpenAIConfig, wire::AZURE};
-
 use crate::Handle;
 use crate::config::ModelProviderConfig;
 use crate::inference::{
     error::InferenceError,
-    protocol::http::WireClient,
-    provider::{
-        CredentialValidationError, InferenceCounter, ModelProvider, RigProvider,
-        platform::ResolvedConnection,
-    },
+    provider::{CredentialValidationError, ProviderAdmin, platform::ResolvedConnection},
 };
 
 pub const DEFAULT_API_VERSION: &str = "2024-10-21";
@@ -53,11 +45,10 @@ pub fn validate_deployment(deployment: &str) -> Result<(), InferenceError> {
     Ok(())
 }
 
-pub fn build(
+pub fn admin(
     resolved: &ResolvedConnection,
     config: &ModelProviderConfig,
-    counter: &InferenceCounter,
-) -> Result<Arc<dyn ModelProvider>, InferenceError> {
+) -> Result<ProviderAdmin, InferenceError> {
     let endpoint = resolved.effective_base_url.as_deref().ok_or_else(|| {
         InferenceError::ConfigError("Azure requires base_url for the resource endpoint".into())
     })?;
@@ -71,13 +62,6 @@ pub fn build(
         .get("azure_api_version")
         .and_then(serde_json::Value::as_str)
         .unwrap_or(DEFAULT_API_VERSION);
-    let client =
-        OpenAIConfig::with_key(&AZURE, key.clone())
-            .with_base_url(endpoint)
-            .with_api_version(version)
-            .connect(WireClient::without_redirects().map_err(|_| {
-                InferenceError::ConfigError("Cannot build Azure HTTP client".into())
-            })?);
     let mut validation_url = reqwest::Url::parse(&format!("{endpoint}/openai/models"))
         .map_err(|_| InferenceError::ConfigError("Invalid Azure resource endpoint".into()))?;
     validation_url
@@ -94,36 +78,32 @@ pub fn build(
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|_| InferenceError::ConfigError("Cannot build Azure validation client".into()))?;
-    Ok(Arc::new(
-        RigProvider::new(move |id: &str| client.chat(id).erase(), counter.clone())
-            .with_wire_transport()
-            .with_validation_check(move || {
-                let client = validation_client.clone();
-                let url = validation_url.clone();
-                async move {
-                    let response = client.get(url).send().await.map_err(|_| {
-                        CredentialValidationError::Failed("Azure resource request failed".into())
-                    })?;
-                    match response.status().as_u16() {
-                        200 => {}
-                        401 | 403 => return Err(CredentialValidationError::AuthenticationRejected),
-                        status => {
-                            return Err(CredentialValidationError::Failed(format!(
-                                "Azure returned HTTP {status}"
-                            )));
-                        }
-                    }
-                    let body: serde_json::Value = response.json().await.map_err(|_| {
-                        CredentialValidationError::Failed("Invalid Azure model response".into())
-                    })?;
-                    if !body.get("data").is_some_and(serde_json::Value::is_array) {
-                        return Err(CredentialValidationError::Failed(
-                            "Invalid Azure model response".into(),
-                        ));
-                    }
-                    // These are base/fine-tuned model IDs, not callable deployment IDs.
-                    Ok(())
+    Ok(ProviderAdmin::default().with_validation_check(move || {
+        let client = validation_client.clone();
+        let url = validation_url.clone();
+        async move {
+            let response = client.get(url).send().await.map_err(|_| {
+                CredentialValidationError::Failed("Azure resource request failed".into())
+            })?;
+            match response.status().as_u16() {
+                200 => {}
+                401 | 403 => return Err(CredentialValidationError::AuthenticationRejected),
+                status => {
+                    return Err(CredentialValidationError::Failed(format!(
+                        "Azure returned HTTP {status}"
+                    )));
                 }
-            }),
-    ))
+            }
+            let body: serde_json::Value = response.json().await.map_err(|_| {
+                CredentialValidationError::Failed("Invalid Azure model response".into())
+            })?;
+            if !body.get("data").is_some_and(serde_json::Value::is_array) {
+                return Err(CredentialValidationError::Failed(
+                    "Invalid Azure model response".into(),
+                ));
+            }
+            // These are base/fine-tuned model IDs, not callable deployment IDs.
+            Ok(())
+        }
+    }))
 }

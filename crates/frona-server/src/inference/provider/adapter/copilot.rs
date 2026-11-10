@@ -10,8 +10,8 @@ use frona_harness::{
         error::InferenceError,
         protocol::http::WireClient,
         provider::{
-            CredentialValidation, CredentialValidationError, InferenceCounter, ModelConfig,
-            ModelListError, ModelProvider, ProviderModelList, RigProvider,
+            CredentialValidationError, InferenceCounter, ModelConfig, ModelListError,
+            ModelProvider, ProviderAdmin, ProviderConnection, RigProvider,
             platform::ResolvedConnection,
         },
     },
@@ -45,7 +45,7 @@ pub(crate) fn current_provider(
     endpoint: &str,
     secret: &crate::credential::managed::integration::ErasedSecret,
     counter: &InferenceCounter,
-) -> Result<Arc<dyn ModelProvider>, InferenceError> {
+) -> Result<ProviderConnection, InferenceError> {
     let credentials = secret
         .credentials::<crate::credential::managed::integration::copilot::Credentials>()
         .map_err(|error| InferenceError::ConfigError(error.to_string()))?;
@@ -54,18 +54,22 @@ pub(crate) fn current_provider(
         credentials.0.clone(),
     )
     .with_base_url(endpoint);
+    let check = config
+        .clone()
+        .connect(frona_harness::inference::provider::adapter::discovery::http_client()?);
     let client = config.connect(rig_core::http_client::DynHttpClient::new(
         WireClient::without_redirects()
             .map_err(|_| InferenceError::ConfigError("Cannot build Copilot HTTP client".into()))?,
     ));
-    let check = client.clone();
-    Ok(Arc::new(
-        RigProvider::new(
-            move |id: &str| client.completion(id).erase(),
-            counter.clone(),
-        )
-        .with_wire_transport()
-        .with_live_check(move || {
+    Ok(ProviderConnection {
+        model: Arc::new(
+            RigProvider::new(
+                move |id: &str| client.completion(id).erase(),
+                counter.clone(),
+            )
+            .with_wire_transport(),
+        ),
+        admin: ProviderAdmin::default().with_live_check(move || {
             let client = check.clone();
             async move {
                 client
@@ -74,7 +78,7 @@ pub(crate) fn current_provider(
                     .map_err(CredentialValidationError::from)
             }
         }),
-    ))
+    })
 }
 
 #[async_trait::async_trait]
@@ -98,7 +102,7 @@ impl CredentialMethodDriver for Driver {
         _: &ModelProviderConfig,
         secret: &crate::credential::managed::integration::ErasedSecret,
         counter: &InferenceCounter,
-    ) -> Result<Arc<dyn ModelProvider>, InferenceError> {
+    ) -> Result<ProviderConnection, InferenceError> {
         if !self.accepts(connection) {
             return Err(InferenceError::ConfigError(
                 "Copilot OAuth requires the trusted default endpoint".into(),
@@ -120,7 +124,7 @@ pub struct SuppliedTokenProvider {
 
 struct CachedChatProvider {
     expires_at: DateTime<Utc>,
-    provider: Arc<dyn ModelProvider>,
+    provider: ProviderConnection,
 }
 
 impl SuppliedTokenProvider {
@@ -144,7 +148,7 @@ impl SuppliedTokenProvider {
         })
     }
 
-    async fn provider(&self) -> Result<Arc<dyn ModelProvider>, CredentialValidationError> {
+    async fn provider(&self) -> Result<ProviderConnection, CredentialValidationError> {
         let mut cache = self.cache.lock().await;
         if let Some(cached) = cache
             .as_ref()
@@ -171,34 +175,52 @@ impl SuppliedTokenProvider {
         Ok(provider)
     }
 
-    async fn inference_provider(&self) -> Result<Arc<dyn ModelProvider>, InferenceError> {
-        self.provider()
-            .await
-            .map_err(|error| InferenceError::InferenceFailed(error.to_string()))
+    pub(crate) fn connection(self) -> ProviderConnection {
+        let provider = Arc::new(self);
+        let listing = provider.clone();
+        let validation = provider.clone();
+        ProviderConnection {
+            model: provider,
+            admin: ProviderAdmin::default()
+                .with_listing_check(move || {
+                    let provider = listing.clone();
+                    async move {
+                        provider
+                            .provider()
+                            .await
+                            .map_err(|error| ModelListError(error.to_string()))?
+                            .admin
+                            .list_models()
+                            .await
+                    }
+                })
+                .with_validation(move || {
+                    let provider = validation.clone();
+                    async move {
+                        provider
+                            .provider()
+                            .await?
+                            .admin
+                            .validate_credentials()
+                            .await
+                    }
+                }),
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl ModelProvider for SuppliedTokenProvider {
-    async fn validate_credentials(
-        &self,
-    ) -> Result<CredentialValidation, CredentialValidationError> {
-        self.provider().await?.validate_credentials().await
-    }
-
-    async fn list_models(&self) -> Result<ProviderModelList, ModelListError> {
-        self.provider()
-            .await
-            .map_err(|error| ModelListError(error.to_string()))?
-            .list_models()
-            .await
-    }
-
     async fn resolve(
         &self,
         model: &ModelConfig,
     ) -> Result<frona_harness::inference::provider::ResolvedModel, InferenceError> {
-        self.inference_provider().await?.resolve(model).await
+        self.provider()
+            .await
+            .map_err(|error| InferenceError::InferenceFailed(error.to_string()))?
+            .model
+            .resolve(model)
+            .await
     }
 }
 
@@ -209,7 +231,10 @@ mod tests {
         chat::broadcast::BroadcastService, core::Handle, credential::managed::Candidate,
         inference::config::ModelRegistryConfig,
     };
-    use frona_harness::config::{InferenceConfig, ModelGroupConfig};
+    use frona_harness::{
+        config::{InferenceConfig, ModelGroupConfig},
+        inference::provider::ProviderModelList,
+    };
     use rig_core::completion::AssistantContent;
     use rig_core::completion::{Message, ToolDefinition};
     use serde_json::{Value, json};
@@ -481,7 +506,7 @@ mod tests {
                 let output = if streaming {
                     let (tx, _rx) = mpsc::channel(16);
                     crate::provider_fixture::invoke(
-                        provider.clone(),
+                        provider.model.clone(),
                         &model,
                         frona_harness::ModelRequest {
                             system: ("system").into(),
@@ -496,7 +521,7 @@ mod tests {
                     .await
                 } else {
                     crate::provider_fixture::invoke(
-                        provider.clone(),
+                        provider.model.clone(),
                         &model,
                         frona_harness::ModelRequest {
                             system: ("system").into(),
@@ -515,7 +540,7 @@ mod tests {
                 assert_eq!(output.usage.observed().unwrap().output_tokens, Some(3));
                 assert!(output.content.iter().any(|content|matches!(content,AssistantContent::ToolCall(call) if call.function.name=="lookup" && serde_json::Value::Object(call.function.arguments.clone())==json!({"ok":true}))));
             }
-            assert_eq!(crate::provider_fixture::invoke(provider.clone(), &model, frona_harness::ModelRequest { system: ("system").into(), messages: vec![Message::user("hello")], tools: vec![], schema: Some(json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]})), max_tokens: None, temperature: None }, None).await.map(|output| output.structured.expect("validated structured output")).unwrap(),json!({"ok":true}));
+            assert_eq!(crate::provider_fixture::invoke(provider.model.clone(), &model, frona_harness::ModelRequest { system: ("system").into(), messages: vec![Message::user("hello")], tools: vec![], schema: Some(json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]})), max_tokens: None, temperature: None }, None).await.map(|output| output.structured.expect("validated structured output")).unwrap(),json!({"ok":true}));
         }
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 6);
@@ -637,11 +662,11 @@ mod tests {
             .build(&connection(), &config(), &payload.erase(), &counter())
             .unwrap();
         assert!(matches!(
-            provider.validate_credentials().await.unwrap().models,
+            provider.admin.validate_credentials().await.unwrap().models,
             Some(ProviderModelList::Listed { .. })
         ));
         assert!(matches!(
-            provider.list_models().await.unwrap(),
+            provider.admin.list_models().await.unwrap(),
             ProviderModelList::Listed { .. }
         ));
         let refreshed = integration(&server)
@@ -654,13 +679,20 @@ mod tests {
         );
         assert!(!refreshed.to_env().unwrap().contains_key("REFRESH_TOKEN"));
         // Resolved tokens use a wire directly, with no authenticator or token store.
-        provider.list_models().await.unwrap();
+        provider.admin.list_models().await.unwrap();
         let mut config = config();
         config.api_key = Some("fixture-github-token".into());
         let mut supplied = SuppliedTokenProvider::new(&config, &server.uri(), counter()).unwrap();
         supplied.driver = integration(&server);
-        supplied.validate_credentials().await.unwrap();
-        supplied.list_models().await.unwrap();
+        let supplied = supplied.connection();
+        supplied.admin.validate_credentials().await.unwrap();
+        supplied.admin.list_models().await.unwrap();
+        // Administration and execution share the same derived token cache.
+        supplied
+            .model
+            .resolve(&model("fixture-chat"))
+            .await
+            .unwrap();
         let requests = server.received_requests().await.unwrap();
         assert_eq!(
             requests
@@ -700,8 +732,8 @@ mod tests {
                 &counter(),
             )
             .unwrap();
-            assert!(provider.validate_credentials().await.is_err());
-            assert!(provider.list_models().await.is_err());
+            assert!(provider.admin.validate_credentials().await.is_err());
+            assert!(provider.admin.list_models().await.is_err());
         }
     }
 

@@ -1,9 +1,8 @@
 use crate::core::config::ModelProviderConfig;
 use frona_harness::inference::{
     error::InferenceError,
-    provider::{CredentialValidationError, InferenceCounter, ModelProvider},
+    provider::{CredentialValidationError, InferenceCounter, ProviderConnection},
 };
-use std::sync::Arc;
 
 use std::time::Duration;
 
@@ -59,7 +58,7 @@ fn candidate(handle: &str, endpoint: &str, key: &str) -> ValidationCandidate {
     }
 }
 
-fn provider(endpoint: &str, key: &str) -> Result<Arc<dyn ModelProvider>, InferenceError> {
+fn provider(endpoint: &str, key: &str) -> Result<ProviderConnection, InferenceError> {
     let mut candidate = candidate("gemini-work", endpoint, key);
     candidate.config.api_key = Some(key.into());
     let connection =
@@ -266,6 +265,7 @@ async fn validation_redirects_are_not_followed() {
             .await;
         let error = provider(&server.uri(), KEY)
             .unwrap()
+            .admin
             .validate_credentials()
             .await
             .unwrap_err();
@@ -355,6 +355,7 @@ async fn native_model_listing_remains_independent_of_the_credential_probe() {
     let ProviderModelList::Listed { models, .. } =
         provider(&format!("{}/proxy", server.uri()), KEY)
             .unwrap()
+            .admin
             .list_models()
             .await
             .unwrap()

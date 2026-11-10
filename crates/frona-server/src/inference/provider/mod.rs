@@ -7,11 +7,10 @@ use crate::core::{Handle, config::ModelProviderConfig};
 use frona_harness::inference::{
     InferenceError,
     provider::{
-        InferenceCounter, ModelProvider,
-        platform::{FactoryKind, ProviderPlatform, ResolvedConnection},
+        InferenceCounter, ProviderConnection,
+        platform::{ProviderPlatform, ResolvedConnection},
     },
 };
-use std::sync::Arc;
 
 /// Resolve an application account without passing its managed credential ID to the SDK.
 pub fn resolve_connection(
@@ -34,16 +33,17 @@ pub(crate) fn build_provider(
     resolved: &ResolvedConnection,
     config: &ModelProviderConfig,
     counter: &InferenceCounter,
-) -> Result<Arc<dyn ModelProvider>, InferenceError> {
-    if resolved.factory == FactoryKind::Copilot {
-        Ok(Arc::new(adapter::copilot::SuppliedTokenProvider::new(
+) -> Result<ProviderConnection, InferenceError> {
+    if resolved.brand == "github-copilot" {
+        Ok(adapter::copilot::SuppliedTokenProvider::new(
             config,
             resolved
                 .effective_base_url
                 .as_deref()
                 .expect("Copilot recipe endpoint"),
             counter.clone(),
-        )?))
+        )?
+        .connection())
     } else {
         frona_harness::inference::provider::platform::build_provider(
             resolved,

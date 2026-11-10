@@ -629,7 +629,8 @@ impl ModelBuilder {
         let provider_model =
             crate::inference::config::compile_request("sdk.model", &recipe, &self.connection)?;
         crate::initialize_tls();
-        let client = build_provider(&resolved, &self.connection, &InferenceCounter::default())?;
+        let client =
+            build_provider(&resolved, &self.connection, &InferenceCounter::default())?.model;
         let config = ModelConfig {
             catalog_provider: resolved.brand,
             provider_handle: handle,

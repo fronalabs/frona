@@ -40,7 +40,7 @@ fn setup(brand: &str, endpoint: &str, settings: Value) -> (Arc<dyn ModelProvider
     }
     .parse_model_groups(&InferenceConfig::default(), Default::default())
     .unwrap();
-    (provider, groups["test"].main.clone())
+    (provider.model, groups["test"].main.clone())
 }
 
 async fn invoke(
@@ -700,7 +700,8 @@ async fn fallback_requests_use_their_own_settings() {
                     config,
                     &crate::inference::provider::InferenceCounter::default(),
                 )
-                .unwrap(),
+                .unwrap()
+                .model,
             )
         })
         .collect();
@@ -783,15 +784,18 @@ async fn chatgpt_construction_with_supplied_token_is_not_live_validation() {
     assert!(server.received_requests().await.unwrap().is_empty());
     assert_eq!(std::fs::read_dir(token_dir.path()).unwrap().count(), 0);
 
-    let provider = crate::inference::provider::RigProvider::new(
-        move |id: &str| client.completion(id).erase(),
-        crate::inference::provider::InferenceCounter::default(),
-    );
+    let connection = crate::inference::provider::ProviderConnection {
+        model: Arc::new(crate::inference::provider::RigProvider::new(
+            move |id: &str| client.completion(id).erase(),
+            crate::inference::provider::InferenceCounter::default(),
+        )),
+        admin: crate::inference::provider::ProviderAdmin::default(),
+    };
     assert!(matches!(
-        provider.validate_credentials().await,
+        connection.admin.validate_credentials().await,
         Err(CredentialValidationError::Unsupported)
     ));
-    assert!(provider.list_models().await.is_err());
+    assert!(connection.admin.list_models().await.is_err());
 }
 #[test]
 fn derived_metadata_tracks_names_nesting_and_protocol_exceptions() {

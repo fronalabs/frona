@@ -6,7 +6,7 @@ use chrono::Utc;
 use frona_harness::{
     config::{ApiSurface, CredentialMethod, ModelGroupConfig},
     inference::provider::{
-        ModelProvider, ProviderModelList, ProviderModelListSource, platform::ResolvedConnection,
+        ProviderAdmin, ProviderModelList, ProviderModelListSource, platform::ResolvedConnection,
     },
 };
 use frona_model_catalog::{
@@ -144,7 +144,7 @@ impl ModelDirectoryService {
         }
         // A generation/routing/method change makes the old account list unusable.
         *cached = None;
-        let inventory = self.draft_inventory(resolved.client.as_ref()).await;
+        let inventory = self.draft_inventory(&resolved.client.admin).await;
         if matches!(inventory, Inventory::Account(_)) {
             *cached = Some(CachedInventory {
                 identity: resolved.identity,
@@ -155,7 +155,7 @@ impl ModelDirectoryService {
         inventory
     }
 
-    pub async fn draft_inventory(&self, provider: &dyn ModelProvider) -> Inventory {
+    pub async fn draft_inventory(&self, provider: &ProviderAdmin) -> Inventory {
         // Drafts never enter shared inventory storage, even for the same handle.
         match tokio::time::timeout(self.timeout, provider.list_models()).await {
             Ok(Ok(list)) => inventory(list),
@@ -592,7 +592,7 @@ mod tests {
             let provider =
                 crate::inference::provider::build_provider(&connection, &config, &counter())
                     .unwrap();
-            let inventory = directory.draft_inventory(provider.as_ref()).await;
+            let inventory = directory.draft_inventory(&provider.admin).await;
             if response.0 == 0 {
                 assert!(account_ids(inventory).is_empty());
             } else {
@@ -611,7 +611,7 @@ mod tests {
         let provider =
             crate::inference::provider::build_provider(&connection, &config, &counter()).unwrap();
         assert!(matches!(
-            directory.draft_inventory(provider.as_ref()).await,
+            directory.draft_inventory(&provider.admin).await,
             Inventory::Error
         ));
     }
@@ -767,8 +767,8 @@ mod tests {
         let before = server.received_requests().await.unwrap().len();
         for _ in 0..2 {
             for (proof, key) in proofs.iter().zip(["draft-a", "draft-b"]) {
-                let provider = validator
-                    .draft_provider(
+                let admin = validator
+                    .draft_admin(
                         proof.pending.validation_id,
                         &handle,
                         &config,
@@ -777,10 +777,7 @@ mod tests {
                     )
                     .await
                     .unwrap();
-                assert_eq!(
-                    account_ids(directory.draft_inventory(provider.as_ref()).await),
-                    [key]
-                );
+                assert_eq!(account_ids(directory.draft_inventory(&admin).await), [key]);
             }
         }
         assert_eq!(server.received_requests().await.unwrap().len(), before + 4);

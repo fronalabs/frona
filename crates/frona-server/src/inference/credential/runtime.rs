@@ -9,7 +9,7 @@ use frona_harness::{
     config::{ApiSurface, CredentialMethod, ProviderModel},
     inference::{
         error::InferenceError,
-        provider::{InferenceCounter, ModelConfig, ModelProvider},
+        provider::{InferenceCounter, ModelConfig, ModelProvider, ProviderConnection},
     },
 };
 
@@ -42,7 +42,7 @@ pub trait CredentialMethodDriver: Send + Sync {
         config: &ModelProviderConfig,
         secret: &crate::credential::managed::integration::ErasedSecret,
         counter: &InferenceCounter,
-    ) -> Result<Arc<dyn ModelProvider>, InferenceError>;
+    ) -> Result<ProviderConnection, InferenceError>;
 }
 
 pub struct PreparedProvider {
@@ -57,12 +57,12 @@ pub struct PreparedProvider {
 
 struct CachedClient {
     fingerprint: [u8; 32],
-    client: Arc<dyn ModelProvider>,
+    client: ProviderConnection,
 }
 
 #[derive(Clone)]
 pub(crate) struct ResolvedProvider {
-    pub client: Arc<dyn ModelProvider>,
+    pub client: ProviderConnection,
     pub identity: [u8; 32],
     pub method: CredentialMethod,
     pub protocols: Vec<ApiSurface>,
@@ -259,7 +259,11 @@ impl RuntimeCredentials {
                 "model protocol is not supported by the configured provider".into(),
             ));
         }
-        if connection.factory == frona_harness::inference::provider::platform::FactoryKind::Azure {
+        if connection
+            .rig_provider
+            .as_ref()
+            .is_some_and(|provider| provider.vendor() == rig_core::providers::azure::PROVIDER_NAME)
+        {
             frona_harness::inference::provider::adapter::azure::validate_deployment(
                 &model.model_id,
             )?;
@@ -360,9 +364,7 @@ impl PreparedProvider {
                     method = CredentialMethod::ApiKey;
                 }
                 "copilot" => {
-                    if resolved.factory
-                        != frona_harness::inference::provider::platform::FactoryKind::Copilot
-                    {
+                    if resolved.brand != "github-copilot" {
                         return Err(unavailable(
                             model,
                             "Copilot credential requires the Copilot provider",
@@ -485,9 +487,10 @@ impl PreparedProvider {
                     .collect(),
             });
         }
-        let client = if let Some(secret) = managed_secret.as_ref().filter(|_| {
-            resolved.factory == frona_harness::inference::provider::platform::FactoryKind::Copilot
-        }) {
+        let client = if let Some(secret) = managed_secret
+            .as_ref()
+            .filter(|_| resolved.brand == "github-copilot")
+        {
             crate::inference::provider::adapter::copilot::current_provider(
                 resolved
                     .effective_base_url
@@ -523,31 +526,6 @@ impl ModelProvider for PreparedProvider {
         self.resolve_selected(model, true).await.map(|_| ())
     }
 
-    async fn list_models(
-        &self,
-    ) -> Result<
-        frona_harness::inference::provider::ProviderModelList,
-        frona_harness::inference::provider::ModelListError,
-    > {
-        let connection = self
-            .connection
-            .as_ref()
-            .map_err(|error| frona_harness::inference::provider::ModelListError(error.clone()))?;
-        let model = ModelConfig {
-            catalog_provider: String::new(),
-            provider_handle: connection.handle.clone(),
-            model_id: "model-list".into(),
-            provider: ProviderModel::Generic,
-            request_settings: Default::default(),
-        };
-        self.resolve_selected(&model, false)
-            .await
-            .map_err(|error| frona_harness::inference::provider::ModelListError(error.to_string()))?
-            .client
-            .list_models()
-            .await
-    }
-
     async fn resolve(
         &self,
         model: &ModelConfig,
@@ -555,6 +533,7 @@ impl ModelProvider for PreparedProvider {
         self.resolve_selected(model, true)
             .await?
             .client
+            .model
             .resolve(model)
             .await
     }
@@ -644,7 +623,7 @@ mod tests {
                 _: &ModelProviderConfig,
                 _: &crate::credential::managed::integration::ErasedSecret,
                 _: &InferenceCounter,
-            ) -> Result<Arc<dyn ModelProvider>, InferenceError> {
+            ) -> Result<ProviderConnection, InferenceError> {
                 panic!("incompatible chat protocol must be rejected before client construction")
             }
         }
@@ -1047,7 +1026,7 @@ mod tests {
             .unwrap();
         let new = runtime.resolve_for_listing(&handle).await.unwrap();
         assert_ne!(old.identity, new.identity);
-        assert!(!Arc::ptr_eq(&old.client, &new.client));
+        assert!(!Arc::ptr_eq(&old.client.model, &new.client.model));
         store
             .vault()
             .delete_by_id(first.item_id, updated.version)
@@ -1165,7 +1144,7 @@ mod tests {
             config: &ModelProviderConfig,
             secret: &crate::credential::managed::integration::ErasedSecret,
             counter: &InferenceCounter,
-        ) -> Result<Arc<dyn ModelProvider>, InferenceError> {
+        ) -> Result<ProviderConnection, InferenceError> {
             let crate::credential::managed::integration::openai_codex::Credentials {
                 access_token,
                 ..
@@ -1485,14 +1464,16 @@ mod tests {
             .resolve_selected(&model_a, true)
             .await
             .unwrap()
-            .client;
+            .client
+            .model;
         let client_b = resolver
             .provider(&model_b.provider_handle.clone().into())
             .unwrap()
             .resolve_selected(&model_b, true)
             .await
             .unwrap()
-            .client;
+            .client
+            .model;
         let draft = store
             .stage(
                 &a,
@@ -1515,6 +1496,7 @@ mod tests {
                 .await
                 .unwrap()
                 .client
+                .model
         ));
         store.promote(draft.validation_id, Some(1)).await.unwrap();
         assert!(Arc::ptr_eq(&prepared, &resolver.provider(&a).unwrap()));
@@ -1528,6 +1510,7 @@ mod tests {
                 .await
                 .unwrap()
                 .client
+                .model
         ));
         assert!(Arc::ptr_eq(
             &client_b,
@@ -1538,6 +1521,7 @@ mod tests {
                 .await
                 .unwrap()
                 .client
+                .model
         ));
         let current = store
             .vault()

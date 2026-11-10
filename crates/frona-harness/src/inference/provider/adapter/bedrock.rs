@@ -217,9 +217,8 @@ impl BedrockProvider {
     }
 }
 
-#[async_trait::async_trait]
-impl ModelProvider for BedrockProvider {
-    async fn list_models(&self) -> Result<ProviderModelList, ModelListError> {
+impl BedrockProvider {
+    pub async fn list_models(&self) -> Result<ProviderModelList, ModelListError> {
         use aws_sdk_bedrock::types::{InferenceType, ModelModality};
         use rig_core::model::{ModelInfo, ModelList};
         let connection = self
@@ -278,7 +277,7 @@ impl ModelProvider for BedrockProvider {
         })
     }
 
-    async fn validate_credentials(
+    pub async fn validate_credentials(
         &self,
     ) -> Result<CredentialValidation, CredentialValidationError> {
         let connection = self.connection().await.map_err(|_| {
@@ -308,7 +307,10 @@ impl ModelProvider for BedrockProvider {
             },
         }
     }
+}
 
+#[async_trait::async_trait]
+impl ModelProvider for BedrockProvider {
     async fn resolve(&self, model: &ModelConfig) -> Result<ResolvedModel, InferenceError> {
         self.connection().await?.provider.resolve(model).await
     }

@@ -10,8 +10,8 @@ use frona_harness::{
         error::InferenceError,
         protocol::http::WireClient,
         provider::{
-            CredentialValidationError, InferenceCounter, ModelProvider, RigProvider,
-            platform::ResolvedConnection,
+            CredentialValidationError, InferenceCounter, ProviderAdmin, ProviderConnection,
+            RigProvider, platform::ResolvedConnection,
         },
     },
 };
@@ -86,7 +86,7 @@ fn current_provider(
     endpoint: &str,
     secret: &crate::credential::managed::integration::ErasedSecret,
     counter: &InferenceCounter,
-) -> Result<Arc<dyn ModelProvider>, InferenceError> {
+) -> Result<ProviderConnection, InferenceError> {
     let credentials = secret
         .credentials::<crate::credential::managed::integration::openai_codex::Credentials>()
         .map_err(|error| InferenceError::ConfigError(error.to_string()))?;
@@ -113,19 +113,21 @@ fn current_provider(
         frona_harness::inference::provider::adapter::discovery::client(access_token)?;
     let account_id = account_id.clone();
     let endpoint = endpoint.to_owned();
-    Ok(Arc::new(
-        RigProvider::new(
-            move |id: &str| client.completion(id).erase(),
-            counter.clone(),
-        )
-        .with_wire_transport()
-        .with_live_check(move || {
+    Ok(ProviderConnection {
+        model: Arc::new(
+            RigProvider::new(
+                move |id: &str| client.completion(id).erase(),
+                counter.clone(),
+            )
+            .with_wire_transport(),
+        ),
+        admin: ProviderAdmin::default().with_live_check(move || {
             let client = discovery_client.clone();
             let endpoint = endpoint.clone();
             let account_id = account_id.clone();
             async move { list_models(&client, &endpoint, account_id.as_deref()).await }
         }),
-    ))
+    })
 }
 
 #[async_trait::async_trait]
@@ -149,7 +151,7 @@ impl CredentialMethodDriver for Driver {
         _: &ModelProviderConfig,
         secret: &crate::credential::managed::integration::ErasedSecret,
         counter: &InferenceCounter,
-    ) -> Result<Arc<dyn ModelProvider>, InferenceError> {
+    ) -> Result<ProviderConnection, InferenceError> {
         if !self.accepts(connection) {
             return Err(InferenceError::ConfigError(
                 "ChatGPT OAuth requires the trusted OpenAI connection".into(),
@@ -236,7 +238,7 @@ mod tests {
                 .mount(&server)
                 .await;
             let ProviderModelList::Listed { source, models } =
-                provider.list_models().await.unwrap()
+                provider.admin.list_models().await.unwrap()
             else {
                 panic!("expected live inventory")
             };
@@ -261,7 +263,7 @@ mod tests {
                 .expect(1)
                 .mount(&server)
                 .await;
-            let error = provider.list_models().await.unwrap_err().to_string();
+            let error = provider.admin.list_models().await.unwrap_err().to_string();
             assert!(!error.contains("fixture-discovery-token"));
             server.verify().await;
         }
@@ -720,7 +722,7 @@ mod tests {
             let result = if streaming {
                 let (tx, _rx) = tokio::sync::mpsc::channel(16);
                 crate::provider_fixture::invoke(
-                    provider.clone(),
+                    provider.model.clone(),
                     &model,
                     frona_harness::ModelRequest {
                         system: ("system").into(),
@@ -735,7 +737,7 @@ mod tests {
                 .await
             } else {
                 crate::provider_fixture::invoke(
-                    provider.clone(),
+                    provider.model.clone(),
                     &model,
                     frona_harness::ModelRequest {
                         system: ("system").into(),
@@ -755,7 +757,7 @@ mod tests {
             assert!(result.content.iter().any(|item|matches!(item,AssistantContent::ToolCall(call) if call.function.name=="lookup" && serde_json::Value::Object(call.function.arguments.clone())==json!({"ok":true}))));
         }
         assert_eq!(
-            crate::provider_fixture::invoke(provider.clone(), &model, frona_harness::ModelRequest { system: ("system").into(), messages: history(), tools: vec![], schema: Some(json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]})), max_tokens: None, temperature: None }, None).await.map(|output| output.structured.expect("validated structured output"))
+            crate::provider_fixture::invoke(provider.model.clone(), &model, frona_harness::ModelRequest { system: ("system").into(), messages: history(), tools: vec![], schema: Some(json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]})), max_tokens: None, temperature: None }, None).await.map(|output| output.structured.expect("validated structured output"))
                 .unwrap(),
             json!({"ok":true})
         );
@@ -782,7 +784,7 @@ mod tests {
         explicit.request_settings.max_tokens = Some(42);
         explicit.request_settings.temperature = Some(0.2);
         crate::provider_fixture::invoke(
-            provider.clone(),
+            provider.model.clone(),
             &explicit,
             frona_harness::ModelRequest {
                 system: ("system").into(),
@@ -811,7 +813,7 @@ mod tests {
             match mode {
                 0 => {
                     crate::provider_fixture::invoke(
-                        provider.clone(),
+                        provider.model.clone(),
                         &explicit,
                         frona_harness::ModelRequest {
                             system: ("system").into(),
@@ -829,7 +831,7 @@ mod tests {
                 1 => {
                     let (tx, _rx) = tokio::sync::mpsc::channel(16);
                     crate::provider_fixture::invoke(
-                        provider.clone(),
+                        provider.model.clone(),
                         &explicit,
                         frona_harness::ModelRequest {
                             system: ("system").into(),
@@ -846,7 +848,7 @@ mod tests {
                 }
                 _ => {
                     crate::provider_fixture::invoke(
-                        provider.clone(),
+                        provider.model.clone(),
                         &explicit,
                         frona_harness::ModelRequest {
                             system: ("system").into(),
@@ -875,7 +877,7 @@ mod tests {
             .insert("stream".into(), json!(false));
         assert!(
             crate::provider_fixture::invoke(
-                provider.clone(),
+                provider.model.clone(),
                 &reserved,
                 frona_harness::ModelRequest {
                     system: ("system").into(),

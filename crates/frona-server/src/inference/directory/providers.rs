@@ -179,7 +179,10 @@ fn describe(
         defaults["base_url"] = json!(config.base_url);
     }
     let endpoint_required = (!built_in && resolved.adapter != AdapterId::Ollama)
-        || resolved.factory == frona_harness::inference::provider::platform::FactoryKind::Azure;
+        || resolved
+            .rig_provider
+            .as_ref()
+            .is_some_and(|provider| provider.vendor() == rig_core::providers::azure::PROVIDER_NAME);
     let mut fields = vec![
         ProviderFieldInfo {
             id: "base_url".into(),
@@ -204,7 +207,11 @@ fn describe(
             suggested_env: vec![],
         },
     ];
-    if resolved.factory == frona_harness::inference::provider::platform::FactoryKind::Azure {
+    if resolved
+        .rig_provider
+        .as_ref()
+        .is_some_and(|provider| provider.vendor() == rig_core::providers::azure::PROVIDER_NAME)
+    {
         fields.push(ProviderFieldInfo {
             id: "azure_api_version".into(),
             target: ProviderFieldTarget::Configuration { path: "/azure_api_version".into() },
@@ -266,9 +273,7 @@ fn describe(
                         target: ProviderFieldTarget::Credential {
                             field: "api_key".into(),
                         },
-                        label: if resolved.factory
-                            == frona_harness::inference::provider::platform::FactoryKind::Copilot
-                        {
+                        label: if resolved.brand == "github-copilot" {
                             "GitHub access token".into()
                         } else {
                             "API key".into()
@@ -276,9 +281,7 @@ fn describe(
                         required: true,
                         sensitive: true,
                         schema: json!({"type":"string","minLength":1}),
-                        suggested_env: if resolved.factory
-                            == frona_harness::inference::provider::platform::FactoryKind::Copilot
-                        {
+                        suggested_env: if resolved.brand == "github-copilot" {
                             vec!["GITHUB_COPILOT_TOKEN".into(), "GITHUB_TOKEN".into()]
                         } else if resolved.adapter == AdapterId::Bedrock {
                             vec!["AWS_BEARER_TOKEN_BEDROCK".into()]

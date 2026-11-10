@@ -14,7 +14,7 @@ use frona_harness::config::CredentialMethod;
 
 use crate::inference::provider::build_provider;
 use frona_harness::inference::provider::{
-    CredentialValidationError, InferenceCounter, ModelProvider, ProviderModelList,
+    CredentialValidationError, InferenceCounter, ProviderAdmin, ProviderModelList,
 };
 
 #[derive(Clone)]
@@ -122,13 +122,13 @@ impl ProviderValidationService {
         self
     }
 
-    async fn session_provider(
+    async fn session_admin(
         &self,
         connection: &frona_harness::inference::provider::platform::ResolvedConnection,
         config: &ModelProviderConfig,
         method: CredentialMethod,
         document: &serde_json::Value,
-    ) -> Result<Arc<dyn ModelProvider>, ProviderValidationError> {
+    ) -> Result<ProviderAdmin, ProviderValidationError> {
         let secret = if connection.brand == "github-copilot" {
             let doc: crate::credential::managed::integration::copilot::Document =
                 serde_json::from_value(document.clone())
@@ -158,6 +158,7 @@ impl ProviderValidationService {
             })
             .ok_or(ProviderValidationError::Unsupported)?
             .build(connection, config, &secret, &self.counter)
+            .map(|connection| connection.admin)
             .map_err(|_| {
                 ProviderValidationError::InvalidCandidate(
                     "cannot construct this session for the selected connection".into(),
@@ -193,7 +194,7 @@ impl ProviderValidationService {
             control_config.api_key = Some(format!("frona-validation-control-{}", Uuid::new_v4()));
             let control = build_provider(&resolved, &control_config, &self.counter)
                 .map_err(|error| ProviderValidationError::InvalidCandidate(error.to_string()))?;
-            match tokio::time::timeout(self.timeout, control.validate_credentials()).await {
+            match tokio::time::timeout(self.timeout, control.admin.validate_credentials()).await {
                 Ok(Err(CredentialValidationError::AuthenticationRejected)) => {}
                 Ok(Err(CredentialValidationError::Unsupported)) => return Err(ProviderValidationError::Unsupported),
                 Err(_) => return Err(ProviderValidationError::TimedOut(self.timeout.as_millis() as u64)),
@@ -203,7 +204,8 @@ impl ProviderValidationService {
                 )),
             }
         }
-        self.validate_prepared(prepared, binding, provider).await
+        self.validate_prepared(prepared, binding, provider.admin)
+            .await
     }
 
     async fn prepare(
@@ -274,7 +276,7 @@ impl ProviderValidationService {
         &self,
         prepared: PreparedCandidate,
         binding: CredentialBinding,
-        provider: Arc<dyn ModelProvider>,
+        provider: ProviderAdmin,
     ) -> Result<ValidationProof, ProviderValidationError> {
         let base_generation = self
             .store
@@ -371,14 +373,14 @@ impl ProviderValidationService {
         Ok((status, payload))
     }
 
-    pub async fn draft_provider(
+    pub async fn draft_admin(
         &self,
         validation_id: Uuid,
         handle: &Handle,
         config: &ModelProviderConfig,
         method: CredentialMethod,
         source: &str,
-    ) -> Result<Arc<dyn ModelProvider>, ProviderValidationError> {
+    ) -> Result<ProviderAdmin, ProviderValidationError> {
         let resolved = crate::inference::provider::resolve_connection(handle, config)
             .map_err(|error| ProviderValidationError::InvalidCandidate(error.to_string()))?;
         let expected = binding(&resolved, source, config);
@@ -400,7 +402,7 @@ impl ProviderValidationService {
                 let document = &payload;
                 if method == CredentialMethod::Oauth || resolved.brand == "github-copilot" {
                     return self
-                        .session_provider(&resolved, config, method, document)
+                        .session_admin(&resolved, config, method, document)
                         .await;
                 }
                 apply_document(&mut effective, &resolved.brand, method, document)?;
@@ -423,13 +425,14 @@ impl ProviderValidationService {
             Candidate::Secret(document) => {
                 if method == CredentialMethod::Oauth || resolved.brand == "github-copilot" {
                     return self
-                        .session_provider(&resolved, config, method, &document)
+                        .session_admin(&resolved, config, method, &document)
                         .await;
                 }
                 apply_document(&mut effective, &resolved.brand, method, &document)?;
             }
         }
         build_provider(&resolved, &effective, &self.counter)
+            .map(|connection| connection.admin)
             .map_err(|error| ProviderValidationError::InvalidCandidate(error.to_string()))
     }
 }
@@ -509,7 +512,6 @@ fn storage(error: impl std::fmt::Display) -> ProviderValidationError {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use async_trait::async_trait;
     use surrealdb::Surreal;
     use surrealdb::engine::local::{Db, Mem};
     use wiremock::matchers::{header, method, path};
@@ -517,10 +519,6 @@ mod tests {
 
     use super::*;
     use crate::chat::broadcast::BroadcastService;
-    use frona_harness::inference::{
-        error::InferenceError,
-        provider::{CredentialValidation, ModelConfig},
-    };
 
     #[derive(Clone)]
     enum Check {
@@ -530,27 +528,18 @@ mod tests {
         Hang,
     }
 
-    struct StubProvider(Check);
-
-    #[async_trait]
-    impl ModelProvider for StubProvider {
-        async fn validate_credentials(
-            &self,
-        ) -> Result<CredentialValidation, CredentialValidationError> {
-            match self.0 {
-                Check::Success => Ok(CredentialValidation { models: None }),
-                Check::Failure => Err(CredentialValidationError::Failed("401".into())),
-                Check::Unsupported => Err(CredentialValidationError::Unsupported),
-                Check::Hang => std::future::pending().await,
+    fn stub_admin(check: Check) -> ProviderAdmin {
+        ProviderAdmin::default().with_validation_check(move || {
+            let check = check.clone();
+            async move {
+                match check {
+                    Check::Success => Ok(()),
+                    Check::Failure => Err(CredentialValidationError::Failed("401".into())),
+                    Check::Unsupported => Err(CredentialValidationError::Unsupported),
+                    Check::Hang => std::future::pending().await,
+                }
             }
-        }
-
-        async fn resolve(
-            &self,
-            _: &ModelConfig,
-        ) -> Result<frona_harness::inference::provider::ResolvedModel, InferenceError> {
-            unreachable!("validation does not execute a model")
-        }
+        })
     }
 
     async fn service() -> (ProviderValidationService, ProviderCredentials) {
@@ -658,7 +647,7 @@ mod tests {
                 .validate_prepared(
                     prepared("bad"),
                     test_binding("https://a.example/v1"),
-                    Arc::new(StubProvider(check)),
+                    stub_admin(check),
                 )
                 .await
                 .unwrap_err()
@@ -670,7 +659,7 @@ mod tests {
             .validate_prepared(
                 prepared("good"),
                 test_binding("https://a.example/v1"),
-                Arc::new(StubProvider(Check::Success)),
+                stub_admin(Check::Success),
             )
             .await
             .unwrap();
@@ -690,19 +679,11 @@ mod tests {
         let a_binding = test_binding("https://a.example/v1");
         let b_binding = test_binding("https://b.example/v1");
         let a = service
-            .validate_prepared(
-                prepared("a"),
-                a_binding.clone(),
-                Arc::new(StubProvider(Check::Success)),
-            )
+            .validate_prepared(prepared("a"), a_binding.clone(), stub_admin(Check::Success))
             .await
             .unwrap();
         let b = service
-            .validate_prepared(
-                prepared("b"),
-                b_binding.clone(),
-                Arc::new(StubProvider(Check::Success)),
-            )
+            .validate_prepared(prepared("b"), b_binding.clone(), stub_admin(Check::Success))
             .await
             .unwrap();
         assert_ne!(a.pending.validation_id, b.pending.validation_id);
@@ -799,7 +780,7 @@ mod tests {
                 .validate_prepared(
                     candidate,
                     test_binding("https://a.example/v1"),
-                    Arc::new(StubProvider(Check::Success)),
+                    stub_admin(Check::Success),
                 )
                 .await
                 .unwrap();
@@ -851,11 +832,7 @@ mod tests {
             .await
             .unwrap();
         let replacement = service
-            .validate_prepared(
-                candidate,
-                replacement_binding,
-                Arc::new(StubProvider(Check::Success)),
-            )
+            .validate_prepared(candidate, replacement_binding, stub_admin(Check::Success))
             .await
             .unwrap();
         let (still_active, payload) = store

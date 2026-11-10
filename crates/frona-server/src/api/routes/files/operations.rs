@@ -6,7 +6,7 @@ use axum::extract::State;
 use tokio::fs;
 
 use crate::storage::{Namespace, VirtualPath, dedup_filename, validate_relative_path};
-use frona_harness::file_tools::path::resolve_filesystem_path;
+use frona_harness::tools::files::path::resolve_filesystem_path;
 
 use super::super::super::error::ApiError;
 use super::super::super::middleware::auth::AuthUser;

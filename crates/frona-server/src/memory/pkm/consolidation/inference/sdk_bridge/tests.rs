@@ -447,7 +447,7 @@ async fn exploration_is_offering_policy_and_shared_budget_can_refuse_the_final_s
 #[test]
 fn complete_tool_outputs_and_explicit_host_effect_refusal() {
     let result = map_output(ToolOutput::error("retry").with_images(vec![
-        frona_harness::file_tools::image::ImageData {
+        frona_harness::tools::files::image::ImageData {
             bytes: vec![1, 2],
             media_type: "image/png".into(),
         },

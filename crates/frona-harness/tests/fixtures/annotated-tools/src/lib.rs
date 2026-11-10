@@ -6,20 +6,20 @@ pub mod application {
     pub struct FnMut;
     pub struct Send;
 
-    #[sdk::tool]
+    #[sdk::tools::tool]
     #[cfg_attr(all(), inline)]
     pub async fn echo(value: F) -> Result<F, sdk::ToolError> {
         Ok(value)
     }
 
-    #[sdk::tool]
+    #[sdk::tools::tool]
     #[cfg_attr(all(), cfg_attr(all(), cfg(any()), inline))]
     pub async fn disabled(value: Missing) -> Result<Missing, sdk::ToolError> {
         Ok(value)
     }
 
     /// Add two values, with context supplied by the harness.
-    #[sdk::tool]
+    #[sdk::tools::tool]
     pub async fn add(
         left: i64,
         execution: sdk::ToolContext<'_>,

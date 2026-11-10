@@ -1,6 +1,6 @@
 //! Individual action dispatch shared by manual, automatic, and recovery drivers.
 
-use super::{
+use crate::{
     ActionKind, ActionResolution, ActionStatus, Conversation, ConversationError,
     ConversationStatus, ExecutionControl, ExecutionStop, FailureKind, PendingAction,
     ResponseActions, ToolCallHook, ToolContext, ToolDecision, ToolError, ToolOutput, ToolRegistry,
@@ -152,7 +152,7 @@ impl Conversation {
         Ok(())
     }
 
-    pub(super) async fn execute_tool_with_hook(
+    pub(crate) async fn execute_tool_with_hook(
         &mut self,
         handle: &PendingAction,
         tools: &mut ToolRegistry<'_>,
@@ -300,7 +300,7 @@ impl Conversation {
     pub fn tool_proposal(
         &self,
         handle: &PendingAction,
-    ) -> Result<super::PendingActionView<'_>, ToolDispatchError> {
+    ) -> Result<crate::PendingActionView<'_>, ToolDispatchError> {
         self.require_tool_proposal(handle)?;
         Ok(self.action(handle)?)
     }
@@ -310,7 +310,7 @@ impl Conversation {
     pub fn action_proposal(
         &self,
         handle: &PendingAction,
-    ) -> Result<super::PendingActionView<'_>, ToolDispatchError> {
+    ) -> Result<crate::PendingActionView<'_>, ToolDispatchError> {
         self.require_action_proposal(handle)?;
         Ok(self.action(handle)?)
     }
@@ -322,7 +322,7 @@ impl Conversation {
         self.stop_dispatch_error(stop.into())
     }
 
-    pub(super) fn require_tool_proposal(
+    pub(crate) fn require_tool_proposal(
         &self,
         handle: &PendingAction,
     ) -> Result<(), ToolDispatchError> {

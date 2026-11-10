@@ -22,7 +22,7 @@ pub trait ToolCallHook: Send {
     async fn decide(&mut self, call: &ToolCall) -> Result<ToolDecision, ToolFailure>;
 }
 
-pub(super) struct CallbackHook<F>(pub F);
+pub(crate) struct CallbackHook<F>(pub F);
 
 #[async_trait]
 impl<F, Fut, E> ToolCallHook for CallbackHook<F>

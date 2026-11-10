@@ -23,7 +23,7 @@ pub fn resolve_path(
     agent_handle: &crate::core::Handle,
     storage: &crate::storage::service::StorageService,
 ) -> Result<std::path::PathBuf, crate::core::error::AppError> {
-    Ok(frona_harness::file_tools::resolve_path(
+    Ok(frona_harness::tools::files::resolve_path(
         &storage.agent_workspace_path(user_handle, agent_handle),
         input,
     )?)
@@ -170,8 +170,8 @@ mod resolve_path_tests {
 }
 
 /// Convert portable read results into server-native content after authorization.
-fn file_output(output: frona_harness::file_tools::FileOutput) -> crate::tool::ToolOutput {
-    use frona_harness::file_tools::FileOutput;
+fn file_output(output: frona_harness::tools::files::FileOutput) -> crate::tool::ToolOutput {
+    use frona_harness::tools::files::FileOutput;
     match output {
         FileOutput::Content {
             text,

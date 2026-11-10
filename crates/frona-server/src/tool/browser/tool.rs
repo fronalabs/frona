@@ -1,4 +1,4 @@
-use frona_harness::file_tools::image::ImageData;
+use frona_harness::tools::files::image::ImageData;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;

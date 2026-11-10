@@ -9,7 +9,7 @@ use crate::core::error::AppError;
 use super::models::{FileEntry, SearchTarget};
 use super::path::{Namespace, VirtualPath, validate_no_traversal};
 use super::workspace::Workspace;
-use frona_harness::file_tools::path::resolve_filesystem_path;
+use frona_harness::tools::files::path::resolve_filesystem_path;
 
 /// Per-user state at `{data_dir}/users/{user_handle}/{subsystem}/...`;
 /// shared/template state at `{data_dir}/system/...` or under `shared_config_dir`.

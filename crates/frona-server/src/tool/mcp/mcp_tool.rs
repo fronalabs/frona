@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::core::error::AppError;
 use crate::tool::{AgentTool, InferenceContext, ToolDefinition, ToolOutput};
-use frona_harness::file_tools::image::{MAX_IMAGE_BYTES, is_supported_image, prepare_image};
+use frona_harness::tools::files::image::{MAX_IMAGE_BYTES, is_supported_image, prepare_image};
 
 use super::manager::McpManager;
 

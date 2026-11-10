@@ -17,8 +17,8 @@ use super::{
     ExecutionStop, Incomplete, Model, ModelError, ModelRequest, PendingAction, PendingActionView,
     Progress, ProgressReceiver, RefinementStage, ReportHandle, ResponseActions, RunOutcome,
     Submission, SubmissionError, ToolCallHook, ToolDecision, ToolDispatchError, ToolOutput,
-    ToolRegistrationError, ToolRegistry, hook::CallbackHook, progress::ProgressOwner,
-    report::RunRecorder, submission_tool,
+    ToolRegistrationError, ToolRegistry, progress::ProgressOwner, report::RunRecorder,
+    submission_tool, tools::CallbackHook,
 };
 
 /// Reusable model configuration. Each run starts fresh conversation and budget

@@ -61,7 +61,7 @@ impl ReadTool {
                 resolved.display(),
             )));
         }
-        frona_harness::file_tools::read::read(&resolved, path_arg, offset, limit)
+        frona_harness::tools::files::read::read(&resolved, path_arg, offset, limit)
             .await
             .map(super::file_output)
             .map_err(Into::into)

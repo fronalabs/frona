@@ -186,7 +186,7 @@ impl AgentTool for Probe {
                     ToolOutput::text("exact success")
                 };
                 output
-                    .with_images(vec![frona_harness::file_tools::image::ImageData {
+                    .with_images(vec![frona_harness::tools::files::image::ImageData {
                         bytes: vec![1, 2, 3],
                         media_type: "image/png".into(),
                     }])

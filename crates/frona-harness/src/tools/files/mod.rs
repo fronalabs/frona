@@ -15,7 +15,7 @@ pub fn resolve_path(root: &Path, input: &str) -> Result<PathBuf, FileError> {
     path::resolve_filesystem_path(&root.join(input))
 }
 
-pub(crate) fn validate_input(input: &str) -> Result<(), FileError> {
+pub(super) fn validate_input(input: &str) -> Result<(), FileError> {
     if input.is_empty() {
         return Err(FileError::Validation("path must not be empty".into()));
     }
@@ -63,7 +63,7 @@ impl FileOutput {
         }
     }
 
-    pub(crate) fn into_tool_output(self) -> crate::ToolResult {
+    pub(super) fn into_tool_output(self) -> crate::ToolResult {
         use crate::{ToolContent, ToolError, ToolOutput};
         use base64::Engine;
         use rig_core::completion::message::{DocumentSourceKind, Image, ImageMediaType, MimeType};

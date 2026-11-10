@@ -59,7 +59,7 @@ impl GlobTool {
                 resolved.display(),
             )));
         }
-        frona_harness::file_tools::glob::glob(&resolved, scope_input, pattern)
+        frona_harness::tools::files::glob::glob(&resolved, scope_input, pattern)
             .map(super::file_output)
             .map_err(Into::into)
     }

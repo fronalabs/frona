@@ -27,7 +27,7 @@ pub mod web_fetch;
 pub mod web_search;
 
 use async_trait::async_trait;
-use frona_harness::file_tools::image::ImageData;
+use frona_harness::tools::files::image::ImageData;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

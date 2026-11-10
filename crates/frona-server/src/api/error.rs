@@ -24,8 +24,8 @@ impl From<AppError> for ApiError {
     }
 }
 
-impl From<frona_harness::file_tools::FileError> for ApiError {
-    fn from(error: frona_harness::file_tools::FileError) -> Self {
+impl From<frona_harness::tools::files::FileError> for ApiError {
+    fn from(error: frona_harness::tools::files::FileError) -> Self {
         Self(AppError::from(error))
     }
 }

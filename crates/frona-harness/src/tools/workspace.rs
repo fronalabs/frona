@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use super::files;
 use super::{ToolError, ToolRegistry, tool};
-use crate::file_tools;
 
 /// Register `read` and `glob` for an existing workspace directory. Relative
 /// paths start at this root; absolute paths must resolve inside it. Symlinks
@@ -43,7 +43,7 @@ pub fn workspace_read_tools(root: impl AsRef<Path>) -> Result<ToolRegistry<'stat
             let root = read_root.clone();
             async move {
                 let path = resolve(&root, &args.path)?;
-                file_tools::read::read(&path, &args.path, args.offset, args.limit)
+                files::read::read(&path, &args.path, args.offset, args.limit)
                     .await.map_err(ToolError::failed)?.into_tool_output()
             }
         },
@@ -55,7 +55,7 @@ pub fn workspace_read_tools(root: impl AsRef<Path>) -> Result<ToolRegistry<'stat
             let root = root.clone();
             async move {
                 let path = resolve(&root, &args.path)?;
-                file_tools::glob::glob(&path, &args.path, &args.pattern)
+                files::glob::glob(&path, &args.path, &args.pattern)
                     .map_err(ToolError::failed)?.into_tool_output()
             }
         },
@@ -64,8 +64,8 @@ pub fn workspace_read_tools(root: impl AsRef<Path>) -> Result<ToolRegistry<'stat
 }
 
 fn resolve(root: &Path, input: &str) -> Result<PathBuf, ToolError> {
-    file_tools::validate_input(input).map_err(ToolError::failed)?;
-    file_tools::path::resolve_workspace_path(root, Path::new(input)).map_err(ToolError::failed)
+    files::validate_input(input).map_err(ToolError::failed)?;
+    files::path::resolve_workspace_path(root, Path::new(input)).map_err(ToolError::failed)
 }
 
 #[derive(Deserialize, JsonSchema)]

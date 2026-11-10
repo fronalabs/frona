@@ -10,7 +10,7 @@ use std::{
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 
-use super::tool::{TypedHandler, typed_tool};
+use super::typed::{TypedHandler, typed_tool};
 use super::{
     Tool, ToolContext, ToolFuture, ToolOutput, ToolRegistrationError, ToolResult, TypedTool,
 };

@@ -4,9 +4,10 @@ use std::{
 };
 
 use async_trait::async_trait;
-use frona_harness::{
-    ExecutionStop, Tool, ToolContent, ToolContext, ToolError, ToolOutput, ToolRegistrationError,
-    ToolRegistry, ToolResult, tool, tool_with_context,
+use frona_harness::ExecutionStop;
+use frona_harness::tools::{
+    Tool, ToolContent, ToolContext, ToolError, ToolOutput, ToolRegistrationError, ToolRegistry,
+    ToolResult, tool, tool_with_context,
 };
 use rig_core::completion::{
     message::{DocumentSourceKind, Image, ImageMediaType},

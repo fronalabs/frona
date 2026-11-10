@@ -148,7 +148,7 @@ pub fn dedup_filename(dir: &Path, filename: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use frona_harness::file_tools::path::{resolve_filesystem_path, resolve_workspace_path};
+    use frona_harness::tools::files::path::{resolve_filesystem_path, resolve_workspace_path};
 
     #[test]
     fn parse_user_path() {

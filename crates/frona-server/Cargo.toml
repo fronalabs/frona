@@ -159,11 +159,11 @@ frona-ontologies = { git = "https://github.com/fronalabs/frona-ontologies", rev 
 
 # Personal-WhatsApp adapter. Uses the stable-Rust `wa-rs` fork of
 # `whatsapp-rust` - the upstream requires nightly.
-wa-rs = { git = "https://github.com/homunbot/wa-rs", rev = "d3695821e8cc435d14768188bc39bcfaffb96f1f" }
-wa-rs-proto = { git = "https://github.com/homunbot/wa-rs", rev = "d3695821e8cc435d14768188bc39bcfaffb96f1f" }
-wa-rs-sqlite-storage = { git = "https://github.com/homunbot/wa-rs", rev = "d3695821e8cc435d14768188bc39bcfaffb96f1f" }
-wa-rs-tokio-transport = { git = "https://github.com/homunbot/wa-rs", rev = "d3695821e8cc435d14768188bc39bcfaffb96f1f" }
-wa-rs-ureq-http = { git = "https://github.com/homunbot/wa-rs", rev = "d3695821e8cc435d14768188bc39bcfaffb96f1f" }
+wa-rs = { git = "https://github.com/homun-app/wa-rs", rev = "418ccf29279101f425e0657c45c77f91667d6409" }
+wa-rs-proto = { git = "https://github.com/homun-app/wa-rs", rev = "418ccf29279101f425e0657c45c77f91667d6409" }
+wa-rs-sqlite-storage = { git = "https://github.com/homun-app/wa-rs", rev = "418ccf29279101f425e0657c45c77f91667d6409" }
+wa-rs-tokio-transport = { git = "https://github.com/homun-app/wa-rs", rev = "418ccf29279101f425e0657c45c77f91667d6409" }
+wa-rs-ureq-http = { git = "https://github.com/homun-app/wa-rs", rev = "418ccf29279101f425e0657c45c77f91667d6409" }
 
 # Pure-Rust Signal client. See workspace Cargo.toml for the git rev and the
 # curve25519-dalek patch (both non-optional).

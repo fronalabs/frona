@@ -15,3 +15,8 @@ opt-level = 1
 
 [profile.dev.package.surrealdb-idx]
 opt-level = 1
+
+# Presage requires optimized ML-KEM to avoid stack overflow when decrypting
+# PQXDH prekey messages in development and test builds.
+[profile.dev.package.libcrux-ml-kem]
+opt-level = 3

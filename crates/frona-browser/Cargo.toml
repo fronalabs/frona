@@ -17,8 +17,9 @@ futures = "0.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = "0.9"
-similar = "2"
+similar = "3"
 thiserror = { workspace = true }
+# Match the WebSocket error type exposed by chromiumoxide through async-tungstenite.
 tungstenite = { version = "0.28", default-features = false }
 tracing = { workspace = true }
 

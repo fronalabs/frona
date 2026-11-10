@@ -32,7 +32,7 @@ tracing-subscriber = { workspace = true }
 # directly because `storage::slugify` depends on it by name, not by accident.
 deunicode = "1"
 arc-swap = "1"
-sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 struct-patch = "0.14"
 argon2 = "0.6"
@@ -74,7 +74,7 @@ rig-core = { workspace = true }
 rig-bedrock = "=0.42.0"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-bedrockruntime = { version = "1.143", default-features = false, features = ["rt-tokio", "default-https-client"] }
-aws-sdk-bedrock = { version = "=1.162.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
+aws-sdk-bedrock = { version = "=1.167.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
 aws-smithy-runtime-api = { version = "1", features = ["client"] }
 aws-smithy-types = "1"
 async-stream = { workspace = true }
@@ -128,7 +128,7 @@ notify = "8"
 rmcp = { version = "3.4.1", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 xz2 = "0.1"
 inventory = "0.3"
-jsonschema = { version = "0.59", default-features = false }
+jsonschema = { version = "0.61", default-features = false }
 
 # horned-owl: typed OWL schema building + I/O; reasonable: OWL 2 RL materializer
 # + validation diagnostics; oxsdatatypes: XSD datatype/facet checks (code);

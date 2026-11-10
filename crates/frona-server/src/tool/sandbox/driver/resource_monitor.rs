@@ -127,9 +127,9 @@ impl SystemResourceManager {
     }
 
     pub fn start_polling(self: &Arc<Self>) -> JoinHandle<()> {
+        let mut sys = System::new().expect("initialize system resource monitoring");
         let manager = Arc::clone(self);
         tokio::spawn(async move {
-            let mut sys = System::new();
             sys.refresh_memory();
             let mut tracker = UsageTracker::new();
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
@@ -443,7 +443,7 @@ where
 }
 
 fn detect_num_cpus() -> f64 {
-    let mut sys = System::new();
+    let mut sys = System::new().expect("initialize CPU detection for resource limits");
     sys.refresh_cpu_all();
     sys.cpus().len().max(1) as f64
 }
@@ -468,7 +468,7 @@ pub fn log_system_resources() {
 }
 
 fn effective_total_memory() -> u64 {
-    let mut sys = System::new();
+    let mut sys = System::new().expect("initialize system memory detection");
     sys.refresh_memory();
     sys.cgroup_limits()
         .map(|cg| cg.total_memory)
@@ -544,7 +544,7 @@ mod tests {
         assert!(manager.tracked.contains_key(&999_999_999));
 
         let mut tracker = UsageTracker::new();
-        let mut sys = System::new();
+        let mut sys = System::new().unwrap();
         tracker.poll_once(&manager, &mut sys);
 
         assert!(!manager.tracked.contains_key(&999_999_999));
@@ -1205,7 +1205,7 @@ mod tests {
             .agent_usage
             .insert("agent_1".into(), Usage::new(70.0, 40.0));
 
-        let mut sys = System::new();
+        let mut sys = System::new().unwrap();
         tracker.poll_once(&manager, &mut sys);
 
         assert_eq!(tracker.global_usage(), Usage::default());

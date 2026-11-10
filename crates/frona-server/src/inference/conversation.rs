@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use base64::Engine;
 use rig_core::completion::message::{
-    DocumentSourceKind, ImageMediaType, MimeType, ProviderCallId, Reasoning, ToolCallId,
-    ToolResult, ToolResultContent, UserContent,
+    AssistantMessage, CallId, DocumentSourceKind, ImageMediaType, MimeType, ToolResult,
+    ToolResultContent, UserContent,
 };
 use rig_core::completion::{AssistantContent, Message as RigMessage};
 
@@ -241,6 +241,7 @@ impl ConversationBuilder for DefaultConversationBuilder {
             };
             model_history.row_ends.push(result.len());
         }
+        attach_legacy_origins(&mut model_history, &ctx.model_config);
         model_history
     }
 }
@@ -366,6 +367,7 @@ impl ConversationBuilder for TaskConversationBuilder {
         {
             result.push(RigMessage::user(prompt));
         }
+        attach_legacy_origins(&mut model_history, &ctx.model_config);
         model_history
     }
 }
@@ -408,6 +410,7 @@ impl ConversationBuilder for HeartbeatConversationBuilder {
         injected.push_str(&self.heartbeat_content);
         injected.push_str("\n</heartbeat_checklist>");
         model_history.history.push(RigMessage::user(&injected));
+        attach_legacy_origins(&mut model_history, &ctx.model_config);
         model_history
     }
 }
@@ -519,6 +522,7 @@ impl ConversationBuilder for ChannelConversationBuilder {
             };
             model_history.row_ends.push(result.len());
         }
+        attach_legacy_origins(&mut model_history, &ctx.model_config);
         model_history
     }
 
@@ -535,14 +539,89 @@ fn group_tool_calls_by_message(tool_calls: &[ToolCall]) -> HashMap<String, Vec<&
     map
 }
 
-fn reasoning_for_replay(r: &crate::chat::message::models::Reasoning) -> Reasoning {
-    r.raw
-        .as_ref()
-        .and_then(|raw| serde_json::from_value(raw.clone()).ok())
-        .unwrap_or_else(|| Reasoning {
-            id: r.id.clone(),
-            ..Reasoning::new_with_signature(&r.content, r.signature.clone())
-        })
+/// Validate provider metadata before the infallible projection builder runs.
+pub fn validate_provider_turns(
+    messages: &[Message],
+    tool_calls: &[ToolCall],
+) -> Result<(), crate::core::error::AppError> {
+    for message in messages {
+        {
+            serde_json::from_value::<std::collections::BTreeMap<u32, AssistantMessage>>(
+                serde_json::json!(message.provider_turns),
+            )
+            .map_err(|error| {
+                crate::core::error::AppError::Validation(format!(
+                    "Invalid provider turns on message {}: {error}",
+                    message.id
+                ))
+            })?;
+        }
+        if let Some(raw) = message.reasoning.as_ref().and_then(|r| r.raw.as_ref()) {
+            frona_harness::inference::history_compat::reasoning_blocks(raw.clone()).map_err(
+                |error| {
+                    crate::core::error::AppError::Validation(format!(
+                        "Invalid reasoning on message {}: {error}",
+                        message.id
+                    ))
+                },
+            )?;
+        }
+    }
+    for call in tool_calls
+        .iter()
+        .filter(|call| messages.iter().any(|message| message.id == call.message_id))
+    {
+        if call.name.is_empty() || call.provider_call_id.is_empty() {
+            return Err(crate::core::error::AppError::Validation(format!(
+                "Invalid stored tool identity on {}",
+                call.id
+            )));
+        }
+        if let Some(raw) = call.turn_reasoning.as_ref().and_then(|r| r.raw.as_ref()) {
+            frona_harness::inference::history_compat::reasoning_blocks(raw.clone()).map_err(
+                |error| {
+                    crate::core::error::AppError::Validation(format!(
+                        "Invalid reasoning on tool call {}: {error}",
+                        call.id
+                    ))
+                },
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn saved_turn(msg: &Message, turn: Option<u32>) -> Option<AssistantMessage> {
+    let value = match turn {
+        Some(turn) => msg.provider_turns.get(&turn.to_string()),
+        None => msg
+            .provider_turns
+            .iter()
+            .max_by_key(|(turn, _)| turn.parse::<u32>().expect("provider turn index validated"))
+            .map(|(_, value)| value),
+    }?;
+    Some(
+        serde_json::from_value(value.clone())
+            .expect("provider turns validated before conversation projection"),
+    )
+}
+
+fn reasoning_for_replay(r: &crate::chat::message::models::Reasoning) -> Vec<AssistantContent> {
+    let value = r.raw.clone().unwrap_or_else(|| serde_json::json!({
+        "id":r.id, "content":[{"type":"text", "content":{"text":r.content, "signature":r.signature}}]
+    }));
+    frona_harness::inference::history_compat::reasoning_blocks(value)
+        .expect("stored reasoning validated before conversation projection")
+}
+
+fn attach_legacy_origins(history: &mut ModelConversationHistory, model: &ModelConfig) {
+    for message in &mut history.history {
+        if let RigMessage::Assistant(assistant) = message
+            && assistant.origin.is_none()
+        {
+            frona_harness::inference::history_compat::contextualize_legacy(assistant, model);
+        }
+    }
 }
 
 fn convert_agent_with_tool_calls(
@@ -569,7 +648,7 @@ fn convert_agent_with_tool_calls(
         turns.entry(te.turn).or_default().push(te);
     }
 
-    for tes in turns.values() {
+    for (turn, tes) in &turns {
         let mut assistant_items: Vec<AssistantContent> = Vec::new();
         // Per-turn reasoning - stamped on the first tool_call of the turn at
         // begin time. Replayed here so thinking-mode providers (DeepSeek,
@@ -577,7 +656,7 @@ fn convert_agent_with_tool_calls(
         // originally emitted; without it they reject the request with
         // `invalid_request_error` on resume after a HITL pause.
         if let Some(r) = tes.iter().find_map(|te| te.turn_reasoning.as_ref()) {
-            assistant_items.push(AssistantContent::Reasoning(reasoning_for_replay(r)));
+            assistant_items.extend(reasoning_for_replay(r));
         }
         if let Some(text) = tes.iter().find_map(|te| te.turn_text.as_deref())
             && !text.is_empty()
@@ -585,34 +664,58 @@ fn convert_agent_with_tool_calls(
             assistant_items.push(AssistantContent::text(text));
         }
         for te in tes {
-            assistant_items.push(AssistantContent::ToolCall(
-                rig_core::completion::message::ToolCall::from_dual_wire(
-                    te.provider_item_id.as_deref().unwrap_or_default(),
-                    &te.provider_call_id,
-                    rig_core::completion::message::ToolFunction {
-                        name: te.name.clone(),
-                        arguments: te.arguments.clone(),
-                    },
-                )
-                .with_signature(te.signature.clone()),
-            ));
+            let call = frona_harness::inference::history_compat::legacy_call(serde_json::json!({
+                "id":te.provider_call_id,
+                "provider":if te.provider_call_id.is_empty() { None } else { Some(serde_json::json!({"call_id":te.provider_call_id, "item_id":te.provider_item_id})) },
+                "function":{"name":te.name,"arguments":te.arguments}, "signature":te.signature,
+                "additional_params":null
+            })).expect("persisted tool calls have valid identities and names");
+            assistant_items.push(AssistantContent::ToolCall(call));
         }
-        if !assistant_items.is_empty() {
-            result.push(RigMessage::Assistant {
-                id: None,
-                content: assistant_items,
-            });
+        let mut assistant =
+            saved_turn(msg, Some(*turn)).unwrap_or_else(|| AssistantMessage::new(assistant_items));
+        // A stopped loop may have recorded a proposal it never started. Only
+        // calls with persisted executions belong to this completed history view.
+        let mut remaining = tes.clone();
+        assistant.content.retain(|item| {
+            let AssistantContent::ToolCall(call) = item else {
+                return true;
+            };
+            if let Some(index) = remaining.iter().position(|te| {
+                te.provider_call_id == call.id.wire() && te.name == call.function.name.as_str()
+            }) {
+                remaining.remove(index);
+                true
+            } else {
+                false
+            }
+        });
+        crate::tool::persistent_dispatch::project_assistant(&mut assistant);
+        let calls: Vec<_> = assistant.tool_calls().cloned().collect();
+        if !assistant.content.is_empty() {
+            result.push(RigMessage::Assistant(assistant));
         }
 
         let tool_results: Vec<UserContent> = tes
             .iter()
             .map(|te| {
-                let provider = ProviderCallId::new(te.provider_call_id.clone());
+                let id = calls
+                    .iter()
+                    .find(|call| {
+                        call.id.wire() == te.provider_call_id
+                            && call.function.name.as_str() == te.name
+                    })
+                    .map(|call| call.id.clone())
+                    .unwrap_or_else(|| CallId::from_wire(&te.provider_call_id));
                 UserContent::ToolResult(ToolResult {
-                    call: ToolCallId::for_provider(provider.as_ref()),
-                    provider,
-                    name: te.name.clone(),
+                    call: id,
+                    name: te
+                        .name
+                        .clone()
+                        .try_into()
+                        .expect("stored tool name is nonempty"),
                     content: vec![ToolResultContent::text(&te.result)],
+                    is_error: !te.success,
                 })
             })
             .collect();
@@ -632,13 +735,14 @@ fn convert_agent_with_tool_calls(
     if is_completed && !msg.content.is_empty() {
         let mut items: Vec<AssistantContent> = Vec::new();
         if let Some(r) = &msg.reasoning {
-            items.push(AssistantContent::Reasoning(reasoning_for_replay(r)));
+            items.extend(reasoning_for_replay(r));
         }
         items.push(AssistantContent::text(&msg.content));
-        result.push(RigMessage::Assistant {
-            id: None,
-            content: items,
-        });
+        result.push(RigMessage::Assistant(
+            saved_turn(msg, None)
+                .filter(|m| m.tool_calls().next().is_none())
+                .unwrap_or_else(|| AssistantMessage::new(items)),
+        ));
     }
 }
 
@@ -668,21 +772,23 @@ pub fn convert_agent_message(
     let is_self = msg.agent_id.as_deref() == Some(agent_id);
     if is_self {
         if let Some(r) = &msg.reasoning {
-            let mut items: Vec<AssistantContent> =
-                vec![AssistantContent::Reasoning(reasoning_for_replay(r))];
+            let mut items: Vec<AssistantContent> = reasoning_for_replay(r);
             if !msg.content.is_empty() {
                 items.push(AssistantContent::text(&msg.content));
             }
-            return Some(RigMessage::Assistant {
-                id: None,
-                content: items,
-            });
+            return Some(RigMessage::Assistant(
+                saved_turn(msg, None).unwrap_or_else(|| AssistantMessage::new(items)),
+            ));
         }
         // Empty Assistant text blocks make Anthropic reject the request.
         if msg.content.is_empty() {
             return None;
         }
-        Some(RigMessage::assistant(&msg.content))
+        Some(
+            saved_turn(msg, None)
+                .map(RigMessage::Assistant)
+                .unwrap_or_else(|| RigMessage::assistant(&msg.content)),
+        )
     } else {
         if msg.content.is_empty() {
             return None;
@@ -818,7 +924,7 @@ pub async fn build_user_message(
                 data: DocumentSourceKind::Base64(b64),
                 media_type: ImageMediaType::from_mime_type(&att.content_type),
                 detail: None,
-                additional_params: None,
+                native: None,
             }));
         }
     }
@@ -841,6 +947,7 @@ mod tests {
         Message {
             agent_context_signature: None,
             processed_content: None,
+            provider_turns: Default::default(),
             id: "m1".to_string(),
             chat_id: "c1".to_string(),
             role,
@@ -873,7 +980,7 @@ mod tests {
         let msg = make_agent_message("hello", "agent-1");
         let result = convert_agent_message(&msg, "agent-1", None);
         assert!(result.is_some());
-        assert!(matches!(result.unwrap(), RigMessage::Assistant { .. }));
+        assert!(matches!(result.unwrap(), RigMessage::Assistant(_)));
     }
 
     #[test]
@@ -1038,7 +1145,8 @@ mod tests {
         let result = convert_agent_message(&msg, "agent-1", None);
         assert!(result.is_some());
         let rig_msg = result.unwrap();
-        if let RigMessage::Assistant { content, .. } = &rig_msg {
+        if let RigMessage::Assistant(assistant) = &rig_msg {
+            let content = &assistant.content;
             let has_reasoning = content
                 .iter()
                 .any(|c| matches!(c, AssistantContent::Reasoning(_)));
@@ -1071,7 +1179,8 @@ mod tests {
         let msg = make_agent_message("hello", "agent-1");
         let result = convert_agent_message(&msg, "agent-1", None);
         assert!(result.is_some());
-        if let RigMessage::Assistant { content, .. } = result.unwrap() {
+        if let RigMessage::Assistant(assistant) = result.unwrap() {
+            let content = assistant.content;
             let has_reasoning = content
                 .iter()
                 .any(|c| matches!(c, AssistantContent::Reasoning(_)));

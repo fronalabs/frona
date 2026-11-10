@@ -76,7 +76,7 @@ fn text(s: &str) -> ModelOutput {
 fn call(name: &str, arguments: Value) -> AssistantContent {
     AssistantContent::ToolCall(ToolCall::from_wire(
         "call",
-        ToolFunction::new(name.into(), arguments),
+        ToolFunction::new(name.try_into().unwrap(), arguments),
     ))
 }
 fn submission(value: u32) -> ModelOutput {
@@ -598,12 +598,8 @@ async fn incompatible_model_is_rejected_before_file_repair_or_interrupted_tool_e
     use std::io::Write;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("compatibility.jsonl");
-    let mut proposal = match call("work", json!({})) {
-        AssistantContent::ToolCall(call) => call,
-        _ => unreachable!(),
-    };
-    proposal.signature = Some("provider signature".into());
-    let (first, _) = model(vec![output(vec![AssistantContent::ToolCall(proposal)])]);
+    let proposal = call("work", json!({})).with_native(json!({"signature":"provider signature"}));
+    let (first, _) = model(vec![output(vec![proposal])]);
     let effects = Arc::new(AtomicUsize::new(0));
     let mut session = Harness::new(first)
         .run("input")
@@ -665,7 +661,7 @@ async fn compacted_view_and_checkpoint_survive_resume_without_resummarization() 
     let mut records = original.history().to_vec();
     let id = records[0].conversation;
     records.push(HistoryRecord {
-        version: 1,
+        version: 2,
         conversation: id,
         seq: records.len() as u64,
         event: HistoryEvent::Compacted {

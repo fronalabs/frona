@@ -144,10 +144,16 @@ impl Conversation {
             .iter()
             .any(|definition| definition.name == *name)
         {
-            return Err(RecoveryError::UnofferedTool { name: name.clone() }.into());
+            return Err(RecoveryError::UnofferedTool {
+                name: name.to_string(),
+            }
+            .into());
         }
         if tools.get_mut(name).is_none() {
-            return Err(RecoveryError::MissingTool { name: name.clone() }.into());
+            return Err(RecoveryError::MissingTool {
+                name: name.to_string(),
+            }
+            .into());
         }
         Ok(())
     }
@@ -221,7 +227,7 @@ impl Conversation {
         // Admission occurs only after policy. Both initial and recovery attempts
         // use this one dispatch boundary, including nested controls and storage.
         let execution = execution.with_action(self.action_position(handle)?);
-        let context = ToolContext::for_execution(call.id.as_str().into(), execution);
+        let context = ToolContext::for_execution(call.id.to_string(), execution);
         let result = execution
             .with_cancellation(&context.cancellation)
             .tool_attempt(&name, || async {
@@ -233,7 +239,11 @@ impl Conversation {
                         error => ToolError::failed(error),
                     })?;
                 execution.check_cancellation()?;
-                tool.call(call.function.arguments, &context).await
+                tool.call(
+                    crate::inference::submission::call_arguments(&call.function),
+                    &context,
+                )
+                .await
             })
             .await;
         if let Some(failure) = self.history_failure() {

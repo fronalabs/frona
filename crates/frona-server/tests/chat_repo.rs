@@ -66,6 +66,7 @@ fn test_message_at(chat_id: &str, content: &str, created_at: chrono::DateTime<Ut
     Message {
         agent_context_signature: None,
         processed_content: None,
+        provider_turns: Default::default(),
         id: frona::core::repository::new_id(),
         chat_id: chat_id.to_string(),
         role: MessageRole::User,

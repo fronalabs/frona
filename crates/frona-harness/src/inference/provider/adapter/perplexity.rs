@@ -1,8 +1,7 @@
 //! Sonar has no documented model-list endpoint. Preserve manual model IDs;
 //! do not send a speculative `/models` request or substitute catalog entries.
+use rig_core::providers::openai;
 use std::sync::Arc;
-
-use rig_core::providers::perplexity;
 
 use crate::config::ModelProviderConfig;
 use crate::inference::error::InferenceError;
@@ -23,14 +22,16 @@ pub(crate) fn build(
         .effective_base_url
         .as_deref()
         .expect("Perplexity endpoint");
-    let client = perplexity::Client::builder()
-        .api_key(&key)
-        .base_url(endpoint)
-        .http_client(WireClient::default())
-        .build()
-        .map_err(|_| InferenceError::ConfigError("Cannot build Perplexity client".into()))?;
+    let client = openai::OpenAIConfig::with_key(&openai::wire::PERPLEXITY, key)
+        .with_base_url(endpoint)
+        .with_route(openai::Route::Chat)
+        .connect(WireClient::default());
     Ok(Arc::new(
-        RigProvider::new(client, counter.clone()).with_wire_transport(),
+        RigProvider::new(
+            move |id: &str| client.completion(id).erase(),
+            counter.clone(),
+        )
+        .with_wire_transport(),
     ))
 }
 

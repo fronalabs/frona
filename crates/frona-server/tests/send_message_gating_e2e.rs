@@ -485,7 +485,7 @@ async fn portable_send_message_resolver_uses_shared_model_budget_before_sending(
                 vec![AssistantContent::ToolCall(ToolCall::from_wire(
                     "send",
                     ToolFunction::new(
-                        "send_message".into(),
+                        "send_message".try_into().unwrap(),
                         serde_json::json!({"content":"Do not send this"}),
                     ),
                 ))],

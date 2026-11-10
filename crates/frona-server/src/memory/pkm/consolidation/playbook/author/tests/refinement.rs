@@ -44,10 +44,7 @@ impl ModelAdapter for Script {
                 .unwrap()
                 .pop_front()
                 .expect("unexpected model call"),
-            UsageReport::Reported(Usage {
-                total_tokens: self.tokens,
-                ..Default::default()
-            }),
+            UsageReport::Reported(Usage::new().total_tokens(Some(self.tokens))),
         ))
     }
 }
@@ -71,7 +68,7 @@ fn fixture(
 fn call(id: &str, name: &str, args: Value) -> AssistantContent {
     AssistantContent::ToolCall(ToolCall::from_wire(
         id,
-        ToolFunction::new(name.into(), args),
+        ToolFunction::new(name.try_into().unwrap(), args),
     ))
 }
 fn valid() -> Value {
@@ -122,7 +119,7 @@ async fn missing_content_is_paired_before_explicit_acceptance() {
     assert_eq!(requests.len(), 2);
     let paired = requests[1].messages.iter().any(|message| match message {
         Message::User { content } => content.iter().any(|item| match item {
-            UserContent::ToolResult(result) if result.call == "bad" => {
+            UserContent::ToolResult(result) if result.call.to_string() == "bad" => {
                 let feedback = format!("{:?}", result.content);
                 ["name", "description", "body"]
                     .iter()

@@ -72,7 +72,10 @@ impl ModelProvider for RecordingProvider {
         self.record(model, max, temperature)?;
         Ok(InferenceOutput::new(
             vec![AssistantContent::text("ok")],
-            Usage::default(),
+            Usage::new()
+                .input_tokens(Some(2))
+                .output_tokens(Some(1))
+                .total_tokens(Some(3)),
         ))
     }
 
@@ -90,7 +93,10 @@ impl ModelProvider for RecordingProvider {
         tokens.send(StreamToken::Text("ok".into())).await.unwrap();
         Ok(InferenceOutput::new(
             vec![AssistantContent::text("ok")],
-            Usage::default(),
+            Usage::new()
+                .input_tokens(Some(2))
+                .output_tokens(Some(1))
+                .total_tokens(Some(3)),
         ))
     }
 
@@ -157,7 +163,7 @@ impl InferenceObserver for RecordingObserver {
     async fn usage(&self, observation: UsageObservation<'_>) -> Result<(), ObservationError> {
         self.usage.lock().unwrap().push(RecordedUsage {
             model: observation.model.model_id.clone(),
-            tokens: observation.usage.map(|usage| usage.total_tokens),
+            tokens: observation.usage.and_then(|usage| usage.total_tokens),
             fallback: observation.fallback_index,
             retries: observation.latency.retry_count,
             attribution: observation
@@ -177,7 +183,7 @@ impl InferenceObserver for RecordingObserver {
         self.attempts.lock().unwrap().push((
             observation.model.model_id.clone(),
             observation.outcome,
-            observation.usage.map(|usage| usage.total_tokens),
+            observation.usage.and_then(|usage| usage.total_tokens),
         ));
         if self.fail {
             Err(std::io::Error::other("telemetry unavailable").into())
@@ -241,7 +247,7 @@ async fn all_execution_modes_share_fallbacks_and_per_request_overrides_are_isola
         )
         .await
         .unwrap();
-    assert!(matches!(result, StreamResult::Contents { .. }));
+    assert!(matches!(result, StreamResult::Contents(_)));
     assert_eq!(accumulated, "ok");
     let calls = provider.calls.lock().unwrap();
     assert_eq!(calls.len(), 8);
@@ -261,7 +267,7 @@ async fn all_execution_modes_share_fallbacks_and_per_request_overrides_are_isola
     assert_eq!(
         usages
             .iter()
-            .filter(|usage| usage.tokens == Some(0))
+            .filter(|usage| usage.tokens == Some(3))
             .count(),
         3
     );

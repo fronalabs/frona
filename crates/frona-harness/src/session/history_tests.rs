@@ -113,7 +113,7 @@ fn text(s: &str) -> ModelOutput {
 fn call(name: &str, args: Value) -> ModelOutput {
     output(vec![AssistantContent::ToolCall(ToolCall::from_wire(
         "id",
-        ToolFunction::new(name.into(), args),
+        ToolFunction::new(name.try_into().unwrap(), args),
     ))])
 }
 fn storage(error: &ManualError) {

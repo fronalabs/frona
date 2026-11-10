@@ -643,10 +643,7 @@ async fn playbook_author_failure_then_retry(failure: AuthorFailure) {
     };
     let mock = Arc::new(MockModelProvider::new(responses));
     if matches!(failure, AuthorFailure::TokenLimit) {
-        mock.set_usage(frona_harness::inference::Usage {
-            total_tokens: 1_000_000,
-            ..Default::default()
-        });
+        mock.set_usage(frona_harness::inference::Usage::new().total_tokens(Some(1_000_000)));
     }
     let config = MemoryConfig {
         pkm_playbook_max_submissions: 2,
@@ -729,7 +726,7 @@ async fn playbook_author_failure_then_retry(failure: AuthorFailure) {
     assert_eq!(parked.stats.playbooks_built, 0);
     let first_tools: std::collections::BTreeSet<_> = mock.tool_histories()[0]
         .iter()
-        .map(|tool| tool.name.clone())
+        .map(|tool| tool.name.to_string())
         .collect();
     assert_eq!(
         first_tools,
@@ -754,10 +751,7 @@ async fn playbook_author_failure_then_retry(failure: AuthorFailure) {
         );
     }
     let calls_before_retry = mock.calls();
-    mock.set_usage(frona_harness::inference::Usage {
-        total_tokens: 15,
-        ..Default::default()
-    });
+    mock.set_usage(frona_harness::inference::Usage::new().total_tokens(Some(15)));
     mock.enqueue(MockResponse::ToolCalls(vec![(
         "a".into(),
         "submit".into(),

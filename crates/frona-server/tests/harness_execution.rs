@@ -140,7 +140,7 @@ async fn streaming_report_groups_retry_attempts_and_records_abandonment() {
         )
         .await
         .unwrap();
-    assert!(matches!(result, StreamResult::Contents { .. }));
+    assert!(matches!(result, StreamResult::Contents(_)));
     let snapshot = report.snapshot();
     assert_eq!(snapshot.logical_calls(), 1);
     assert_eq!(snapshot.provider_attempts(), 2);

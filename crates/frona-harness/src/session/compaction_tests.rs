@@ -72,7 +72,7 @@ impl ModelAdapter for Fake {
             if self.submission {
                 vec![AssistantContent::ToolCall(ToolCall::from_wire(
                     format!("submit-{n}"),
-                    ToolFunction::new("submit".into(), json!({"value":n})),
+                    ToolFunction::new("submit".try_into().unwrap(), json!({"value":n})),
                 ))]
             } else if n < self.rounds {
                 vec![proposal(&format!("call-{n}"), "read")]
@@ -82,12 +82,12 @@ impl ModelAdapter for Fake {
         };
         Ok(ModelOutput::new(
             content,
-            UsageReport::Reported(Usage {
-                input_tokens: 10,
-                output_tokens: 2,
-                total_tokens: 12,
-                ..Default::default()
-            }),
+            UsageReport::Reported(
+                Usage::new()
+                    .input_tokens(10)
+                    .output_tokens(2)
+                    .total_tokens(12),
+            ),
         ))
     }
 }
@@ -206,11 +206,15 @@ async fn unsupported_main_request_is_recoverable_without_compaction_side_effects
 }
 
 fn proposal(id: &str, name: &str) -> AssistantContent {
-    let mut call = ToolCall::from_wire(id, ToolFunction::new(name.into(), json!({})));
+    let call = AssistantContent::ToolCall(ToolCall::from_wire(
+        id,
+        ToolFunction::new(name.try_into().unwrap(), json!({})),
+    ));
     if id == "call-0" {
-        call.signature = Some("opaque-signature".into());
+        call.with_native(json!({"signature":"opaque-signature"}))
+    } else {
+        call
     }
-    AssistantContent::ToolCall(call)
 }
 
 fn config() -> CompactionConfig {
@@ -315,12 +319,12 @@ async fn manual_compaction_commits_raw_summary_and_exact_report_inputs_with_stre
             .unwrap();
         assert_eq!(
             output.usage,
-            UsageReport::Reported(Usage {
-                input_tokens: 10,
-                output_tokens: 2,
-                total_tokens: 12,
-                ..Default::default()
-            })
+            UsageReport::Reported(
+                Usage::new()
+                    .input_tokens(10)
+                    .output_tokens(2)
+                    .total_tokens(12)
+            )
         );
         let restored = HistoryView::from_compacted(&originals, saved).unwrap();
         let requests = state.requests.lock().unwrap();
@@ -568,7 +572,10 @@ async fn compatibility_uses_retained_content_without_erasing_old_signed_response
     else {
         panic!("missing original call")
     };
-    assert_eq!(first.signature.as_deref(), Some("opaque-signature"));
+    assert_eq!(
+        first.native.as_ref().unwrap().item["signature"],
+        "opaque-signature"
+    );
     assert_eq!(
         session.conversation().responses()[0].origin(),
         Some("fake/model")

@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use rig_core::client::ModelListingClient;
-use rig_core::client::Nothing;
-use rig_core::providers::{anthropic, deepseek, groq, mira, mistral, moonshot, ollama, openai};
+use rig_core::providers::{anthropic, ollama, openai};
 
 use crate::Handle;
 use crate::config::CredentialMethod;
@@ -622,7 +620,7 @@ fn validate_attributes(
 pub fn normalize_endpoint(adapter: AdapterId, input: &str) -> String {
     let trimmed = input.trim().trim_end_matches('/');
     match adapter {
-        AdapterId::Anthropic => anthropic::client::normalize_anthropic_base_url(trimmed),
+        AdapterId::Anthropic => anthropic::wire::normalize_base_url(trimmed),
         AdapterId::Openai => trimmed
             .strip_suffix("/chat/completions")
             .or_else(|| trimmed.strip_suffix("/responses"))
@@ -633,31 +631,25 @@ pub fn normalize_endpoint(adapter: AdapterId, input: &str) -> String {
     }
 }
 
-macro_rules! build_listable_key_client {
-    ($name:expr, $config:expr, $endpoint:expr, $module:ident, $counter:expr) => {{
-        let key = require_api_key($name, $config)?;
-        let mut builder = $module::Client::builder()
-            .http_client(crate::inference::protocol::http::WireClient::default())
-            .api_key(&key);
-        if let Some(url) = $endpoint {
-            builder = builder.base_url(url);
-        }
-        let client = builder
-            .build()
-            .map_err(|error| config_error($name, error))?;
+macro_rules! listable_client {
+    ($client:expr, $counter:expr) => {{
+        let client = $client;
         let validation_client = client.clone();
         Ok(Arc::new(
-            RigProvider::new(client, $counter.clone())
-                .with_wire_transport()
-                .with_live_check(move || {
-                    let client = validation_client.clone();
-                    async move {
-                        client
-                            .list_models()
-                            .await
-                            .map_err(CredentialValidationError::from)
-                    }
-                }),
+            RigProvider::new(
+                move |id: &str| client.completion(id).erase(),
+                $counter.clone(),
+            )
+            .with_wire_transport()
+            .with_live_check(move || {
+                let client = validation_client.clone();
+                async move {
+                    client
+                        .list_models()
+                        .await
+                        .map_err(CredentialValidationError::from)
+                }
+            }),
         ) as Arc<dyn ModelProvider>)
     }};
 }
@@ -684,47 +676,61 @@ pub fn build_provider(
         )),
         FactoryKind::OpenAi | FactoryKind::GenericOpenAi => {
             let key = require_api_key(name, config)?;
-            let mut completions = openai::CompletionsClient::builder()
-                .http_client(crate::inference::protocol::http::WireClient::default())
-                .api_key(&key);
-            let mut responses = openai::Client::builder()
-                .http_client(crate::inference::protocol::http::WireClient::default())
-                .api_key(&key);
+            let mut connection = openai::OpenAIConfig::new(key);
             if let Some(url) = endpoint {
-                completions = completions.base_url(url);
-                responses = responses.base_url(url);
+                connection = connection.with_base_url(url);
             }
             Ok(Arc::new(
                 OpenAiProvider::new(
-                    completions
-                        .build()
-                        .map_err(|error| config_error(name, error))?,
-                    responses
-                        .build()
-                        .map_err(|error| config_error(name, error))?,
+                    connection.connect(crate::inference::protocol::http::WireClient::default()),
                     counter.clone(),
                 )
                 .with_wire_transport(),
             ))
         }
         FactoryKind::Anthropic => {
-            build_listable_key_client!(name, config, endpoint, anthropic, counter)
+            let key = require_api_key(name, config)?;
+            let mut connection = anthropic::AnthropicConfig::new(key);
+            if let Some(url) = endpoint {
+                connection = connection.with_base_url(url);
+            }
+            listable_client!(
+                connection.connect(crate::inference::protocol::http::WireClient::default()),
+                counter
+            )
         }
-        FactoryKind::Groq => build_listable_key_client!(name, config, endpoint, groq, counter),
+        FactoryKind::Groq
+        | FactoryKind::DeepSeek
+        | FactoryKind::Mistral
+        | FactoryKind::Moonshot
+        | FactoryKind::Mira => {
+            let key = require_api_key(name, config)?;
+            let dialect = match resolved.factory {
+                FactoryKind::Groq => &openai::wire::GROQ,
+                FactoryKind::DeepSeek => &openai::wire::DEEPSEEK,
+                FactoryKind::Mistral => &openai::wire::MISTRAL,
+                FactoryKind::Moonshot => &openai::wire::MOONSHOT,
+                FactoryKind::Mira => &openai::wire::MIRA,
+                _ => unreachable!(),
+            };
+            let mut connection =
+                openai::OpenAIConfig::with_key(dialect, key).with_route(openai::Route::Chat);
+            if let Some(url) = endpoint {
+                connection = connection.with_base_url(url);
+            }
+            listable_client!(
+                connection.connect(crate::inference::protocol::http::WireClient::default()),
+                counter
+            )
+        }
         FactoryKind::OpenRouter => {
             crate::inference::provider::adapter::openrouter::build(resolved, config, counter)
-        }
-        FactoryKind::DeepSeek => {
-            build_listable_key_client!(name, config, endpoint, deepseek, counter)
         }
         FactoryKind::Gemini => {
             crate::inference::provider::adapter::gemini::build(resolved, config, counter)
         }
         FactoryKind::Cohere => {
             crate::inference::provider::adapter::cohere::build(resolved, config, counter)
-        }
-        FactoryKind::Mistral => {
-            build_listable_key_client!(name, config, endpoint, mistral, counter)
         }
         FactoryKind::Perplexity => {
             crate::inference::provider::adapter::perplexity::build(resolved, config, counter)
@@ -735,26 +741,21 @@ pub fn build_provider(
         FactoryKind::Hyperbolic => {
             crate::inference::provider::adapter::hyperbolic::build(resolved, config, counter)
         }
-        FactoryKind::Moonshot => {
-            build_listable_key_client!(name, config, endpoint, moonshot, counter)
-        }
-        FactoryKind::Mira => build_listable_key_client!(name, config, endpoint, mira, counter),
         FactoryKind::HuggingFace => {
             crate::inference::provider::adapter::huggingface::build(resolved, config, counter)
         }
         FactoryKind::Galadriel | FactoryKind::Xai => {
             let key = require_api_key(name, config)?;
-            let client = openai::CompletionsClient::builder()
-                .http_client(crate::inference::protocol::http::WireClient::default())
-                .api_key(&key)
-                .base_url(endpoint.expect("Galadriel recipe has an endpoint"))
-                .build()
-                .map_err(|error| config_error(name, error))?;
+            let client = openai::OpenAIConfig::new(key)
+                .with_base_url(endpoint.expect("provider recipe has an endpoint"))
+                .with_route(openai::Route::Chat)
+                .connect(crate::inference::protocol::http::WireClient::default());
+            let validation_client = client.clone();
             Ok(Arc::new(
-                RigProvider::new(client.clone(), counter.clone())
+                RigProvider::new(move |id: &str| client.chat(id).erase(), counter.clone())
                     .with_wire_transport()
                     .with_live_check(move || {
-                        let client = client.clone();
+                        let client = validation_client.clone();
                         async move {
                             client
                                 .list_models()
@@ -766,27 +767,29 @@ pub fn build_provider(
             ))
         }
         FactoryKind::Ollama => {
-            let mut builder = ollama::Client::builder()
-                .http_client(crate::inference::protocol::http::WireClient::default())
-                .api_key(Nothing);
+            let mut connection = ollama::OllamaConfig::new();
             if let Some(url) = endpoint {
-                builder = builder.base_url(url);
+                connection = connection.with_base_url(url);
             }
-            let client = builder.build().map_err(|error| config_error(name, error))?;
+            let client =
+                connection.connect(crate::inference::protocol::http::WireClient::default());
             let validation_client = client.clone();
             Ok(Arc::new(
-                RigProvider::new(client, counter.clone())
-                    .with_wire_transport()
-                    .with_live_check(move || {
-                        let client = validation_client.clone();
-                        async move {
-                            client
-                                .list_models()
-                                .await
-                                .map_err(CredentialValidationError::from)
-                        }
-                    })
-                    .with_hook(hooks::ollama),
+                RigProvider::new(
+                    move |id: &str| client.native_completion(id).erase(),
+                    counter.clone(),
+                )
+                .with_wire_transport()
+                .with_live_check(move || {
+                    let client = validation_client.clone();
+                    async move {
+                        client
+                            .list_models()
+                            .await
+                            .map_err(CredentialValidationError::from)
+                    }
+                })
+                .with_hook(hooks::ollama),
             ))
         }
     }
@@ -805,10 +808,6 @@ pub fn require_api_key(
                 "Provider '{provider}' requires an api_key but none was provided"
             ))
         })
-}
-
-fn config_error(provider: &str, error: impl std::fmt::Display) -> InferenceError {
-    InferenceError::ConfigError(format!("{provider}: {error}"))
 }
 
 pub fn accepts_openrouter(connection: &ResolvedConnection) -> bool {

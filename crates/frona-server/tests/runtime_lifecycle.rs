@@ -13,7 +13,7 @@ use frona_harness::inference::provider::ModelRequestSettings;
 use frona_harness::inference::provider::StreamToken;
 use rig_core::completion::{
     AssistantContent, Message,
-    message::{ToolCall, ToolCallId, ToolFunction},
+    message::{CallId, ToolCall, ToolFunction},
     request::{ToolDefinition, Usage},
 };
 use std::{
@@ -109,12 +109,11 @@ fn group(provider: Arc<Script>) -> ModelGroup {
     }
 }
 fn call(name: &str, args: serde_json::Value) -> Vec<AssistantContent> {
-    let mut call = ToolCall::new(
-        ToolCallId::new_or_mint(format!("call-{name}")),
-        ToolFunction::new(name.into(), args),
+    let call = ToolCall::new(
+        CallId::from_wire(format!("call-{name}")),
+        ToolFunction::new(name.try_into().unwrap(), args),
     );
-    call.signature = Some("opaque-provider-signature".into());
-    vec![AssistantContent::ToolCall(call)]
+    vec![AssistantContent::ToolCall(call).with_native(serde_json::json!({"thoughtSignature":"opaque-provider-signature", "functionCall":{"name":name}}))]
 }
 fn agent() -> CreateAgentRequest {
     serde_json::from_value(serde_json::json!({"name":"Assistant","handle":"assistant","description":"Fixture","model_group":"primary"})).unwrap()

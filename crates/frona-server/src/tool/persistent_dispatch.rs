@@ -154,9 +154,12 @@ impl<'a> PersistentToolDispatcher<'a> {
         tools
             .register(PersistentInvocation {
                 definition: ToolDefinition {
-                    name: definition.id.clone(),
+                    name: definition.id.clone().try_into().map_err(|_| {
+                        ToolDispatchError::ToolHook("tool name cannot be empty".into())
+                    })?,
                     description: definition.description.clone(),
                     parameters: definition.parameters.clone(),
+                    annotations: Default::default(),
                 },
                 dispatcher: self,
                 call,
@@ -240,7 +243,9 @@ impl<'a> PersistentToolDispatcher<'a> {
         &mut self,
         call: &ToolCall,
     ) -> Result<crate::inference::tool_call::ToolCall, AppError> {
-        let (arguments, description) = project_arguments(&call.function.arguments);
+        let (arguments, description) = project_arguments(
+            &harness::inference::submission::call_arguments(&call.function),
+        );
         let record = self
             .service
             .begin_tool_call(
@@ -248,11 +253,17 @@ impl<'a> PersistentToolDispatcher<'a> {
                 &active_chat(self.context)?.id,
                 &self.message_id,
                 self.turn,
-                call.wire_call_id(),
-                call.provider
+                &call.id.wire(),
+                call.native
                     .as_ref()
-                    .and_then(|provider| provider.item_id.clone()),
-                call.signature.clone(),
+                    .and_then(|native| native.item.get("id"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                call.native
+                    .as_ref()
+                    .and_then(|native| native.item.get("thoughtSignature"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
                 &call.function.name,
                 &arguments,
                 description,
@@ -412,18 +423,14 @@ impl Tool for PersistentInvocation<'_, '_> {
 pub fn project_messages(
     messages: &[rig_core::completion::Message],
 ) -> Vec<rig_core::completion::Message> {
-    use rig_core::completion::{AssistantContent, Message, message::UserContent};
+    use rig_core::completion::{Message, message::UserContent};
     messages
         .iter()
         .cloned()
         .map(|message| match message {
-            Message::Assistant { id, mut content } => {
-                for item in &mut content {
-                    if let AssistantContent::ToolCall(call) = item {
-                        call.function.arguments = project_arguments(&call.function.arguments).0;
-                    }
-                }
-                Message::Assistant { id, content }
+            Message::Assistant(mut assistant) => {
+                project_assistant(&mut assistant);
+                Message::Assistant(assistant)
             }
             Message::User { content } => {
                 let mut projected = Vec::new();
@@ -450,4 +457,21 @@ pub fn project_messages(
             message => message,
         })
         .collect()
+}
+
+/// Apply the same argument projection to live and restored assistant turns.
+/// The caller passes a view; the original recorded provider output stays intact.
+pub(crate) fn project_assistant(assistant: &mut rig_core::message::AssistantMessage) {
+    use rig_core::message::AssistantContent;
+    for item in &mut assistant.content {
+        if let AssistantContent::ToolCall(call) = item {
+            call.function = rig_core::message::ToolFunction::new(
+                call.function.name.clone(),
+                project_arguments(&harness::inference::submission::call_arguments(
+                    &call.function,
+                ))
+                .0,
+            );
+        }
+    }
 }

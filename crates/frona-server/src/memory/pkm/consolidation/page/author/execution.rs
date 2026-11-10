@@ -89,12 +89,10 @@ impl ModelProvider for Script {
         }
         Ok(InferenceOutput::new(
             output?,
-            Usage {
-                input_tokens: 10,
-                output_tokens: 5,
-                total_tokens: 15,
-                ..Default::default()
-            },
+            Usage::new()
+                .input_tokens(Some(10))
+                .output_tokens(Some(5))
+                .total_tokens(Some(15)),
         ))
     }
     async fn stream_inference(
@@ -563,7 +561,10 @@ fn read_call(index: usize) -> Result<Vec<AssistantContent>, InferenceError> {
     use rig_core::completion::message::{ToolCall, ToolFunction};
     Ok(vec![AssistantContent::ToolCall(ToolCall::from_wire(
         format!("read-{index}"),
-        ToolFunction::new("read_entity".into(), serde_json::json!({"path":"one"})),
+        ToolFunction::new(
+            "read_entity".try_into().unwrap(),
+            serde_json::json!({"path":"one"}),
+        ),
     ))])
 }
 

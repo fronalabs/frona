@@ -67,17 +67,11 @@ fn scripted_model(
 fn call(id: &str, name: &str, args: Value) -> AssistantContent {
     AssistantContent::ToolCall(ToolCall::from_wire(
         id,
-        ToolFunction::new(name.into(), args),
+        ToolFunction::new(name.try_into().unwrap(), args),
     ))
 }
 fn output(content: Vec<AssistantContent>) -> ModelOutput {
-    ModelOutput::new(
-        content,
-        UsageReport::Reported(Usage {
-            total_tokens: 3,
-            ..Usage::new()
-        }),
-    )
+    ModelOutput::new(content, UsageReport::Reported(Usage::new().total_tokens(3)))
 }
 fn submitted(value: u32) -> Result<ModelOutput, InferenceError> {
     Ok(output(vec![call(

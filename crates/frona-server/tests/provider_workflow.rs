@@ -149,7 +149,7 @@ async fn infer(service: &ModelProviderService, expected: &str) {
         })
         .await
         .unwrap();
-    assert_eq!(usage.input_tokens, 2);
+    assert_eq!(usage.input_tokens, Some(2));
     assert_eq!(
         frona_harness::inference::provider::extract_text_from_choice(&content).unwrap(),
         expected

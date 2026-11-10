@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const ID: &str = "copilot";
+
+#[derive(Clone)]
+pub struct Credentials(pub String);
 pub(crate) const CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -45,7 +48,7 @@ impl CopilotIntegration {
     pub(crate) async fn exchange(
         &self,
         github_token: &str,
-    ) -> Result<ResolvedSecret<rig_core::providers::copilot::CopilotAuth>, AppError> {
+    ) -> Result<ResolvedSecret<Credentials>, AppError> {
         let response = self
             .http
             .get(&self.exchange_url)
@@ -83,7 +86,7 @@ impl CopilotIntegration {
             ));
         }
         Ok(ResolvedSecret {
-            credentials: rig_core::providers::copilot::CopilotAuth::ApiKey(token.token),
+            credentials: Credentials(token.token),
             expires_at: Some(expires),
             cache: CachePolicy::Until(expires - chrono::Duration::seconds(30)),
         })
@@ -92,13 +95,13 @@ impl CopilotIntegration {
 
 #[async_trait::async_trait]
 impl ManagedIntegration for CopilotIntegration {
-    type Credentials = rig_core::providers::copilot::CopilotAuth;
+    type Credentials = Credentials;
 
     async fn get_secret(
         &self,
         doc: Value,
         _: &mut SecretContext,
-    ) -> Result<ResolvedSecret<rig_core::providers::copilot::CopilotAuth>, AppError> {
+    ) -> Result<ResolvedSecret<Credentials>, AppError> {
         let doc: Document = serde_json::from_value(doc)
             .map_err(|_| AppError::Validation("invalid Copilot credential".into()))?;
         if doc.github_token.is_empty() {
@@ -108,15 +111,14 @@ impl ManagedIntegration for CopilotIntegration {
     }
 }
 
-impl super::SecretEnv for rig_core::providers::copilot::CopilotAuth {
+impl super::SecretEnv for Credentials {
     fn to_env(&self) -> Result<std::collections::HashMap<String, String>, AppError> {
-        match self {
-            Self::ApiKey(token) if !token.is_empty() => {
-                Ok([("ACCESS_TOKEN".into(), token.clone())].into())
-            }
-            _ => Err(AppError::Validation(
+        if self.0.is_empty() {
+            Err(AppError::Validation(
                 "unresolved Copilot authentication".into(),
-            )),
+            ))
+        } else {
+            Ok([("ACCESS_TOKEN".into(), self.0.clone())].into())
         }
     }
 }

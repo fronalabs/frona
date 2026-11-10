@@ -71,7 +71,7 @@ impl Capabilities {
 
 /// Usage provenance is explicit. LegacyNormalized is neither a verified report
 /// nor an estimate: old adapters may substitute zero for missing wire fields.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum UsageReport {
     Reported(Usage),
     Unavailable,
@@ -113,6 +113,11 @@ impl ModelRequest {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModelOutput {
+    /// Provider provenance required to replay native reasoning and tool items.
+    #[serde(default)]
+    pub origin: Option<rig_core::message::Origin>,
+    #[serde(default)]
+    pub stop: Option<rig_core::message::StopReason>,
     pub content: Vec<AssistantContent>,
     /// Native structured output, with the original content retained separately.
     #[serde(deserialize_with = "crate::history::required")]
@@ -128,6 +133,8 @@ pub struct ModelOutput {
 impl ModelOutput {
     pub fn new(content: Vec<AssistantContent>, usage: UsageReport) -> Self {
         Self {
+            origin: None,
+            stop: None,
             content,
             structured: None,
             usage,
@@ -393,9 +400,11 @@ impl<'a> Model<'a> {
                 .map(|result| InvocationOutput {
                     origin: result.model,
                     output: ModelOutput {
+                        usage: result.output.usage_report(),
+                        origin: result.output.origin,
+                        stop: result.output.stop,
                         content: result.output.content,
                         structured: None,
-                        usage: UsageReport::LegacyNormalized(result.output.usage),
                         metadata: result.output.metadata,
                         ttft_ms: result.output.ttft_ms,
                     },
@@ -429,7 +438,22 @@ impl<'a> Model<'a> {
                 )
                 .await;
         }
-        let result = execution.check_cancellation().and(result);
+        let result = execution
+            .check_cancellation()
+            .and(result)
+            .and_then(|output| {
+                if let Some(
+                    stop @ (rig_core::message::StopReason::Length
+                    | rig_core::message::StopReason::Error(_)
+                    | rig_core::message::StopReason::Aborted(_)),
+                ) = &output.stop
+                {
+                    return Err(InferenceError::InferenceFailed(format!(
+                        "Model returned an incomplete turn: {stop:?}"
+                    )));
+                }
+                Ok(output)
+            });
         if let Some(report) = report {
             report.finish(super::report::inference_outcome(&result));
         }
@@ -620,9 +644,11 @@ impl ModelAdapter for BuiltinAdapter {
 
 fn from_builtin(output: crate::inference::provider::InferenceOutput) -> ModelOutput {
     ModelOutput {
+        usage: output.usage_report(),
+        origin: output.origin,
+        stop: output.stop,
         content: output.content,
         structured: None,
-        usage: UsageReport::LegacyNormalized(output.usage),
         metadata: output.metadata,
         ttft_ms: output.ttft_ms,
     }
@@ -632,26 +658,19 @@ fn from_builtin(output: crate::inference::provider::InferenceOutput) -> ModelOut
 pub(crate) fn portable_assistant_content(content: &AssistantContent) -> bool {
     matches!(content, AssistantContent::Text(_))
         || matches!(content, AssistantContent::ToolCall(call)
-        if call.signature.is_none() && call.additional_params.is_none()
-        && call.provider.as_ref().is_none_or(|id| id.item_id.is_none()))
+        if call.native.is_none())
 }
 
 pub(crate) fn portable_fallback_history(messages: &[Message]) -> bool {
     use rig_core::completion::message::{ToolResultContent, UserContent};
     messages.iter().all(|message| match message {
-        Message::Assistant { content, .. } => content.iter().all(portable_assistant_content),
+        Message::Assistant(message) => message.content.iter().all(portable_assistant_content),
         Message::User { content } => content.iter().all(|item| match item {
             UserContent::Text(_) => true,
-            UserContent::ToolResult(result) => {
-                result
-                    .provider
-                    .as_ref()
-                    .is_none_or(|id| id.item_id.is_none())
-                    && result
-                        .content
-                        .iter()
-                        .all(|content| matches!(content, ToolResultContent::Text(_)))
-            }
+            UserContent::ToolResult(result) => result
+                .content
+                .iter()
+                .all(|content| matches!(content, ToolResultContent::Text(_))),
             _ => false,
         }),
         Message::System { .. } => true,

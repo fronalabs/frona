@@ -69,7 +69,7 @@ pub struct CompactionLimits {
 pub enum HistoryViewEntry {
     Original(usize),
     Summary {
-        message: Message,
+        message: Box<Message>,
         covered_original_positions: Vec<usize>,
     },
 }
@@ -149,7 +149,7 @@ impl<'a> HistoryView<'a> {
                         || !covered_original_positions
                             .windows(2)
                             .all(|pair| pair[0] < pair[1])
-                        || !matches!(message, Message::User { content } if matches!(content.as_slice(), [UserContent::Text(_)]))
+                        || !matches!(message.as_ref(), Message::User { content } if matches!(content.as_slice(), [UserContent::Text(_)]))
                     {
                         return Err(invalid(
                             "summary must cover ordered unique positions and contain plain user text",
@@ -228,7 +228,7 @@ impl<'a> HistoryView<'a> {
         let compacted = CompactedView {
             source_message_count: originals.len(),
             entries: std::iter::once(HistoryViewEntry::Summary {
-                message: summary,
+                message: Box::new(summary),
                 covered_original_positions: (0..prefix_end).collect(),
             })
             .chain((prefix_end..originals.len()).map(HistoryViewEntry::Original))
@@ -253,7 +253,7 @@ impl<'a> HistoryView<'a> {
             .iter()
             .map(|entry| match entry {
                 HistoryViewEntry::Original(position) => self.originals[*position].clone(),
-                HistoryViewEntry::Summary { message, .. } => message.clone(),
+                HistoryViewEntry::Summary { message, .. } => message.as_ref().clone(),
             })
             .collect()
     }
@@ -275,7 +275,7 @@ impl<'a> HistoryView<'a> {
             .fold(request_overhead(system, tools), |tokens, entry| {
                 let message = match entry {
                     HistoryViewEntry::Original(position) => &self.originals[*position],
-                    HistoryViewEntry::Summary { message, .. } => message,
+                    HistoryViewEntry::Summary { message, .. } => message.as_ref(),
                 };
                 tokens.saturating_add(estimate_message_tokens(message))
             })
@@ -434,7 +434,7 @@ impl CompactionPlan<'_> {
             return Err(CompactionError::EmptySummary);
         }
         let mut entries = vec![HistoryViewEntry::Summary {
-            message: summary_message(summary, context),
+            message: Box::new(summary_message(summary, context)),
             covered_original_positions: self.covered.clone(),
         }];
         entries.extend(self.retained.clone());
@@ -498,7 +498,7 @@ mod tests {
                 ModelOutput::new(
                     vec![AssistantContent::ToolCall(ToolCall::from_wire(
                         "call",
-                        ToolFunction::new("lookup".into(), serde_json::json!({})),
+                        ToolFunction::new("lookup".try_into().unwrap(), serde_json::json!({})),
                     ))],
                     UsageReport::Unavailable,
                 ),
@@ -524,7 +524,7 @@ mod tests {
         let descriptor = |covered: Vec<usize>, retained: Vec<usize>| CompactedView {
             source_message_count: 4,
             entries: std::iter::once(HistoryViewEntry::Summary {
-                message: summary_message("facts", None),
+                message: Box::new(summary_message("facts", None)),
                 covered_original_positions: covered,
             })
             .chain(retained.into_iter().map(HistoryViewEntry::Original))

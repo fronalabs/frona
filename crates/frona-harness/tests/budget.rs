@@ -20,10 +20,7 @@ fn tool() -> BudgetOperation<'static> {
 fn reported(tokens: u64) -> BudgetCompletion {
     BudgetCompletion {
         outcome: BudgetOutcome::Succeeded,
-        usage: UsageReport::Reported(Usage {
-            total_tokens: tokens,
-            ..Usage::new()
-        }),
+        usage: UsageReport::Reported(Usage::new().total_tokens(tokens)),
     }
 }
 
@@ -226,13 +223,13 @@ fn uncertain_failed_and_abandoned_usage_is_charged_once() {
 
 #[test]
 fn known_only_policy_and_large_legacy_values_preserve_known_counts() {
-    let legacy = UsageReport::LegacyNormalized(Usage {
-        input_tokens: 3000,
-        output_tokens: 2000,
-        cached_input_tokens: 1000,
-        reasoning_tokens: 500,
-        ..Usage::new()
-    });
+    let legacy = UsageReport::LegacyNormalized(
+        Usage::new()
+            .input_tokens(3000)
+            .output_tokens(2000)
+            .cached_input_tokens(1000)
+            .reasoning_tokens(500),
+    );
     for policy in [
         UncertainUsagePolicy::KnownOnly,
         UncertainUsagePolicy::MinimumCharge(4096),
@@ -295,10 +292,7 @@ fn custom_trait_policy_receives_original_completion_once_and_can_borrow() {
         .unwrap()
         .complete(BudgetCompletion {
             outcome: BudgetOutcome::Cancelled,
-            usage: UsageReport::LegacyNormalized(Usage {
-                total_tokens: 13,
-                ..Usage::new()
-            }),
+            usage: UsageReport::LegacyNormalized(Usage::new().total_tokens(13)),
         });
     drop(budget.admit(tool()).unwrap());
     assert_eq!(
@@ -311,8 +305,48 @@ fn custom_trait_policy_receives_original_completion_once_and_can_borrow() {
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].outcome, BudgetOutcome::Cancelled);
     assert!(
-        matches!(&records[0].usage, UsageReport::LegacyNormalized(usage) if usage.total_tokens == 13)
+        matches!(&records[0].usage, UsageReport::LegacyNormalized(usage) if usage.total_tokens == Some(13))
     );
     assert_eq!(records[1].outcome, BudgetOutcome::Abandoned);
     assert!(matches!(records[1].usage, UsageReport::Unavailable));
+}
+
+#[test]
+fn reported_partial_usage_retains_known_counts_and_applies_uncertainty_policy() {
+    for (policy, expected) in [
+        (UncertainUsagePolicy::KnownOnly, 100),
+        (UncertainUsagePolicy::MinimumCharge(4096), 4096),
+    ] {
+        let budget = DefaultBudget::new(BudgetLimits {
+            uncertain_usage: policy,
+            ..BudgetLimits::default()
+        });
+        budget.admit(model()).unwrap().complete(BudgetCompletion {
+            outcome: BudgetOutcome::Succeeded,
+            usage: UsageReport::Reported(Usage::new().input_tokens(100)),
+        });
+        assert_eq!(budget.snapshot().tokens, expected);
+        assert_eq!(budget.snapshot().uncertain_model_attempts, 1);
+    }
+    for usage in [Usage::new(), Usage::new().input_tokens(0)] {
+        let budget = DefaultBudget::default();
+        budget.admit(model()).unwrap().complete(BudgetCompletion {
+            outcome: BudgetOutcome::Succeeded,
+            usage: UsageReport::Reported(usage),
+        });
+        assert_eq!(budget.snapshot().tokens, 4096);
+        assert_eq!(budget.snapshot().uncertain_model_attempts, 1);
+    }
+    for usage in [
+        Usage::new().total_tokens(0),
+        Usage::new().input_tokens(0).output_tokens(0),
+    ] {
+        let budget = DefaultBudget::default();
+        budget.admit(model()).unwrap().complete(BudgetCompletion {
+            outcome: BudgetOutcome::Succeeded,
+            usage: UsageReport::Reported(usage),
+        });
+        assert_eq!(budget.snapshot().tokens, 0);
+        assert_eq!(budget.snapshot().uncertain_model_attempts, 0);
+    }
 }

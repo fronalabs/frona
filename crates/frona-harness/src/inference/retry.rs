@@ -9,7 +9,7 @@ use rig_core::completion::request::ToolDefinition as RigToolDefinition;
 
 use crate::inference::context::{estimate_message_tokens, estimate_tokens, truncate_history};
 use crate::inference::error::InferenceError;
-use crate::inference::observation::LatencyMetrics;
+use crate::inference::observation::{LatencyMetrics, Observations};
 use crate::inference::provider::ModelProvider;
 use crate::inference::provider::{InferenceOutput, ModelConfig};
 use crate::inference::{ModelGroup, ModelRequest, config::RetryConfig};
@@ -219,7 +219,8 @@ pub(crate) async fn inference_with_retry_and_fallback(
                 .as_ref()
                 .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
             let provider = provider_for(&model_group.providers, &model_group.main)?;
-            execution
+            let attempt_start = Instant::now();
+            let output = execution
                 .model_attempt(
                     &model_group.main,
                     observations,
@@ -233,9 +234,12 @@ pub(crate) async fn inference_with_retry_and_fallback(
                             temperature,
                         )
                     },
-                    |output| UsageReport::LegacyNormalized(output.usage),
+                    |output| output.usage_report(),
                 )
-                .await
+                .await?;
+            ensure_complete_observed(&output, observations, &model_group.main, 0, attempt_start)
+                .await?;
+            Ok(output)
         },
     )
     .await
@@ -306,7 +310,8 @@ pub(crate) async fn inference_with_retry_and_fallback(
                 .as_ref()
                 .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
             let provider = provider_for(&model_group.providers, fallback)?;
-            execution
+            let attempt_start = Instant::now();
+            let output = execution
                 .model_attempt(
                     fallback,
                     observations,
@@ -320,9 +325,18 @@ pub(crate) async fn inference_with_retry_and_fallback(
                             temperature,
                         )
                     },
-                    |output| UsageReport::LegacyNormalized(output.usage),
+                    |output| output.usage_report(),
                 )
-                .await
+                .await?;
+            ensure_complete_observed(
+                &output,
+                observations,
+                fallback,
+                (idx + 1) as u8,
+                attempt_start,
+            )
+            .await?;
+            Ok(output)
         })
         .await
         {
@@ -405,7 +419,8 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
                 .as_ref()
                 .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
             let provider = provider_for(&model_group.providers, &model_group.main)?;
-            execution
+            let attempt_start = Instant::now();
+            let output = execution
                 .model_attempt(
                     &model_group.main,
                     observations,
@@ -423,12 +438,21 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
                         output
                             .response
                             .as_ref()
-                            .map_or(UsageReport::Unavailable, |response| {
-                                UsageReport::LegacyNormalized(response.usage)
-                            })
+                            .map_or(UsageReport::Unavailable, |response| response.usage_report())
                     },
                 )
-                .await
+                .await?;
+            if let Some(response) = &output.response {
+                ensure_complete_observed(
+                    response,
+                    observations,
+                    &model_group.main,
+                    0,
+                    attempt_start,
+                )
+                .await?;
+            }
+            Ok(output)
         },
     )
     .await
@@ -490,7 +514,8 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
                 .as_ref()
                 .map_err(|error| InferenceError::InferenceFailed(error.clone()))?;
             let provider = provider_for(&model_group.providers, fallback)?;
-            execution
+            let attempt_start = Instant::now();
+            let output = execution
                 .model_attempt(
                     fallback,
                     observations,
@@ -508,12 +533,21 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
                         output
                             .response
                             .as_ref()
-                            .map_or(UsageReport::Unavailable, |response| {
-                                UsageReport::LegacyNormalized(response.usage)
-                            })
+                            .map_or(UsageReport::Unavailable, |response| response.usage_report())
                     },
                 )
-                .await
+                .await?;
+            if let Some(response) = &output.response {
+                ensure_complete_observed(
+                    response,
+                    observations,
+                    fallback,
+                    (idx + 1) as u8,
+                    attempt_start,
+                )
+                .await?;
+            }
+            Ok(output)
         })
         .await
         {
@@ -552,6 +586,34 @@ pub(crate) async fn structured_inference_with_retry_and_fallback(
     }
 
     Err(InferenceError::AllFallbacksFailed(errors))
+}
+
+// The provider call has already charged its actual usage. A rejected partial
+// output is also billable telemetry, although it cannot become a completed turn.
+// Successful operations retain the existing aggregate retry timing callback.
+async fn ensure_complete_observed(
+    output: &InferenceOutput,
+    observations: Observations<'_>,
+    model: &ModelConfig,
+    fallback_index: u8,
+    attempt_start: Instant,
+) -> Result<(), InferenceError> {
+    if let Err(error) = output.ensure_complete() {
+        observations
+            .usage(
+                model,
+                Some(&output.usage),
+                fallback_index,
+                LatencyMetrics {
+                    duration_ms: attempt_start.elapsed().as_millis() as u64,
+                    ttft_ms: output.ttft_ms,
+                    ..Default::default()
+                },
+            )
+            .await;
+        return Err(error);
+    }
+    Ok(())
 }
 
 pub(crate) fn provider_for(

@@ -1,3 +1,6 @@
+#[path = "helpers/native.rs"]
+mod native;
+
 use frona_harness::{inference::Usage, *};
 use rig_core::completion::{
     AssistantContent, Message,
@@ -12,32 +15,32 @@ use uuid::Uuid;
 
 fn output(content: Vec<AssistantContent>) -> ModelOutput {
     ModelOutput {
+        origin: None,
+        stop: None,
         content,
         structured: Some(json!({"native": [true, null]})),
-        usage: UsageReport::Reported(Usage {
-            input_tokens: 17,
-            output_tokens: 9,
-            total_tokens: 26,
-            ..Usage::new()
-        }),
+        usage: UsageReport::Reported(
+            Usage::new()
+                .input_tokens(17)
+                .output_tokens(9)
+                .total_tokens(26),
+        ),
         metadata: json!({"provider": {"opaque": [null, "signature+/=\n"]}}),
         ttft_ms: Some(23),
     }
 }
 fn call(name: &str, args: Value) -> AssistantContent {
-    AssistantContent::ToolCall(
-        ToolCall::from_dual_wire(
-            "item",
+    AssistantContent::ToolCall(native::call(
+        ToolCall::from_wire(
             "same-provider-id",
-            ToolFunction::new(name.into(), args),
-        )
-        .with_signature(Some("opaque+/=\nsignature".into()))
-        .with_additional_params(Some(json!({"provider-extension": [1, null]}))),
-    )
+            ToolFunction::new(name.try_into().unwrap(), args),
+        ),
+        json!({"id":"item", "call_id":"same-provider-id", "signature":"opaque+/=\nsignature", "provider-extension":[1,null]}),
+    ))
 }
 fn opened(initial: Option<Vec<UserContent>>) -> HistoryRecord {
     HistoryRecord {
-        version: 1,
+        version: 2,
         conversation: Uuid::nil(),
         seq: 0,
         event: HistoryEvent::Opened {
@@ -49,7 +52,7 @@ fn opened(initial: Option<Vec<UserContent>>) -> HistoryRecord {
 }
 fn append(records: &mut Vec<HistoryRecord>, event: HistoryEvent) {
     records.push(HistoryRecord {
-        version: 1,
+        version: 2,
         conversation: records[0].conversation,
         seq: records.len() as u64,
         event,
@@ -117,10 +120,7 @@ fn rich_source_history_roundtrips_exactly_and_batches_in_proposal_order() {
     let actions = source
         .record_response(
             output(vec![
-                AssistantContent::Reasoning(Reasoning::new_with_signature(
-                    "thinking",
-                    Some("reason-signature".into()),
-                )),
+                AssistantContent::Reasoning(Reasoning::new("thinking")).with_native(json!({"type":"thinking", "thinking":"thinking", "signature":"reason-signature"})),
                 AssistantContent::Image(image.clone()),
                 call("lookup", json!("raw string, not coerced")),
                 call("lookup", json!([null, 2])),
@@ -415,7 +415,7 @@ fn format_versions_positions_and_envelopes_fail_without_guessing() {
     for (field, value, expected) in [
         (
             "version",
-            json!(2),
+            json!(3),
             HistoryDecodeErrorKind::UnsupportedVersion,
         ),
         (
@@ -666,7 +666,7 @@ fn compaction_replays_the_exact_view_and_preserves_all_originals_and_metadata() 
 }
 
 #[test]
-fn golden_version_one_wire_and_duplicate_fields_are_not_normalized() {
+fn golden_version_one_upgrades_and_duplicate_fields_are_not_normalized() {
     let golden = include_bytes!("fixtures/history/completed-checkpoint-v1.jsonl");
     let decoded = decode_jsonl(golden).unwrap();
     assert_eq!(
@@ -677,14 +677,28 @@ fn golden_version_one_wire_and_duplicate_fields_are_not_normalized() {
         decoded.replay.checkpoint.unwrap().1.payload,
         json!({"done": true})
     );
+    let upgraded = encode_jsonl(decoded.replay.conversation.history()).unwrap();
+    assert!(
+        decoded
+            .replay
+            .conversation
+            .history()
+            .iter()
+            .all(|record| record.version == 2)
+    );
+    let reread = decode_jsonl(&upgraded).unwrap();
     assert_eq!(
-        encode_jsonl(decoded.replay.conversation.history()).unwrap(),
-        golden
+        reread.replay.conversation.messages(),
+        decoded.replay.conversation.messages()
+    );
+    assert_eq!(
+        reread.replay.checkpoint.unwrap().1.payload,
+        json!({"done":true})
     );
     let original = String::from_utf8(encode_jsonl(&[opened(None)]).unwrap()).unwrap();
     for (from, to) in [
         ("\"seq\":0", "\"seq\":0,\"seq\":0"),
-        ("\"version\":1", "\"version\":2,\"version\":1"),
+        ("\"version\":2", "\"version\":2,\"version\":2"),
         ("\"initial\":null", "\"initial\":null,\"initial\":[]"),
         ("\"mode\":\"Text\"", "\"mode\":\"Text\",\"mode\":\"Text\""),
     ] {

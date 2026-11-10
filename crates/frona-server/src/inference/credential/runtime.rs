@@ -813,13 +813,12 @@ mod tests {
             secret: &crate::credential::managed::integration::ErasedSecret,
             counter: &InferenceCounter,
         ) -> Result<Arc<dyn ModelProvider>, InferenceError> {
-            let rig_core::providers::chatgpt::ChatGPTAuth::AccessToken { access_token, .. } =
-                secret
-                    .credentials::<rig_core::providers::chatgpt::ChatGPTAuth>()
-                    .map_err(|e| InferenceError::ConfigError(e.to_string()))?
-            else {
-                return Err(InferenceError::ConfigError("expected access token".into()));
-            };
+            let crate::credential::managed::integration::openai_codex::Credentials {
+                access_token,
+                ..
+            } = secret
+                .credentials::<crate::credential::managed::integration::openai_codex::Credentials>()
+                .map_err(|e| InferenceError::ConfigError(e.to_string()))?;
             let mut config = config.clone();
             config.api_key = Some(access_token.to_owned());
             build_provider(connection, &config, counter)

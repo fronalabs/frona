@@ -1,3 +1,6 @@
+#[path = "helpers/native.rs"]
+mod native;
+
 use frona_harness::{
     ActionKind, ActionResolution, ActionStatus, Conversation, ConversationError,
     ConversationStatus, ModelOutput, ToolContent, ToolOutput, UsageReport,
@@ -14,7 +17,7 @@ use serde_json::{Value, json};
 fn call(id: &str, name: &str, arguments: Value) -> AssistantContent {
     AssistantContent::ToolCall(ToolCall::from_wire(
         id,
-        ToolFunction::new(name.into(), arguments),
+        ToolFunction::new(name.try_into().unwrap(), arguments),
     ))
 }
 fn output(content: Vec<AssistantContent>) -> ModelOutput {
@@ -25,7 +28,8 @@ fn result(text: &str) -> ActionResolution {
 }
 fn offered(name: &str) -> ToolDefinition {
     ToolDefinition {
-        name: name.into(),
+        annotations: Default::default(),
+        name: name.try_into().unwrap(),
         description: "application schema".into(),
         parameters: json!({"type":"object"}),
     }
@@ -81,7 +85,7 @@ fn records_every_mixed_proposal_without_decoding_dispatch_or_mutating_arguments(
     );
     assert_eq!(conversation.messages().len(), 2);
     assert!(
-        matches!(&conversation.messages()[1], Message::Assistant {content,..} if content == &original)
+        matches!(&conversation.messages()[1], Message::Assistant(rig_core::completion::message::AssistantMessage { content, .. }) if content == &original)
     );
     assert_eq!(
         conversation.request_messages().unwrap_err(),
@@ -100,18 +104,17 @@ fn resolves_out_of_order_into_one_original_order_result_batch_with_rich_content(
         media_type: Some(ImageMediaType::PNG),
         ..Default::default()
     };
-    let signed = ToolCall::from_dual_wire(
-        "item-1",
-        "call-1",
-        ToolFunction::new("lookup".into(), json!({"description":"keep"})),
-    )
-    .with_signature(Some("opaque+/=\nunchanged".into()))
-    .with_additional_params(Some(json!({"opaque":"call metadata"})));
+    let signed = native::call(
+        ToolCall::from_wire(
+            "call-1",
+            ToolFunction::new("lookup".try_into().unwrap(), json!({"description":"keep"})),
+        ),
+        json!({"id":"item-1", "call_id":"call-1", "signature":"opaque+/=\nunchanged", "opaque":"call metadata"}),
+    );
     let contents = vec![
-        AssistantContent::Reasoning(Reasoning::new_with_signature(
-            "thinking",
-            Some("reason-signature".into()),
-        )),
+        AssistantContent::Reasoning(Reasoning::new("thinking")).with_native(
+            json!({"type":"thinking", "thinking":"thinking", "signature":"reason-signature"}),
+        ),
         AssistantContent::Image(image.clone()),
         AssistantContent::ToolCall(signed.clone()),
         call("call-2", "submit", json!({"answer":42})),
@@ -148,7 +151,7 @@ fn resolves_out_of_order_into_one_original_order_result_batch_with_rich_content(
         .unwrap();
     assert_eq!(conversation.messages().len(), 3);
     assert!(
-        matches!(&conversation.messages()[1], Message::Assistant {content,..} if content == &contents)
+        matches!(&conversation.messages()[1], Message::Assistant(rig_core::completion::message::AssistantMessage { content, .. }) if content == &contents)
     );
     let Message::User { content } = &conversation.messages()[2] else {
         panic!("result batch missing")
@@ -158,11 +161,10 @@ fn resolves_out_of_order_into_one_original_order_result_batch_with_rich_content(
         panic!("tool result missing")
     };
     assert_eq!(first.call, signed.id);
-    assert_eq!(first.provider, signed.provider);
     assert_eq!(first.name, "lookup");
     assert_eq!(first.content, rich.content);
     assert!(
-        matches!(&content[1], UserContent::ToolResult(result) if result.call.as_str() == "call-2")
+        matches!(&content[1], UserContent::ToolResult(result) if result.call.wire() == "call-2")
     );
     assert_eq!(
         conversation.responses()[0].actions()[0]
@@ -197,8 +199,8 @@ fn duplicate_and_absent_provider_ids_do_not_conflate_action_slots() {
             .action(&pending.actions[2])
             .unwrap()
             .call
-            .provider
-            .is_none()
+            .id
+            .is_local()
     );
     for (index, handle) in pending.actions.iter().enumerate() {
         conversation
@@ -344,7 +346,7 @@ fn native_structured_and_empty_content_remain_raw_without_invented_actions() {
         json!({"id":"provider-response"})
     );
     assert!(
-        matches!(&conversation.messages()[0], Message::Assistant { content, .. } if content.is_empty())
+        matches!(&conversation.messages()[0], Message::Assistant(rig_core::completion::message::AssistantMessage { content, .. }) if content.is_empty())
     );
     assert!(conversation.request_messages().is_ok());
 }
@@ -373,8 +375,8 @@ fn new_messages_and_responses_cannot_bypass_pending_pairing() {
     assert_eq!(
         conversation
             .push_user(vec![UserContent::tool_result(
-                "invented",
-                "lookup",
+                rig_core::completion::message::CallId::from_wire("invented"),
+                "lookup".try_into().unwrap(),
                 vec![ToolContent::text("invented")]
             )])
             .unwrap_err(),
@@ -386,5 +388,42 @@ fn new_messages_and_responses_cannot_bypass_pending_pairing() {
     assert_eq!(conversation.messages().len(), 3);
     assert!(
         matches!(&conversation.messages()[2], Message::User {content} if matches!(&content[0], UserContent::Text(_)))
+    );
+}
+
+#[test]
+fn native_turn_provenance_and_failed_results_survive_history_replay() {
+    use rig_core::completion::message::{Origin, StopReason};
+    let native_item = json!({"type":"tool_use", "id":"call", "name":"lookup", "input":{}});
+    let content = call("call", "lookup", json!({})).with_native(native_item.clone());
+    let origin = Origin::new("anthropic.messages", "anthropic", "claude-model");
+    let mut response = output(vec![content]);
+    response.origin = Some(origin.clone());
+    response.stop = Some(StopReason::ToolUse);
+    let mut conversation = Conversation::new("lookup");
+    let actions = conversation.record_response(response, vec![]).unwrap();
+    conversation
+        .resolve(
+            &actions.actions[0],
+            ActionResolution::Failed(ToolOutput::text("unavailable")),
+        )
+        .unwrap();
+
+    let Message::Assistant(turn) = &conversation.messages()[1] else {
+        panic!("missing turn")
+    };
+    assert_eq!(turn.origin.as_ref(), Some(&origin));
+    assert_eq!(turn.stop, Some(StopReason::ToolUse));
+    assert_eq!(turn.content[0].native_item(), Some(&native_item));
+    let Message::User { content } = &conversation.messages()[2] else {
+        panic!("missing result")
+    };
+    assert!(matches!(&content[0], UserContent::ToolResult(result) if result.is_error));
+
+    let bytes = frona_harness::encode_jsonl(conversation.history()).unwrap();
+    let restored = frona_harness::decode_jsonl(&bytes).unwrap();
+    assert_eq!(
+        restored.replay.conversation.messages(),
+        conversation.messages()
     );
 }

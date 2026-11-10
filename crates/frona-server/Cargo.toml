@@ -71,7 +71,7 @@ futures = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
 frona-derive = { path = "../frona-derive" }
 rig-core = { workspace = true }
-rig-bedrock = "=0.42.0"
+rig-bedrock = "=0.46.0"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-bedrockruntime = { version = "1.143", default-features = false, features = ["rt-tokio", "default-https-client"] }
 aws-sdk-bedrock = { version = "=1.167.0", default-features = false, features = ["rt-tokio", "default-https-client"] }

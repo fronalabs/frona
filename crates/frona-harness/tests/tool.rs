@@ -102,7 +102,8 @@ async fn lending_tool_can_mutate_borrowed_state_across_await() {
         tools
             .register(MutableTool {
                 definition: ToolDefinition {
-                    name: "observe".into(),
+                    annotations: Default::default(),
+                    name: "observe".try_into().unwrap(),
                     description: "Observe".into(),
                     parameters: json!({"type":"object"}),
                 },
@@ -126,7 +127,7 @@ async fn rich_content_and_context_are_not_flattened_or_discarded() {
         data: DocumentSourceKind::Raw(vec![1, 2, 3]),
         media_type: Some(ImageMediaType::PNG),
         detail: None,
-        additional_params: None,
+        native: None,
     };
     let expected = ToolOutput::content(vec![
         ToolContent::Text("caption".into()),
@@ -212,7 +213,8 @@ async fn registration_rejects_collisions_without_replacing_existing_tools() {
     ));
     let reserved = MutableTool {
         definition: ToolDefinition {
-            name: "submit".into(),
+            annotations: Default::default(),
+            name: "submit".try_into().unwrap(),
             description: String::new(),
             parameters: json!({}),
         },
@@ -249,4 +251,27 @@ async fn owned_tool_and_output_can_run_in_an_application_spawned_task() {
     .unwrap()
     .unwrap();
     assert_eq!(output.content[0].as_json(), Some(&json!(3)));
+}
+
+#[tokio::test]
+async fn unit_callbacks_accept_normalized_empty_arguments_without_discarding_fields() {
+    let mut calls = 0;
+    let mut unit = tool("unit", "No arguments", |_: ()| {
+        calls += 1;
+        async { Ok("called") }
+    })
+    .unwrap();
+    assert!(unit.call(json!({}), &ToolContext::default()).await.is_ok());
+    assert!(
+        unit.call(serde_json::Value::Null, &ToolContext::default())
+            .await
+            .is_ok()
+    );
+    assert!(
+        unit.call(json!({"unexpected":true}), &ToolContext::default())
+            .await
+            .is_err()
+    );
+    drop(unit);
+    assert_eq!(calls, 2);
 }

@@ -261,12 +261,12 @@ impl MockModelProvider {
             system_prompts: Mutex::new(Vec::new()),
             model_names: Mutex::new(Vec::new()),
             request_settings: Mutex::new(Vec::new()),
-            usage: Mutex::new(Usage {
-                input_tokens: 10,
-                output_tokens: 5,
-                total_tokens: 15,
-                ..Default::default()
-            }),
+            usage: Mutex::new(
+                Usage::new()
+                    .input_tokens(Some(10))
+                    .output_tokens(Some(5))
+                    .total_tokens(Some(15)),
+            ),
         }
     }
 
@@ -402,8 +402,8 @@ impl ModelProvider for MockModelProvider {
                 .into_iter()
                 .map(|(id, name, args)| {
                     AssistantContent::ToolCall(ToolCall::new(
-                        rig_core::completion::message::ToolCallId::new_or_mint(id),
-                        ToolFunction::new(name, args),
+                        rig_core::completion::message::CallId::from_wire(id),
+                        ToolFunction::new(name.try_into().expect("test tool name"), args),
                     ))
                 })
                 .collect(),
@@ -496,8 +496,8 @@ impl ModelProvider for MockModelProvider {
                 .into_iter()
                 .map(|(id, name, args)| {
                     AssistantContent::ToolCall(ToolCall::new(
-                        rig_core::completion::message::ToolCallId::new_or_mint(id),
-                        ToolFunction::new(name, args),
+                        rig_core::completion::message::CallId::from_wire(id),
+                        ToolFunction::new(name.try_into().expect("test tool name"), args),
                     ))
                 })
                 .collect(),

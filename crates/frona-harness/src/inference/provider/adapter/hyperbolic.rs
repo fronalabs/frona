@@ -8,10 +8,7 @@ use crate::inference::provider::ModelProvider;
 use crate::inference::provider::RigProvider;
 use crate::inference::provider::platform::ResolvedConnection;
 use crate::inference::provider::platform::require_api_key;
-use rig_core::{
-    client::ModelListingClient,
-    providers::{hyperbolic, openai},
-};
+use rig_core::providers::openai;
 use std::sync::Arc;
 
 pub(crate) fn build(
@@ -24,34 +21,30 @@ pub(crate) fn build(
         .effective_base_url
         .as_deref()
         .expect("Hyperbolic endpoint");
-    let client = hyperbolic::Client::builder()
-        .api_key(&key)
-        .base_url(endpoint)
-        .http_client(WireClient::default())
-        .build()
-        .map_err(|_| InferenceError::ConfigError("Cannot build Hyperbolic client".into()))?;
-    let discovery = openai::CompletionsClient::builder()
-        .api_key(&key)
-        .base_url(format!("{}/v1", endpoint.trim_end_matches('/')))
-        .http_client(WireClient::without_redirects().map_err(|_| {
+    let client = openai::OpenAIConfig::with_key(&openai::wire::HYPERBOLIC, key.clone())
+        .with_base_url(endpoint)
+        .with_route(openai::Route::Chat)
+        .connect(WireClient::default());
+    let discovery = openai::OpenAIConfig::new(key)
+        .with_base_url(format!("{}/v1", endpoint.trim_end_matches('/')))
+        .connect(WireClient::without_redirects().map_err(|_| {
             InferenceError::ConfigError("Cannot build model discovery transport".into())
-        })?)
-        .build()
-        .map_err(|_| {
-            InferenceError::ConfigError("Cannot build Hyperbolic model discovery client".into())
-        })?;
+        })?);
     Ok(Arc::new(
-        RigProvider::new(client, counter.clone())
-            .with_wire_transport()
-            .with_live_check(move || {
-                let client = discovery.clone();
-                async move {
-                    client
-                        .list_models()
-                        .await
-                        .map_err(CredentialValidationError::from)
-                }
-            }),
+        RigProvider::new(
+            move |id: &str| client.completion(id).erase(),
+            counter.clone(),
+        )
+        .with_wire_transport()
+        .with_live_check(move || {
+            let client = discovery.clone();
+            async move {
+                client
+                    .list_models()
+                    .await
+                    .map_err(CredentialValidationError::from)
+            }
+        }),
     ))
 }
 

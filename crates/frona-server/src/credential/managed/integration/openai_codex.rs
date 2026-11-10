@@ -10,6 +10,12 @@ pub const ID: &str = "openai_codex";
 pub(crate) const AUTH_ENDPOINT: &str = "https://auth.openai.com";
 pub(crate) const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 
+#[derive(Clone)]
+pub struct Credentials {
+    pub access_token: String,
+    pub account_id: Option<String>,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Document {
     pub access_token: String,
@@ -155,7 +161,7 @@ impl OpenAiCodexIntegration {
 
 #[async_trait::async_trait]
 impl ManagedIntegration for OpenAiCodexIntegration {
-    type Credentials = rig_core::providers::chatgpt::ChatGPTAuth;
+    type Credentials = Credentials;
 
     async fn get_secret(
         &self,
@@ -176,10 +182,10 @@ impl ManagedIntegration for OpenAiCodexIntegration {
     }
 }
 
-impl super::SecretEnv for rig_core::providers::chatgpt::ChatGPTAuth {
+impl super::SecretEnv for Credentials {
     fn to_env(&self) -> Result<std::collections::HashMap<String, String>, AppError> {
         match self {
-            Self::AccessToken {
+            Self {
                 access_token,
                 account_id: Some(account_id),
             } if !access_token.is_empty() && !account_id.is_empty() => Ok([
@@ -193,9 +199,7 @@ impl super::SecretEnv for rig_core::providers::chatgpt::ChatGPTAuth {
 }
 
 impl Document {
-    pub(crate) fn resolved(
-        &self,
-    ) -> Result<ResolvedSecret<rig_core::providers::chatgpt::ChatGPTAuth>, AppError> {
+    pub(crate) fn resolved(&self) -> Result<ResolvedSecret<Credentials>, AppError> {
         let current = self;
         let expiry = current
             .expires_at
@@ -211,7 +215,7 @@ impl Document {
         }
         let early = expiry - chrono::Duration::seconds(30);
         Ok(ResolvedSecret {
-            credentials: rig_core::providers::chatgpt::ChatGPTAuth::AccessToken {
+            credentials: Credentials {
                 access_token: current.access_token.clone(),
                 account_id: Some(account.clone()),
             },

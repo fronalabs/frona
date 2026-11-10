@@ -1,3 +1,6 @@
+#[path = "helpers/native.rs"]
+mod native;
+
 use frona_harness::{
     ActionResolution, CompactionError, CompactionLimits, Conversation, HistoryView,
     HistoryViewEntry, ModelOutput, ToolContent, ToolOutput, UsageReport,
@@ -24,13 +27,13 @@ fn old() -> Vec<Message> {
     ]
 }
 fn call(item: &str, id: &str, name: &str) -> ToolCall {
-    ToolCall::from_dual_wire(
-        item,
-        id,
-        ToolFunction::new(name.into(), json!({"query":"unchanged"})),
+    native::call(
+        ToolCall::from_wire(
+            id,
+            ToolFunction::new(name.try_into().unwrap(), json!({"query":"unchanged"})),
+        ),
+        json!({"id":item, "call_id":id, "signature":"opaque+/=\nsignature", "opaque":"metadata"}),
     )
-    .with_signature(Some("opaque+/=\nsignature".into()))
-    .with_additional_params(Some(json!({"opaque":"metadata"})))
 }
 fn image() -> Image {
     Image {
@@ -62,10 +65,9 @@ fn exchange(contents: Vec<AssistantContent>) -> Vec<Message> {
 fn active_attachments_and_signed_tool_groups_are_retained_exactly() {
     let mut originals = old();
     let mut active = exchange(vec![
-        AssistantContent::Reasoning(Reasoning::new_with_signature(
-            "reasoning",
-            Some("reason-signature".into()),
-        )),
+        AssistantContent::Reasoning(Reasoning::new("reasoning")).with_native(
+            json!({"type":"thinking", "thinking":"reasoning", "signature":"reason-signature"}),
+        ),
         AssistantContent::ToolCall(call("item", "call", "lookup")),
     ]);
     active[0] = Message::User {
@@ -120,7 +122,7 @@ fn text_with_results_protects_the_entire_preceding_call_group() {
 }
 
 #[test]
-fn duplicate_ids_remain_distinct_and_results_match_provider_and_name() {
+fn duplicate_ids_remain_distinct_and_results_match_call_id_and_name() {
     let mut originals = old();
     originals.extend(exchange(vec![
         AssistantContent::ToolCall(call("item-a", "same", "first")),
@@ -142,7 +144,7 @@ fn duplicate_ids_remain_distinct_and_results_match_provider_and_name() {
     if let Message::User { content } = incorrect.last_mut().unwrap()
         && let UserContent::ToolResult(result) = &mut content[0]
     {
-        result.provider = call("wrong-item", "same", "first").provider;
+        result.call = rig_core::completion::message::CallId::from_wire("wrong-call");
     }
     assert!(matches!(
         HistoryView::new(&incorrect).plan("", &[], limits()),
@@ -152,7 +154,7 @@ fn duplicate_ids_remain_distinct_and_results_match_provider_and_name() {
     if let Message::User { content } = incorrect.last_mut().unwrap()
         && let UserContent::ToolResult(result) = &mut content[0]
     {
-        result.name = "wrong-tool".into();
+        result.name = "wrong-tool".try_into().unwrap();
     }
     assert!(matches!(
         HistoryView::new(&incorrect).plan("", &[], limits()),
@@ -274,7 +276,8 @@ fn current_request_and_request_overhead_cannot_be_trimmed_to_fit() {
         Err(CompactionError::ContextOverflow { .. })
     ));
     let tools = vec![ToolDefinition {
-        name: "lookup".into(),
+        annotations: Default::default(),
+        name: "lookup".try_into().unwrap(),
         description: "description ".repeat(100),
         parameters: json!({"type":"object"}),
     }];
@@ -319,7 +322,7 @@ fn a_single_input_refinement_loop_compacts_completed_revisions_and_preserves_inp
                     vec![AssistantContent::ToolCall(ToolCall::from_wire(
                         format!("submit-{round}"),
                         ToolFunction::new(
-                            "submit".into(),
+                            "submit".try_into().unwrap(),
                             json!({"draft":"candidate ".repeat(30)}),
                         ),
                     ))],
@@ -359,7 +362,7 @@ fn a_single_input_refinement_loop_compacts_completed_revisions_and_preserves_inp
             ModelOutput::new(
                 vec![AssistantContent::ToolCall(ToolCall::from_wire(
                     "next",
-                    ToolFunction::new("submit".into(), json!({"draft":"next"})),
+                    ToolFunction::new("submit".try_into().unwrap(), json!({"draft":"next"})),
                 ))],
                 UsageReport::Unavailable,
             ),
@@ -394,12 +397,11 @@ fn restored_view_can_display_new_pending_actions_but_cannot_plan_over_them() {
         .unwrap()
         .finish("facts", None)
         .unwrap();
-    originals.push(Message::Assistant {
-        id: None,
-        content: vec![AssistantContent::ToolCall(call(
-            "item", "pending", "lookup",
-        ))],
-    });
+    originals.push(Message::Assistant(
+        rig_core::completion::message::AssistantMessage::new(vec![AssistantContent::ToolCall(
+            call("item", "pending", "lookup"),
+        )]),
+    ));
     let view = HistoryView::from_compacted(&originals, &compacted).unwrap();
     assert_eq!(view.messages().last(), originals.last());
     assert!(matches!(

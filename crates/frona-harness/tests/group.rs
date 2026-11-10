@@ -110,24 +110,19 @@ fn group(outputs: Vec<Result<InferenceOutput, InferenceError>>) -> (ModelGroup, 
     )
 }
 fn output(content: Vec<AssistantContent>) -> Result<InferenceOutput, InferenceError> {
-    Ok(InferenceOutput::new(
-        content,
-        Usage {
-            total_tokens: 7,
-            ..Usage::default()
-        },
-    )
-    .with_metadata(json!({"raw":"preserved"}))
-    .with_ttft(Some(23)))
+    Ok(InferenceOutput::new(content, Usage::new().total_tokens(7))
+        .with_metadata(json!({"raw":"preserved"}))
+        .with_ttft(Some(23)))
 }
 fn failed() -> Result<InferenceOutput, InferenceError> {
     Err(InferenceError::InferenceFailed("fixture failure".into()))
 }
 fn signed() -> AssistantContent {
-    AssistantContent::ToolCall(
-        ToolCall::from_wire("native", ToolFunction::new("read".into(), json!({})))
-            .with_signature(Some("opaque".into())),
-    )
+    AssistantContent::ToolCall(ToolCall::from_wire(
+        "native",
+        ToolFunction::new("read".try_into().unwrap(), json!({})),
+    ))
+    .with_native(json!({"signature":"opaque"}))
 }
 #[derive(Clone)]
 struct Observer(Arc<Mutex<Vec<(String, u8, u32)>>>);
@@ -447,7 +442,7 @@ async fn submission_attempt_policy_excludes_compaction_and_fallback_and_prefligh
         output(vec![AssistantContent::text("Earlier facts summarized.")]),
         output(vec![AssistantContent::ToolCall(ToolCall::from_wire(
             "result",
-            ToolFunction::new("submit".into(), json!({"value":8})),
+            ToolFunction::new("submit".try_into().unwrap(), json!({"value":8})),
         ))]),
     ]);
     prepared.context_window = 1400;
@@ -503,7 +498,7 @@ async fn one_submission_attempt_can_use_multiple_provider_attempts() {
         failed(),
         output(vec![AssistantContent::ToolCall(ToolCall::from_wire(
             "result",
-            ToolFunction::new("submit".into(), json!({"value":4})),
+            ToolFunction::new("submit".try_into().unwrap(), json!({"value":4})),
         ))]),
     ]);
     let run = Harness::new(Model::from_group(prepared))
@@ -542,4 +537,33 @@ async fn model_response_limit_excludes_compaction_and_provider_retries() {
     assert_eq!(run.await.unwrap(), "done");
     assert_eq!(report.snapshot().requests.len(), 2);
     assert_eq!(report.snapshot().attempts.len(), 4);
+}
+
+#[tokio::test]
+async fn incomplete_main_usage_is_observed_once_before_successful_fallback() {
+    let mut partial = output(vec![AssistantContent::text("unfinished")]).unwrap();
+    partial.stop = Some(rig_core::message::StopReason::Length);
+    let (prepared, calls) = group(vec![
+        Ok(partial),
+        output(vec![AssistantContent::text("complete")]),
+    ]);
+    let observer = Observer(Arc::new(Mutex::new(vec![])));
+    let harness = Harness::new(Model::from_group(prepared));
+    let mut session = harness.run("work").observer(observer.clone()).manual();
+    let report = session.report();
+    session.call_model().await.unwrap();
+    assert_eq!(session.conversation().responses().len(), 1);
+    assert_eq!(session.finish().unwrap(), "complete");
+    assert_eq!(calls.lock().unwrap().len(), 2);
+    assert_eq!(
+        *observer.0.lock().unwrap(),
+        [("main".into(), 0, 0), ("backup".into(), 1, 0)]
+    );
+    let report = report.snapshot();
+    assert_eq!(report.attempts.len(), 2);
+    for attempt in &report.attempts {
+        assert!(
+            matches!(&attempt.usage, Some(UsageReport::LegacyNormalized(usage)) if usage.total_tokens == Some(7))
+        );
+    }
 }

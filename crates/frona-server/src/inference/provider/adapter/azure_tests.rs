@@ -57,9 +57,10 @@ fn model(config: &ModelProviderConfig, deployment: &str) -> ModelConfig {
 
 fn tools() -> Vec<ToolDefinition> {
     vec![ToolDefinition {
-        name: "lookup".into(),
+        name: rig_core::message::ToolName::new("lookup").unwrap(),
         description: "Lookup".into(),
         parameters: json!({"type":"object","properties":{"q":{"type":"string"}}}),
+        annotations: Default::default(),
     }]
 }
 
@@ -125,9 +126,9 @@ async fn deployment_paths_api_key_and_native_parameters_survive_normal_stream_an
                     .await
             }
             .unwrap();
-            assert_eq!(output.usage.input_tokens, 2);
-            assert_eq!(output.usage.output_tokens, 3);
-            assert!(output.content.iter().any(|content| matches!(content, AssistantContent::ToolCall(call) if call.function.name == "lookup" && call.function.arguments == json!({"q":"value"}))));
+            assert_eq!(output.usage.input_tokens, Some(2));
+            assert_eq!(output.usage.output_tokens, Some(3));
+            assert!(output.content.iter().any(|content| matches!(content, AssistantContent::ToolCall(call) if call.function.name == "lookup" && serde_json::Value::Object(call.function.arguments.clone()) == json!({"q":"value"}))));
         }
     }
     let requests = server.received_requests().await.unwrap();

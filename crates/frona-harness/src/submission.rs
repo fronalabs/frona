@@ -37,9 +37,12 @@ pub enum SubmissionError {
 /// The same schema offered to a model is checked when decoding its submission.
 pub fn submission_tool<T: JsonSchema>() -> ToolDefinition {
     ToolDefinition {
-        name: SUBMIT_TOOL_NAME.into(),
+        name: SUBMIT_TOOL_NAME
+            .try_into()
+            .expect("submission name is nonempty"),
         description: "Submit the final structured result. Call this once you are confident.".into(),
         parameters: schemars::schema_for!(T).to_value(),
+        annotations: Default::default(),
     }
 }
 
@@ -56,8 +59,9 @@ impl Conversation {
         let definition = submission_tool::<T>();
         let validator = jsonschema::validator_for(&definition.parameters)
             .map_err(|error| SubmissionError::Schema(error.to_string()))?;
-        let args = &self.action(handle)?.call.function.arguments;
-        match decode_submission(args, Some(&validator), true) {
+        let args =
+            crate::inference::submission::call_arguments(&self.action(handle)?.call.function);
+        match decode_submission(&args, Some(&validator), true) {
             Ok(value) => {
                 self.mark_submission_validated(handle)?;
                 Ok(Submission::Ready(value))

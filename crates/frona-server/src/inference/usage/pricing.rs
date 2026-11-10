@@ -1,6 +1,6 @@
 //! Convert Rig token counts to the catalog's fresh-input pricing convention.
 
-use frona_harness::inference::{protocol::parameters::WireDialect, provider::ModelConfig};
+use frona_harness::inference::provider::ModelConfig;
 use frona_model_catalog::{ModelCatalogSnapshot, catalog::TokenUsage};
 use rig_core::completion::request::Usage;
 
@@ -10,18 +10,15 @@ pub(super) fn compute(
     usage: &Usage,
 ) -> (Option<f64>, String) {
     let normalized = TokenUsage {
-        input_tokens: if WireDialect::for_model(&model.provider) == WireDialect::Anthropic {
-            usage.input_tokens
-        } else {
-            // Total-shaped prompt counts already include cache reads and writes.
-            usage
-                .input_tokens
-                .saturating_sub(usage.cached_input_tokens)
-                .saturating_sub(usage.cache_creation_input_tokens)
-        },
-        output_tokens: usage.output_tokens,
-        cached_input_tokens: usage.cached_input_tokens,
-        cache_creation_input_tokens: usage.cache_creation_input_tokens,
+        // Rig normalizes every provider, including Anthropic, to total input.
+        input_tokens: usage
+            .input_tokens
+            .unwrap_or_default()
+            .saturating_sub(usage.cached_input_tokens.unwrap_or_default())
+            .saturating_sub(usage.cache_creation_input_tokens.unwrap_or_default()),
+        output_tokens: usage.output_tokens.unwrap_or_default(),
+        cached_input_tokens: usage.cached_input_tokens.unwrap_or_default(),
+        cache_creation_input_tokens: usage.cache_creation_input_tokens.unwrap_or_default(),
     };
     (
         snapshot
@@ -66,20 +63,18 @@ mod tests {
         for (provider, input_tokens) in [
             ("openrouter", 1_000_000),
             ("openai", 1_000_000),
-            ("anthropic", 200_000),
+            ("anthropic", 1_000_000),
         ] {
             let (snapshot, mut model) = fixture(provider);
             // These deliberately disagree with both the wire dialect and catalog identity.
             for handle in ["work-account", "anthropic", "openrouter"] {
                 model.provider_handle = crate::core::Handle::try_new(handle).unwrap().into();
-                let mut usage = Usage {
-                    input_tokens,
-                    cached_input_tokens: 600_000,
-                    cache_creation_input_tokens: 200_000,
-                    ..Default::default()
-                };
+                let mut usage = Usage::new()
+                    .input_tokens(Some(input_tokens))
+                    .cached_input_tokens(Some(600_000))
+                    .cache_creation_input_tokens(Some(200_000));
                 assert!((compute(&snapshot, &model, &usage).0.unwrap() - 1.53).abs() < 1e-9);
-                usage.output_tokens = 100_000;
+                usage.output_tokens = Some(100_000);
                 assert!((compute(&snapshot, &model, &usage).0.unwrap() - 2.53).abs() < 1e-9);
             }
         }
@@ -93,12 +88,10 @@ mod tests {
             (300, 100, 300),
             (u64::MAX, u64::MAX, u64::MAX),
         ] {
-            let usage = Usage {
-                input_tokens,
-                cached_input_tokens: reads,
-                cache_creation_input_tokens: writes,
-                ..Default::default()
-            };
+            let usage = Usage::new()
+                .input_tokens(Some(input_tokens))
+                .cached_input_tokens(Some(reads))
+                .cache_creation_input_tokens(Some(writes));
             let expected = (reads as f64 * 0.3 + writes as f64 * 3.75) / 1_000_000.0;
             let actual = compute(&snapshot, &model, &usage).0.unwrap();
             assert!((actual - expected).abs() <= expected * 1e-12);
@@ -108,12 +101,10 @@ mod tests {
     #[test]
     fn preserves_exact_catalog_rates_and_unknown_cost() {
         let (mut snapshot, model) = fixture("openrouter");
-        let usage = Usage {
-            input_tokens: 1_000_000,
-            cached_input_tokens: 600_000,
-            cache_creation_input_tokens: 200_000,
-            ..Default::default()
-        };
+        let usage = Usage::new()
+            .input_tokens(Some(1_000_000))
+            .cached_input_tokens(Some(600_000))
+            .cache_creation_input_tokens(Some(200_000));
         // A native-provider entry must never replace this connection's catalog pricing.
         snapshot.entries.insert(
             "openrouter/fixture".into(),
@@ -171,13 +162,11 @@ mod tests {
         }
         // Keep cache reads/writes in the calculation to protect their rates when
         // selecting either an exact entry or a family estimate.
-        let usage = Usage {
-            input_tokens: 1_000_000,
-            output_tokens: 100_000,
-            cached_input_tokens: 600_000,
-            cache_creation_input_tokens: 200_000,
-            ..Default::default()
-        };
+        let usage = Usage::new()
+            .input_tokens(Some(1_000_000))
+            .output_tokens(Some(100_000))
+            .cached_input_tokens(Some(600_000))
+            .cache_creation_input_tokens(Some(200_000));
         for (provider, model_id, expected) in [
             (
                 "openrouter",
@@ -214,8 +203,60 @@ mod tests {
         }
     }
 
-    #[test]
-    fn openrouter_wire_usage_preserves_cache_breakdown_or_leaves_it_zero() {
+    async fn wire_usage(provider: &str, usage: serde_json::Value, streaming: bool) -> Usage {
+        use frona_harness::inference::protocol::http::WireClient;
+        use rig_core::{
+            completion::CompletionRequest,
+            http_client::DynHttpClient,
+            providers::{anthropic, openai},
+        };
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let server = MockServer::start().await;
+        let transport = DynHttpClient::new(WireClient::without_redirects().unwrap());
+        let model = if provider == "anthropic" {
+            anthropic::AnthropicConfig::new("fixture")
+                .with_base_url(server.uri())
+                .connect(transport)
+                .completion("fixture")
+                .erase()
+        } else {
+            openai::OpenAIConfig::with_key(&openai::wire::OPENROUTER, "fixture")
+                .with_base_url(server.uri())
+                .connect(transport)
+                .completion("fixture")
+                .erase()
+        };
+        let response = if streaming {
+            ResponseTemplate::new(200).set_body_raw(format!(
+                "event: message_start\ndata: {}\n\nevent: message_delta\ndata: {}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
+                json!({"type":"message_start","message":{"id":"fixture","type":"message","role":"assistant","content":[],"model":"fixture","usage":usage}}),
+                json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":usage["output_tokens"]}}),
+            ), "text/event-stream")
+        } else {
+            let body = if provider == "anthropic" {
+                json!({"id":"fixture","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"fixture","stop_reason":"end_turn","usage":usage})
+            } else {
+                json!({"id":"fixture","object":"chat.completion","created":1,"model":"fixture","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":usage})
+            };
+            ResponseTemplate::new(200).set_body_json(body)
+        };
+        Mock::given(method("POST"))
+            .respond_with(response)
+            .expect(1)
+            .mount(&server)
+            .await;
+        let request = CompletionRequest::new("hello").max_tokens(100);
+        let response = if streaming {
+            model.stream(request).unwrap().finish().await.unwrap()
+        } else {
+            model.call(request).await.unwrap()
+        };
+        server.verify().await;
+        response.usage
+    }
+
+    #[tokio::test]
+    async fn openrouter_wire_usage_preserves_cache_breakdown_or_leaves_it_zero() {
         // Rig uses this same usage type for completion responses and terminal SSE chunks.
         for details in [
             None,
@@ -226,19 +267,17 @@ mod tests {
             if let Some(details) = &details {
                 wire["prompt_tokens_details"] = details.clone();
             }
-            let usage: rig_core::providers::openrouter::Usage =
-                serde_json::from_value(wire).unwrap();
-            let usage = Usage::from(usage);
+            let usage = wire_usage("openrouter", wire, false).await;
             let has_breakdown = details
                 .as_ref()
                 .is_some_and(|d| d.get("cache_write_tokens").is_some());
-            assert_eq!(usage.input_tokens, 1_000_000);
+            assert_eq!(usage.input_tokens, Some(1_000_000));
             assert_eq!(
-                usage.cached_input_tokens,
+                usage.cached_input_tokens.unwrap_or_default(),
                 if has_breakdown { 600_000 } else { 0 }
             );
             assert_eq!(
-                usage.cache_creation_input_tokens,
+                usage.cache_creation_input_tokens.unwrap_or_default(),
                 if has_breakdown { 200_000 } else { 0 }
             );
             let (snapshot, model) = fixture("openrouter");
@@ -247,23 +286,23 @@ mod tests {
         }
     }
 
-    #[test]
-    fn anthropic_completion_and_stream_usage_preserve_disjoint_cache_counts() {
+    #[tokio::test]
+    async fn anthropic_completion_and_stream_usage_preserve_disjoint_cache_counts() {
         for cache_counts in [None, Some((0, 0)), Some((600_000, 200_000))] {
             let mut wire = json!({"input_tokens": 200_000, "output_tokens": 100_000});
             if let Some((reads, writes)) = cache_counts {
                 wire["cache_read_input_tokens"] = json!(reads);
                 wire["cache_creation_input_tokens"] = json!(writes);
             }
-            let completion: rig_core::providers::anthropic::completion::Usage =
-                serde_json::from_value(wire.clone()).unwrap();
-            let streaming: rig_core::providers::anthropic::streaming::PartialUsage =
-                serde_json::from_value(wire).unwrap();
-            for usage in [Usage::from(completion), Usage::from(streaming)] {
+            for streaming in [false, true] {
+                let usage = wire_usage("anthropic", wire.clone(), streaming).await;
                 let (reads, writes) = cache_counts.unwrap_or_default();
-                assert_eq!(usage.input_tokens, 200_000);
-                assert_eq!(usage.cached_input_tokens, reads);
-                assert_eq!(usage.cache_creation_input_tokens, writes);
+                assert_eq!(usage.input_tokens, Some(200_000 + reads + writes));
+                assert_eq!(usage.cached_input_tokens.unwrap_or_default(), reads);
+                assert_eq!(
+                    usage.cache_creation_input_tokens.unwrap_or_default(),
+                    writes
+                );
                 let (snapshot, model) = fixture("anthropic");
                 let expected = if writes > 0 { 2.53 } else { 1.6 };
                 assert!((compute(&snapshot, &model, &usage).0.unwrap() - expected).abs() < 1e-9);
@@ -275,8 +314,8 @@ mod tests {
     fn normalizes_rig_usage_without_changing_catalog_prices() {
         for (provider, input, expected) in [
             ("openai", 1_000_000, 1.5),
-            ("anthropic", 600_000, 3.2),
-            ("anthropic", 200_000, 1.2),
+            ("anthropic", 1_000_000, 3.2),
+            ("anthropic", 600_000, 1.2),
         ] {
             let mut snapshot = ModelCatalogSnapshot::empty();
             snapshot.entries.insert(
@@ -302,11 +341,9 @@ mod tests {
                 model_id: "fixture".into(),
                 provider: frona_harness::config::ProviderModel::from_name(provider),
             };
-            let usage = Usage {
-                input_tokens: input,
-                cached_input_tokens: 400_000,
-                ..Default::default()
-            };
+            let usage = Usage::new()
+                .input_tokens(Some(input))
+                .cached_input_tokens(Some(400_000));
             for handle in [provider, "work-account", "other-account"] {
                 model.provider_handle = crate::core::Handle::try_new(handle).unwrap().into();
                 let (cost, version) = compute(&snapshot, &model, &usage);

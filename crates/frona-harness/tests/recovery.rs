@@ -49,7 +49,7 @@ fn record(
                         AssistantContent::ToolCall(ToolCall::from_wire(
                             "duplicate-id",
                             ToolFunction::new(
-                                (*name).into(),
+                                (*name).try_into().unwrap(),
                                 if *name == "submit" {
                                     json!("candidate")
                                 } else {
@@ -455,7 +455,7 @@ async fn live_incomplete_recovery_preserves_old_report_and_uses_a_fresh_scope() 
         model_calls.clone(),
         vec![AssistantContent::ToolCall(ToolCall::from_wire(
             "one",
-            ToolFunction::new("work".into(), json!({})),
+            ToolFunction::new("work".try_into().unwrap(), json!({})),
         ))],
     );
     let run = Harness::new(fake).run("input").tool(

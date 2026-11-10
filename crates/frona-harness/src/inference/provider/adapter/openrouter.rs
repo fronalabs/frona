@@ -1,7 +1,6 @@
 //! OpenRouter's model directory is public; credential validation uses `/key`.
+use rig_core::providers::openai;
 use std::sync::Arc;
-
-use rig_core::{client::ModelListingClient, providers::openrouter};
 
 use crate::config::ModelProviderConfig;
 use crate::inference::error::InferenceError;
@@ -35,59 +34,60 @@ pub(crate) fn build(
         .map_err(|_| {
             InferenceError::ConfigError("Cannot build OpenRouter validation client".into())
         })?;
-    let client = openrouter::Client::builder()
-        .api_key(&key)
-        .base_url(endpoint)
-        .http_client(WireClient::default())
-        .build()
-        .map_err(|_| InferenceError::ConfigError("Cannot build OpenRouter client".into()))?;
+    let client = openai::OpenAIConfig::with_key(&openai::wire::OPENROUTER, key)
+        .with_base_url(endpoint)
+        .with_route(openai::Route::Chat)
+        .connect(WireClient::default());
     let discovery_client = client.clone();
     Ok(Arc::new(
-        RigProvider::new(client, counter.clone())
-            .with_wire_transport()
-            .with_live_check(move || {
-                let client = discovery_client.clone();
-                async move {
-                    client
-                        .list_models()
-                        .await
-                        .map_err(CredentialValidationError::from)
-                }
-            })
-            .with_validation_check(move || {
-                let client = validation_client.clone();
-                let url = validation_url.clone();
-                let authorization = authorization.clone();
-                async move {
-                    let response = client
-                        .get(url)
-                        .header(reqwest::header::AUTHORIZATION, authorization)
-                        .send()
-                        .await
-                        .map_err(|_| {
-                            CredentialValidationError::Failed(
-                                "OpenRouter credential request failed".into(),
-                            )
-                        })?;
-                    match response.status().as_u16() {
-                        200 => {}
-                        401 | 403 => return Err(CredentialValidationError::AuthenticationRejected),
-                        status => {
-                            return Err(CredentialValidationError::Failed(format!(
-                                "OpenRouter returned HTTP {status}"
-                            )));
-                        }
-                    }
-                    let body: serde_json::Value = response.json().await.map_err(|_| {
-                        CredentialValidationError::Failed("Invalid OpenRouter key response".into())
+        RigProvider::new(
+            move |id: &str| client.completion(id).erase(),
+            counter.clone(),
+        )
+        .with_wire_transport()
+        .with_live_check(move || {
+            let client = discovery_client.clone();
+            async move {
+                client
+                    .list_models()
+                    .await
+                    .map_err(CredentialValidationError::from)
+            }
+        })
+        .with_validation_check(move || {
+            let client = validation_client.clone();
+            let url = validation_url.clone();
+            let authorization = authorization.clone();
+            async move {
+                let response = client
+                    .get(url)
+                    .header(reqwest::header::AUTHORIZATION, authorization)
+                    .send()
+                    .await
+                    .map_err(|_| {
+                        CredentialValidationError::Failed(
+                            "OpenRouter credential request failed".into(),
+                        )
                     })?;
-                    if !body.get("data").is_some_and(serde_json::Value::is_object) {
-                        return Err(CredentialValidationError::Failed(
-                            "Invalid OpenRouter key response".into(),
-                        ));
+                match response.status().as_u16() {
+                    200 => {}
+                    401 | 403 => return Err(CredentialValidationError::AuthenticationRejected),
+                    status => {
+                        return Err(CredentialValidationError::Failed(format!(
+                            "OpenRouter returned HTTP {status}"
+                        )));
                     }
-                    Ok(())
                 }
-            }),
+                let body: serde_json::Value = response.json().await.map_err(|_| {
+                    CredentialValidationError::Failed("Invalid OpenRouter key response".into())
+                })?;
+                if !body.get("data").is_some_and(serde_json::Value::is_object) {
+                    return Err(CredentialValidationError::Failed(
+                        "Invalid OpenRouter key response".into(),
+                    ));
+                }
+                Ok(())
+            }
+        }),
     ))
 }

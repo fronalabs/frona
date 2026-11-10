@@ -141,7 +141,7 @@ async fn agent_with_tool_calls_single_turn() {
     assert_eq!(result.len(), 4);
     assert!(matches!(&result[0], RigMessage::User { .. }));
 
-    if let RigMessage::Assistant { content, .. } = &result[1] {
+    if let RigMessage::Assistant(rig_core::message::AssistantMessage { content, .. }) = &result[1] {
         let items: Vec<_> = content.iter().collect();
         assert_eq!(items.len(), 2);
         assert!(
@@ -165,7 +165,7 @@ async fn agent_with_tool_calls_single_turn() {
         panic!("Expected user message with tool results");
     }
 
-    if let RigMessage::Assistant { content, .. } = &result[3] {
+    if let RigMessage::Assistant(rig_core::message::AssistantMessage { content, .. }) = &result[3] {
         let items: Vec<_> = content.iter().collect();
         assert_eq!(items.len(), 1);
         assert!(matches!(items[0], AssistantContent::Text(t) if t.text == "Here's the answer"));
@@ -218,7 +218,7 @@ async fn agent_executing_status_no_final_text() {
 
     assert_eq!(result.len(), 3);
     assert!(matches!(&result[0], RigMessage::User { .. }));
-    assert!(matches!(&result[1], RigMessage::Assistant { .. }));
+    assert!(matches!(&result[1], RigMessage::Assistant(_)));
     assert!(matches!(&result[2], RigMessage::User { .. }));
 }
 
@@ -241,7 +241,7 @@ async fn agent_without_tool_calls_unchanged() {
 
     assert_eq!(result.len(), 2);
     assert!(matches!(&result[0], RigMessage::User { .. }));
-    if let RigMessage::Assistant { content, .. } = &result[1] {
+    if let RigMessage::Assistant(rig_core::message::AssistantMessage { content, .. }) = &result[1] {
         let items: Vec<_> = content.iter().collect();
         assert_eq!(items.len(), 1);
         assert!(matches!(items[0], AssistantContent::Text(t) if t.text == "Hi there!"));
@@ -272,7 +272,7 @@ async fn turn_text_appears_in_reconstructed_history() {
 
     assert_eq!(result.len(), 4);
 
-    if let RigMessage::Assistant { content, .. } = &result[1] {
+    if let RigMessage::Assistant(rig_core::message::AssistantMessage { content, .. }) = &result[1] {
         let items: Vec<_> = content.iter().collect();
         assert_eq!(items.len(), 2);
         assert!(matches!(items[0], AssistantContent::Text(t) if t.text == "Here's what I found:"));
@@ -302,7 +302,7 @@ async fn turn_text_empty_string_omitted() {
         .await
         .history;
 
-    if let RigMessage::Assistant { content, .. } = &result[1] {
+    if let RigMessage::Assistant(rig_core::message::AssistantMessage { content, .. }) = &result[1] {
         let items: Vec<_> = content.iter().collect();
         assert_eq!(items.len(), 1);
         assert!(matches!(items[0], AssistantContent::ToolCall(_)));
@@ -339,13 +339,13 @@ async fn agent_with_tool_calls_includes_per_turn_reasoning() {
 
     assert_eq!(result.len(), 3);
 
-    if let RigMessage::Assistant { content, .. } = &result[1] {
+    if let RigMessage::Assistant(rig_core::message::AssistantMessage { content, .. }) = &result[1] {
         let items: Vec<_> = content.iter().collect();
         assert_eq!(items.len(), 3, "expected reasoning + text + tool_call");
         let AssistantContent::Reasoning(r) = items[0] else {
             panic!("first item must be Reasoning, got {:?}", items[0]);
         };
-        assert_eq!(r.display_text(), "I should engage with a question.");
+        assert_eq!(r.text, "I should engage with a question.");
         assert!(
             matches!(items[1], AssistantContent::Text(t) if t.text == "Let me ask you something.")
         );
@@ -375,7 +375,7 @@ async fn agent_with_tool_calls_omits_reasoning_when_absent() {
         .await
         .history;
 
-    if let RigMessage::Assistant { content, .. } = &result[1] {
+    if let RigMessage::Assistant(rig_core::message::AssistantMessage { content, .. }) = &result[1] {
         let items: Vec<_> = content.iter().collect();
         assert_eq!(items.len(), 2, "expected text + tool_call only");
         assert!(matches!(items[0], AssistantContent::Text(_)));
@@ -422,14 +422,16 @@ async fn agent_with_tool_calls_attaches_reasoning_per_turn() {
     assert_eq!(result.len(), 5);
 
     for (idx, expected) in [(1usize, "thinking for turn 0"), (3, "thinking for turn 1")] {
-        let RigMessage::Assistant { content, .. } = &result[idx] else {
+        let RigMessage::Assistant(rig_core::message::AssistantMessage { content, .. }) =
+            &result[idx]
+        else {
             panic!("expected assistant at {idx}");
         };
         let items: Vec<_> = content.iter().collect();
         let AssistantContent::Reasoning(r) = items[0] else {
             panic!("first item at {idx} must be Reasoning");
         };
-        assert_eq!(r.display_text(), expected);
+        assert_eq!(r.text, expected);
     }
 }
 

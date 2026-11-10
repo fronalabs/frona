@@ -3593,10 +3593,7 @@ async fn rejected_ingest_context(mock: Arc<MockModelProvider>) -> (Ctx, Chat) {
 #[tokio::test]
 async fn ingest_queued_feedback_blocked_by_budget_does_not_advance_watermark() {
     let mock = Arc::new(MockModelProvider::new(vec![rejected_ingest_quote()]));
-    mock.set_usage(frona_harness::inference::Usage {
-        total_tokens: 1_000_000,
-        ..Default::default()
-    });
+    mock.set_usage(frona_harness::inference::Usage::new().total_tokens(Some(1_000_000)));
     let (ctx, chat) = rejected_ingest_context(mock.clone()).await;
     ctx.pkm
         .run_extraction_sweep(
@@ -3639,10 +3636,7 @@ async fn ingest_incomplete_budget_result_is_revalidated_before_salvaging_shown_f
         rejected_ingest_quote(),
         rejected_ingest_quote(),
     ]));
-    mock.set_usage(frona_harness::inference::Usage {
-        total_tokens: 500_000,
-        ..Default::default()
-    });
+    mock.set_usage(frona_harness::inference::Usage::new().total_tokens(Some(500_000)));
     let (ctx, chat) = rejected_ingest_context(mock.clone()).await;
     ctx.pkm
         .run_extraction_sweep(

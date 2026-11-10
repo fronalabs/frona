@@ -180,7 +180,7 @@ fn harness(
 fn call(name: &str, args: Value) -> AssistantContent {
     AssistantContent::ToolCall(ToolCall::from_wire(
         name,
-        ToolFunction::new(name.into(), args),
+        ToolFunction::new(name.try_into().unwrap(), args),
     ))
 }
 fn target() -> Value {

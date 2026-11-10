@@ -1,3 +1,6 @@
+#[path = "helpers/native.rs"]
+mod native;
+
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -31,7 +34,7 @@ struct Args {
 fn call(name: &str) -> AssistantContent {
     AssistantContent::ToolCall(ToolCall::from_wire(
         name,
-        ToolFunction::new(name.into(), json!({"value":1})),
+        ToolFunction::new(name.try_into().unwrap(), json!({"value":1})),
     ))
 }
 fn record(
@@ -114,10 +117,7 @@ impl ModelAdapter for LocalModel {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(ModelOutput::new(
             vec![AssistantContent::text("nested")],
-            UsageReport::Reported(Usage {
-                total_tokens: self.tokens,
-                ..Usage::new()
-            }),
+            UsageReport::Reported(Usage::new().total_tokens(self.tokens)),
         ))
     }
 }
@@ -235,7 +235,8 @@ async fn rejected_unknown_and_unoffered_calls_never_execute_or_consume_budget() 
         .filter(|tool| tool.name == "allowed")
         .cloned()
         .chain([ToolDefinition {
-            name: "missing".into(),
+            annotations: Default::default(),
+            name: "missing".try_into().unwrap(),
             description: String::new(),
             parameters: json!({}),
         }])
@@ -456,7 +457,8 @@ async fn borrowed_policy_and_lending_non_sync_tool_keep_metadata_and_raw_argumen
         tools
             .register(Lending {
                 definition: ToolDefinition {
-                    name: "lending".into(),
+                    annotations: Default::default(),
+                    name: "lending".try_into().unwrap(),
                     description: String::new(),
                     parameters: json!({}),
                 },
@@ -465,13 +467,16 @@ async fn borrowed_policy_and_lending_non_sync_tool_keep_metadata_and_raw_argumen
                 non_sync: Cell::new(0),
             })
             .unwrap();
-        let original = ToolCall::from_dual_wire(
-            "item-id",
-            "call-id",
-            ToolFunction::new("lending".into(), json!({"description":"keep original"})),
-        )
-        .with_signature(Some("opaque+/=".into()))
-        .with_additional_params(Some(json!({"raw":"metadata"})));
+        let original = native::call(
+            ToolCall::from_wire(
+                "call-id",
+                ToolFunction::new(
+                    "lending".try_into().unwrap(),
+                    json!({"description":"keep original"}),
+                ),
+            ),
+            json!({"id":"item-id", "call_id":"call-id", "signature":"opaque+/=", "raw":"metadata"}),
+        );
         let mut conversation = Conversation::new("go");
         let handles = conversation
             .record_response(
@@ -550,10 +555,7 @@ async fn admitted_tool_finishes_after_exhaustion_but_cancellation_interrupts_it(
                         .unwrap()
                         .complete(BudgetCompletion {
                             outcome: BudgetOutcome::Succeeded,
-                            usage: UsageReport::Reported(Usage {
-                                total_tokens: 12,
-                                ..Usage::new()
-                            }),
+                            usage: UsageReport::Reported(Usage::new().total_tokens(12)),
                         });
                 }
                 // Cancellation wins over an already-ready tool result as specified.
@@ -658,7 +660,7 @@ async fn unsuccessful_rich_feedback_preserves_content_and_metadata() {
             data: DocumentSourceKind::Raw(vec![1, 2, 3]),
             media_type: Some(ImageMediaType::PNG),
             detail: None,
-            additional_params: None,
+            native: None,
         }),
     ])
     .with_metadata(json!({"source":"application"}));

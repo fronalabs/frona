@@ -2,6 +2,7 @@ pub mod compaction;
 pub mod config;
 pub mod context;
 pub mod error;
+pub mod history_compat;
 mod metrics;
 pub mod observation;
 pub mod protocol;

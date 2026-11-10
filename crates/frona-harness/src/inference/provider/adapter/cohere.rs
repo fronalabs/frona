@@ -8,10 +8,7 @@ use crate::inference::provider::ModelProvider;
 use crate::inference::provider::RigProvider;
 use crate::inference::provider::platform::ResolvedConnection;
 use crate::inference::provider::platform::require_api_key;
-use rig_core::{
-    model::{Model, ModelList},
-    providers::cohere,
-};
+use rig_core::model::{ModelInfo, ModelList};
 use serde::Deserialize;
 use std::{collections::HashSet, sync::Arc};
 
@@ -53,7 +50,7 @@ async fn list_models(
                         && entry.endpoints.iter().any(|endpoint| endpoint == "chat")
                 })
                 .map(|entry| {
-                    let mut model = Model::from_id(entry.name);
+                    let mut model = ModelInfo::from_id(entry.name);
                     model.context_length = entry.context_length;
                     model
                 }),
@@ -76,21 +73,21 @@ pub(crate) fn build(
         .effective_base_url
         .clone()
         .expect("Cohere endpoint");
-    let client = cohere::Client::builder()
-        .api_key(&key)
-        .base_url(&endpoint)
-        .http_client(WireClient::default())
-        .build()
-        .map_err(|_| InferenceError::ConfigError("Cannot build Cohere client".into()))?;
+    let client = rig_core::providers::cohere::CohereConfig::new(key.clone())
+        .with_base_url(endpoint.clone())
+        .connect(WireClient::default());
     let discovery = super::discovery::client(&key)?;
     Ok(Arc::new(
-        RigProvider::new(client, counter.clone())
-            .with_wire_transport()
-            .with_live_check(move || {
-                let discovery = discovery.clone();
-                let endpoint = endpoint.clone();
-                async move { list_models(&discovery, &endpoint).await }
-            }),
+        RigProvider::new(
+            move |id: &str| client.completion(id).erase(),
+            counter.clone(),
+        )
+        .with_wire_transport()
+        .with_live_check(move || {
+            let discovery = discovery.clone();
+            let endpoint = endpoint.clone();
+            async move { list_models(&discovery, &endpoint).await }
+        }),
     ))
 }
 

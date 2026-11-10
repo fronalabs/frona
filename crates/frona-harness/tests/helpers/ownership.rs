@@ -42,33 +42,33 @@ impl ModelAdapter for ApplicationClient<'_> {
         {
             AssistantContent::ToolCall(ToolCall::from_wire(
                 "observe-call",
-                ToolFunction::new("observe".into(), json!({})),
+                ToolFunction::new("observe".try_into().unwrap(), json!({})),
             ))
         } else if request.tools.iter().any(|tool| tool.name == "submit") {
             AssistantContent::ToolCall(ToolCall::from_wire(
                 "answer",
-                ToolFunction::new("submit".into(), json!({"value": self.0})),
+                ToolFunction::new("submit".try_into().unwrap(), json!({"value": self.0})),
             ))
         } else if request.messages.len() == 1
             && request.tools.iter().any(|tool| tool.name == "echo")
         {
             AssistantContent::ToolCall(ToolCall::from_wire(
                 "echo-call",
-                ToolFunction::new("echo".into(), json!({"value": self.0})),
+                ToolFunction::new("echo".try_into().unwrap(), json!({"value": self.0})),
             ))
         } else if request.tools.iter().any(|tool| tool.name == "read")
             && request.messages.len() == 1
         {
             AssistantContent::ToolCall(ToolCall::from_wire(
                 "discover",
-                ToolFunction::new("glob".into(), json!({"pattern":"*.txt"})),
+                ToolFunction::new("glob".try_into().unwrap(), json!({"pattern":"*.txt"})),
             ))
         } else if request.tools.iter().any(|tool| tool.name == "read")
             && request.messages.len() == 3
         {
             AssistantContent::ToolCall(ToolCall::from_wire(
                 "inspect",
-                ToolFunction::new("read".into(), json!({"path":"notes.txt"})),
+                ToolFunction::new("read".try_into().unwrap(), json!({"path":"notes.txt"})),
             ))
         } else {
             AssistantContent::text(self.0)
@@ -87,7 +87,8 @@ impl<'a> LendingTool<'a> {
     pub fn new(observations: &'a mut Vec<String>) -> Self {
         Self {
             definition: ToolDefinition {
-                name: "observe".into(),
+                annotations: Default::default(),
+                name: "observe".try_into().unwrap(),
                 description: "Record an observation".into(),
                 parameters: json!({"type":"object"}),
             },

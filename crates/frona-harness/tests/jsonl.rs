@@ -16,7 +16,7 @@ fn response(content: AssistantContent) -> ModelOutput {
 }
 fn append(records: &mut Vec<HistoryRecord>, event: HistoryEvent) {
     records.push(HistoryRecord {
-        version: 1,
+        version: 2,
         conversation: records[0].conversation,
         seq: records.len() as u64,
         event,
@@ -44,7 +44,7 @@ fn create_attach_append_reopen_and_continue_same_conversation() {
         .record_response(
             response(AssistantContent::ToolCall(ToolCall::from_wire(
                 "id",
-                ToolFunction::new("tool".into(), json!({"raw":true})),
+                ToolFunction::new("tool".try_into().unwrap(), json!({"raw":true})),
             ))),
             vec![],
         )
@@ -243,7 +243,7 @@ fn compaction_and_checkpoint_evidence_survive_file_reopen() {
         HistoryEvent::Checkpoint {
             checkpoint: HistoryCheckpoint {
                 schema: "loop".into(),
-                version: 1,
+                version: 2,
                 payload: json!({"candidate":7}),
                 through_seq,
             },

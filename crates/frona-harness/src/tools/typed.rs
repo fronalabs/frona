@@ -57,9 +57,12 @@ pub(super) fn typed_tool<A: JsonSchema, H>(
         .map_err(|error| ToolRegistrationError::Schema(error.to_string()))?;
     Ok(TypedTool {
         definition: ToolDefinition {
-            name,
+            name: name
+                .try_into()
+                .map_err(|_| ToolRegistrationError::InvalidName)?,
             description,
             parameters,
+            annotations: Default::default(),
         },
         validator,
         handler,
@@ -121,6 +124,21 @@ where
     }
 
     async fn call(&mut self, arguments: Value, context: &ToolContext<'_>) -> ToolResult {
+        // Rig normalizes a parameterless call's null arguments to an empty
+        // object. Unit callbacks still decode as null; other schemas keep the
+        // provider's object unchanged and undergo their usual validation.
+        let arguments = if arguments.as_object().is_some_and(serde_json::Map::is_empty)
+            && self
+                .definition
+                .parameters
+                .get("type")
+                .and_then(Value::as_str)
+                == Some("null")
+        {
+            Value::Null
+        } else {
+            arguments
+        };
         self.validator
             .validate(&arguments)
             .map_err(|error| ToolError::failed(error.to_string()))?;

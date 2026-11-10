@@ -69,12 +69,10 @@ impl ModelProvider for Script {
                 .unwrap()
                 .pop_front()
                 .expect("unexpected model call"),
-            Usage {
-                input_tokens: 10,
-                output_tokens: 5,
-                total_tokens: 15,
-                ..Usage::default()
-            },
+            Usage::default()
+                .input_tokens(Some(10))
+                .output_tokens(Some(5))
+                .total_tokens(Some(15)),
         ))
     }
     async fn stream_inference(
@@ -129,7 +127,7 @@ impl AgentTool for Read {
 fn call(id: &str, name: &str, args: serde_json::Value) -> AssistantContent {
     AssistantContent::ToolCall(ToolCall::from_wire(
         id,
-        ToolFunction::new(name.into(), args),
+        ToolFunction::new(name.try_into().unwrap(), args),
     ))
 }
 fn submit(value: u32) -> Vec<AssistantContent> {

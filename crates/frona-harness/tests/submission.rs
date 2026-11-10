@@ -20,7 +20,7 @@ struct Answer {
 fn call(id: &str, name: &str, arguments: Value) -> AssistantContent {
     AssistantContent::ToolCall(ToolCall::from_wire(
         id,
-        ToolFunction::new(name.into(), arguments),
+        ToolFunction::new(name.try_into().unwrap(), arguments),
     ))
 }
 fn record(
@@ -35,7 +35,7 @@ fn record(
         .unwrap()
         .actions
 }
-fn results(conversation: &Conversation) -> Vec<(&str, String)> {
+fn results(conversation: &Conversation) -> Vec<(String, String)> {
     conversation
         .messages()
         .iter()
@@ -44,7 +44,7 @@ fn results(conversation: &Conversation) -> Vec<(&str, String)> {
                 .iter()
                 .filter_map(|item| match item {
                     UserContent::ToolResult(result) => Some((
-                        result.call.as_str(),
+                        result.call.to_string(),
                         result
                             .content
                             .iter()
@@ -93,7 +93,7 @@ fn malformed_submission_repairs_its_call_and_waits_for_mixed_siblings() {
     assert_eq!(
         results(&conversation)
             .iter()
-            .map(|(id, _)| *id)
+            .map(|(id, _)| id.as_str())
             .collect::<Vec<_>>(),
         ["lookup", "bad", "other"]
     );
@@ -103,7 +103,7 @@ fn malformed_submission_repairs_its_call_and_waits_for_mixed_siblings() {
         conversation.responses()[0].actions()[1]
             .call()
             .function
-            .arguments,
+            .arguments_value(),
         json!({"relations":[]})
     );
 }
@@ -125,7 +125,7 @@ fn existing_wrapper_and_json_collection_repairs_preserve_original_arguments() {
             conversation.responses()[0].actions()[0]
                 .call()
                 .function
-                .arguments,
+                .arguments_value(),
             args
         );
         assert_eq!(
@@ -220,13 +220,13 @@ fn acceptance_requires_exact_validated_action_and_all_siblings_resolved() {
         conversation.responses()[0].actions()[0]
             .call()
             .function
-            .arguments,
+            .arguments_value(),
         original
     );
     assert_eq!(
         results(&conversation)
             .iter()
-            .map(|(id, _)| *id)
+            .map(|(id, _)| id.as_str())
             .collect::<Vec<_>>(),
         ["first", "second", "lookup"]
     );
@@ -356,4 +356,32 @@ fn invalid_schema_is_an_operational_error_without_repair_or_resolution() {
             .submission_validated
     );
     assert!(results(&conversation).is_empty());
+}
+
+#[test]
+fn truncated_arguments_cannot_be_accepted_from_rigs_partial_object() {
+    let raw = r#"{"classes":["Person"],"unfinished":"#;
+    let function = ToolFunction::parse("submit".try_into().unwrap(), raw);
+    assert_eq!(function.arguments["classes"], json!(["Person"]));
+    assert_eq!(function.invalid_arguments.as_deref(), Some(raw));
+    let mut conversation = Conversation::new("classify");
+    let actions = record(
+        &mut conversation,
+        vec![AssistantContent::ToolCall(ToolCall::from_wire(
+            "partial", function,
+        ))],
+    );
+    assert!(matches!(
+        conversation.submission::<Answer>(&actions[0]).unwrap(),
+        Submission::Repaired { .. }
+    ));
+    assert_eq!(
+        conversation.responses()[0].actions()[0]
+            .call()
+            .function
+            .invalid_arguments
+            .as_deref(),
+        Some(raw)
+    );
+    assert_eq!(conversation.status(), ConversationStatus::Active);
 }

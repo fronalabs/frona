@@ -822,7 +822,7 @@ impl Conversation {
                     response: response_index,
                     action: index,
                 },
-                name: action.call.function.name.clone(),
+                name: action.call.function.name.to_string(),
                 kind: action.kind,
                 status: action.status,
             });
@@ -840,10 +840,11 @@ impl Conversation {
                 );
             }
         }
-        self.messages.push(Message::Assistant {
-            id: None,
-            content: output.content.clone(),
-        });
+        self.messages.push(Message::Assistant(
+            rig_core::completion::message::AssistantMessage::new(output.content.clone())
+                .with_origin(output.origin.clone())
+                .with_stop(output.stop.clone()),
+        ));
         self.responses.push(ResponseRecord {
             message_position: self.messages.len() - 1,
             output,
@@ -1008,8 +1009,8 @@ impl Conversation {
                 .map(|action| {
                     UserContent::ToolResult(ToolResult {
                         call: action.call.id.clone(),
-                        provider: action.call.provider.clone(),
                         name: action.call.function.name.clone(),
+                        is_error: !matches!(action.resolution, Some(ActionResolution::Result(_))),
                         content: action
                             .resolution
                             .as_ref()
@@ -1057,7 +1058,7 @@ impl Conversation {
                     response: handle.response,
                     action: handle.slot,
                 },
-                name: action.call.function.name.clone(),
+                name: action.call.function.name.to_string(),
                 kind: action.kind,
                 status: action.status,
             }

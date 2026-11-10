@@ -380,8 +380,68 @@ impl ChatService {
     /// broadcast the change. Used by the command dispatch path so a handler
     /// can mutate the placeholder agent message (e.g. swap its `agent_id`)
     /// and have the harness persist the change in a single call.
+    /// Keep provider replay state written during inference when a caller saves
+    /// a message snapshot captured before the model ran.
+    async fn preserve_provider_turns(&self, msg: &mut Message) -> Result<(), AppError> {
+        if let Some(current) = self.message_repo.find_by_id(&msg.id).await? {
+            msg.provider_turns = current.provider_turns;
+        }
+        Ok(())
+    }
+
+    pub async fn next_provider_turn(&self, message_id: &str) -> Result<u32, AppError> {
+        let message = self
+            .message_repo
+            .find_by_id(message_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Message not found".into()))?;
+        let mut last = self
+            .get_tool_calls_by_message(message_id)
+            .await?
+            .into_iter()
+            .map(|call| call.turn)
+            .max();
+        for key in message.provider_turns.keys() {
+            let turn = key
+                .parse::<u32>()
+                .map_err(|_| AppError::Internal("Invalid persisted provider turn index".into()))?;
+            last = Some(last.map_or(turn, |previous| previous.max(turn)));
+        }
+        last.map_or(Ok(0), |last| {
+            last.checked_add(1)
+                .ok_or_else(|| AppError::Internal("Provider turn index exhausted".into()))
+        })
+    }
+
+    pub async fn record_provider_turn(
+        &self,
+        message_id: &str,
+        turn: u32,
+        assistant: &rig_core::message::AssistantMessage,
+    ) -> Result<(), AppError> {
+        let mut message = self
+            .message_repo
+            .find_by_id(message_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Message not found".into()))?;
+        let turns = &mut message.provider_turns;
+        if turns.contains_key(&turn.to_string()) {
+            return Err(AppError::Conflict("Provider turn already recorded".into()));
+        }
+        turns.insert(
+            turn.to_string(),
+            serde_json::to_value(assistant).map_err(|error| {
+                AppError::Internal(format!("Cannot preserve provider turn: {error}"))
+            })?,
+        );
+        self.message_repo.update(&message).await?;
+        Ok(())
+    }
+
     pub async fn save_updated_message(&self, msg: &Message) -> Result<Message, AppError> {
-        let saved = self.message_repo.update(msg).await?;
+        let mut msg = msg.clone();
+        self.preserve_provider_turns(&mut msg).await?;
+        let saved = self.message_repo.update(&msg).await?;
         if let Ok(Some(chat)) = self.chat_repo.find_by_id(&saved.chat_id).await {
             self.broadcast_message_persisted(
                 &saved,
@@ -1279,6 +1339,7 @@ impl ChatService {
     ) -> Result<MessageResponse, AppError> {
         msg.status = Some(MessageStatus::Completed);
         msg.error = None;
+        self.preserve_provider_turns(&mut msg).await?;
         let updated = self.message_repo.update(&msg).await?;
         let chat = self.chat_repo.find_by_id(&updated.chat_id).await?;
 
@@ -1325,6 +1386,7 @@ impl ChatService {
     ) -> Result<MessageResponse, AppError> {
         msg.status = Some(MessageStatus::Cancelled);
         msg.error = None;
+        self.preserve_provider_turns(&mut msg).await?;
         let updated = self.message_repo.update(&msg).await?;
         if let Ok(Some(chat)) = self.chat_repo.find_by_id(&updated.chat_id).await {
             self.broadcast.broadcast_entity_updated(
@@ -1357,6 +1419,7 @@ impl ChatService {
     ) -> Result<MessageResponse, AppError> {
         msg.status = Some(MessageStatus::Failed);
         msg.error = Some(error.clone());
+        self.preserve_provider_turns(&mut msg).await?;
         let updated = self.message_repo.update(&msg).await?;
         if let Ok(Some(chat)) = self.chat_repo.find_by_id(&updated.chat_id).await {
             self.broadcast.broadcast_entity_updated(
@@ -1393,6 +1456,7 @@ impl ChatService {
         if !matches!(msg.status, Some(MessageStatus::Paused)) {
             msg.status = Some(MessageStatus::Paused);
             msg.error = None;
+            self.preserve_provider_turns(&mut msg).await?;
             msg = self.message_repo.update(&msg).await?;
         }
         let chat = match self.chat_repo.find_by_id(&msg.chat_id).await? {
@@ -2057,6 +2121,68 @@ fn try_parse_title_json(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn provider_turns_survive_resume_and_stale_finalization_without_public_exposure() {
+        use rig_core::message::{AssistantContent, AssistantMessage, Origin, Reasoning};
+        let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
+            .await
+            .unwrap();
+        crate::db::init::setup_schema(&db).await.unwrap();
+        let fixture = crate::app_state_fixture::build(&db).await;
+        let service = &fixture.state.chat_service;
+        let now = chrono::Utc::now();
+        let chat: Chat = serde_json::from_value(serde_json::json!({
+            "id": "provider-turn-chat", "user_id": "user", "agent_id": "agent",
+            "created_at": now, "updated_at": now,
+        }))
+        .unwrap();
+        service.chat_repo.create(&chat).await.unwrap();
+        let mut stale = Message::builder(&chat.id, MessageRole::Agent, "".into())
+            .status(MessageStatus::Executing)
+            .build();
+        stale
+            .metadata
+            .insert("visible".into(), serde_json::json!("kept"));
+        service.message_repo.create(&stale).await.unwrap();
+        let first = AssistantMessage::new(vec![
+            AssistantContent::Reasoning(Reasoning::new("private")).with_native(
+                serde_json::json!({"type":"thinking","thinking":"private","signature":"opaque"}),
+            ),
+        ])
+        .with_origin(Origin::new("anthropic.messages", "anthropic", "fixture"));
+        assert_eq!(service.next_provider_turn(&stale.id).await.unwrap(), 0);
+        service
+            .record_provider_turn(&stale.id, 0, &first)
+            .await
+            .unwrap();
+        assert!(matches!(
+            service.record_provider_turn(&stale.id, 0, &first).await,
+            Err(AppError::Conflict(_))
+        ));
+        assert_eq!(service.next_provider_turn(&stale.id).await.unwrap(), 1);
+        service.save_updated_message(&stale).await.unwrap();
+        let second = AssistantMessage::new(vec![AssistantContent::text("done")]);
+        service
+            .record_provider_turn(&stale.id, 1, &second)
+            .await
+            .unwrap();
+        stale.content = "done".into();
+        let public = service.complete_agent_message(stale.clone()).await.unwrap();
+        assert!(!public.metadata.contains_key("provider_turns"));
+        assert_eq!(public.metadata["visible"], "kept");
+        let saved = service.find_message(&stale.id).await.unwrap().unwrap();
+        let turns = &saved.provider_turns;
+        assert_eq!(
+            serde_json::from_value::<AssistantMessage>(turns["0"].clone()).unwrap(),
+            first
+        );
+        assert_eq!(
+            serde_json::from_value::<AssistantMessage>(turns["1"].clone()).unwrap(),
+            second
+        );
+        assert_eq!(service.next_provider_turn(&stale.id).await.unwrap(), 2);
+    }
 
     #[tokio::test]
     async fn failed_message_persists_and_broadcasts_error_details() {

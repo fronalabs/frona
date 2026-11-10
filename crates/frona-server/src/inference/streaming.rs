@@ -5,15 +5,14 @@ use crate::{
     inference::tool_loop::{InferenceEvent, InferenceEventKind},
 };
 use backon::Retryable;
+use frona_harness::ExecutionControl;
 use frona_harness::inference::{
     InferenceError, ModelGroup, ModelRequest, RequestOverrides,
     observation::{LatencyMetrics, Observations},
     provider::{InferenceOutput, ModelConfig, StreamToken},
 };
-use frona_harness::{ExecutionControl, UsageReport};
 use rig_core::completion::{
-    AssistantContent, Message as RigMessage, message::UserContent,
-    request::ToolDefinition as RigToolDefinition,
+    Message as RigMessage, message::UserContent, request::ToolDefinition as RigToolDefinition,
 };
 use std::{
     sync::{
@@ -71,10 +70,7 @@ impl ModelGroupStreaming for ModelGroup {
 }
 
 pub enum StreamResult {
-    Contents {
-        content: Vec<AssistantContent>,
-        usage: frona_harness::inference::Usage,
-    },
+    Contents(Box<InferenceOutput>),
     Cancelled,
 }
 
@@ -220,10 +216,29 @@ async fn stream_one_model(
         let contents_result = execution.model_attempt(model_config, observations, || provider.stream_inference(
             model_config, system_prompt, chat_history.to_vec(), tools.to_vec(), text_tx,
             overrides.max_tokens, overrides.temperature,
-        ), |output| UsageReport::LegacyNormalized(output.usage)).await;
+        ), |output| output.usage_report()).await;
         let duration_ms = attempt_start.elapsed().as_millis() as u64;
 
         let turn_text = forward_handle.await.unwrap_or_default();
+        let contents_result = match contents_result {
+            Ok(output) => {
+                let usage = output.usage;
+                let ttft_ms = output.ttft_ms;
+                match output.ensure_complete() {
+                    Ok(()) => Ok(output),
+                    Err(error) => {
+                        observations.usage(model_config, Some(&usage), fallback_index, LatencyMetrics {
+                            duration_ms,
+                            ttft_ms,
+                            retry_overhead_ms: outer_start.elapsed().as_millis() as u64 - duration_ms,
+                            retry_count: retries.load(Ordering::Relaxed),
+                        }).await;
+                        Err(error)
+                    }
+                }
+            }
+            Err(error) => Err(error),
+        };
 
         match contents_result {
             Err(error) if error.is_cancelled() => Err(InferenceError::Cancelled(turn_text)),
@@ -234,7 +249,7 @@ async fn stream_one_model(
                 );
                 let last_is_assistant = matches!(
                     chat_history.last(),
-                    Some(RigMessage::Assistant { .. })
+                    Some(RigMessage::Assistant(_))
                 );
                 if last_is_tool_result || last_is_assistant {
                     let retry_overhead_ms = outer_start.elapsed().as_millis() as u64 - duration_ms;
@@ -296,12 +311,12 @@ async fn stream_one_model(
     .await;
 
     match result {
-        Ok((InferenceOutput { content, usage, .. }, text)) => {
+        Ok((output, text)) => {
             accumulated_text.push_str(&text);
             if execution.is_cancelled() {
                 return Ok(StreamResult::Cancelled);
             }
-            Ok(StreamResult::Contents { content, usage })
+            Ok(StreamResult::Contents(Box::new(output)))
         }
         Err(InferenceError::Cancelled(text)) => {
             accumulated_text.push_str(&text);

@@ -71,6 +71,7 @@ async fn assert_absent_field_defaults(field: &str) {
     match field {
         "attachments" => expected.attachments.clear(),
         "metadata" => expected.metadata.clear(),
+        "provider_turns" => expected.provider_turns.clear(),
         "delivery.attempts" => expected.delivery.as_mut().unwrap().attempts = 0,
         "delivery.tool_index" => expected.delivery.as_mut().unwrap().tool_index = 0,
         _ => unreachable!(),
@@ -85,6 +86,11 @@ async fn assert_absent_field_defaults(field: &str) {
         vec![expected]
     );
     repo.delete(&original.id).await.unwrap();
+}
+
+#[tokio::test]
+async fn legacy_messages_without_provider_turns_load_with_empty_replay_state() {
+    assert_absent_field_defaults("provider_turns").await;
 }
 
 #[tokio::test]

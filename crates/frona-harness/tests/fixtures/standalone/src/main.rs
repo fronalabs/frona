@@ -199,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ModelOutput::new(
                 vec![AssistantContent::ToolCall(ToolCall::from_wire(
                     "recovery-echo",
-                    ToolFunction::new("echo".into(), json!({"value": "recover"})),
+                    ToolFunction::new("echo".try_into().unwrap(), json!({"value": "recover"})),
                 ))],
                 UsageReport::Unavailable,
             ),

@@ -57,7 +57,7 @@ pub mod tests {
     use crate::inference::provider::ProviderModelListSource;
     use crate::inference::provider::platform::ProviderPlatform;
     use crate::inference::provider::platform::build_provider;
-    use rig_core::model::Model;
+    use rig_core::model::ModelInfo;
     use std::sync::Arc;
 
     pub fn provider(brand: &str, endpoint: &str) -> Arc<dyn ModelProvider> {
@@ -72,7 +72,7 @@ pub mod tests {
         build_provider(&connection, &config, &InferenceCounter::default()).unwrap()
     }
 
-    pub async fn models(provider: &dyn ModelProvider) -> Vec<Model> {
+    pub async fn models(provider: &dyn ModelProvider) -> Vec<ModelInfo> {
         let ProviderModelList::Listed { source, models } = provider.list_models().await.unwrap()
         else {
             panic!("expected live models")

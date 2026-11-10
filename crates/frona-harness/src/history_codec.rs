@@ -1,4 +1,4 @@
-//! Pure version-one JSONL encoding and decoding; no file or execution policy.
+//! Versioned JSONL encoding and decoding; no file or execution policy.
 use std::ops::Range;
 
 use super::{HistoryRecord, HistoryReplay, replay_history};
@@ -71,7 +71,7 @@ pub fn decode_jsonl(bytes: &[u8]) -> Result<DecodedHistory, HistoryDecodeError> 
             byte: Some(offset),
             message,
         };
-        let value: serde_json::Value = serde_json::from_slice(line)
+        let mut value: serde_json::Value = serde_json::from_slice(line)
             .map_err(|e| error(HistoryDecodeErrorKind::Corruption, e.to_string()))?;
         let version = value
             .get("version")
@@ -82,14 +82,26 @@ pub fn decode_jsonl(bytes: &[u8]) -> Result<DecodedHistory, HistoryDecodeError> 
                     "missing or invalid version".into(),
                 )
             })?;
-        if version != 1 {
+        if version != 1 && version != 2 {
             return Err(error(
                 HistoryDecodeErrorKind::UnsupportedVersion,
                 format!("unsupported version {version}"),
             ));
         }
-        let record = serde_json::from_slice(line)
-            .map_err(|e| error(HistoryDecodeErrorKind::Format, e.to_string()))?;
+        let record = if version == 1 {
+            // Legacy conversion needs a Value, but must not collapse duplicate
+            // structural fields before the typed history decoder sees them.
+            value = serde_json::from_slice::<UniqueValue>(line)
+                .map_err(|e| error(HistoryDecodeErrorKind::Format, e.to_string()))?
+                .0;
+            crate::inference::history_compat::upgrade_record(&mut value)
+                .map_err(|e| error(HistoryDecodeErrorKind::Format, e.to_string()))?;
+            serde_json::from_value(value)
+                .map_err(|e| error(HistoryDecodeErrorKind::Format, e.to_string()))?
+        } else {
+            serde_json::from_slice(line)
+                .map_err(|e| error(HistoryDecodeErrorKind::Format, e.to_string()))?
+        };
         records.push(record);
         offsets.push(offset);
         offset += line.len();
@@ -104,4 +116,70 @@ pub fn decode_jsonl(bytes: &[u8]) -> Result<DecodedHistory, HistoryDecodeError> 
         replay,
         incomplete_tail,
     })
+}
+
+/// Reject ambiguous legacy JSON at every depth before migration. Application
+/// payloads are preserved as values; malformed duplicate keys are not repaired.
+struct UniqueValue(serde_json::Value);
+
+impl<'de> serde::Deserialize<'de> for UniqueValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = UniqueValue;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a JSON value without duplicate object keys")
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(UniqueValue(value.into()))
+            }
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(UniqueValue(value.into()))
+            }
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(UniqueValue(value.into()))
+            }
+            fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Self::Value, E> {
+                serde_json::Number::from_f64(value)
+                    .map(|number| UniqueValue(serde_json::Value::Number(number)))
+                    .ok_or_else(|| E::custom("invalid JSON number"))
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(UniqueValue(value.into()))
+            }
+            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
+                Ok(UniqueValue(value.into()))
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(UniqueValue(serde_json::Value::Null))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut values = Vec::new();
+                while let Some(UniqueValue(value)) = seq.next_element()? {
+                    values.push(value);
+                }
+                Ok(UniqueValue(serde_json::Value::Array(values)))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut values = serde_json::Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if values.contains_key(&key) {
+                        return Err(serde::de::Error::custom(format!("duplicate field `{key}`")));
+                    }
+                    let UniqueValue(value) = map.next_value()?;
+                    values.insert(key, value);
+                }
+                Ok(UniqueValue(serde_json::Value::Object(values)))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
 }

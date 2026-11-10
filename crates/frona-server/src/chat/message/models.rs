@@ -185,6 +185,10 @@ pub struct Message {
     #[serde(default)]
     #[surreal(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
+    /// Exact provider replies for replay, never accepted through public metadata.
+    #[serde(default)]
+    #[surreal(default)]
+    pub provider_turns: BTreeMap<String, serde_json::Value>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -316,6 +320,7 @@ impl MessageBuilder {
             dispatch_mode: self.dispatch_mode,
             command: self.command,
             metadata: self.metadata,
+            provider_turns: BTreeMap::new(),
             created_at: chrono::Utc::now(),
         }
     }

@@ -16,7 +16,7 @@ use frona_harness::{
     },
 };
 use rig_core::{
-    model::{Model, ModelList},
+    model::{ModelInfo, ModelList},
     providers::chatgpt,
 };
 use std::sync::Arc;
@@ -58,7 +58,7 @@ async fn list_models(
             .into_iter()
             .filter(|model| model.visibility == "list")
             .map(|entry| {
-                let mut model = Model::new(entry.slug, entry.display_name);
+                let mut model = ModelInfo::new(entry.slug, entry.display_name);
                 model.description = entry.description;
                 model.context_length = entry.context_window;
                 model
@@ -88,43 +88,43 @@ fn current_provider(
     counter: &InferenceCounter,
 ) -> Result<Arc<dyn ModelProvider>, InferenceError> {
     let credentials = secret
-        .credentials::<chatgpt::ChatGPTAuth>()
+        .credentials::<crate::credential::managed::integration::openai_codex::Credentials>()
         .map_err(|error| InferenceError::ConfigError(error.to_string()))?;
-    let client =
-        chatgpt::Client::builder()
-            .api_key(credentials.clone())
-            .allow_device_flow(false)
-            .base_url(endpoint)
-            .originator("frona")
-            .user_agent(concat!("frona/", env!("CARGO_PKG_VERSION")))
-            .default_instructions("")
-            .http_client(WireClient::without_redirects().map_err(|_| {
-                InferenceError::ConfigError("Cannot build ChatGPT transport".into())
-            })?)
-            .build()
-            .map_err(|_| InferenceError::ConfigError("Cannot build ChatGPT client".into()))?;
-    let chatgpt::ChatGPTAuth::AccessToken {
+    let crate::credential::managed::integration::openai_codex::Credentials {
         access_token,
         account_id,
-    } = credentials
-    else {
-        return Err(InferenceError::ConfigError(
-            "ChatGPT discovery requires a managed access token".into(),
-        ));
-    };
+    } = credentials;
+    let mut config = rig_core::providers::openai::OpenAIConfig::with_key(
+        &chatgpt::DIALECT,
+        access_token.clone(),
+    )
+    .with_base_url(endpoint)
+    .with_instructions("");
+    config.account_id = account_id.clone();
+    if let Some(identity) = config.identity.as_mut() {
+        identity.originator = "frona".into();
+        identity.user_agent = concat!("frona/", env!("CARGO_PKG_VERSION")).into();
+    }
+    let client = config.connect(rig_core::http_client::DynHttpClient::new(
+        WireClient::without_redirects()
+            .map_err(|_| InferenceError::ConfigError("Cannot build ChatGPT transport".into()))?,
+    ));
     let discovery_client =
         frona_harness::inference::provider::adapter::discovery::client(access_token)?;
     let account_id = account_id.clone();
     let endpoint = endpoint.to_owned();
     Ok(Arc::new(
-        RigProvider::new(client, counter.clone())
-            .with_wire_transport()
-            .with_live_check(move || {
-                let client = discovery_client.clone();
-                let endpoint = endpoint.clone();
-                let account_id = account_id.clone();
-                async move { list_models(&client, &endpoint, account_id.as_deref()).await }
-            }),
+        RigProvider::new(
+            move |id: &str| client.completion(id).erase(),
+            counter.clone(),
+        )
+        .with_wire_transport()
+        .with_live_check(move || {
+            let client = discovery_client.clone();
+            let endpoint = endpoint.clone();
+            let account_id = account_id.clone();
+            async move { list_models(&client, &endpoint, account_id.as_deref()).await }
+        }),
     ))
 }
 
@@ -341,24 +341,21 @@ mod tests {
     }
 
     fn history() -> Vec<Message> {
+        let call = rig_core::message::ToolCall::from_wire(
+            "call_old",
+            rig_core::message::ToolFunction::new("lookup".try_into().unwrap(), json!({})),
+        );
+        let result = call.result(vec![ToolResultContent::text("external-result")]);
+        let call = AssistantContent::ToolCall(call).with_native(json!({"type":"function_call", "id":"fc_old", "call_id":"call_old", "name":"lookup", "arguments":"{}"}));
         vec![
             Message::user("hello"),
-            Message::Assistant {
-                id: None,
-                content: vec![AssistantContent::tool_call_with_call_id(
-                    "fc_old",
-                    "call_old".into(),
-                    "lookup",
-                    json!({}),
-                )],
-            },
+            Message::Assistant(
+                rig_core::message::AssistantMessage::new(vec![call]).with_origin(
+                    rig_core::message::Origin::new("openai.responses", "chatgpt", "manual-model"),
+                ),
+            ),
             Message::User {
-                content: vec![UserContent::tool_result_with_call_id(
-                    "fc_old",
-                    "call_old",
-                    "lookup",
-                    vec![ToolResultContent::text("external-result")],
-                )],
+                content: vec![UserContent::ToolResult(result)],
             },
         ]
     }
@@ -715,9 +712,10 @@ mod tests {
         let model = model();
         for streaming in [false, true] {
             let tools = vec![ToolDefinition {
-                name: "lookup".into(),
+                name: rig_core::message::ToolName::new("lookup").unwrap(),
                 description: "Lookup".into(),
                 parameters: json!({"type":"object","properties":{}}),
+                annotations: Default::default(),
             }];
             let result = if streaming {
                 let (tx, _rx) = tokio::sync::mpsc::channel(16);
@@ -730,9 +728,9 @@ mod tests {
                     .await
             }
             .unwrap();
-            assert_eq!(result.usage.input_tokens, 2);
-            assert_eq!(result.usage.output_tokens, 3);
-            assert!(result.content.iter().any(|item|matches!(item,AssistantContent::ToolCall(call) if call.function.name=="lookup" && call.function.arguments==json!({"ok":true}))));
+            assert_eq!(result.usage.input_tokens, Some(2));
+            assert_eq!(result.usage.output_tokens, Some(3));
+            assert!(result.content.iter().any(|item|matches!(item,AssistantContent::ToolCall(call) if call.function.name=="lookup" && serde_json::Value::Object(call.function.arguments.clone())==json!({"ok":true}))));
         }
         assert_eq!(
             provider
@@ -787,9 +785,10 @@ mod tests {
         assert!(body.get("temperature").is_none());
         for mode in 0..3 {
             let tools = vec![ToolDefinition {
-                name: "lookup".into(),
+                name: rig_core::message::ToolName::new("lookup").unwrap(),
                 description: "Lookup".into(),
                 parameters: json!({"type":"object","properties":{}}),
+                annotations: Default::default(),
             }];
             match mode {
                 0 => {

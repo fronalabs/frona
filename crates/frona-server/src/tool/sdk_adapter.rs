@@ -43,9 +43,13 @@ impl<'a, F: FnMut(ToolOutput) -> ToolResult + Send> AgentToolAdapter<'a, F> {
             tool,
             context,
             definition: ToolDefinition {
-                name: definition.id,
+                name: definition
+                    .id
+                    .try_into()
+                    .map_err(|_| AppError::Validation("tool name cannot be empty".into()))?,
                 description: definition.description,
                 parameters: definition.parameters,
+                annotations: Default::default(),
             },
             map_output,
         })
@@ -81,7 +85,7 @@ pub fn content_result(output: &ToolOutput) -> ToolResult {
             ),
             media_type: ImageMediaType::from_mime_type(&image.media_type),
             detail: None,
-            additional_params: None,
+            native: None,
         }));
     }
     let result = frona_harness::ToolOutput::content(content);

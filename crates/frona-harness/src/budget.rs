@@ -269,17 +269,24 @@ fn check(limit: BudgetLimit, maximum: Option<u64>, consumed: u64) -> Result<(), 
 }
 
 fn token_charge(usage: &UsageReport, policy: UncertainUsagePolicy) -> (u64, bool) {
-    let known = match usage {
+    let (known, complete) = match usage {
         UsageReport::Reported(usage) | UsageReport::LegacyNormalized(usage) => {
-            // Prefer the larger supplied total; do not add cache/reasoning
-            // subsets to their parent input/output counts a second time.
-            usage
-                .total_tokens
-                .max(usage.input_tokens.saturating_add(usage.output_tokens))
+            // Cache/reasoning counts are subsets, so never add them twice.
+            // Partial counts remain a lower bound, not a report of zero for
+            // whichever input/output measurement the provider omitted.
+            let parts = usage
+                .input_tokens
+                .unwrap_or_default()
+                .saturating_add(usage.output_tokens.unwrap_or_default());
+            (
+                usage.total_tokens.unwrap_or_default().max(parts),
+                usage.total_tokens.is_some()
+                    || (usage.input_tokens.is_some() && usage.output_tokens.is_some()),
+            )
         }
-        UsageReport::Unavailable => 0,
+        UsageReport::Unavailable => (0, false),
     };
-    let uncertain = !matches!(usage, UsageReport::Reported(_));
+    let uncertain = !complete || !matches!(usage, UsageReport::Reported(_));
     let charge = match (uncertain, policy) {
         (true, UncertainUsagePolicy::MinimumCharge(minimum)) => known.max(minimum),
         _ => known,

@@ -221,9 +221,10 @@ fn record(
         .definitions()
         .iter()
         .map(|d| rig_core::completion::request::ToolDefinition {
-            name: d.id.clone(),
+            name: rig_core::message::ToolName::new(d.id.clone()).unwrap(),
             description: d.description.clone(),
             parameters: d.parameters.clone(),
+            annotations: Default::default(),
         })
         .collect();
     conversation
@@ -232,17 +233,14 @@ fn record(
                 names
                     .iter()
                     .map(|name| {
-                        AssistantContent::ToolCall(
-                            ToolCall::from_dual_wire(
-                                "item",
-                                "duplicate",
-                                ToolFunction::new(
-                                    (*name).into(),
-                                    json!({"description":"Working","value":1}),
-                                ),
-                            )
-                            .with_signature(Some("signature".into())),
-                        )
+                        AssistantContent::ToolCall(ToolCall::from_wire(
+                            "duplicate",
+                            ToolFunction::new(
+                                (*name).try_into().unwrap(),
+                                json!({"description":"Working","value":1}),
+                            ),
+                        ))
+                        .with_native(json!({"id":"item", "thoughtSignature":"signature"}))
                     })
                     .collect(),
                 UsageReport::Unavailable,
@@ -327,7 +325,8 @@ async fn rich_success_and_failure_keep_raw_calls_but_project_canonical_requests(
                     && r.description.as_deref() == Some("Working"))
         );
         let raw = conversation.messages();
-        let Message::Assistant { content, .. } = &raw[0] else {
+        let Message::Assistant(rig_core::message::AssistantMessage { content, .. }) = &raw[0]
+        else {
             panic!()
         };
         let AssistantContent::ToolCall(call) = &content[0] else {
@@ -335,7 +334,8 @@ async fn rich_success_and_failure_keep_raw_calls_but_project_canonical_requests(
         };
         assert_eq!(call.function.arguments["description"], "Working");
         let projected = project_messages(raw);
-        let Message::Assistant { content, .. } = &projected[0] else {
+        let Message::Assistant(rig_core::message::AssistantMessage { content, .. }) = &projected[0]
+        else {
             panic!()
         };
         let AssistantContent::ToolCall(call) = &content[0] else {

@@ -47,13 +47,15 @@ impl<'a> ToolRegistry<'a> {
         let tool = tool.into_tool()?;
         let definition = tool.definition().clone();
         validate_name(&definition.name)?;
-        if self.tools.contains_key(&definition.name) {
-            return Err(ToolRegistrationError::Duplicate(definition.name));
+        if self.tools.contains_key(definition.name.as_str()) {
+            return Err(ToolRegistrationError::Duplicate(
+                definition.name.to_string(),
+            ));
         }
         jsonschema::validator_for(&definition.parameters)
             .map_err(|error| ToolRegistrationError::Schema(error.to_string()))?;
         self.tools.insert(
-            definition.name.clone(),
+            definition.name.to_string(),
             RegisteredTool {
                 definition,
                 tool: Box::new(tool),

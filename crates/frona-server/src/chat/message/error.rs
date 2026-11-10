@@ -177,28 +177,18 @@ fn inference_details(error: &InferenceError) -> InferenceFailureDetails {
         InferenceError::RateLimited { .. } => ErrorCategory::RateLimit,
         InferenceError::EmptyResponse => ErrorCategory::InvalidResponse,
         InferenceError::CompletionFailed(error) => {
-            use rig_core::{completion::CompletionError, http_client::Error};
-            match error {
-                CompletionError::HttpError(
-                    Error::InvalidStatusCode(status)
-                    | Error::InvalidStatusCodeWithMessage(status, _),
-                ) => {
-                    http_status = Some(status.as_u16());
-                    if status.as_u16() == 404 {
-                        ErrorCategory::ModelUnavailable
-                    } else {
-                        http_category(status.as_u16())
-                    }
-                }
-                CompletionError::HttpError(Error::Instance(_)) => ErrorCategory::Network,
-                CompletionError::JsonError(_) => ErrorCategory::InvalidResponse,
-                CompletionError::ProviderResponse(response) => {
-                    http_status = response.status.map(|status| status.as_u16());
-                    http_status
-                        .filter(|status| *status >= 400)
-                        .map(http_category)
-                        .unwrap_or(ErrorCategory::InvalidResponse)
-                }
+            use rig_core::error::ErrorKind;
+            let report = error.report();
+            http_status = report.http_status;
+            match report.kind {
+                ErrorKind::Http | ErrorKind::Timeout => ErrorCategory::Network,
+                ErrorKind::Json | ErrorKind::Response => ErrorCategory::InvalidResponse,
+                ErrorKind::ProviderResponse => match http_status {
+                    Some(404) => ErrorCategory::ModelUnavailable,
+                    Some(status) if status >= 400 => http_category(status),
+                    _ => ErrorCategory::InvalidResponse,
+                },
+                ErrorKind::Request => ErrorCategory::InvalidRequest,
                 _ => ErrorCategory::Unknown,
             }
         }
@@ -261,12 +251,10 @@ mod tests {
             &model("subscription", "gpt-5.3-codex"),
             || async {
                 calls.fetch_add(1, Ordering::Relaxed);
-                Err(InferenceError::CompletionFailed(
-                    rig_core::completion::CompletionError::HttpError(
-                        rig_core::http_client::Error::InvalidStatusCodeWithMessage(
-                            axum::http::StatusCode::BAD_REQUEST,
-                            "Model unavailable for this account".into(),
-                        ),
+                Err(InferenceError::from(
+                    rig_core::error::ProviderError::from_http_response(
+                        axum::http::StatusCode::BAD_REQUEST,
+                        "Model unavailable for this account",
                     ),
                 ))
             },

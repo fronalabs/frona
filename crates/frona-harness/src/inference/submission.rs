@@ -1,5 +1,16 @@
 //! Shared structured-payload decoding and repair, without runtime services.
 
+/// Preserve invalid arguments as submitted instead of executing Rig's partial
+/// object projection. Typed tools and submissions can then reject or repair them.
+pub fn call_arguments(function: &rig_core::completion::message::ToolFunction) -> serde_json::Value {
+    match &function.invalid_arguments {
+        Some(raw) => {
+            serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.clone()))
+        }
+        None => function.arguments_value(),
+    }
+}
+
 /// Turn a `submit` call's arguments into `T`, tolerating one spurious wrapper level, and
 /// on failure describing the payload rather than just naming a field.
 ///

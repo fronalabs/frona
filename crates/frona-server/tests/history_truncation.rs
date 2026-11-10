@@ -13,9 +13,7 @@ use helpers::{
     MockModelProvider, MockResponse, test_metrics_ctx, test_model_group, test_providers,
     test_usage_ctx,
 };
-use rig_core::completion::message::{
-    ProviderCallId, ToolCallId, ToolResult, ToolResultContent, UserContent,
-};
+use rig_core::completion::message::{CallId, ToolResult, ToolResultContent, UserContent};
 use rig_core::completion::{AssistantContent, Message};
 
 const SYSTEM: &str = "fixture system";
@@ -74,11 +72,10 @@ fn result(ids: &[&str]) -> Message {
         content: ids
             .iter()
             .map(|id| {
-                let provider = ProviderCallId::new(*id);
                 UserContent::ToolResult(ToolResult {
-                    call: ToolCallId::for_provider(provider.as_ref()),
-                    provider,
-                    name: "read".into(),
+                    call: CallId::from_wire(*id),
+                    name: "read".try_into().unwrap(),
+                    is_error: false,
                     content: vec![ToolResultContent::text(format!("result for {id}"))],
                 })
             })
@@ -87,15 +84,13 @@ fn result(ids: &[&str]) -> Message {
 }
 
 fn calls(ids: &[&str]) -> Message {
-    Message::Assistant {
-        id: None,
-        content: std::iter::once(AssistantContent::text("checking"))
-            .chain(
-                ids.iter()
-                    .map(|id| AssistantContent::tool_call(*id, "read", serde_json::json!({}))),
-            )
+    Message::Assistant(rig_core::message::AssistantMessage::new(
+        std::iter::once(AssistantContent::text("checking"))
+            .chain(ids.iter().map(|id| {
+                AssistantContent::tool_call(*id, "read".try_into().unwrap(), serde_json::json!({}))
+            }))
             .collect(),
-    }
+    ))
 }
 
 fn mixed_history() -> Vec<Message> {
@@ -418,23 +413,20 @@ async fn streaming_rejects_oversized_input_without_sending_a_truncated_request()
 
 fn active_history() -> Vec<Message> {
     let mut history = mixed_history();
-    if let Message::Assistant { id, content } = &mut history[4] {
-        *id = Some("assistant-original".into());
-        content.insert(
-            0,
-            AssistantContent::Reasoning(
-                rig_core::completion::message::Reasoning::new_with_signature(
-                    "Original reasoning",
-                    Some("opaque-signature+/=".into()),
-                ),
-            ),
-        );
+    if let Message::Assistant(assistant) = &mut history[4] {
+        let mut origin =
+            rig_core::message::Origin::new("anthropic.messages", "anthropic", "fixture");
+        origin.response_id = Some("assistant-original".into());
+        assistant.origin = Some(origin);
+        assistant.content.insert(0, AssistantContent::Reasoning(
+            rig_core::message::Reasoning::new("Original reasoning")
+        ).with_native(serde_json::json!({"type":"thinking", "thinking":"Original reasoning", "signature":"opaque-signature+/="})));
     }
     *history.last_mut().unwrap() = Message::User {
         content: vec![
             UserContent::text("Original task: analyze the attached report and image"),
             UserContent::image_base64("ZXhhY3QtaW1hZ2U=", None, None),
-            UserContent::document("Exact report attachment", None),
+            UserContent::document_text("Exact report attachment", None),
         ],
     };
     history
@@ -504,7 +496,9 @@ async fn streaming_tool_result_retries_and_fallback_preserve_the_complete_active
     assert_eq!(requests[1].len(), history.len() + 2);
     assert_eq!(requests[1], requests[2]);
     assert_eq!(fallback.histories(), vec![requests[1].clone()]);
-    let Message::Assistant { content, .. } = &requests[1][history.len()] else {
+    let Message::Assistant(rig_core::message::AssistantMessage { content, .. }) =
+        &requests[1][history.len()]
+    else {
         panic!("tool call must precede its result")
     };
     let AssistantContent::ToolCall(call) = &content[0] else {
@@ -528,7 +522,7 @@ async fn streaming_smaller_fallback_limits_fail_explicitly_without_losing_histor
             InferenceError::InferenceFailed("primary unavailable".into()),
         )]));
         let fallback = Arc::new(MockModelProvider::new(vec![MockResponse::Error(
-            InferenceError::CompletionFailed(rig_core::completion::CompletionError::ProviderError(
+            InferenceError::from(rig_core::error::ProviderError::Provider(
                 "400 context limit exceeded".into(),
             )),
         )]));

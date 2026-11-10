@@ -97,7 +97,7 @@ async fn real_writer_failures_stop_before_effect_or_preserve_returned_effect() {
                     ModelOutput::new(
                         vec![AssistantContent::ToolCall(ToolCall::from_wire(
                             "one",
-                            ToolFunction::new("effect".into(), json!({})),
+                            ToolFunction::new("effect".try_into().unwrap(), json!({})),
                         ))],
                         UsageReport::Unavailable,
                     ),

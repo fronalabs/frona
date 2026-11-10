@@ -8,17 +8,15 @@ use crate::inference::provider::ModelProvider;
 use crate::inference::provider::RigProvider;
 use crate::inference::provider::platform::ResolvedConnection;
 use crate::inference::provider::platform::require_api_key;
-use rig_core::{
-    model::{Model, ModelList},
-    providers::together,
-};
+use rig_core::model::{ModelInfo, ModelList};
+use rig_core::providers::openai;
 use std::sync::Arc;
 
 async fn list_models(
     client: &reqwest::Client,
     endpoint: &str,
 ) -> Result<ModelList, CredentialValidationError> {
-    let models: Vec<Model> =
+    let models: Vec<ModelInfo> =
         super::discovery::get(client.get(format!("{}/v1/models", endpoint.trim_end_matches('/'))))
             .await?;
     Ok(ModelList::new(
@@ -39,21 +37,22 @@ pub(crate) fn build(
         .effective_base_url
         .clone()
         .expect("Together endpoint");
-    let client = together::Client::builder()
-        .api_key(&key)
-        .base_url(&endpoint)
-        .http_client(WireClient::default())
-        .build()
-        .map_err(|_| InferenceError::ConfigError("Cannot build Together client".into()))?;
+    let client = openai::OpenAIConfig::with_key(&openai::wire::TOGETHER, key.clone())
+        .with_base_url(endpoint.clone())
+        .with_route(openai::Route::Chat)
+        .connect(WireClient::default());
     let discovery = super::discovery::client(&key)?;
     Ok(Arc::new(
-        RigProvider::new(client, counter.clone())
-            .with_wire_transport()
-            .with_live_check(move || {
-                let discovery = discovery.clone();
-                let endpoint = endpoint.clone();
-                async move { list_models(&discovery, &endpoint).await }
-            }),
+        RigProvider::new(
+            move |id: &str| client.completion(id).erase(),
+            counter.clone(),
+        )
+        .with_wire_transport()
+        .with_live_check(move || {
+            let discovery = discovery.clone();
+            let endpoint = endpoint.clone();
+            async move { list_models(&discovery, &endpoint).await }
+        }),
     ))
 }
 

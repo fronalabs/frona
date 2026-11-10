@@ -87,13 +87,15 @@ pub fn estimate_message_tokens(msg: &RigMessage) -> usize {
                 }
             })
             .sum::<usize>(),
-        RigMessage::Assistant { content, .. } => content
+        RigMessage::Assistant(rig_core::completion::message::AssistantMessage {
+            content, ..
+        }) => content
             .iter()
             .map(|c| -> usize {
                 match c {
                     rig_core::completion::AssistantContent::Text(t) => t.text.len(),
                     rig_core::completion::AssistantContent::ToolCall(tc) => {
-                        tc.function.name.len() + tc.function.arguments.to_string().len()
+                        tc.function.name.len() + tc.function.raw_arguments().len()
                     }
                     _ => 100,
                 }
@@ -229,7 +231,10 @@ fn tool_group_boundaries(
     let mut boundaries = vec![0];
     for (index, message) in history.iter().enumerate() {
         match message {
-            RigMessage::Assistant { content, .. } => {
+            RigMessage::Assistant(rig_core::completion::message::AssistantMessage {
+                content,
+                ..
+            }) => {
                 if !pending.is_empty() {
                     return Err(
                         "Assistant message interrupts an incomplete tool-result group".into(),
@@ -254,10 +259,7 @@ fn tool_group_boundaries(
                 for item in content {
                     if let UserContent::ToolResult(result) = item {
                         let matching = pending.iter().position(|call| {
-                            call.id == result.call
-                                && (!exact
-                                    || (call.provider == result.provider
-                                        && call.function.name == result.name))
+                            call.id == result.call && (!exact || call.function.name == result.name)
                         });
                         let Some(matching) = matching else {
                             return Err("Tool result has no matching pending call".into());
@@ -304,7 +306,8 @@ mod tests {
         };
         let history = vec![RigMessage::user("exact history")];
         let tools = vec![rig_core::completion::request::ToolDefinition {
-            name: "read".into(),
+            annotations: Default::default(),
+            name: "read".try_into().unwrap(),
             description: "exact tool".into(),
             parameters: serde_json::json!({"type":"object"}),
         }];

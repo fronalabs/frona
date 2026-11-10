@@ -1,3 +1,6 @@
+#[path = "helpers/native.rs"]
+mod native;
+
 use std::collections::VecDeque;
 use std::sync::{
     Arc, Mutex,
@@ -48,10 +51,7 @@ impl ModelAdapter for Fake {
 fn output(contents: Vec<AssistantContent>) -> ModelOutput {
     ModelOutput::new(
         contents,
-        UsageReport::Reported(Usage {
-            total_tokens: 3,
-            ..Usage::new()
-        }),
+        UsageReport::Reported(Usage::new().total_tokens(3)),
     )
 }
 fn text(value: &str) -> ModelOutput {
@@ -60,7 +60,7 @@ fn text(value: &str) -> ModelOutput {
 fn call(id: &str, name: &str, args: Value) -> AssistantContent {
     AssistantContent::ToolCall(ToolCall::from_wire(
         id,
-        ToolFunction::new(name.into(), args),
+        ToolFunction::new(name.try_into().unwrap(), args),
     ))
 }
 fn model(
@@ -152,8 +152,8 @@ async fn two_models_keep_history_budget_and_selective_owned_actions() {
         panic!("missing paired batch")
     };
     assert_eq!(content.len(), 2);
-    assert!(matches!(&content[0], UserContent::ToolResult(r) if r.call.as_str()=="one"));
-    assert!(matches!(&content[1], UserContent::ToolResult(r) if r.call.as_str()=="two"));
+    assert!(matches!(&content[0], UserContent::ToolResult(r) if r.call.wire()=="one"));
+    assert!(matches!(&content[1], UserContent::ToolResult(r) if r.call.wire()=="two"));
 }
 
 #[tokio::test]
@@ -181,11 +181,13 @@ async fn override_is_per_call_and_budget_refusal_does_not_reset_history() {
 
 #[tokio::test]
 async fn incompatible_switch_fails_before_admission_and_original_model_still_works() {
-    let signed = ToolCall::from_wire(
-        "signed",
-        ToolFunction::new("lookup".into(), json!({"value":"a"})),
-    )
-    .with_signature(Some("opaque".into()));
+    let signed = native::call(
+        ToolCall::from_wire(
+            "signed",
+            ToolFunction::new("lookup".try_into().unwrap(), json!({"value":"a"})),
+        ),
+        json!({"signature":"opaque"}),
+    );
     let (first, first_requests) = model(
         "first",
         true,

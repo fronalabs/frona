@@ -9,7 +9,7 @@ use rig_core::completion::request::Usage;
 use crate::chat::broadcast::BroadcastService;
 use crate::core::repository::{Repository, new_id};
 use crate::{db::repo::generic::SurrealRepo, inference::usage::UsageContext};
-use frona_harness::inference::{protocol::parameters::WireDialect, provider::ModelConfig};
+use frona_harness::inference::provider::ModelConfig;
 use frona_model_catalog::ModelCatalogStore;
 
 use super::models::InferenceUsage;
@@ -235,7 +235,9 @@ fn build_row(
     pricing_version: String,
 ) -> InferenceUsage {
     let kind = &usage_ctx.kind;
-    let output_tokens_per_second = compute_output_tps(usage.output_tokens, latency);
+    let output_tokens_per_second = usage
+        .output_tokens
+        .and_then(|tokens| compute_output_tps(tokens, latency));
     InferenceUsage {
         id: new_id(),
         user_id: usage_ctx.user_id.clone(),
@@ -249,17 +251,10 @@ fn build_row(
         provider: model_ref.provider_name().to_string(),
         model_id: model_ref.model_id.clone(),
         model_ref: model_ref.as_str(),
-        input_tokens: if WireDialect::for_model(&model_ref.provider) == WireDialect::Anthropic {
-            usage
-                .input_tokens
-                .saturating_add(usage.cached_input_tokens)
-                .saturating_add(usage.cache_creation_input_tokens)
-        } else {
-            usage.input_tokens
-        },
-        cached_input_tokens: usage.cached_input_tokens,
-        output_tokens: usage.output_tokens,
-        total_tokens: usage.total_tokens,
+        input_tokens: usage.input_tokens.unwrap_or_default(),
+        cached_input_tokens: usage.cached_input_tokens.unwrap_or_default(),
+        output_tokens: usage.output_tokens.unwrap_or_default(),
+        total_tokens: usage.total_tokens.unwrap_or_default(),
         fallback_index,
         duration_ms: latency.duration_ms,
         ttft_ms: latency.ttft_ms,

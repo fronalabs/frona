@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use rig_core::providers::azure::{self, AzureOpenAIAuth};
+use rig_core::providers::openai::{OpenAIConfig, wire::AZURE};
 
 use crate::Handle;
 use crate::config::ModelProviderConfig;
@@ -71,17 +71,13 @@ pub fn build(
         .get("azure_api_version")
         .and_then(serde_json::Value::as_str)
         .unwrap_or(DEFAULT_API_VERSION);
-    let client = azure::Client::builder()
-        .api_key(AzureOpenAIAuth::ApiKey(key.clone()))
-        .azure_endpoint(endpoint.to_owned())
-        .api_version(version)
-        .http_client(
-            WireClient::without_redirects().map_err(|_| {
+    let client =
+        OpenAIConfig::with_key(&AZURE, key.clone())
+            .with_base_url(endpoint)
+            .with_api_version(version)
+            .connect(WireClient::without_redirects().map_err(|_| {
                 InferenceError::ConfigError("Cannot build Azure HTTP client".into())
-            })?,
-        )
-        .build()
-        .map_err(|_| InferenceError::ConfigError("Invalid Azure client configuration".into()))?;
+            })?);
     let mut validation_url = reqwest::Url::parse(&format!("{endpoint}/openai/models"))
         .map_err(|_| InferenceError::ConfigError("Invalid Azure resource endpoint".into()))?;
     validation_url
@@ -99,7 +95,7 @@ pub fn build(
         .build()
         .map_err(|_| InferenceError::ConfigError("Cannot build Azure validation client".into()))?;
     Ok(Arc::new(
-        RigProvider::new(client, counter.clone())
+        RigProvider::new(move |id: &str| client.chat(id).erase(), counter.clone())
             .with_wire_transport()
             .with_validation_check(move || {
                 let client = validation_client.clone();

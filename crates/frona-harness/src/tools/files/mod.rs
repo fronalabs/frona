@@ -96,7 +96,7 @@ impl FileOutput {
                 ),
                 media_type: ImageMediaType::from_mime_type(&image.media_type),
                 detail: None,
-                additional_params: None,
+                native: None,
             })
         }));
         Ok(ToolOutput::content(content))

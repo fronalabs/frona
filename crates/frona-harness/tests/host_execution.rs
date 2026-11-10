@@ -93,7 +93,7 @@ fn proposal() -> ModelOutput {
     ModelOutput::new(
         vec![AssistantContent::ToolCall(ToolCall::from_wire(
             "call",
-            ToolFunction::new("wait".into(), serde_json::json!({})),
+            ToolFunction::new("wait".try_into().unwrap(), serde_json::json!({})),
         ))],
         UsageReport::Unavailable,
     )

@@ -104,7 +104,9 @@ async fn database() -> Surreal<Db> {
 #[tokio::test]
 async fn gemini_call_signatures_survive_human_approval_and_database_reload() {
     let server = MockServer::start().await;
-    let signatures = [Some("opaque-A+/=\nunchanged"), Some("opaque-B+/="), None];
+    // Gemini accepts only padded standard base64 signatures. Distinct opaque
+    // bytes still need to survive persistence and HITL without modification.
+    let signatures = [Some("b3BhcXVlLUErLz0="), Some("b3BhcXVlLUIrLz0="), None];
     let parts: Vec<Value> = signatures
         .iter()
         .enumerate()
@@ -187,6 +189,19 @@ async fn gemini_call_signatures_survive_human_approval_and_database_reload() {
         .unwrap();
     assert_eq!(message.status, Some(MessageStatus::Paused), "{message:?}");
 
+    let first_turn = message.provider_turns["0"].clone();
+    assert_eq!(
+        first_turn["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["type"] == "toolcall")
+            .count(),
+        3
+    );
+    let response: frona::chat::message::models::MessageResponse = message.clone().into();
+    assert!(!response.metadata.contains_key("provider_turns"));
+
     // Load real rows, discard the original harness, and resolve the actual pending
     // human questions before resuming. No in-memory provider response is reused.
     drop(initial_harness);
@@ -239,6 +254,8 @@ async fn gemini_call_signatures_survive_human_approval_and_database_reload() {
         "{message:?}"
     );
     assert_eq!(message.content, "Approved and resumed.");
+    assert_eq!(message.provider_turns["0"], first_turn);
+    assert_eq!(message.provider_turns.len(), 2);
 
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2);
@@ -258,7 +275,8 @@ async fn gemini_call_signatures_survive_human_approval_and_database_reload() {
             .unwrap();
         assert_eq!(
             part.get("thoughtSignature").and_then(Value::as_str),
-            *signature
+            *signature,
+            "body={body:#?}; first_turn={first_turn:#?}"
         );
     }
 }
@@ -268,11 +286,17 @@ async fn reasoning_metadata_replays_through_native_anthropic_and_openai_requests
     for (brand, reasoning) in [
         (
             "anthropic",
-            Reasoning::new_with_signature("Private reasoning", Some("signed-thinking+/=".into())),
+            native_reasoning(
+                "Private reasoning",
+                json!({"type":"thinking", "thinking":"Private reasoning", "signature":"signed-thinking+/="}),
+            ),
         ),
         (
             "openai",
-            Reasoning::encrypted("encrypted-reasoning+/=").with_id("rs_original".into()),
+            native_reasoning(
+                "",
+                json!({"type":"reasoning", "id":"rs_original", "encrypted_content":"encrypted-reasoning+/=", "summary":[]}),
+            ),
         ),
     ] {
         let server = MockServer::start().await;
@@ -308,7 +332,7 @@ async fn reasoning_metadata_replays_through_native_anthropic_and_openai_requests
                 &response.id,
                 0,
                 "call_original",
-                None,
+                (brand == "openai").then(|| "fc_original".into()),
                 None,
                 "lookup",
                 &json!({}),
@@ -361,7 +385,7 @@ async fn reasoning_metadata_replays_through_native_anthropic_and_openai_requests
         // requiring an unrelated response fixture for each provider dialect.
         assert!(
             group.providers["fixture"]
-                .inference(&model, "system", history, vec![], Some(4096), None)
+                .inference(&model, "system", history, replay_tools(), Some(4096), None)
                 .await
                 .is_err()
         );
@@ -375,7 +399,7 @@ async fn reasoning_metadata_replays_through_native_anthropic_and_openai_requests
                 .iter()
                 .flat_map(|message| message["content"].as_array().unwrap())
                 .find(|block| block["type"] == "thinking")
-                .unwrap();
+                .unwrap_or_else(|| panic!("No thinking block: {body:#?}"));
             assert_eq!(thinking["thinking"], "Private reasoning");
             assert_eq!(thinking["signature"], "signed-thinking+/=");
         } else {
@@ -384,9 +408,19 @@ async fn reasoning_metadata_replays_through_native_anthropic_and_openai_requests
                 .unwrap()
                 .iter()
                 .find(|item| item["type"] == "reasoning")
-                .unwrap();
+                .unwrap_or_else(|| panic!("No reasoning block: {body:#?}"));
             assert_eq!(reasoning["id"], "rs_original");
             assert_eq!(reasoning["encrypted_content"], "encrypted-reasoning+/=");
+            // Responses reasoning is paired with the following provider item.
+            // A real response records both its call ID and its distinct item ID.
+            let input = body["input"].as_array().unwrap();
+            let reasoning_at = input
+                .iter()
+                .position(|item| item["type"] == "reasoning")
+                .unwrap();
+            assert_eq!(input[reasoning_at + 1]["type"], "function_call");
+            assert_eq!(input[reasoning_at + 1]["id"], "fc_original");
+            assert_eq!(input[reasoning_at + 1]["call_id"], "call_original");
         }
     }
 }
@@ -435,10 +469,16 @@ async fn old_tool_calls_without_signature_load_from_json_and_database() {
 
 #[test]
 fn separate_reasoning_items_currently_keep_only_the_first_item() {
-    // Characterize the existing storage limitation separately from call signatures.
-    // Preserving all items and their ordering requires a different storage change.
-    let first = Reasoning::encrypted("first-ciphertext").with_id("rs_first".into());
-    let second = Reasoning::encrypted("second-ciphertext").with_id("rs_second".into());
+    // The legacy UI reasoning projection keeps one item; the provider_turns
+    // snapshots separately retain the complete ordered response for replay.
+    let first = native_reasoning(
+        "",
+        json!({"type":"reasoning", "id":"rs_first", "encrypted_content":"first-ciphertext", "summary":[]}),
+    );
+    let second = native_reasoning(
+        "",
+        json!({"type":"reasoning", "id":"rs_second", "encrypted_content":"second-ciphertext", "summary":[]}),
+    );
     let stored = extract_reasoning(&[
         AssistantContent::Reasoning(first.clone()),
         AssistantContent::text("Between reasoning items"),
@@ -449,7 +489,7 @@ fn separate_reasoning_items_currently_keep_only_the_first_item() {
     assert_eq!(retained, first);
 }
 
-async fn assert_tool_call_replay_matches_live_request(dual_id: bool) {
+async fn assert_tool_call_replay_matches_live_request(dual_id: bool, snapshot: bool) {
     use rig_core::completion::message::{
         ToolCall as NativeToolCall, ToolFunction, ToolResult, ToolResultContent, UserContent,
     };
@@ -480,17 +520,44 @@ async fn assert_tool_call_replay_matches_live_request(dual_id: bool) {
         .unwrap();
     // Nested objects and objects inside arrays must retain the same serialization
     // after SurrealDB reorders their keys. Array element order must not change.
-    let arguments: Value = serde_json::from_str(if dual_id {
+    let mut arguments: Value = serde_json::from_str(if dual_id {
         r#"{"memory":"Test memory","overrides":false}"#
     } else {
         r#"{"overrides":false,"memory":"Test memory","nested":{"z":1,"a":2},"items":[{"z":3,"a":4},2,1]}"#
     }).unwrap();
-    let function = ToolFunction::new("lookup".into(), arguments.clone());
-    let call = if dual_id {
-        NativeToolCall::from_dual_wire("fc_original", "call_original", function)
-    } else {
-        NativeToolCall::from_wire("call_original", function)
-    };
+    if snapshot {
+        arguments["description"] = json!("Working");
+    }
+    let function = ToolFunction::new("lookup".try_into().unwrap(), arguments.clone());
+    let mut call = NativeToolCall::new(
+        rig_core::message::CallId::from_wire("call_original"),
+        function,
+    );
+    if dual_id {
+        let AssistantContent::ToolCall(native_call) = AssistantContent::ToolCall(call).with_native(json!({
+            "type":"function_call", "id":"fc_original", "call_id":"call_original", "name":"lookup", "arguments":serde_json::to_string(&arguments).unwrap()
+        })) else { unreachable!() };
+        call = native_call;
+    }
+    if snapshot {
+        state
+            .chat_service
+            .record_provider_turn(
+                &message.id,
+                0,
+                &rig_core::message::AssistantMessage::new(vec![AssistantContent::ToolCall(
+                    call.clone(),
+                )])
+                .with_origin(rig_core::message::Origin::new(
+                    "openai.responses",
+                    "openai",
+                    "test-model",
+                )),
+            )
+            .await
+            .unwrap();
+        arguments.as_object_mut().unwrap().remove("description");
+    }
     state
         .chat_service
         .begin_tool_call(
@@ -498,11 +565,9 @@ async fn assert_tool_call_replay_matches_live_request(dual_id: bool) {
             &chat.id,
             &message.id,
             0,
-            call.wire_call_id(),
-            call.provider
-                .as_ref()
-                .and_then(|provider| provider.item_id.clone()),
-            call.signature.clone(),
+            &call.id.wire(),
+            dual_id.then(|| "fc_original".to_owned()),
+            None,
             &call.function.name,
             &arguments,
             None,
@@ -547,25 +612,37 @@ async fn assert_tool_call_replay_matches_live_request(dual_id: bool) {
         .await
         .history;
     let live = vec![
-        RigMessage::Assistant {
-            id: None,
-            content: vec![AssistantContent::ToolCall(call.clone())],
-        },
+        RigMessage::Assistant(
+            rig_core::message::AssistantMessage::new(vec![AssistantContent::ToolCall(
+                call.clone(),
+            )])
+            .with_origin(dual_id.then(|| {
+                rig_core::message::Origin::new("openai.responses", "openai", "test-model")
+            })),
+        ),
         RigMessage::User {
             content: vec![UserContent::ToolResult(ToolResult {
                 call: call.id,
-                provider: call.provider,
+                is_error: false,
                 name: call.function.name,
                 content: vec![ToolResultContent::text("Result")],
             })],
         },
     ];
+    let live = frona::tool::persistent_dispatch::project_messages(&live);
     for history in [live, replay] {
         let mut input = vec![RigMessage::user("Look up the value.")];
         input.extend(history);
         assert!(
             group.providers["fixture"]
-                .inference(&group.main, "system", input, vec![], Some(4096), None,)
+                .inference(
+                    &group.main,
+                    "system",
+                    input,
+                    replay_tools(),
+                    Some(4096),
+                    None,
+                )
                 .await
                 .is_err()
         );
@@ -594,10 +671,32 @@ async fn assert_tool_call_replay_matches_live_request(dual_id: bool) {
 
 #[tokio::test]
 async fn responses_tool_item_id_survives_database_replay() {
-    assert_tool_call_replay_matches_live_request(true).await;
+    assert_tool_call_replay_matches_live_request(true, false).await;
 }
 
 #[tokio::test]
 async fn tool_argument_serialization_survives_database_replay() {
-    assert_tool_call_replay_matches_live_request(false).await;
+    assert_tool_call_replay_matches_live_request(false, false).await;
+}
+
+fn native_reasoning(text: &str, item: Value) -> Reasoning {
+    let AssistantContent::Reasoning(reasoning) =
+        AssistantContent::Reasoning(Reasoning::new(text)).with_native(item)
+    else {
+        unreachable!()
+    };
+    reasoning
+}
+
+#[tokio::test]
+async fn native_snapshot_replay_uses_the_same_description_projection_as_live_history() {
+    assert_tool_call_replay_matches_live_request(true, true).await;
+}
+
+fn replay_tools() -> Vec<rig_core::completion::request::ToolDefinition> {
+    vec![rig_core::completion::request::ToolDefinition::new(
+        "lookup".try_into().unwrap(),
+        "Look up a value",
+        json!({"type":"object"}),
+    )]
 }

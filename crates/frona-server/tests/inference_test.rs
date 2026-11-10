@@ -13,11 +13,9 @@ async fn streaming_failure_reports_retries_and_fallback_context() {
         }),
     ]));
     let fallback = Arc::new(MockModelProvider::new(vec![MockResponse::Error(
-        InferenceError::CompletionFailed(rig_core::completion::CompletionError::HttpError(
-            rig_core::http_client::Error::InvalidStatusCodeWithMessage(
-                axum::http::StatusCode::BAD_REQUEST,
-                "Model unavailable for this account".into(),
-            ),
+        InferenceError::from(rig_core::error::ProviderError::from_http_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            "Model unavailable for this account",
         )),
     )]));
     let mut providers = test_providers("mock", primary.clone());
@@ -93,7 +91,7 @@ async fn streaming_skips_unavailable_primary_and_uses_fallback_without_catalogs(
     )
     .await
     .unwrap();
-    assert!(matches!(result, StreamResult::Contents { .. }));
+    assert!(matches!(result, StreamResult::Contents(_)));
     assert_eq!(text, "fallback stream");
     assert_eq!(provider.calls(), 1);
 }
@@ -1549,7 +1547,7 @@ async fn tool_instructions_leave_system_stable_and_replay_the_exact_live_tail() 
                         rig_core::completion::message::ToolCall::from_wire(
                             id,
                             rig_core::completion::message::ToolFunction::new(
-                                name.into(),
+                                name.try_into().unwrap(),
                                 serde_json::json!({}),
                             ),
                         ),

@@ -53,13 +53,7 @@ pub fn model(outputs: Vec<ModelOutput>) -> Result<Model<'static>, ModelError> {
 
 pub fn output(content: Vec<AssistantContent>) -> ModelOutput {
     // The fixture knows its accounting value. Real adapters must report provenance honestly.
-    ModelOutput::new(
-        content,
-        UsageReport::Reported(Usage {
-            total_tokens: 3,
-            ..Usage::new()
-        }),
-    )
+    ModelOutput::new(content, UsageReport::Reported(Usage::new().total_tokens(3)))
 }
 
 pub fn text(value: &str) -> ModelOutput {
@@ -69,7 +63,7 @@ pub fn text(value: &str) -> ModelOutput {
 pub fn call(id: &str, name: &str, arguments: Value) -> AssistantContent {
     AssistantContent::ToolCall(ToolCall::from_wire(
         id,
-        ToolFunction::new(name.into(), arguments),
+        ToolFunction::new(name.try_into().unwrap(), arguments),
     ))
 }
 

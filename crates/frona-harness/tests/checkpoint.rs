@@ -257,7 +257,7 @@ fn checkpoints_preserve_pending_submissions_and_incomplete_stops() {
             ModelOutput::new(
                 vec![AssistantContent::ToolCall(ToolCall::from_wire(
                     "submit-id",
-                    ToolFunction::new("submit".into(), json!("candidate")),
+                    ToolFunction::new("submit".try_into().unwrap(), json!("candidate")),
                 ))],
                 UsageReport::Unavailable,
             ),

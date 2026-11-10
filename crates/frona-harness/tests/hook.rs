@@ -1,3 +1,6 @@
+#[path = "helpers/native.rs"]
+mod native;
+
 use std::{
     cell::Cell,
     collections::VecDeque,
@@ -70,18 +73,12 @@ fn scripted_model(outputs: Vec<ModelOutput>) -> (Model<'static>, Arc<Mutex<Vec<M
     )
 }
 fn output(content: Vec<AssistantContent>) -> ModelOutput {
-    ModelOutput::new(
-        content,
-        UsageReport::Reported(Usage {
-            total_tokens: 1,
-            ..Usage::new()
-        }),
-    )
+    ModelOutput::new(content, UsageReport::Reported(Usage::new().total_tokens(1)))
 }
 fn call(id: &str, name: &str, arguments: Value) -> AssistantContent {
     AssistantContent::ToolCall(ToolCall::from_wire(
         id,
-        ToolFunction::new(name.into(), arguments),
+        ToolFunction::new(name.try_into().unwrap(), arguments),
     ))
 }
 fn text() -> ModelOutput {
@@ -226,11 +223,16 @@ async fn unavailable_tools_and_submission_protocol_never_reach_hook() {
 
 #[tokio::test]
 async fn hook_snapshot_cannot_rewrite_canonical_arguments_or_signatures() {
-    let signed = ToolCall::from_wire(
-        "a",
-        ToolFunction::new("known".into(), json!({"description":"original"})),
-    )
-    .with_signature(Some("opaque+/=".into()));
+    let signed = native::call(
+        ToolCall::from_wire(
+            "a",
+            ToolFunction::new(
+                "known".try_into().unwrap(),
+                json!({"description":"original"}),
+            ),
+        ),
+        json!({"signature":"opaque+/="}),
+    );
     let (model, requests) = scripted_model(vec![
         output(vec![AssistantContent::ToolCall(signed.clone())]),
         text(),
@@ -248,18 +250,26 @@ async fn hook_snapshot_cannot_rewrite_canonical_arguments_or_signatures() {
         )
         .before_tool(|mut snapshot| async move {
             assert_eq!(snapshot.function.arguments["description"], "original");
-            assert_eq!(snapshot.signature.as_deref(), Some("opaque+/="));
-            snapshot.function.arguments = json!({"description":"modified"});
-            snapshot.signature = None;
+            assert_eq!(
+                snapshot.native.as_ref().unwrap().item["signature"],
+                "opaque+/="
+            );
+            snapshot.function.arguments = json!({"description":"modified"})
+                .as_object()
+                .unwrap()
+                .clone();
+            snapshot.native = None;
             assert_eq!(snapshot.function.arguments["description"], "modified");
-            assert!(snapshot.signature.is_none());
+            assert!(snapshot.native.is_none());
             Ok::<_, ()>(ToolDecision::Execute)
         })
         .await
         .unwrap();
     assert_eq!(*seen.lock().unwrap(), json!({"description":"original"}));
     let requests = requests.lock().unwrap();
-    let Message::Assistant { content, .. } = &requests[1].messages[1] else {
+    let Message::Assistant(rig_core::completion::message::AssistantMessage { content, .. }) =
+        &requests[1].messages[1]
+    else {
         panic!("missing response")
     };
     assert_eq!(content, &vec![AssistantContent::ToolCall(signed)]);
@@ -358,10 +368,7 @@ async fn admission_rechecks_tokens_consumed_while_async_hook_waits() {
             .unwrap()
             .complete(BudgetCompletion {
                 outcome: BudgetOutcome::Succeeded,
-                usage: UsageReport::Reported(Usage {
-                    total_tokens: 4,
-                    ..Usage::new()
-                }),
+                usage: UsageReport::Reported(Usage::new().total_tokens(4)),
             });
         release.notify_one();
     };
@@ -447,7 +454,7 @@ struct LendingHook<'a> {
 #[async_trait]
 impl ToolCallHook for LendingHook<'_> {
     async fn decide(&mut self, call: &ToolCall) -> Result<ToolDecision, ToolFailure> {
-        self.calls.push(call.function.name.clone());
+        self.calls.push(call.function.name.to_string());
         tokio::task::yield_now().await;
         self.count.set(self.count.get() + 1);
         Ok(ToolDecision::Execute)

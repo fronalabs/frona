@@ -57,7 +57,7 @@ fn record(
             ModelOutput::new(
                 vec![AssistantContent::ToolCall(ToolCall::from_wire(
                     "actual-call",
-                    ToolFunction::new(name.into(), args),
+                    ToolFunction::new(name.try_into().unwrap(), args),
                 ))],
                 UsageReport::Unavailable,
             ),

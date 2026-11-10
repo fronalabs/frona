@@ -244,7 +244,7 @@ impl History {
             return Err(failure.clone());
         }
         let record = HistoryRecord {
-            version: 1,
+            version: 2,
             conversation,
             seq: self.memory.records.len() as u64,
             event,

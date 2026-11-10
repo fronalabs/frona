@@ -17,9 +17,10 @@ serde_json.workspace = true
 serde_with.workspace = true
 serde-aux.workspace = true
 chrono.workspace = true
-uuid = { workspace = true, features = ["v7"] }
+uuid = { workspace = true, features = ["v5", "v7"] }
 thiserror.workspace = true
 rig-core.workspace = true
+rig-reqwest = "0.46"
 tokio.workspace = true
 tracing.workspace = true
 backon.workspace = true
@@ -37,7 +38,7 @@ reqwest = { version = "0.13", features = ["form", "json", "query", "rustls"], de
 metrics = "0.24"
 json_partial = "0.2"
 jsonschema = { version = "0.61", default-features = false }
-rig-bedrock = "=0.42.0"
+rig-bedrock = "=0.46.0"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-bedrockruntime = { version = "1.143", default-features = false, features = ["rt-tokio", "default-https-client"] }
 aws-sdk-bedrock = { version = "=1.167.0", default-features = false, features = ["rt-tokio", "default-https-client"] }

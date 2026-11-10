@@ -111,7 +111,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "1"
-rig-core = "0.42"
+rig-core = "0.46"
 async-trait = "0.1"
 tempfile = "3"
 '''.replace("HARNESS", packaged.name).replace("VERSION", version)

@@ -17,7 +17,6 @@ use frona_harness::{
     },
 };
 use rig_core::{
-    client::ModelListingClient,
     completion::{Message, ToolDefinition},
     providers::copilot,
 };
@@ -51,31 +50,33 @@ pub(crate) fn current_provider(
     counter: &InferenceCounter,
 ) -> Result<Arc<dyn ModelProvider>, InferenceError> {
     let credentials = secret
-        .credentials::<copilot::CopilotAuth>()
+        .credentials::<crate::credential::managed::integration::copilot::Credentials>()
         .map_err(|error| InferenceError::ConfigError(error.to_string()))?;
-    let client =
-        copilot::Client::builder()
-            .api_key(credentials.clone())
-            .allow_device_flow(false)
-            .base_url(endpoint)
-            .http_client(WireClient::without_redirects().map_err(|_| {
-                InferenceError::ConfigError("Cannot build Copilot HTTP client".into())
-            })?)
-            .build()
-            .map_err(|_| InferenceError::ConfigError("Cannot build Copilot client".into()))?;
+    let config = rig_core::providers::openai::OpenAIConfig::with_key(
+        &copilot::DIALECT,
+        credentials.0.clone(),
+    )
+    .with_base_url(endpoint);
+    let client = config.connect(rig_core::http_client::DynHttpClient::new(
+        WireClient::without_redirects()
+            .map_err(|_| InferenceError::ConfigError("Cannot build Copilot HTTP client".into()))?,
+    ));
     let check = client.clone();
     Ok(Arc::new(
-        RigProvider::new(client, counter.clone())
-            .with_wire_transport()
-            .with_live_check(move || {
-                let client = check.clone();
-                async move {
-                    client
-                        .list_models()
-                        .await
-                        .map_err(CredentialValidationError::from)
-                }
-            }),
+        RigProvider::new(
+            move |id: &str| client.completion(id).erase(),
+            counter.clone(),
+        )
+        .with_wire_transport()
+        .with_live_check(move || {
+            let client = check.clone();
+            async move {
+                client
+                    .list_models()
+                    .await
+                    .map_err(CredentialValidationError::from)
+            }
+        }),
     ))
 }
 
@@ -326,24 +327,21 @@ mod tests {
     fn tool_history() -> Vec<Message> {
         vec![
             Message::user("hello"),
-            Message::Assistant {
-                id: None,
-                content: vec![AssistantContent::tool_call(
+            Message::Assistant(rig_core::message::AssistantMessage::new(vec![
+                AssistantContent::tool_call(
                     "previous-call",
-                    "lookup",
+                    "lookup".try_into().unwrap(),
                     json!({}),
-                )],
-            },
+                ),
+            ])),
             Message::User {
-                content: vec![
-                    rig_core::completion::message::UserContent::tool_result_from_wire(
-                        "previous-call",
-                        "lookup",
-                        vec![rig_core::completion::message::ToolResultContent::text(
-                            "external-result",
-                        )],
-                    ),
-                ],
+                content: vec![rig_core::completion::message::UserContent::tool_result(
+                    rig_core::message::CallId::from_wire("previous-call"),
+                    "lookup".try_into().unwrap(),
+                    vec![rig_core::completion::message::ToolResultContent::text(
+                        "external-result",
+                    )],
+                )],
             },
         ]
     }
@@ -394,7 +392,9 @@ mod tests {
         let provider = current_provider(
             &server.uri(),
             &crate::credential::managed::integration::ResolvedSecret {
-                credentials: copilot::CopilotAuth::ApiKey("fixture-chat-token".into()),
+                credentials: crate::credential::managed::integration::copilot::Credentials(
+                    "fixture-chat-token".into(),
+                ),
                 expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
                 cache: crate::credential::managed::integration::CachePolicy::NoCache,
             }
@@ -406,9 +406,10 @@ mod tests {
             let model = model(id);
             for streaming in [false, true] {
                 let tools = vec![ToolDefinition {
-                    name: "lookup".into(),
+                    name: rig_core::message::ToolName::new("lookup").unwrap(),
                     description: "Lookup".into(),
                     parameters: json!({"type":"object","properties":{}}),
+                    annotations: Default::default(),
                 }];
                 let output = if streaming {
                     let (tx, _rx) = mpsc::channel(16);
@@ -421,9 +422,9 @@ mod tests {
                         .await
                 }
                 .unwrap();
-                assert_eq!(output.usage.input_tokens, 2);
-                assert_eq!(output.usage.output_tokens, 3);
-                assert!(output.content.iter().any(|content|matches!(content,AssistantContent::ToolCall(call) if call.function.name=="lookup" && call.function.arguments==json!({"ok":true}))));
+                assert_eq!(output.usage.input_tokens, Some(2));
+                assert_eq!(output.usage.output_tokens, Some(3));
+                assert!(output.content.iter().any(|content|matches!(content,AssistantContent::ToolCall(call) if call.function.name=="lookup" && serde_json::Value::Object(call.function.arguments.clone())==json!({"ok":true}))));
             }
             assert_eq!(provider.structured_inference(&model,"system",vec![Message::user("hello")],json!({"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}),None,None).await.unwrap(),json!({"ok":true}));
         }
@@ -563,16 +564,8 @@ mod tests {
             "fixture-chat-token"
         );
         assert!(!refreshed.to_env().unwrap().contains_key("REFRESH_TOKEN"));
-        let directory = tempfile::tempdir().unwrap();
-        let client = copilot::Client::builder()
-            .api_key(copilot::CopilotAuth::ApiKey("fixture-chat-token".into()))
-            .allow_device_flow(false)
-            .token_dir(directory.path())
-            .base_url(server.uri())
-            .build()
-            .unwrap();
-        client.list_models().await.unwrap();
-        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        // Resolved tokens use a wire directly, with no authenticator or token store.
+        provider.list_models().await.unwrap();
         let mut config = config();
         config.api_key = Some("fixture-github-token".into());
         let mut supplied = SuppliedTokenProvider::new(&config, &server.uri(), counter()).unwrap();
@@ -608,7 +601,9 @@ mod tests {
             let provider = current_provider(
                 &server.uri(),
                 &crate::credential::managed::integration::ResolvedSecret {
-                    credentials: copilot::CopilotAuth::ApiKey("fixture-chat-token".into()),
+                    credentials: crate::credential::managed::integration::copilot::Credentials(
+                        "fixture-chat-token".into(),
+                    ),
                     expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
                     cache: crate::credential::managed::integration::CachePolicy::NoCache,
                 }
@@ -649,7 +644,9 @@ mod tests {
                     &resolved,
                     &custom,
                     &crate::credential::managed::integration::ResolvedSecret {
-                        credentials: copilot::CopilotAuth::ApiKey("fixture-chat-token".into()),
+                        credentials: crate::credential::managed::integration::copilot::Credentials(
+                            "fixture-chat-token".into()
+                        ),
                         expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
                         cache: crate::credential::managed::integration::CachePolicy::NoCache,
                     }

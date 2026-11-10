@@ -64,13 +64,7 @@ fn model(
     (model, requests)
 }
 fn output(content: Vec<AssistantContent>) -> ModelOutput {
-    ModelOutput::new(
-        content,
-        UsageReport::Reported(Usage {
-            total_tokens: 3,
-            ..Usage::new()
-        }),
-    )
+    ModelOutput::new(content, UsageReport::Reported(Usage::new().total_tokens(3)))
 }
 fn text(text: &str) -> ModelOutput {
     output(vec![AssistantContent::text(text)])
@@ -78,7 +72,7 @@ fn text(text: &str) -> ModelOutput {
 fn call(id: &str, name: &str, arguments: Value) -> AssistantContent {
     AssistantContent::ToolCall(ToolCall::from_wire(
         id,
-        ToolFunction::new(name.into(), arguments),
+        ToolFunction::new(name.try_into().unwrap(), arguments),
     ))
 }
 fn history(requests: &Arc<Mutex<Vec<ModelRequest>>>) -> Vec<(String, Vec<Message>, Value)> {
@@ -316,7 +310,7 @@ async fn sibling_tool_exhaustion_never_promotes_a_valid_looking_submission() {
         incomplete.conversation.responses()[0].actions()[0]
             .call()
             .function
-            .arguments,
+            .arguments_value(),
         json!({"value":42})
     );
     assert!(
@@ -460,4 +454,49 @@ async fn setup_and_provider_failures_are_typed_incomplete_without_fallback_outpu
         .unwrap_err();
     assert!(matches!(incomplete.reason, ManualError::Setup(_)));
     assert!(requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn incomplete_turns_cannot_promote_submissions_or_dispatch_tools_but_charge_usage() {
+    use rig_core::completion::message::StopReason;
+    for (stop, content) in [
+        (
+            StopReason::Length,
+            call("answer", "submit", json!({"value":42})),
+        ),
+        (
+            StopReason::Error("provider failed".into()),
+            call("effect", "effect", json!({})),
+        ),
+        (
+            StopReason::Aborted("cancelled upstream".into()),
+            call("answer", "submit", json!({"value":42})),
+        ),
+    ] {
+        let mut response = output(vec![content]);
+        response.stop = Some(stop);
+        let (model, requests) = model(vec![Ok(response)]);
+        let budget = DefaultBudget::default();
+        let effects = AtomicUsize::new(0);
+        let incomplete = Harness::new(model)
+            .run("answer")
+            .budget(&budget)
+            .tool(
+                tool("effect", "Count execution", |_: Value| async {
+                    effects.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .unwrap(),
+            )
+            .structured::<Answer>()
+            .await
+            .unwrap_err();
+        assert!(matches!(incomplete.reason, ManualError::Model(_)));
+        assert!(incomplete.conversation.responses().is_empty());
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        assert_eq!(effects.load(Ordering::SeqCst), 0);
+        assert_eq!(budget.snapshot().tokens, 3);
+        assert_eq!(budget.snapshot().model_attempts, 1);
+        assert_eq!(budget.snapshot().tool_calls, 0);
+    }
 }

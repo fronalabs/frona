@@ -31,16 +31,13 @@ fn capacity(n: usize) -> NonZeroUsize {
 fn output(content: AssistantContent) -> ModelOutput {
     ModelOutput::new(
         vec![content],
-        UsageReport::Reported(Usage {
-            total_tokens: 3,
-            ..Usage::new()
-        }),
+        UsageReport::Reported(Usage::new().total_tokens(3)),
     )
 }
 fn call(name: &str, value: u32) -> ModelOutput {
     output(AssistantContent::ToolCall(ToolCall::from_wire(
         "same-id",
-        ToolFunction::new(name.into(), json!({"value": value})),
+        ToolFunction::new(name.try_into().unwrap(), json!({"value": value})),
     )))
 }
 #[derive(Deserialize, JsonSchema)]

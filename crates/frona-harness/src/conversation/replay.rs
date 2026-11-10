@@ -35,7 +35,7 @@ pub fn replay_history(records: &[HistoryRecord]) -> Result<HistoryReplay, Histor
     let mut conversation = Conversation::empty_with_id(first.conversation);
     for (index, record) in records.iter().enumerate() {
         let seq = u64::try_from(index).map_err(|e| state_error(u64::MAX, e.to_string()))?;
-        if record.version != 1 {
+        if record.version != 2 {
             return Err(HistoryDecodeError::new(
                 HistoryDecodeErrorKind::UnsupportedVersion,
                 seq,

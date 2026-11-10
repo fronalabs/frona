@@ -1893,10 +1893,7 @@ async fn classify_rejected_result(ending: ClassificationEnd) {
     }
     let mock = Arc::new(MockModelProvider::new(responses));
     if matches!(ending, ClassificationEnd::Budget) {
-        mock.set_usage(frona_harness::inference::Usage {
-            total_tokens: 1_000_000,
-            ..Default::default()
-        });
+        mock.set_usage(frona_harness::inference::Usage::new().total_tokens(Some(1_000_000)));
     }
 
     let memory_config = frona::core::config::MemoryConfig::default();
@@ -5183,10 +5180,7 @@ async fn unresolved_resolution(interruption: Option<ResolutionInterruption>) {
     if interruption == Some(ResolutionInterruption::Budget) {
         // Each successful earlier stage has its own allowance. The rejected
         // resolver candidate exhausts this dialogue before its next request.
-        mock.set_usage(frona_harness::inference::Usage {
-            total_tokens: 1_000_000,
-            ..Default::default()
-        });
+        mock.set_usage(frona_harness::inference::Usage::new().total_tokens(Some(1_000_000)));
     }
 
     let storage = StorageService::new(&config);
@@ -6812,10 +6806,7 @@ async fn reconciliation_advisory(outcome: AdvisoryOutcome) {
         AdvisoryOutcome::Cancelled | AdvisoryOutcome::Budget
     );
     if outcome == AdvisoryOutcome::Budget {
-        mock.set_usage(frona_harness::inference::Usage {
-            total_tokens: 1_000_000,
-            ..Default::default()
-        });
+        mock.set_usage(frona_harness::inference::Usage::new().total_tokens(Some(1_000_000)));
     }
     if !interrupted {
         mock.enqueue(MockResponse::ToolCalls(vec![("a".into(), "submit".into(), json!({"decisions":[{"term":if outcome == AdvisoryOutcome::KeepLiteral {"frona:employer"} else {"frona:worksFor"},"decision":"declare"}]}))]));
@@ -6880,10 +6871,7 @@ async fn reconciliation_advisory(outcome: AdvisoryOutcome) {
                 4
             }
         );
-        mock.set_usage(frona_harness::inference::Usage {
-            total_tokens: 15,
-            ..Default::default()
-        });
+        mock.set_usage(frona_harness::inference::Usage::new().total_tokens(Some(15)));
         mock.enqueue(MockResponse::ToolCalls(vec![(
             "retry-reconcile".into(),
             "submit".into(),

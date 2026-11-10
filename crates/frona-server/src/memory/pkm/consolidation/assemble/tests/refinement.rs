@@ -199,7 +199,10 @@ impl ModelAdapter for Script {
         Ok(ModelOutput::new(
             vec![AssistantContent::ToolCall(ToolCall::from_wire(
                 "s",
-                ToolFunction::new("submit".into(), serde_json::to_value(submission).unwrap()),
+                ToolFunction::new(
+                    "submit".try_into().unwrap(),
+                    serde_json::to_value(submission).unwrap(),
+                ),
             ))],
             UsageReport::Unavailable,
         ))
@@ -251,7 +254,7 @@ fn assert_retained(incomplete: &Incomplete<AdjudicationCandidate>, expected: &Ad
             response.output().content.iter().any(|content| {
                 matches!(content,
             AssistantContent::ToolCall(call)
-                if call.function.arguments == serde_json::to_value(expected).unwrap())
+                if serde_json::Value::Object(call.function.arguments.clone()) == serde_json::to_value(expected).unwrap())
             })
         }),
         "the original retained submission remains in response history"

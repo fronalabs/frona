@@ -28,10 +28,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) fn usage(tokens: u64) -> Usage {
-    Usage {
-        total_tokens: tokens,
-        ..Usage::new()
-    }
+    Usage::new().total_tokens(tokens)
 }
 
 pub(crate) enum Step {

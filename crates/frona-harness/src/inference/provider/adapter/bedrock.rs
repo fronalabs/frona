@@ -125,7 +125,7 @@ impl Intercept for ConverseParameters {
 struct Connection {
     sdk: Client,
     discovery: aws_sdk_bedrock::Client,
-    provider: RigProvider<rig_bedrock::client::Client>,
+    provider: RigProvider,
 }
 
 fn configure_loader(
@@ -184,7 +184,8 @@ impl BedrockProvider {
             }
             if let Some(key) = key { discovery = discovery.bearer_token(Token::new(key, None)); }
             let discovery = aws_sdk_bedrock::Client::from_conf(discovery.build());
-            let provider = RigProvider::new(rig_bedrock::client::Client::from(sdk.clone()), self.counter.clone()).with_wire_transport();
+            let client = rig_bedrock::client::BedrockRuntime::from(sdk.clone());
+            let provider = RigProvider::new(move |id: &str| client.completion(id).erase(), self.counter.clone()).with_wire_transport();
             Ok(Connection { sdk, discovery, provider })
         }).await
     }
@@ -199,8 +200,9 @@ impl BedrockProvider {
                 .endpoint_url("http://127.0.0.1:9")
                 .build(),
         );
+        let client = rig_bedrock::client::BedrockRuntime::from(sdk.clone());
         let provider = RigProvider::new(
-            rig_bedrock::client::Client::from(sdk.clone()),
+            move |id: &str| client.completion(id).erase(),
             counter.clone(),
         )
         .with_wire_transport();
@@ -220,7 +222,7 @@ impl BedrockProvider {
 impl ModelProvider for BedrockProvider {
     async fn list_models(&self) -> Result<ProviderModelList, ModelListError> {
         use aws_sdk_bedrock::types::{InferenceType, ModelModality};
-        use rig_core::model::{Model, ModelList};
+        use rig_core::model::{ModelInfo, ModelList};
         let connection = self
             .connection()
             .await
@@ -233,11 +235,11 @@ impl ModelProvider for BedrockProvider {
             .send()
             .await
             .map_err(|error| discovery_error(error.raw_response().map(|r| r.status().as_u16())))?;
-        let mut models: Vec<Model> = response
+        let mut models: Vec<ModelInfo> = response
             .model_summaries()
             .iter()
             .map(|entry| {
-                let mut model = Model::from_id(entry.model_id());
+                let mut model = ModelInfo::from_id(entry.model_id());
                 model.name = entry.model_name().map(str::to_owned);
                 model
             })
@@ -260,7 +262,7 @@ impl ModelProvider for BedrockProvider {
                     .iter()
                     .filter(|entry| entry.status().as_str() == "ACTIVE")
                     .map(|entry| {
-                        Model::new(entry.inference_profile_id(), entry.inference_profile_name())
+                        ModelInfo::new(entry.inference_profile_id(), entry.inference_profile_name())
                     }),
             );
             match page.next_token().filter(|token| !token.is_empty()) {
@@ -608,7 +610,8 @@ mod tests {
                 json!({"inferenceConfig":{"topP":0.9},"additionalModelRequestFields":{"top_k":20,"nullable":null},"literal.dot":true}),
             );
             let tools = vec![ToolDefinition {
-                name: "lookup".into(),
+                annotations: Default::default(),
+                name: "lookup".try_into().unwrap(),
                 description: "fixture".into(),
                 parameters: json!({"type":"object","properties":{}}),
             }];
@@ -623,7 +626,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(normal.usage.input_tokens, 3);
+            assert_eq!(normal.usage.input_tokens, Some(3));
             let (tx, mut rx) = mpsc::channel(8);
             let stream = provider
                 .stream_inference(
@@ -637,7 +640,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(stream.usage.output_tokens, 2);
+            assert_eq!(stream.usage.output_tokens, Some(2));
             assert!(
                 matches!(rx.recv().await, Some(StreamToken::Text(text)) if text == "fixture reply")
             );

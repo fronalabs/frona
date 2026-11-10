@@ -240,7 +240,7 @@ async fn inference_and_granted_commands_share_a_provider_without_implicit_secret
             })
             .await
             .unwrap();
-        assert_eq!(usage.input_tokens, 1);
+        assert_eq!(usage.input_tokens, Some(1));
         if identity.is_none() {
             let output = tool
                 .execute(

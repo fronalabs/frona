@@ -98,7 +98,7 @@ async fn static_composite_documents_invalidate_on_update_and_authorization_runs_
     assert_eq!(typed["USERNAME"], "one");
     assert!(
         resolved
-            .credentials::<rig_core::providers::chatgpt::ChatGPTAuth>()
+            .credentials::<crate::credential::managed::integration::openai_codex::Credentials>()
             .is_err()
     );
     let (_, cached) = resolver
@@ -143,11 +143,13 @@ async fn static_composite_documents_invalidate_on_update_and_authorization_runs_
 
 #[test]
 fn resolved_exports_preserve_fields_and_redact_diagnostics() {
-    use rig_core::providers::{chatgpt::ChatGPTAuth, copilot::CopilotAuth};
+    use super::{
+        copilot::Credentials as CopilotCredentials, openai_codex::Credentials as CodexCredentials,
+    };
 
     let expiry = Utc::now() + chrono::Duration::hours(1);
     let secret = ResolvedSecret {
-        credentials: ChatGPTAuth::AccessToken {
+        credentials: CodexCredentials {
             access_token: "private-access".into(),
             account_id: Some("private-account".into()),
         },
@@ -166,7 +168,7 @@ fn resolved_exports_preserve_fields_and_redact_diagnostics() {
     let erased = secret.erase();
     assert!(!format!("{erased:?}").contains("private"));
     let copilot = ResolvedSecret {
-        credentials: CopilotAuth::ApiKey("short-lived".into()),
+        credentials: CopilotCredentials("short-lived".into()),
         expires_at: Some(expiry),
         cache: CachePolicy::Until(expiry),
     };
@@ -177,22 +179,15 @@ fn resolved_exports_preserve_fields_and_redact_diagnostics() {
             ("EXPIRES_AT".into(), expiry.to_rfc3339()),
         ])
     );
-    assert!(ChatGPTAuth::OAuth.to_env().is_err());
     assert!(
-        ChatGPTAuth::AccessToken {
+        CodexCredentials {
             access_token: "token".into(),
             account_id: None
         }
         .to_env()
         .is_err()
     );
-    assert!(CopilotAuth::OAuth.to_env().is_err());
-    assert!(
-        CopilotAuth::GitHubAccessToken("bootstrap".into())
-            .to_env()
-            .is_err()
-    );
-    assert!(CopilotAuth::ApiKey(String::new()).to_env().is_err());
+    assert!(CopilotCredentials(String::new()).to_env().is_err());
 }
 
 #[test]

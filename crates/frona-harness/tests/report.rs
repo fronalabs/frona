@@ -44,18 +44,12 @@ fn model(outputs: Vec<ModelOutput>) -> Model<'static> {
     Model::from_adapter("fake", "report", Script(Mutex::new(outputs.into()))).unwrap()
 }
 fn output(content: Vec<AssistantContent>) -> ModelOutput {
-    ModelOutput::new(
-        content,
-        UsageReport::Reported(Usage {
-            total_tokens: 3,
-            ..Usage::new()
-        }),
-    )
+    ModelOutput::new(content, UsageReport::Reported(Usage::new().total_tokens(3)))
 }
 fn call(id: &str, name: &str, arguments: Value) -> AssistantContent {
     AssistantContent::ToolCall(ToolCall::from_wire(
         id,
-        ToolFunction::new(name.into(), arguments),
+        ToolFunction::new(name.try_into().unwrap(), arguments),
     ))
 }
 fn submitted(value: u32) -> ModelOutput {
@@ -104,10 +98,7 @@ async fn inspector_reads_independent_report_and_feedback_correlates_to_actual_re
     assert!(final_report.feedback[1].issued_in.is_empty());
     assert_eq!(
         final_report.attempts[0].usage,
-        Some(UsageReport::Reported(Usage {
-            total_tokens: 3,
-            ..Usage::new()
-        }))
+        Some(UsageReport::Reported(Usage::new().total_tokens(3)))
     );
 }
 
@@ -258,10 +249,7 @@ async fn reports_are_per_run_even_with_shared_budget() {
         assert_eq!(report.snapshot().provider_attempts(), 1);
         assert_eq!(
             report.snapshot().attempts[0].usage,
-            Some(UsageReport::Reported(Usage {
-                total_tokens: 3,
-                ..Usage::new()
-            }))
+            Some(UsageReport::Reported(Usage::new().total_tokens(3)))
         );
     }
     assert_eq!(budget.snapshot().model_attempts, 2);

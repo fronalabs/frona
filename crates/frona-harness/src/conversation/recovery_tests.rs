@@ -59,7 +59,10 @@ fn fixture(writer: Option<RetryFault>) -> (Conversation, ToolRegistry<'static>, 
             ModelOutput::new(
                 vec![AssistantContent::ToolCall(ToolCall::from_wire(
                     "id",
-                    rig_core::completion::message::ToolFunction::new("work".into(), json!({})),
+                    rig_core::completion::message::ToolFunction::new(
+                        "work".try_into().unwrap(),
+                        json!({}),
+                    ),
                 ))],
                 UsageReport::Unavailable,
             ),

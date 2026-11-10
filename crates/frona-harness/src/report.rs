@@ -67,7 +67,7 @@ pub struct RequestReport {
     pub outcome: Option<CallOutcome>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AttemptReport {
     pub id: AttemptId,
     pub request: RequestId,
@@ -183,7 +183,7 @@ pub(super) fn failure_kind(error: &ManualError) -> FailureKind {
 
 /// A snapshot contains activity metadata and positions, not message bodies or
 /// application retained values. Its size grows with recorded execution activity.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExecutionReport {
     pub requests: Vec<RequestReport>,
     pub attempts: Vec<AttemptReport>,
@@ -330,8 +330,8 @@ impl ReportHandle {
     ) {
         self.read().actions.push(ActionReport {
             position,
-            call_id: call.id.as_str().into(),
-            name: call.function.name.clone(),
+            call_id: call.id.to_string(),
+            name: call.function.name.to_string(),
             kind,
             started: false,
             outcome: None,

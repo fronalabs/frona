@@ -72,6 +72,7 @@ impl PersistentConversation {
             stored_messages.truncate(index + 1);
         }
         let tool_calls = service.get_tool_calls(chat_id).await?;
+        crate::inference::conversation::validate_provider_turns(&stored_messages, &tool_calls)?;
         let mut model_history = builder
             .build(
                 &stored_messages,

@@ -959,28 +959,71 @@ async fn normalized_prompt_usage_agrees_across_storage_rollups_sse_and_metrics()
         SurrealRepo::new(db.clone()),
         broadcast,
     );
-    let anthropic: rig_core::providers::anthropic::completion::Usage = serde_json::from_value(json!({
+    async fn wire_usage(provider: &str, usage: serde_json::Value) -> Usage {
+        use frona_harness::inference::protocol::http::WireClient;
+        use rig_core::{
+            completion::CompletionRequest,
+            http_client::DynHttpClient,
+            providers::{anthropic, openai},
+        };
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let server = MockServer::start().await;
+        let transport = DynHttpClient::new(WireClient::without_redirects().unwrap());
+        let (model, body) = if provider == "anthropic" {
+            (
+                anthropic::AnthropicConfig::new("fixture")
+                    .with_base_url(server.uri())
+                    .connect(transport)
+                    .completion("fixture")
+                    .erase(),
+                json!({"id":"fixture","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"fixture","stop_reason":"end_turn","usage":usage}),
+            )
+        } else {
+            (
+                openai::OpenAIConfig::with_key(&openai::wire::OPENROUTER, "fixture")
+                    .with_base_url(server.uri())
+                    .connect(transport)
+                    .completion("fixture")
+                    .erase(),
+                json!({"id":"fixture","object":"chat.completion","created":1,"model":"fixture","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":usage}),
+            )
+        };
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let usage = model
+            .call(CompletionRequest::new("hello").max_tokens(100))
+            .await
+            .unwrap()
+            .usage;
+        server.verify().await;
+        usage
+    }
+    let anthropic = wire_usage("anthropic", json!({
         "input_tokens": 200, "cache_read_input_tokens": 600, "cache_creation_input_tokens": 200, "output_tokens": 100
-    })).unwrap();
-    let openrouter: rig_core::providers::openrouter::Usage = serde_json::from_value(json!({
-        "prompt_tokens": 1000, "completion_tokens": 100, "total_tokens": 1100,
-        "prompt_tokens_details": {"cached_tokens": 600, "cache_write_tokens": 200}
-    }))
-    .unwrap();
+    })).await;
+    let openrouter = wire_usage(
+        "openrouter",
+        json!({
+            "prompt_tokens": 1000, "completion_tokens": 100, "total_tokens": 1100,
+            "prompt_tokens_details": {"cached_tokens": 600, "cache_write_tokens": 200}
+        }),
+    )
+    .await;
     for (provider, handle, usage) in [
-        ("anthropic", "company-account", Usage::from(anthropic)),
-        ("openrouter", "anthropic", Usage::from(openrouter)),
+        ("anthropic", "company-account", anthropic),
+        ("openrouter", "anthropic", openrouter),
         (
             "openai",
             "openrouter",
-            Usage {
-                input_tokens: 1000,
-                cached_input_tokens: 600,
-                cache_creation_input_tokens: 200,
-                output_tokens: 100,
-                total_tokens: 1100,
-                ..Default::default()
-            },
+            Usage::new()
+                .input_tokens(Some(1000))
+                .cached_input_tokens(Some(600))
+                .cache_creation_input_tokens(Some(200))
+                .output_tokens(Some(100))
+                .total_tokens(Some(1100)),
         ),
     ] {
         let model = ModelConfig {
@@ -1136,13 +1179,11 @@ async fn usage_migration_recovers_supported_totals_without_repricing_or_guessing
         svc.record(
             &chat_usage_ctx("u", "a", fixture.message, fixture.message),
             &model,
-            &Usage {
-                input_tokens: fixture.input,
-                cached_input_tokens: fixture.cached,
-                output_tokens: fixture.output,
-                total_tokens: fixture.total.unwrap_or_default(),
-                ..Default::default()
-            },
+            &Usage::new()
+                .input_tokens(Some(fixture.input))
+                .cached_input_tokens(Some(fixture.cached))
+                .output_tokens(Some(fixture.output))
+                .total_tokens(Some(fixture.total.unwrap_or_default())),
             0,
             LatencyMetrics::default(),
         )

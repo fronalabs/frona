@@ -42,7 +42,7 @@ impl ModelAdapter for ApplicationClient<'_> {
         let mut response = ModelOutput::new(
             vec![AssistantContent::text("hello")],
             if self.usage {
-                UsageReport::Reported(Usage::default())
+                UsageReport::Reported(Usage::new().total_tokens(0))
             } else {
                 UsageReport::Unavailable
             },
@@ -76,7 +76,7 @@ async fn application_client_borrows_state_and_preserves_usage_and_metadata() {
     assert!(matches!(
         output.usage,
         UsageReport::Reported(Usage {
-            total_tokens: 0,
+            total_tokens: Some(0),
             ..
         })
     ));
@@ -131,7 +131,8 @@ async fn unsupported_capabilities_fail_before_calling_the_application() {
     request
         .tools
         .push(rig_core::completion::request::ToolDefinition {
-            name: "read".into(),
+            annotations: Default::default(),
+            name: "read".try_into().unwrap(),
             description: "read".into(),
             parameters: json!({"type":"object"}),
         });
@@ -179,8 +180,8 @@ async fn builtin_openai_uses_existing_factory_and_preserves_raw_response() {
     assert_eq!(output.metadata["raw"]["id"], "chat-original");
     assert!(matches!(
         output.usage,
-        UsageReport::LegacyNormalized(Usage {
-            total_tokens: 0,
+        UsageReport::Reported(Usage {
+            total_tokens: Some(0),
             ..
         })
     ));
@@ -214,8 +215,8 @@ async fn builtin_structured_output_keeps_call_ids_and_original_arguments() {
             _ => None,
         })
         .unwrap();
-    assert_eq!(call.id, "call-original");
-    assert_eq!(call.function.arguments, arguments);
+    assert_eq!(call.id.wire(), "call-original");
+    assert_eq!(call.function.arguments_value(), arguments);
     assert_eq!(
         output.response.metadata["raw"]["choices"][0]["message"]["tool_calls"][0]["id"],
         "call-original"
@@ -292,7 +293,10 @@ async fn builtin_signed_submission_preserves_provider_signature() {
             _ => None,
         })
         .unwrap();
-    assert_eq!(call.signature.as_deref(), Some(signature));
+    assert_eq!(
+        call.native.as_ref().unwrap().item["thoughtSignature"],
+        signature
+    );
     assert_eq!(
         output.response.metadata["raw"]["candidates"][0]["content"]["parts"][0]["thoughtSignature"],
         signature
@@ -312,7 +316,8 @@ async fn builtin_does_not_silently_drop_tools_from_native_structured_requests() 
     request
         .tools
         .push(rig_core::completion::request::ToolDefinition {
-            name: "read".into(),
+            annotations: Default::default(),
+            name: "read".try_into().unwrap(),
             description: "read".into(),
             parameters: json!({"type":"object"}),
         });

@@ -64,10 +64,12 @@ pub fn record_inference_request(
             ("user_id", ctx.user_id.clone()),
             ("agent_id", ctx.agent_id.clone()),
         ];
-        counter!(INFERENCE_INPUT_TOKENS_TOTAL, &token_labels).increment(usage.input_tokens);
-        counter!(INFERENCE_OUTPUT_TOKENS_TOTAL, &token_labels).increment(usage.output_tokens);
+        counter!(INFERENCE_INPUT_TOKENS_TOTAL, &token_labels)
+            .increment(usage.input_tokens.unwrap_or_default());
+        counter!(INFERENCE_OUTPUT_TOKENS_TOTAL, &token_labels)
+            .increment(usage.output_tokens.unwrap_or_default());
         counter!(INFERENCE_CACHED_INPUT_TOKENS_TOTAL, &token_labels)
-            .increment(usage.cached_input_tokens);
+            .increment(usage.cached_input_tokens.unwrap_or_default());
     }
 }
 

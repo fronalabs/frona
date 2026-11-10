@@ -7,11 +7,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use rig_core::client::ModelListingClient;
 use rig_core::completion::request::{ToolDefinition as RigToolDefinition, Usage};
 use rig_core::completion::{
-    AssistantContent, CompletionModel, CompletionRequest, CompletionResponse,
-    Message as RigMessage,
+    AssistantContent, CompletionRequest, CompletionResponse, Message as RigMessage,
     message::{ToolCall, ToolChoice, ToolFunction},
 };
 use rig_core::model::ModelList;
@@ -29,14 +27,16 @@ pub enum StreamToken {
 }
 
 /// Result of a single provider call. Returned by both streaming and non-streaming
-/// paths so the retry layer + tool loop can treat them uniformly. Usage defaults
-/// to zeros if the provider omitted it.
+/// paths so the retry layer + tool loop can treat them uniformly. Usage retains
+/// absent fields when the provider omitted them.
 ///
 /// `ttft_ms` is the wall time from the start of `consume_tool_stream` to the
 /// first text/reasoning chunk arriving on the wire. `None` on the non-streaming
 /// path (no first-token concept - the whole response arrives at once).
 #[derive(Debug, Clone)]
 pub struct InferenceOutput {
+    pub origin: Option<rig_core::message::Origin>,
+    pub stop: Option<rig_core::message::StopReason>,
     pub content: Vec<AssistantContent>,
     pub usage: Usage,
     pub ttft_ms: Option<u64>,
@@ -74,24 +74,20 @@ pub enum CredentialValidationError {
     Failed(String),
 }
 
-impl From<rig_core::model::ModelListingError> for CredentialValidationError {
-    fn from(error: rig_core::model::ModelListingError) -> Self {
-        use rig_core::model::ModelListingError;
-        match error {
-            ModelListingError::ApiError {
-                status_code: 401 | 403,
-                ..
+impl From<rig_core::error::ProviderError> for CredentialValidationError {
+    fn from(error: rig_core::error::ProviderError) -> Self {
+        let report = error.report();
+        match report.http_status {
+            Some(401 | 403) => Self::AuthenticationRejected,
+            Some(status) => Self::Failed(format!("provider returned HTTP {status}")),
+            None if matches!(
+                error,
+                rig_core::error::ProviderError::InvalidAuthentication(_)
+            ) =>
+            {
+                Self::AuthenticationRejected
             }
-            | ModelListingError::AuthError { .. } => Self::AuthenticationRejected,
-            ModelListingError::ApiError { status_code, .. } => {
-                Self::Failed(format!("provider returned HTTP {status_code}"))
-            }
-            ModelListingError::RequestError { .. } => {
-                Self::Failed("provider request failed".into())
-            }
-            ModelListingError::ParseError { .. } => {
-                Self::Failed("invalid provider response".into())
-            }
+            None => Self::Failed("provider request or response failed".into()),
         }
     }
 }
@@ -105,9 +101,60 @@ impl InferenceOutput {
         Self {
             content,
             usage,
+            origin: None,
+            stop: None,
             ttft_ms: None,
             metadata: serde_json::Value::Null,
         }
+    }
+
+    fn from_response(response: CompletionResponse) -> Self {
+        let mut metadata = serde_json::to_value(&response).unwrap_or_default();
+        // Preserve the SDK's response-id lookup alongside Rig's origin envelope.
+        metadata["response_id"] = serde_json::json!(response.origin.response_id);
+        let stop = response.stop();
+        Self::new(response.choice, response.usage)
+            .with_metadata(metadata)
+            .with_provenance(response.origin, stop)
+    }
+
+    pub fn usage_report(&self) -> crate::UsageReport {
+        if self.origin.is_some() {
+            crate::UsageReport::Reported(self.usage)
+        } else {
+            crate::UsageReport::LegacyNormalized(self.usage)
+        }
+    }
+
+    /// Check after recording the attempt's usage: incomplete output is billable
+    /// but must never complete a loop or dispatch its proposed tool calls.
+    pub fn ensure_complete(&self) -> Result<(), InferenceError> {
+        use rig_core::message::StopReason;
+        let reason = match &self.stop {
+            Some(StopReason::Length) => {
+                Some("provider output-token limit interrupted the response")
+            }
+            Some(StopReason::Error(reason) | StopReason::Aborted(reason)) => Some(reason.as_str()),
+            _ => None,
+        };
+        match reason {
+            Some(reason) => Err(InferenceError::from(
+                rig_core::error::ProviderError::Response(format!(
+                    "Incomplete provider response: {reason}"
+                )),
+            )),
+            None => Ok(()),
+        }
+    }
+
+    pub fn with_provenance(
+        mut self,
+        origin: rig_core::message::Origin,
+        stop: rig_core::message::StopReason,
+    ) -> Self {
+        self.origin = Some(origin);
+        self.stop = Some(stop);
+        self
     }
 
     pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
@@ -180,31 +227,31 @@ impl<'a> CompletionRequestBuilder<'a> {
         // arguments before provider adapters turn them into JSON strings, so
         // rebuilding history does not change an already-sent prompt prefix.
         for message in &mut chat_history {
-            if let RigMessage::Assistant { content, .. } = message {
-                for item in content {
+            if let RigMessage::Assistant(message) = message {
+                for item in &mut message.content {
                     if let AssistantContent::ToolCall(call) = item {
-                        call.function.arguments.sort_all_objects();
+                        let mut arguments =
+                            serde_json::Value::Object(std::mem::take(&mut call.function.arguments));
+                        arguments.sort_all_objects();
+                        call.function.arguments = arguments
+                            .as_object()
+                            .expect("arguments remain an object")
+                            .clone();
                     }
                 }
             }
         }
 
-        CompletionRequest {
-            model: None,
-            preamble: Some(self.system_prompt.to_string()),
-            chat_history,
-            documents: vec![],
-            tools: self.tools,
-            temperature: self.temperature,
-            max_tokens: self.max_tokens,
-            tool_choice: self.tool_choice,
-            additional_params: self.additional_params,
-            // A tool's own `parameters` already carry `T`'s schema; this field is the
-            // provider's `response_format`, which constrains *message content* instead -
-            // a different channel, and one that pulls against `ToolChoice::Required`.
-            output_schema: None,
-            record_telemetry_content: false,
-        }
+        let mut request = CompletionRequest::new("");
+        request.chat_history = std::iter::once(Arc::new(RigMessage::system(self.system_prompt)))
+            .chain(chat_history.into_iter().map(Arc::new))
+            .collect();
+        request.tools = self.tools.into_iter().map(Arc::new).collect();
+        request.temperature = self.temperature;
+        request.max_tokens = self.max_tokens;
+        request.tool_choice = self.tool_choice;
+        request.additional_params = self.additional_params;
+        request
     }
 }
 
@@ -388,8 +435,11 @@ pub struct StructuredOutput {
 
 pub const SUBMIT_TOOL_NAME: &str = "submit";
 
-pub struct RigProvider<C> {
-    client: C,
+type CompletionModelFactory =
+    dyn Fn(&str) -> rig_core::DynModel<rig_core::operation::Completion> + Send + Sync;
+
+pub struct RigProvider {
+    model: Arc<CompletionModelFactory>,
     counter: InferenceCounter,
     hook: Option<crate::inference::protocol::hooks::RequestHook>,
     live_check: Option<LiveCheck>,
@@ -406,47 +456,42 @@ type ValidationCheck = Arc<
         + Sync,
 >;
 
-pub struct OpenAiProvider<H = reqwest::Client> {
-    chat_completions: RigProvider<rig_core::providers::openai::CompletionsClient<H>>,
-    responses: RigProvider<rig_core::providers::openai::Client<H>>,
+pub struct OpenAiProvider {
+    chat_completions: RigProvider,
+    responses: RigProvider,
 }
 
-impl<
-    H: rig_core::http_client::HttpClientExt
-        + Clone
-        + std::fmt::Debug
-        + Default
-        + Send
-        + Sync
-        + 'static,
-> OpenAiProvider<H>
-{
-    pub fn new(
-        chat_completions: rig_core::providers::openai::CompletionsClient<H>,
-        responses: rig_core::providers::openai::Client<H>,
-        counter: InferenceCounter,
-    ) -> Self {
-        let validation_client = chat_completions.clone();
+impl OpenAiProvider {
+    pub fn new(client: rig_core::providers::openai::OpenAI, counter: InferenceCounter) -> Self {
+        let validation_client = client.clone();
+        let chat_client = client.clone();
         Self {
-            chat_completions: RigProvider::new(chat_completions, counter.clone())
-                .with_live_check(move || {
-                    let client = validation_client.clone();
-                    async move {
-                        client
-                            .list_models()
-                            .await
-                            .map_err(CredentialValidationError::from)
-                    }
-                })
-                .with_hook(crate::inference::protocol::hooks::openai),
-            responses: RigProvider::new(responses, counter),
+            chat_completions: RigProvider::new(
+                move |id: &str| chat_client.chat(id).erase(),
+                counter.clone(),
+            )
+            .with_live_check(move || {
+                let client = validation_client.clone();
+                async move {
+                    client
+                        .list_models()
+                        .await
+                        .map_err(CredentialValidationError::from)
+                }
+            })
+            .with_hook(crate::inference::protocol::hooks::openai),
+            responses: RigProvider::new(move |id: &str| client.responses(id).erase(), counter),
         }
     }
 
-    fn api(model: &ModelConfig) -> OpenAiApi {
-        match &model.provider {
+    fn provider(&self, model: &ModelConfig) -> &RigProvider {
+        let api = match &model.provider {
             ProviderModel::OpenAI { api, .. } => api.unwrap_or_default(),
             _ => OpenAiApi::ChatCompletions,
+        };
+        match api {
+            OpenAiApi::ChatCompletions => &self.chat_completions,
+            OpenAiApi::Responses => &self.responses,
         }
     }
 
@@ -458,16 +503,7 @@ impl<
 }
 
 #[async_trait]
-impl<
-    H: rig_core::http_client::HttpClientExt
-        + Clone
-        + std::fmt::Debug
-        + Default
-        + Send
-        + Sync
-        + 'static,
-> ModelProvider for OpenAiProvider<H>
-{
+impl ModelProvider for OpenAiProvider {
     async fn validate_credentials(
         &self,
     ) -> Result<CredentialValidation, CredentialValidationError> {
@@ -487,32 +523,16 @@ impl<
         max_tokens: Option<u64>,
         temperature: Option<f64>,
     ) -> Result<InferenceOutput, InferenceError> {
-        match Self::api(model) {
-            OpenAiApi::ChatCompletions => {
-                self.chat_completions
-                    .inference(
-                        model,
-                        system_prompt,
-                        chat_history,
-                        tools,
-                        max_tokens,
-                        temperature,
-                    )
-                    .await
-            }
-            OpenAiApi::Responses => {
-                self.responses
-                    .inference(
-                        model,
-                        system_prompt,
-                        chat_history,
-                        tools,
-                        max_tokens,
-                        temperature,
-                    )
-                    .await
-            }
-        }
+        self.provider(model)
+            .inference(
+                model,
+                system_prompt,
+                chat_history,
+                tools,
+                max_tokens,
+                temperature,
+            )
+            .await
     }
 
     async fn stream_inference(
@@ -525,34 +545,17 @@ impl<
         max_tokens: Option<u64>,
         temperature: Option<f64>,
     ) -> Result<InferenceOutput, InferenceError> {
-        match Self::api(model) {
-            OpenAiApi::ChatCompletions => {
-                self.chat_completions
-                    .stream_inference(
-                        model,
-                        system_prompt,
-                        chat_history,
-                        tools,
-                        token_tx,
-                        max_tokens,
-                        temperature,
-                    )
-                    .await
-            }
-            OpenAiApi::Responses => {
-                self.responses
-                    .stream_inference(
-                        model,
-                        system_prompt,
-                        chat_history,
-                        tools,
-                        token_tx,
-                        max_tokens,
-                        temperature,
-                    )
-                    .await
-            }
-        }
+        self.provider(model)
+            .stream_inference(
+                model,
+                system_prompt,
+                chat_history,
+                tools,
+                token_tx,
+                max_tokens,
+                temperature,
+            )
+            .await
     }
 
     async fn structured_output(
@@ -564,32 +567,16 @@ impl<
         max_tokens: Option<u64>,
         temperature: Option<f64>,
     ) -> Result<StructuredOutput, InferenceError> {
-        match Self::api(model) {
-            OpenAiApi::ChatCompletions => {
-                self.chat_completions
-                    .structured_output(
-                        model,
-                        system_prompt,
-                        chat_history,
-                        schema,
-                        max_tokens,
-                        temperature,
-                    )
-                    .await
-            }
-            OpenAiApi::Responses => {
-                self.responses
-                    .structured_output(
-                        model,
-                        system_prompt,
-                        chat_history,
-                        schema,
-                        max_tokens,
-                        temperature,
-                    )
-                    .await
-            }
-        }
+        self.provider(model)
+            .structured_output(
+                model,
+                system_prompt,
+                chat_history,
+                schema,
+                max_tokens,
+                temperature,
+            )
+            .await
     }
 
     async fn structured_inference(
@@ -601,39 +588,29 @@ impl<
         max_tokens: Option<u64>,
         temperature: Option<f64>,
     ) -> Result<serde_json::Value, InferenceError> {
-        match Self::api(model) {
-            OpenAiApi::ChatCompletions => {
-                self.chat_completions
-                    .structured_inference(
-                        model,
-                        system_prompt,
-                        chat_history,
-                        schema,
-                        max_tokens,
-                        temperature,
-                    )
-                    .await
-            }
-            OpenAiApi::Responses => {
-                self.responses
-                    .structured_inference(
-                        model,
-                        system_prompt,
-                        chat_history,
-                        schema,
-                        max_tokens,
-                        temperature,
-                    )
-                    .await
-            }
-        }
+        self.provider(model)
+            .structured_inference(
+                model,
+                system_prompt,
+                chat_history,
+                schema,
+                max_tokens,
+                temperature,
+            )
+            .await
     }
 }
 
-impl<C> RigProvider<C> {
-    pub fn new(client: C, counter: InferenceCounter) -> Self {
+impl RigProvider {
+    pub fn new(
+        model: impl Fn(&str) -> rig_core::DynModel<rig_core::operation::Completion>
+        + Send
+        + Sync
+        + 'static,
+        counter: InferenceCounter,
+    ) -> Self {
         Self {
-            client,
+            model: Arc::new(model),
             counter,
             hook: None,
             live_check: None,
@@ -709,11 +686,7 @@ impl<C> RigProvider<C> {
 }
 
 #[async_trait]
-impl<C> ModelProvider for RigProvider<C>
-where
-    C: rig_core::client::CompletionClient + Send + Sync,
-    C::CompletionModel: CompletionModel + Send + Sync + 'static,
-{
+impl ModelProvider for RigProvider {
     async fn validate_credentials(
         &self,
     ) -> Result<CredentialValidation, CredentialValidationError> {
@@ -759,8 +732,6 @@ where
         max_tokens: Option<u64>,
         temperature: Option<f64>,
     ) -> Result<InferenceOutput, InferenceError> {
-        use rig_core::completion::CompletionModel as _;
-
         let (params, wire) = self.prepare_parameters(
             model_ref,
             max_tokens,
@@ -770,7 +741,13 @@ where
         let model_id = model_ref.model_id.as_str();
 
         let _guard = self.counter.guard();
-        let model = self.client.completion_model(model_id);
+        let model = (self.model)(model_id);
+        let mut chat_history = chat_history;
+        crate::inference::history_compat::prepare_legacy_history(
+            &mut chat_history,
+            model_ref,
+            &model,
+        )?;
 
         tracing::debug!(
             model = %model_id,
@@ -797,17 +774,13 @@ where
             .build();
 
         let response: CompletionResponse =
-            crate::inference::protocol::http::scope(wire, model.completion(request))
-                .await
-                .map_err(InferenceError::CompletionFailed)?;
+            crate::inference::protocol::http::scope(wire, model.call(request)).await?;
 
-        let metadata = serde_json::to_value(&response).unwrap_or_default();
-        let contents: Vec<AssistantContent> = response.choice.into_iter().collect();
-        let usage = response.usage;
+        let output = InferenceOutput::from_response(response);
 
         tracing::debug!(
             model = %model_id,
-            response = ?contents,
+            response = ?output.content,
             "LLM response"
         );
         if let Some((history, tools, system)) = traced {
@@ -818,11 +791,11 @@ where
                     history: &history,
                     tools: &tools,
                 },
-                &contents,
+                &output.content,
             );
         }
 
-        Ok(InferenceOutput::new(contents, usage).with_metadata(metadata))
+        Ok(output)
     }
 
     async fn stream_inference(
@@ -835,8 +808,6 @@ where
         max_tokens: Option<u64>,
         temperature: Option<f64>,
     ) -> Result<InferenceOutput, InferenceError> {
-        use rig_core::completion::CompletionModel as _;
-
         let (params, wire) = self.prepare_parameters(
             model_ref,
             max_tokens,
@@ -846,7 +817,13 @@ where
         let model_id = model_ref.model_id.as_str();
 
         let _guard = self.counter.guard();
-        let model = self.client.completion_model(model_id);
+        let model = (self.model)(model_id);
+        let mut chat_history = chat_history;
+        crate::inference::history_compat::prepare_legacy_history(
+            &mut chat_history,
+            model_ref,
+            &model,
+        )?;
 
         tracing::debug!(
             model = %model_id,
@@ -856,7 +833,7 @@ where
         tracing::debug!(system_prompt = %system_prompt, "LLM system prompt");
         tracing::debug!(chat_history = ?chat_history, "LLM chat history");
 
-        let tool_names: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+        let tool_names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
         let traced = crate::inference::trace::enabled().then(|| {
             (
                 chat_history.clone(),
@@ -874,50 +851,49 @@ where
 
         let StreamConsumed {
             mut accumulated_text,
-            mut contents,
+            mut output,
             still_buffering,
-            usage,
-            ttft_ms,
-            metadata,
         } = crate::inference::protocol::http::scope(wire, async {
-            let stream = model
-                .stream(request)
-                .await
-                .map_err(InferenceError::CompletionFailed)?;
+            let stream = model.stream(request)?;
             consume_tool_stream(stream, &token_tx, &tool_names).await
         })
         .await?;
 
-        let has_tool_calls = contents
+        let has_tool_calls = output
+            .content
             .iter()
             .any(|c| matches!(c, AssistantContent::ToolCall(_)));
         if !has_tool_calls && !accumulated_text.is_empty() && still_buffering {
+            let original_text = accumulated_text.clone();
             recover_tool_calls_from_text(
                 &mut accumulated_text,
-                &mut contents,
+                &mut output.content,
                 &tool_names,
                 model_id,
             );
+            if accumulated_text != original_text {
+                output
+                    .content
+                    .retain(|item| !matches!(item, AssistantContent::Text(_)));
+                if !accumulated_text.is_empty() {
+                    output
+                        .content
+                        .insert(0, AssistantContent::text(&accumulated_text));
+                }
+            }
         }
 
-        if !accumulated_text.is_empty() {
-            if still_buffering {
-                let _ = token_tx
-                    .send(StreamToken::Text(accumulated_text.clone()))
-                    .await;
-            }
-            let text_index = contents
-                .iter()
-                .take_while(|item| matches!(item, AssistantContent::Reasoning(_)))
-                .count();
-            contents.insert(text_index, AssistantContent::text(&accumulated_text));
+        if !accumulated_text.is_empty() && still_buffering {
+            let _ = token_tx
+                .send(StreamToken::Text(accumulated_text.clone()))
+                .await;
         }
 
         tracing::debug!(
             model = %model_id,
-            response = ?contents,
-            usage = ?usage,
-            ttft_ms = ?ttft_ms,
+            response = ?output.content,
+            usage = ?output.usage,
+            ttft_ms = ?output.ttft_ms,
             "LLM streaming response"
         );
         if let Some((history, tools, system)) = traced {
@@ -928,13 +904,11 @@ where
                     history: &history,
                     tools: &tools,
                 },
-                &contents,
+                &output.content,
             );
         }
 
-        Ok(InferenceOutput::new(contents, usage)
-            .with_ttft(ttft_ms)
-            .with_metadata(metadata))
+        Ok(output)
     }
 
     async fn structured_output(
@@ -946,16 +920,21 @@ where
         max_tokens: Option<u64>,
         temperature: Option<f64>,
     ) -> Result<StructuredOutput, InferenceError> {
-        use rig_core::completion::CompletionModel as _;
-
         let (params, wire) = self.prepare_parameters(model_ref, max_tokens, temperature, true)?;
         let model_id = model_ref.model_id.as_str();
 
         let _guard = self.counter.guard();
-        let model = self.client.completion_model(model_id);
+        let model = (self.model)(model_id);
+        let mut chat_history = chat_history;
+        crate::inference::history_compat::prepare_legacy_history(
+            &mut chat_history,
+            model_ref,
+            &model,
+        )?;
 
         let submit = RigToolDefinition {
-            name: SUBMIT_TOOL_NAME.to_string(),
+            name: rig_core::message::ToolName::new(SUBMIT_TOOL_NAME).expect("submit is nonempty"),
+            annotations: Default::default(),
             description: "Submit the structured output. You MUST call this tool exactly once with the required fields filled in.".to_string(),
             parameters: schema,
         };
@@ -980,20 +959,36 @@ where
             .build();
 
         let response: CompletionResponse =
-            crate::inference::protocol::http::scope(wire, model.completion(request))
-                .await
-                .map_err(InferenceError::CompletionFailed)?;
+            crate::inference::protocol::http::scope(wire, model.call(request)).await?;
 
-        let metadata = serde_json::to_value(&response).unwrap_or_default();
-        let arguments = response
-            .choice
+        let output = InferenceOutput::from_response(response);
+        let arguments = output
+            .content
             .iter()
             .find_map(|c| match c {
                 AssistantContent::ToolCall(ToolCall {
-                    function: ToolFunction { name, arguments },
+                    function:
+                        ToolFunction {
+                            name,
+                            arguments,
+                            invalid_arguments: None,
+                        },
                     ..
-                }) if name == SUBMIT_TOOL_NAME => Some(arguments.clone()),
+                }) if name == SUBMIT_TOOL_NAME => {
+                    Some(serde_json::Value::Object(arguments.clone()))
+                }
                 _ => None,
+            })
+            .or_else(|| {
+                matches!(
+                    output.stop,
+                    Some(
+                        rig_core::message::StopReason::Length
+                            | rig_core::message::StopReason::Error(_)
+                            | rig_core::message::StopReason::Aborted(_)
+                    )
+                )
+                .then_some(serde_json::Value::Null)
             })
             .ok_or_else(|| {
                 InferenceError::InferenceFailed(format!(
@@ -1005,9 +1000,7 @@ where
 
         Ok(StructuredOutput {
             value: arguments,
-            response: Some(
-                InferenceOutput::new(response.choice, response.usage).with_metadata(metadata),
-            ),
+            response: Some(output),
         })
     }
 
@@ -1020,7 +1013,7 @@ where
         max_tokens: Option<u64>,
         temperature: Option<f64>,
     ) -> Result<serde_json::Value, InferenceError> {
-        Ok(self
+        let output = self
             .structured_output(
                 model,
                 system_prompt,
@@ -1029,135 +1022,67 @@ where
                 max_tokens,
                 temperature,
             )
-            .await?
-            .value)
+            .await?;
+        if let Some(response) = &output.response {
+            response.ensure_complete()?;
+        }
+        Ok(output.value)
     }
 }
 
 struct StreamConsumed {
     accumulated_text: String,
-    contents: Vec<AssistantContent>,
+    output: InferenceOutput,
     still_buffering: bool,
-    usage: Usage,
-    ttft_ms: Option<u64>,
-    metadata: serde_json::Value,
 }
 
-async fn consume_tool_stream<S>(
-    mut stream: S,
+async fn consume_tool_stream(
+    mut stream: rig_core::streaming::CompletionStream,
     token_tx: &mpsc::Sender<StreamToken>,
     tool_names: &[String],
-) -> Result<StreamConsumed, InferenceError>
-where
-    S: futures::Stream<
-            Item = Result<
-                rig_core::streaming::StreamedAssistantContent,
-                rig_core::completion::CompletionError,
-            >,
-        > + Unpin,
-{
+) -> Result<StreamConsumed, InferenceError> {
     use futures::StreamExt;
+    use rig_core::streaming::{Item, StreamEvent};
     use std::time::Instant;
 
     let stream_start = Instant::now();
-    let mut ttft_ms: Option<u64> = None;
-    let mut contents: Vec<AssistantContent> = Vec::new();
+    let mut ttft_ms = None;
     let mut accumulated_text = String::new();
     let mut buffering = true;
-    let mut accumulated_reasoning = String::new();
-    let mut reasoning_id: Option<String> = None;
-    let mut reasoning_signature: Option<String> = None;
-    let mut complete_reasoning: Option<rig_core::completion::message::Reasoning> = None;
-    let mut final_usage: Option<Usage> = None;
-    let mut metadata = serde_json::Value::Null;
-
     while let Some(chunk) = stream.next().await {
-        match chunk {
-            Ok(rig_core::streaming::StreamedAssistantContent::Text(text)) => {
-                if ttft_ms.is_none() {
-                    ttft_ms = Some(stream_start.elapsed().as_millis() as u64);
-                }
-                accumulated_text.push_str(&text.text);
+        match chunk? {
+            Item::Event(StreamEvent::Text { text, .. }) => {
+                ttft_ms.get_or_insert_with(|| stream_start.elapsed().as_millis() as u64);
+                accumulated_text.push_str(&text);
                 if buffering {
-                    if accumulated_text.len() >= 64 {
-                        let has_tool_name = tool_names
+                    if accumulated_text.len() >= 64
+                        && !tool_names
                             .iter()
-                            .any(|name| accumulated_text.contains(name.as_str()));
-                        if !has_tool_name {
-                            let _ = token_tx
-                                .send(StreamToken::Text(accumulated_text.clone()))
-                                .await;
-                            buffering = false;
-                        }
+                            .any(|name| accumulated_text.contains(name.as_str()))
+                    {
+                        let _ = token_tx
+                            .send(StreamToken::Text(accumulated_text.clone()))
+                            .await;
+                        buffering = false;
                     }
                 } else {
-                    let _ = token_tx.send(StreamToken::Text(text.text)).await;
+                    let _ = token_tx.send(StreamToken::Text(text)).await;
                 }
             }
-            Ok(rig_core::streaming::StreamedAssistantContent::ToolCall { tool_call, .. }) => {
-                contents.push(AssistantContent::ToolCall(tool_call));
-            }
-            Ok(rig_core::streaming::StreamedAssistantContent::Reasoning {
-                reasoning: r, ..
-            }) => {
-                if ttft_ms.is_none() {
-                    ttft_ms = Some(stream_start.elapsed().as_millis() as u64);
-                }
-                let text = r.display_text();
-                reasoning_id = r.id.clone();
-                reasoning_signature = r.first_signature().map(|s| s.to_string());
-                complete_reasoning = Some(r);
+            Item::Event(StreamEvent::Reasoning { text, .. }) => {
+                ttft_ms.get_or_insert_with(|| stream_start.elapsed().as_millis() as u64);
                 let _ = token_tx.send(StreamToken::Reasoning(text)).await;
             }
-            Ok(rig_core::streaming::StreamedAssistantContent::ReasoningDelta {
-                provider_id,
-                reasoning,
-                ..
-            }) => {
-                if ttft_ms.is_none() {
-                    ttft_ms = Some(stream_start.elapsed().as_millis() as u64);
-                }
-                accumulated_reasoning.push_str(&reasoning);
-                if provider_id.is_some() {
-                    reasoning_id = provider_id;
-                }
-                let _ = token_tx.send(StreamToken::Reasoning(reasoning)).await;
-            }
-            Ok(rig_core::streaming::StreamedAssistantContent::Final(r)) => {
-                metadata = serde_json::to_value(&r).unwrap_or_default();
-                final_usage = Some(r.usage);
-            }
-            Ok(_) => {}
-            Err(e) => {
-                return Err(InferenceError::CompletionFailed(e));
-            }
+            _ => {}
         }
     }
-
-    if let Some(reasoning) = complete_reasoning {
-        contents.insert(0, AssistantContent::Reasoning(reasoning));
-    } else if !accumulated_reasoning.is_empty() {
-        let thinking_chars = accumulated_reasoning.len();
-        tracing::debug!(thinking_chars, "Thinking tokens received");
-        contents.insert(
-            0,
-            AssistantContent::Reasoning(rig_core::completion::message::Reasoning {
-                id: reasoning_id,
-                ..rig_core::completion::message::Reasoning::new_with_signature(
-                    &accumulated_reasoning,
-                    reasoning_signature,
-                )
-            }),
-        );
-    }
-
+    // Finish verifies the provider end and retains native blocks and their order;
+    // reconstructing them from deltas would lose replay signatures and metadata.
+    let response = stream.finish().await?;
     Ok(StreamConsumed {
         accumulated_text,
-        contents,
+        output: InferenceOutput::from_response(response).with_ttft(ttft_ms),
         still_buffering: buffering,
-        usage: final_usage.unwrap_or_default(),
-        ttft_ms,
-        metadata,
     })
 }
 
@@ -1188,10 +1113,14 @@ fn recover_tool_calls_from_text(
 
     for tc in extracted {
         contents.push(AssistantContent::ToolCall(ToolCall::new(
-            rig_core::completion::message::ToolCallId::new_or_mint(
+            rig_core::completion::message::CallId::from_wire(
                 uuid::Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext)).to_string(),
             ),
-            ToolFunction::new(tc.tool_name, tc.arguments),
+            ToolFunction::new(
+                rig_core::message::ToolName::new(tc.tool_name)
+                    .expect("offered tool name is nonempty"),
+                tc.arguments,
+            ),
         )));
     }
 }
@@ -1498,7 +1427,8 @@ mod tests {
         assert_eq!(
             params.additional_params,
             Some(serde_json::json!({
-                "reasoning": {"effort": "high"}
+                "reasoning": {"effort": "high"},
+                "top_logprobs": 5
             }))
         );
     }
@@ -1523,14 +1453,18 @@ mod tests {
     fn openai_provider_selects_api_for_each_model_reference() {
         let chat = openai_model(OpenAiApi::ChatCompletions, Default::default());
         let responses = openai_model(OpenAiApi::Responses, Default::default());
-        assert_eq!(
-            OpenAiProvider::<reqwest::Client>::api(&chat),
-            OpenAiApi::ChatCompletions
-        );
-        assert_eq!(
-            OpenAiProvider::<reqwest::Client>::api(&responses),
-            OpenAiApi::Responses
-        );
+        let provider = OpenAiProvider {
+            chat_completions: RigProvider::new(|_| unreachable!(), InferenceCounter::default()),
+            responses: RigProvider::new(|_| unreachable!(), InferenceCounter::default()),
+        };
+        assert!(std::ptr::eq(
+            provider.provider(&chat),
+            &provider.chat_completions
+        ));
+        assert!(std::ptr::eq(
+            provider.provider(&responses),
+            &provider.responses
+        ));
     }
 
     #[test]
@@ -1723,7 +1657,10 @@ mod tests {
         match &contents[0] {
             AssistantContent::ToolCall(tc) => {
                 assert_eq!(tc.function.name, "search_web");
-                assert_eq!(tc.function.arguments, serde_json::json!({"query": "rust"}));
+                assert_eq!(
+                    tc.function.arguments_value(),
+                    serde_json::json!({"query": "rust"})
+                );
             }
             _ => panic!("Expected ToolCall content"),
         }
@@ -1741,8 +1678,8 @@ mod tests {
         let contents = vec![
             AssistantContent::text("part1"),
             AssistantContent::ToolCall(ToolCall::new(
-                rig_core::completion::message::ToolCallId::new_or_mint("id1"),
-                ToolFunction::new("tool".to_string(), serde_json::json!({})),
+                rig_core::completion::message::CallId::from_wire("id1"),
+                ToolFunction::new("tool".try_into().unwrap(), serde_json::json!({})),
             )),
             AssistantContent::text("part2"),
         ];
@@ -1753,8 +1690,8 @@ mod tests {
     #[test]
     fn test_extract_text_from_choice_no_text() {
         let contents = vec![AssistantContent::ToolCall(ToolCall::new(
-            rig_core::completion::message::ToolCallId::new_or_mint("id1"),
-            ToolFunction::new("tool".to_string(), serde_json::json!({})),
+            rig_core::completion::message::CallId::from_wire("id1"),
+            ToolFunction::new("tool".try_into().unwrap(), serde_json::json!({})),
         ))];
         let result = extract_text_from_choice(&contents);
         assert!(result.is_err());

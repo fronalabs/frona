@@ -226,77 +226,60 @@ fn request_parameters(
     max_tokens: Option<u64>,
     temperature: Option<f64>,
 ) -> Result<(super::hooks::RequestParams, Value), InferenceError> {
-    use rig_core::providers::{gemini::completion::gemini_api_types, openai::responses_api};
-
     let mut max_tokens = max_tokens.or(model.request_settings.max_tokens);
     let temperature = temperature.or(model.request_settings.temperature);
     let mut compatibility = json!({});
     let additional = match &model.provider {
         ProviderModel::Gemini { params } => {
-            let config = gemini_api_types::GenerationConfig {
-                top_p: params.top_p,
-                top_k: params
-                    .top_k
-                    .map(|value| checked_integer(value, "top_k"))
-                    .transpose()?,
-                candidate_count: params
-                    .candidate_count
-                    .map(|value| checked_integer(value, "candidate_count"))
-                    .transpose()?,
-                stop_sequences: params.stop_sequences.clone(),
-                thinking_config: params
-                    .thinking_config
-                    .as_ref()
-                    .map(|thinking| {
-                        Ok::<_, InferenceError>(gemini_api_types::ThinkingConfig {
-                            thinking_budget: Some(checked_integer(
-                                thinking.thinking_budget,
-                                "thinking_config.thinking_budget",
-                            )?),
-                            include_thoughts: thinking.include_thoughts,
-                            thinking_level: None,
-                        })
-                    })
-                    .transpose()?,
-                ..Default::default()
-            };
-            if serialize(&config)?.as_object().is_some_and(Map::is_empty) {
+            let mut config = Map::new();
+            if let Some(value) = params.top_p {
+                config.insert("topP".into(), json!(value));
+            }
+            if let Some(value) = params.top_k {
+                config.insert(
+                    "topK".into(),
+                    json!(checked_integer::<u32>(value, "top_k")?),
+                );
+            }
+            if let Some(value) = params.candidate_count {
+                config.insert(
+                    "candidateCount".into(),
+                    json!(checked_integer::<u32>(value, "candidate_count")?),
+                );
+            }
+            if let Some(value) = &params.stop_sequences {
+                config.insert("stopSequences".into(), json!(value));
+            }
+            if let Some(thinking) = &params.thinking_config {
+                let mut value = json!({"thinkingBudget": checked_integer::<i32>(thinking.thinking_budget, "thinking_config.thinking_budget")?});
+                if let Some(include) = thinking.include_thoughts {
+                    value["includeThoughts"] = json!(include);
+                }
+                config.insert("thinkingConfig".into(), value);
+            }
+            if config.is_empty() {
                 json!({})
             } else {
-                serialize(&gemini_api_types::AdditionalParameters {
-                    generation_config: Some(config),
-                    additional_params: None,
-                })?
+                json!({"generationConfig": config})
             }
         }
         ProviderModel::OpenAI {
             api: Some(crate::config::OpenAiApi::Responses),
             params,
         } => {
-            // The explicit legacy alias has always taken precedence over the common cap.
+            // Keep the legacy cap alias and forward-compatible reasoning strings.
             max_tokens = params.max_completion_tokens.or(max_tokens);
-            let reasoning = params.reasoning_effort.as_ref().and_then(|effort| {
-                match serde_json::from_value::<responses_api::ReasoningEffort>(json!(effort)) {
-                    Ok(effort) => Some(responses_api::Reasoning {
-                        effort: Some(effort),
-                        ..Default::default()
-                    }),
-                    Err(_) => {
-                        // Preserve forward-compatible strings that Rig's enum cannot express.
-                        compatibility["reasoning"] = json!({"effort": effort});
-                        None
-                    }
-                }
-            });
-            if let Some(value) = params.top_logprobs {
-                // Rig's Responses AdditionalParameters currently omits this field.
-                compatibility["top_logprobs"] = json!(value);
+            let mut additional = json!({});
+            if let Some(top_p) = params.top_p {
+                additional["top_p"] = json!(top_p);
             }
-            serialize(&responses_api::AdditionalParameters {
-                top_p: params.top_p,
-                reasoning,
-                ..Default::default()
-            })?
+            if let Some(effort) = &params.reasoning_effort {
+                additional["reasoning"] = json!({"effort": effort});
+            }
+            if let Some(value) = params.top_logprobs {
+                additional["top_logprobs"] = json!(value);
+            }
+            additional
         }
         ProviderModel::Bedrock { params } => {
             // Rig narrows this common value to i32 in the AWS SDK builder.

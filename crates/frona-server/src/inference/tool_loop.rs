@@ -103,9 +103,17 @@ pub fn extract_reasoning(contents: &[AssistantContent]) -> Option<Reasoning> {
     contents.iter().find_map(|c| {
         if let AssistantContent::Reasoning(r) = c {
             Some(Reasoning {
-                id: r.id.clone(),
-                content: r.display_text(),
-                signature: r.first_signature().map(|s| s.to_string()),
+                id: c
+                    .native_item()
+                    .and_then(|item| item.get("id"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                content: r.text.clone(),
+                signature: c
+                    .native_item()
+                    .and_then(|item| item.get("signature"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
                 raw: serde_json::to_value(r).ok(),
             })
         } else {
@@ -130,9 +138,10 @@ pub(crate) fn to_rig_tool_definitions(
             let mut parameters = d.parameters.clone();
             parameters.sort_all_objects();
             RigToolDefinition {
-                name: d.id.clone(),
+                name: rig_core::message::ToolName::new(d.id.clone()).expect("registered tool name"),
                 description,
                 parameters,
+                annotations: Default::default(),
             }
         })
         .collect();
@@ -226,7 +235,15 @@ pub async fn run_tool_loop_controlled(
     } else {
         model_group.inference.max_tool_turns
     };
+    let first_turn = if turns == 0 {
+        0
+    } else {
+        chat_service.next_provider_turn(message_id).await?
+    };
     for turn in 0..turns {
+        let persisted_turn = first_turn
+            .checked_add(turn as u32)
+            .ok_or_else(|| AppError::Internal("Provider turn index exhausted".into()))?;
         if ctx.shutdown_token.is_cancelled() {
             return shutdown(
                 &mut conversation,
@@ -274,8 +291,10 @@ pub async fn run_tool_loop_controlled(
                 &mut turn_text,
             )
             .await;
-        let (contents, usage) = match response {
-            Ok(StreamResult::Contents { content, usage }) => (content, usage),
+        let (contents, usage, origin, stop) = match response {
+            Ok(StreamResult::Contents(output)) => {
+                (output.content, output.usage, output.origin, output.stop)
+            }
             Ok(StreamResult::Cancelled) => {
                 return stopped(
                     &mut conversation,
@@ -306,11 +325,26 @@ pub async fn run_tool_loop_controlled(
                 }
             },
         };
+        let assistant = rig_core::message::AssistantMessage::new(contents.clone())
+            .with_origin(origin.clone())
+            .with_stop(stop.clone());
+        chat_service
+            .record_provider_turn(message_id, persisted_turn, &assistant)
+            .await?;
         last_reasoning = extract_reasoning(&contents);
         last_text = turn_text.clone();
+        let usage = if origin.is_some() {
+            UsageReport::Reported(usage)
+        } else {
+            UsageReport::LegacyNormalized(usage)
+        };
         let actions = conversation
             .record_response(
-                ModelOutput::new(contents, UsageReport::LegacyNormalized(usage)),
+                ModelOutput {
+                    origin,
+                    stop,
+                    ..ModelOutput::new(contents, usage)
+                },
                 rig_tools.clone(),
             )
             .map_err(protocol_error)?;
@@ -345,7 +379,7 @@ pub async fn run_tool_loop_controlled(
             tool_registry,
             ctx,
             message_id,
-            turn as u32,
+            persisted_turn,
             (!turn_text.is_empty()).then_some(turn_text.clone()),
             last_reasoning.clone(),
         )
@@ -545,13 +579,8 @@ mod tests {
     #[test]
     fn extract_reasoning_from_contents() {
         let contents = vec![
-            AssistantContent::Reasoning(
-                rig_core::completion::message::Reasoning::new_with_signature(
-                    "thinking hard",
-                    Some("sig-123".to_string()),
-                )
-                .with_id("r-1".to_string()),
-            ),
+            AssistantContent::Reasoning(rig_core::message::Reasoning::new("thinking hard"))
+                .with_native(serde_json::json!({"type":"thinking", "thinking":"thinking hard", "signature":"sig-123", "id":"r-1"})),
             AssistantContent::text("final answer"),
         ];
         let r = extract_reasoning(&contents);
@@ -571,10 +600,7 @@ mod tests {
     #[test]
     fn extract_reasoning_joins_multi_chunk() {
         let contents = vec![AssistantContent::Reasoning(
-            rig_core::completion::message::Reasoning::multi(vec![
-                "chunk1 ".to_string(),
-                "chunk2".to_string(),
-            ]),
+            rig_core::message::Reasoning::new("chunk1 \nchunk2"),
         )];
         let r = extract_reasoning(&contents).unwrap();
         assert_eq!(r.content, "chunk1 \nchunk2");
@@ -582,8 +608,8 @@ mod tests {
 
     #[test]
     fn extract_reasoning_preserves_opaque_blocks_when_display_text_is_empty() {
-        let reasoning = rig_core::completion::message::Reasoning::encrypted("ciphertext")
-            .with_id("rs_opaque".to_string());
+        let AssistantContent::Reasoning(reasoning) = AssistantContent::Reasoning(rig_core::message::Reasoning::new(""))
+            .with_native(serde_json::json!({"type":"reasoning", "id":"rs_opaque", "encrypted_content":"ciphertext", "summary":[]})) else { unreachable!() };
         let contents = vec![AssistantContent::Reasoning(reasoning.clone())];
 
         let stored = extract_reasoning(&contents).expect("reasoning should be retained");

@@ -95,7 +95,9 @@ fn transport_cause(error: &(dyn std::error::Error + 'static)) -> String {
     }
 }
 
-fn rewrite(request: Request<Bytes>) -> http_client::Result<Request<Bytes>> {
+fn rewrite(
+    request: Request<Bytes>,
+) -> Result<Request<Bytes>, Box<dyn std::error::Error + Send + Sync>> {
     let Ok(parameters) = PARAMETERS.try_with(Clone::clone) else {
         return Ok(request);
     };
@@ -103,17 +105,16 @@ fn rewrite(request: Request<Bytes>) -> http_client::Result<Request<Bytes>> {
         return Ok(request);
     }
     let (mut parts, bytes) = request.into_parts();
-    let mut body: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|error| http_client::Error::Instance(Box::new(error)))?;
+    let mut body: serde_json::Value = serde_json::from_slice(&bytes)?;
     if !body.is_object() {
-        return Err(http_client::Error::Instance(Box::new(std::io::Error::new(
+        return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "provider request must be a JSON object",
-        ))));
+        )
+        .into());
     }
     parameters.apply(&mut body);
-    let bytes =
-        serde_json::to_vec(&body).map_err(|error| http_client::Error::Instance(Box::new(error)))?;
+    let bytes = serde_json::to_vec(&body)?;
     parts.headers.remove("content-length");
     Ok(Request::from_parts(parts, Bytes::from(bytes)))
 }
@@ -128,10 +129,10 @@ impl HttpClientExt for WireClient {
         U: From<Bytes> + Send + 'static,
     {
         let request = rewrite(request.map(Into::into));
-        let inner = self.inner.clone();
+        let inner = rig_reqwest::ReqwestClient::from(self.inner.clone());
         async move {
             inner
-                .send(request?)
+                .send(request.map_err(http_client::Error::Instance)?)
                 .await
                 .inspect_err(|error| log_transport_error("send", error))
         }
@@ -144,7 +145,8 @@ impl HttpClientExt for WireClient {
     where
         U: From<Bytes> + Send + 'static,
     {
-        self.inner.send_multipart(request)
+        let inner = rig_reqwest::ReqwestClient::from(self.inner.clone());
+        async move { inner.send_multipart(request).await }
     }
 
     fn send_streaming<T>(
@@ -156,8 +158,8 @@ impl HttpClientExt for WireClient {
     {
         let request = rewrite(request.map(Into::into));
         async move {
-            self.inner
-                .send_streaming(request?)
+            rig_reqwest::ReqwestClient::from(self.inner.clone())
+                .send_streaming(request.map_err(http_client::Error::Instance)?)
                 .await
                 .inspect_err(|error| log_transport_error("send_streaming", error))
         }

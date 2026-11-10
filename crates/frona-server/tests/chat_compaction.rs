@@ -616,12 +616,12 @@ impl App {
             images[0].data,
             DocumentSourceKind::Base64("ZXhhY3QtaW1hZ2UtY29udGVudA==".into())
         );
-        let call_at = actual.iter().position(|m| matches!(m, RigMessage::Assistant { content, .. } if content.iter().any(|c| matches!(c, AssistantContent::ToolCall(call) if call.function.name == "read_file")))).unwrap();
+        let call_at = actual.iter().position(|m| matches!(m, RigMessage::Assistant(rig_core::message::AssistantMessage { content, .. }) if content.iter().any(|c| matches!(c, AssistantContent::ToolCall(call) if call.function.name == "read_file")))).unwrap();
         assert!(
             matches!(&actual[call_at + 1], RigMessage::User { content } if content.iter().any(|c| matches!(c, UserContent::ToolResult(_))))
         );
         assert!(
-            matches!(&actual[call_at + 2], RigMessage::Assistant { content, .. } if content.iter().any(|c| matches!(c, AssistantContent::Text(t) if t.text == "Following assistant text")))
+            matches!(&actual[call_at + 2], RigMessage::Assistant(rig_core::message::AssistantMessage { content, .. }) if content.iter().any(|c| matches!(c, AssistantContent::Text(t) if t.text == "Following assistant text")))
         );
     }
 }
@@ -1728,7 +1728,7 @@ async fn switch_agent_preserves_task_and_heartbeat_builders() {
         assert!(app.model.system_prompts()[0].contains("Selected continuation agent"));
         assert!(app.model.tool_histories()[0].is_empty());
         let history = app.model.last_history();
-        assert!(history.iter().any(|m| matches!(m, RigMessage::Assistant { content, .. } if content.iter().any(|c| matches!(c, AssistantContent::Text(t) if t.text == "Target prior response")))));
+        assert!(history.iter().any(|m| matches!(m, RigMessage::Assistant(rig_core::message::AssistantMessage { content, .. }) if content.iter().any(|c| matches!(c, AssistantContent::Text(t) if t.text == "Target prior response")))));
         let user_texts: Vec<_> = history
             .iter()
             .filter_map(|message| match message {
@@ -1797,7 +1797,7 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
             app.fixture.state.policy_service.create_policy(&app.user.id,
                 r#"@id("capture-read-file") permit(principal, action == Policy::Action::"invoke_tool", resource) when { resource == Policy::Tool::"read" || resource == Policy::Tool::"write" };"#,
             ).await.unwrap();
-            let retained = app.history(MessageRole::User, false).await;
+            let mut retained = app.history(MessageRole::User, false).await;
             let mut old_attachment = row(
                 "historical-image",
                 1,
@@ -1854,6 +1854,18 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
                 )
                 .await
                 .unwrap();
+            // The completed model call records its exact provider turn before
+            // compaction. Every other retained field and the row order must stay
+            // unchanged, including this snapshot when the tail is reloaded.
+            retained
+                .iter_mut()
+                .find(|message| message.id == "placeholder")
+                .unwrap()
+                .provider_turns
+                .insert(
+                    "0".into(),
+                    serde_json::json!({"content":[{"type":"text","text":"default response"}]}),
+                );
             let normal_history = app.model.last_history();
             let normal_system = app.model.system_prompts().last().unwrap().clone();
             let normal_tools = app.model.tool_histories().last().unwrap().clone();
@@ -2080,9 +2092,9 @@ async fn empty_or_tool_summary_never_advances_cutoff() {
     let mixed = MockResponse::Content(vec![
         AssistantContent::text("Summary text with a forbidden tool request"),
         AssistantContent::ToolCall(rig_core::completion::message::ToolCall::new(
-            rig_core::completion::message::ToolCallId::new_or_mint("mixed-call"),
+            rig_core::completion::message::CallId::from_wire("mixed-call"),
             rig_core::completion::message::ToolFunction::new(
-                "read".into(),
+                "read".try_into().unwrap(),
                 serde_json::json!({"path":"must-not-read"}),
             ),
         )),
@@ -2147,9 +2159,10 @@ async fn compaction_candidates_never_truncate_and_fallback_preserves_usage_scope
             RigMessage::user("Summarize preceding conversation"),
         ];
         let tools = vec![rig_core::completion::request::ToolDefinition {
-            name: "read_file".into(),
+            name: rig_core::message::ToolName::new("read_file").unwrap(),
             description: "Original tool description".into(),
             parameters: serde_json::json!({"type":"object"}),
+            annotations: Default::default(),
         }];
         let group = service
             .resolve(&frona_harness::inference::ModelRef("conversation".into()))
@@ -2388,12 +2401,10 @@ impl App {
 }
 
 fn provider_usage(total: u64) -> frona_harness::inference::Usage {
-    frona_harness::inference::Usage {
-        input_tokens: total.saturating_sub(5),
-        output_tokens: 5,
-        total_tokens: total,
-        ..Default::default()
-    }
+    frona_harness::inference::Usage::new()
+        .input_tokens(Some(total.saturating_sub(5)))
+        .output_tokens(Some(5))
+        .total_tokens(Some(total))
 }
 
 #[tokio::test]
@@ -2512,18 +2523,9 @@ async fn invalid_token_counts_use_estimated_trigger_and_split() {
     // Zero usage, missing total, inconsistent total, incomplete output, and overflow.
     for usage in [
         Default::default(),
-        frona_harness::inference::Usage {
-            total_tokens: 0,
-            ..provider_usage(6000)
-        },
-        frona_harness::inference::Usage {
-            total_tokens: 100,
-            ..provider_usage(6000)
-        },
-        frona_harness::inference::Usage {
-            output_tokens: 0,
-            ..provider_usage(6000)
-        },
+        provider_usage(6000).total_tokens(Some(0)),
+        provider_usage(6000).total_tokens(Some(100)),
+        provider_usage(6000).output_tokens(Some(0)),
         provider_usage(i64::MAX as u64),
     ] {
         let app = fallback_statistics_fixture(Some(usage)).await;
@@ -2703,14 +2705,14 @@ async fn cached_provider_totals_are_normalized_without_adding_cache_tokens_twice
         for legacy in [false, true] {
             let app = App::with_provider(18_000, true, provider.clone()).await;
             app.history(MessageRole::User, false).await;
-            app.recorded_stats(frona_harness::inference::Usage {
-                input_tokens: input,
-                cached_input_tokens: cached,
-                cache_creation_input_tokens: writes,
-                output_tokens: 5,
-                total_tokens: total,
-                ..Default::default()
-            })
+            app.recorded_stats(
+                frona_harness::inference::Usage::new()
+                    .input_tokens(Some(input))
+                    .cached_input_tokens(Some(cached))
+                    .cache_creation_input_tokens(Some(writes))
+                    .output_tokens(Some(5))
+                    .total_tokens(Some(total)),
+            )
             .await;
             if legacy {
                 app.db
@@ -3092,44 +3094,32 @@ impl ConversationBuilder for NativePrefix {
 async fn persistent_request_preserves_native_ids_signatures_system_and_mixed_results() {
     use frona::chat::conversation::{PersistentConversation, PersistentRequest};
     use rig_core::completion::message::{
-        ProviderCallId, Reasoning, ToolCall, ToolCallId, ToolFunction, ToolResult,
-        ToolResultContent,
+        CallId, Reasoning, ToolCall, ToolFunction, ToolResult, ToolResultContent,
     };
     let app = App::new().await;
     let saved = row("source", 0, MessageRole::User, "raw input");
     app.messages().create(&saved).await.unwrap();
-    let call = ToolCall::from_dual_wire(
-        "item-17",
-        "call-9",
-        ToolFunction::new(
-            "original-name".into(),
-            serde_json::json!({"nested": [1, null, "exact"]}),
-        ),
-    )
-    .with_signature(Some("opaque+/=\nsignature".into()))
-    .with_additional_params(Some(serde_json::json!({"provider": "opaque"})));
-    let provider = ProviderCallId::new("call-9");
+    let call = AssistantContent::ToolCall(ToolCall::from_wire(
+        "call-9", ToolFunction::new("original-name".try_into().unwrap(), serde_json::json!({"nested": [1, null, "exact"]}))
+    )).with_native(serde_json::json!({"id":"item-17", "signature":"opaque+/=\nsignature", "provider":"opaque"}));
+    let mut origin = rig_core::message::Origin::new("openai.responses", "openai", "fixture");
+    origin.response_id = Some("native-assistant-id".into());
     let native = vec![
         RigMessage::System {
             content: "native system".into(),
         },
         RigMessage::user("frozen input"),
-        RigMessage::Assistant {
-            id: Some("native-assistant-id".into()),
-            content: vec![
-                AssistantContent::Reasoning(Reasoning::new_with_signature(
-                    "native reasoning",
-                    Some("reason-signature".into()),
-                )),
-                AssistantContent::ToolCall(call),
-            ],
-        },
+        RigMessage::Assistant(rig_core::message::AssistantMessage::new(vec![
+            AssistantContent::Reasoning(Reasoning::new("native reasoning"))
+                .with_native(serde_json::json!({"type":"thinking", "thinking":"native reasoning", "signature":"reason-signature"})),
+            call,
+        ]).with_origin(origin)),
         RigMessage::User {
             content: vec![
                 UserContent::ToolResult(ToolResult {
-                    call: ToolCallId::for_provider(provider.as_ref()),
-                    provider,
-                    name: "repaired-name".into(),
+                    call: CallId::from_wire("call-9"),
+                    name: "repaired-name".try_into().unwrap(),
+                    is_error: false,
                     content: vec![ToolResultContent::text("exact result")],
                 }),
                 UserContent::text("mixed feedback"),
@@ -3201,8 +3191,19 @@ async fn persistent_request_compacts_then_reopens_the_saved_prefix_and_row_mappi
         .await
         .unwrap()
         .remove(0);
-    call.provider_item_id = Some("persisted-item-id".into());
-    call.signature = Some("persisted-opaque+/=signature".into());
+    call.provider_item_id = Some("fc_persisted_item".into());
+    call.turn_text = None;
+    // A legacy Responses turn retains the reasoning ciphertext alongside its
+    // following call's item ID. Gemini call signatures use a different dialect.
+    call.turn_reasoning = Some(frona::chat::message::models::Reasoning {
+        id: Some("rs_persisted_reasoning".into()),
+        content: String::new(),
+        signature: None,
+        raw: Some(serde_json::json!({
+            "id":"rs_persisted_reasoning",
+            "content":[{"type":"encrypted","content":"persisted-opaque+/=reasoning"}]
+        })),
+    });
     tool_repo.update(&call).await.unwrap();
     let saved_calls = app.chat_service.get_tool_calls("chat").await.unwrap();
     let before = app.messages().find_by_chat_id("chat").await.unwrap();
@@ -3240,8 +3241,9 @@ async fn persistent_request_compacts_then_reopens_the_saved_prefix_and_row_mappi
         .unwrap();
     assert!(conversation.was_compacted());
     let serialized = serde_json::to_string(&request.messages).unwrap();
-    assert!(serialized.contains("persisted-item-id"));
-    assert!(serialized.contains("persisted-opaque+/=signature"));
+    assert!(serialized.contains("fc_persisted_item"));
+    assert!(serialized.contains("rs_persisted_reasoning"));
+    assert!(serialized.contains("persisted-opaque+/=reasoning"));
     assert_eq!(
         serde_json::to_value(app.chat_service.get_tool_calls("chat").await.unwrap()).unwrap(),
         serde_json::to_value(saved_calls).unwrap()

@@ -137,7 +137,10 @@ fn projected_input_rejects_foreign_scope_prefix_and_roles_and_pending_proposals(
     assert!(input.execution(execution.with_report(&foreign)).is_err());
     let call = ToolCall::from_wire(
         "id",
-        rig_core::completion::message::ToolFunction::new("tool".into(), serde_json::json!({})),
+        rig_core::completion::message::ToolFunction::new(
+            "tool".try_into().unwrap(),
+            serde_json::json!({}),
+        ),
     );
     conversation
         .record_response(

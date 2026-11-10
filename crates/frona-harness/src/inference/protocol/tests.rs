@@ -90,7 +90,8 @@ async fn openai_defaults_to_responses_with_reasoning_and_tools() {
     );
     for stream in [false, true] {
         let tools = vec![ToolDefinition {
-            name: "lookup".into(),
+            annotations: Default::default(),
+            name: "lookup".try_into().unwrap(),
             description: "Look up a value".into(),
             parameters: json!({"type":"object","properties":{}}),
         }];
@@ -561,7 +562,8 @@ async fn structured_and_tool_calls_keep_envelope_and_custom_body() {
         .unwrap();
     assert_eq!(result, json!({"ok":true}));
     let tools = vec![ToolDefinition {
-        name: "lookup".into(),
+        annotations: Default::default(),
+        name: "lookup".try_into().unwrap(),
         description: "Lookup".into(),
         parameters: schema.clone(),
     }];
@@ -677,29 +679,23 @@ async fn concurrent_calls_on_cached_client_do_not_leak_custom_parameters() {
 // Local token construction is never authentication proof. The approved OAuth
 // proof comes from the backend-owned token exchange, not Rig's authorize().
 #[tokio::test]
-async fn chatgpt_authorize_with_supplied_token_is_not_live_validation() {
+async fn chatgpt_construction_with_supplied_token_is_not_live_validation() {
     use crate::inference::provider::CredentialValidationError;
     use rig_core::providers::chatgpt;
 
     let server = wiremock::MockServer::start().await;
     let token_dir = tempfile::tempdir().unwrap();
-    let client = chatgpt::Client::builder()
-        .api_key(chatgpt::ChatGPTAuth::AccessToken {
-            access_token: "deliberately-invalid-token".into(),
-            account_id: Some("not-an-account".into()),
-        })
-        .base_url(server.uri())
-        .allow_device_flow(false)
-        .token_dir(token_dir.path())
-        .build()
-        .unwrap();
-
-    client.authorize().await.unwrap();
+    let client = rig_core::providers::openai::OpenAIConfig::with_key(
+        &chatgpt::DIALECT,
+        "deliberately-invalid-token",
+    )
+    .with_base_url(server.uri())
+    .connect(crate::inference::protocol::http::WireClient::default());
     assert!(server.received_requests().await.unwrap().is_empty());
     assert_eq!(std::fs::read_dir(token_dir.path()).unwrap().count(), 0);
 
     let provider = crate::inference::provider::RigProvider::new(
-        client,
+        move |id: &str| client.completion(id).erase(),
         crate::inference::provider::InferenceCounter::default(),
     );
     assert!(matches!(

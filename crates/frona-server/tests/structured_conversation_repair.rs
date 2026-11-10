@@ -39,7 +39,7 @@ fn answer_text<'a>(history: &'a [rig_core::completion::Message], id: &str) -> Op
             let rig_core::completion::message::UserContent::ToolResult(result) = item else {
                 return None;
             };
-            (result.call.as_str() == id)
+            (result.call.wire() == id)
                 .then(|| result.content.iter().find_map(|item| item.as_text()))
                 .flatten()
         })

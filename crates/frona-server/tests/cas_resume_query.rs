@@ -27,6 +27,7 @@ fn make_message(id: &str, status: MessageStatus) -> Message {
     Message {
         agent_context_signature: None,
         processed_content: None,
+        provider_turns: Default::default(),
         id: id.to_string(),
         chat_id: "chat-1".into(),
         role: MessageRole::Agent,

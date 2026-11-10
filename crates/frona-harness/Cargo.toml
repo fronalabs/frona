@@ -64,5 +64,5 @@ serde_yaml = "0.9"
 tempfile = "3"
 
 [[example]]
-name = "sdk_jsonl"
+name = "jsonl"
 required-features = ["jsonl"]

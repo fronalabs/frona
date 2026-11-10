@@ -16,8 +16,8 @@ import tempfile
 import tomllib
 
 PACKAGES = ("frona-derive", "frona-text", "frona-model-catalog", "frona-harness")
-RECIPES = ("sdk_basic", "sdk_tools", "sdk_refinement", "sdk_manual", "sdk_budgets",
-           "sdk_workspace", "sdk_progress", "sdk_jsonl")
+RECIPES = ("basic", "tools", "refinement", "manual", "budgets",
+           "workspace", "progress", "jsonl")
 
 
 def feature_flags(features):
@@ -45,7 +45,7 @@ def verify_fresh_resolution(cargo, consumer, temp, host):
     fresh = temp / "fresh-consumer"
     shutil.copytree(consumer, fresh, ignore=shutil.ignore_patterns("Cargo.lock"))
     verify_graph(cargo, fresh, temp, host, "")
-    cargo(["check", "--bin", "sdk_basic", *feature_flags("")], fresh)
+    cargo(["check", "--bin", "basic", *feature_flags("")], fresh)
     graph = json.loads(cargo(["metadata", "--format-version", "1", "--filter-platform", host, *feature_flags("")], fresh, True).stdout)
     tokio_versions = [p["version"] for p in graph["packages"] if p["name"] == "tokio"]
     print(f"Fresh lockfile resolution and default build passed (Tokio {', '.join(tokio_versions)}).", flush=True)
@@ -117,7 +117,7 @@ tempfile = "3"
 '''.replace("HARNESS", packaged.name).replace("VERSION", version)
         for recipe in RECIPES:
             manifest += f'\n[[bin]]\nname = "{recipe}"\npath = "src/bin/{recipe}.rs"\n'
-            if recipe == "sdk_jsonl":
+            if recipe == "jsonl":
                 manifest += 'required-features = ["jsonl"]\n'
         manifest += '\n[patch.crates-io]\n'
         patch_flags = []
@@ -150,7 +150,7 @@ tempfile = "3"
             verify_graph(cargo, consumer, temp, host, features)
             cargo(["test", *feature_flags(features)], consumer)
         for recipe in RECIPES:
-            cargo(["run", "--bin", recipe, *feature_flags("jsonl" if recipe == "sdk_jsonl" else "")], consumer)
+            cargo(["run", "--bin", recipe, *feature_flags("jsonl" if recipe == "jsonl" else "")], consumer)
         cargo(["check", "--examples", "--features", "jsonl", *patch_flags], packaged)
         verify_fresh_resolution(cargo, consumer, temp, host)
         print("Package verification passed: default/JSONL without SurrealDB, renamed annotations, portable DTOs, actual ownership witnesses, eight recipes, JSONL recovery, and archive-only support assets.", flush=True)

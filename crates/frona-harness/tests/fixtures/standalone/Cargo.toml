@@ -23,36 +23,36 @@ tempfile = "3"
 tokio-util = { version = "0.7", features = ["rt"] }
 
 [[bin]]
-name = "sdk_tools"
-path = "../../../examples/sdk_tools.rs"
+name = "tools"
+path = "../../../examples/tools.rs"
 
 [[bin]]
-name = "sdk_basic"
-path = "../../../examples/sdk_basic.rs"
+name = "basic"
+path = "../../../examples/basic.rs"
 
 [[bin]]
-name = "sdk_refinement"
-path = "../../../examples/sdk_refinement.rs"
+name = "refinement"
+path = "../../../examples/refinement.rs"
 
 [[bin]]
-name = "sdk_manual"
-path = "../../../examples/sdk_manual.rs"
+name = "manual"
+path = "../../../examples/manual.rs"
 
 [[bin]]
-name = "sdk_budgets"
-path = "../../../examples/sdk_budgets.rs"
+name = "budgets"
+path = "../../../examples/budgets.rs"
 
 [[bin]]
-name = "sdk_workspace"
-path = "../../../examples/sdk_workspace.rs"
+name = "workspace"
+path = "../../../examples/workspace.rs"
 
 [[bin]]
-name = "sdk_progress"
-path = "../../../examples/sdk_progress.rs"
+name = "progress"
+path = "../../../examples/progress.rs"
 
 [[bin]]
-name = "sdk_jsonl"
-path = "../../../examples/sdk_jsonl.rs"
+name = "jsonl"
+path = "../../../examples/jsonl.rs"
 required-features = ["jsonl"]
 
 [[test]]

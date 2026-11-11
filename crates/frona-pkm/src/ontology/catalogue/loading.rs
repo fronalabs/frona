@@ -13,7 +13,7 @@ use crate::Error;
 
 /// Every ontology file under `dir`, sorted for deterministic attribution. A missing
 /// directory yields nothing rather than failing - the user root need not exist.
-pub(super) fn ontology_files(dir: &Path) -> Result<Vec<PathBuf>, Error> {
+pub fn ontology_files(dir: &Path) -> Result<Vec<PathBuf>, Error> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),

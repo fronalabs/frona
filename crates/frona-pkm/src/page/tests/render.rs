@@ -49,3 +49,48 @@ fn author_input_includes_episode_status_and_utc_and_local_dates() {
         "{rendered}",
     );
 }
+
+#[test]
+fn replacement_requires_every_nested_provider_failure_to_be_operational() {
+    use frona_harness::{ExecutionStop, inference::InferenceError};
+    let failed = |source, model: &str, retry_count| InferenceError::ModelFailed {
+        provider: "fixture".into(),
+        model: model.into(),
+        retry_count,
+        source: Box::new(source),
+    };
+    for disallowed in [
+        InferenceError::ProviderNotConfigured("missing".into()),
+        InferenceError::ModelGroupNotFound("missing".into()),
+        InferenceError::ConfigError("invalid".into()),
+        InferenceError::Stop(ExecutionStop::Storage(Box::new(std::io::Error::other(
+            "required storage",
+        )))),
+        InferenceError::Cancelled("cancelled".into()),
+        InferenceError::AllFallbacksFailed(vec![]),
+    ] {
+        let nested = InferenceError::AllFallbacksFailed(vec![
+            InferenceError::InferenceFailed("unavailable".into()),
+            failed(
+                InferenceError::AllFallbacksFailed(vec![failed(disallowed, "pkm", 0)]),
+                "fallback",
+                0,
+            ),
+        ]);
+        assert!(!provider_replacement_allowed(&nested));
+    }
+    assert!(provider_replacement_allowed(
+        &InferenceError::AllFallbacksFailed(vec![
+            failed(
+                InferenceError::InferenceFailed("unavailable".into()),
+                "primary",
+                1
+            ),
+            failed(
+                InferenceError::AllFallbacksFailed(vec![InferenceError::EmptyResponse]),
+                "fallback",
+                0
+            ),
+        ])
+    ));
+}

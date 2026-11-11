@@ -197,6 +197,7 @@ impl<'h, 'model> ResolveRun<'h, 'model> {
             limit: RESOLUTION_RETRIEVAL_LIMIT as usize,
         };
         Search::new((*self.ctx).clone())
+            .with_retrieval(self.retrieval.clone())
             .find_candidates(
                 request,
                 |c| {

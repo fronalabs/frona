@@ -21,6 +21,7 @@ use std::{
 use tracing::warn;
 #[derive(Clone)]
 pub(super) struct ClassifyLogic {
+    pub retrieval: Option<Arc<dyn crate::candidates::CandidateRetrieval>>,
     pub input: Arc<ClassifyInput>,
     pub prefixes: PrefixMap,
     pub prompts: ClassifyPrompts,
@@ -104,6 +105,7 @@ impl ClassificationInspection {
                 subject_page.rederive_search();
             }
             let candidates = Search::new(ctx.graph.clone())
+                .with_retrieval(self.logic.retrieval.clone())
                 .find_candidates(
                     Request {
                         subject: Subject::from_entity(&subject_page),

@@ -1,0 +1,58 @@
+# A miniature stand-in for the pinned release: a taxonomy, two disjointness axioms
+# stated the two different ways sources state them, a property chain, and labels.
+# Small enough to reason about by hand, shaped like the real thing.
+
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix ex:   <http://example.org/mini/> .
+
+<http://example.org/mini/> a owl:Ontology .
+
+ex:Thing a owl:Class .
+
+ex:Agent a owl:Class ;
+    rdfs:subClassOf ex:Thing ;
+    rdfs:label "agent" .
+
+ex:Person a owl:Class ;
+    rdfs:subClassOf ex:Agent ;
+    rdfs:label "person" .
+
+ex:Organization a owl:Class ;
+    rdfs:subClassOf ex:Agent ;
+    rdfs:label "organization" .
+
+ex:Employee a owl:Class ;
+    rdfs:subClassOf ex:Person ;
+    rdfs:label "employee" ;
+    skos:altLabel "staffer" .
+
+ex:Event a owl:Class ;
+    rdfs:subClassOf ex:Thing ;
+    rdfs:label "event" .
+
+ex:Meeting a owl:Class ;
+    rdfs:subClassOf ex:Event ;
+    rdfs:label "meeting" .
+
+# Stated via a union list, which is how KBpedia states all 646 of its disjointness
+# axioms. A reader that only accepts `<iri>` objects yields zero pairs from this,
+# with no error and a plausible-looking graph.
+ex:Agent owl:disjointWith [ owl:unionOf ( ex:Event ) ] .
+
+# ...and the plain form, so both paths are covered.
+ex:Person owl:disjointWith ex:Organization .
+
+ex:worksFor a owl:ObjectProperty ;
+    rdfs:domain ex:Person ;
+    rdfs:range ex:Organization ;
+    rdfs:label "works for" .
+
+ex:employedBy a owl:ObjectProperty ;
+    rdfs:subPropertyOf ex:worksFor .
+
+# Three deep, deliberately: `reasonable` does not implement `scm-spo`, so a
+# materialisation derives no `contractedBy ⊑ worksFor` at all. The walk does.
+ex:contractedBy a owl:ObjectProperty ;
+    rdfs:subPropertyOf ex:employedBy .

@@ -6,3 +6,6 @@ pub use snapshot::EntitySnapshot;
 
 mod redirect;
 pub(crate) use redirect::resolve_path;
+
+#[cfg(test)]
+mod tests;

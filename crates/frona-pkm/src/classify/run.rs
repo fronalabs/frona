@@ -17,6 +17,7 @@ pub(super) async fn run<'a, 'run, F>(
     phase: &'run Classify<'a>,
     mut input: ClassifyInput,
     configure: F,
+    diagnostics: Option<&dyn ClassificationDiagnostics>,
 ) -> Result<ClassifyOutput, Error>
 where
     'a: 'run,
@@ -78,6 +79,7 @@ where
         .map(|l| format!("- \"{}\" → {}\n", l.relation, l.to_entity_path))
         .collect();
     let logic = ClassifyLogic {
+        retrieval: phase.retrieval.clone(),
         prefixes: ontology.prefixes(),
         prompts: phase.prompts.clone(),
         input: Arc::new(input.clone()),
@@ -151,6 +153,9 @@ where
         .await;
     let request_count = report.snapshot().logical_calls();
     let diagnostic = serde_json::json!({"evidence":evidence,"request_count":request_count,"one_request":request_count==1,"fallback_investigation_requests":request_count.saturating_sub(1),"validation":{"attempts":inspection.attempts.load(Ordering::Relaxed),"failures":inspection.failures.load(Ordering::Relaxed),"failure_batches":inspection.details.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()}});
+    if let Some(diagnostics) = diagnostics {
+        diagnostics.record(&diagnostic).await?;
+    }
     let mut output = ClassifyOutput {
         classification: None,
         proposals: input.proposals,

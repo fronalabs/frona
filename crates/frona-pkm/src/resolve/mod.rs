@@ -35,16 +35,33 @@ pub struct ResolveInput {
     pub prior_identity_fingerprint: Option<String>,
     pub prior_pair_fingerprints: BTreeMap<String, String>,
 }
+/// Work performed by one identity investigation, for caller-owned pipeline counters.
+#[derive(Debug, Default)]
+pub struct ResolveStats {
+    pub fingerprint_skips: usize,
+    pub identity_state_changes: usize,
+    pub candidate_evaluations: usize,
+    pub pair_weakenings: usize,
+    pub pair_changes: usize,
+    pub decision_attempts: usize,
+    pub conversations: usize,
+}
 /// No mutations are persisted. `None` means no investigation was necessary, never
 /// a distinct verdict. Fingerprints are returned for the host to bank atomically.
 pub struct ResolveOutput {
+    pub stats: ResolveStats,
     pub decision: Option<IdentityResolution>,
     pub proposals: ProposalSet,
+    /// Validated input and research rows before applying identity merges. Hosts
+    /// committing individual losers can stage these rows, then apply each merge
+    /// with its own durable checkpoint instead of publishing the full plan at once.
+    pub prepared_proposals: ProposalSet,
     pub identity_fingerprint: Option<String>,
     pub pair_fingerprints: Vec<(String, String)>,
     pub corrections: usize,
 }
 pub struct Resolve<'a> {
+    retrieval: Option<std::sync::Arc<dyn crate::candidates::CandidateRetrieval>>,
     harness: Harness<'a>,
     prompts: ResolvePrompts,
     max_submissions: usize,
@@ -53,11 +70,20 @@ pub struct Resolve<'a> {
 impl<'a> Resolve<'a> {
     pub fn new(harness: Harness<'a>) -> Self {
         Self {
+            retrieval: None,
             harness,
             prompts: ResolvePrompts::default(),
             max_submissions: 10,
             max_tool_turns: 20,
         }
+    }
+    /// Use caller-owned indexed recall while retaining phase-owned filtering and ranking.
+    pub fn candidate_retrieval(
+        mut self,
+        retrieval: std::sync::Arc<dyn crate::candidates::CandidateRetrieval>,
+    ) -> Self {
+        self.retrieval = Some(retrieval);
+        self
     }
     pub fn prompts(mut self, value: ResolvePrompts) -> Self {
         self.prompts = value;
@@ -94,6 +120,7 @@ impl<'a> Resolve<'a> {
             prior_pair_fingerprints,
         } = input;
         let execution = ResolveRun {
+            retrieval: self.retrieval.clone(),
             ctx: Arc::new(graph),
             prefixes: ontology.prefixes(),
             harness: &self.harness,
@@ -101,7 +128,9 @@ impl<'a> Resolve<'a> {
             max_submissions: self.max_submissions,
             max_tool_turns: self.max_tool_turns,
         };
-        let empty = |proposals| ResolveOutput {
+        let empty = |proposals: ProposalSet| ResolveOutput {
+            prepared_proposals: proposals.clone(),
+            stats: ResolveStats::default(),
             decision: None,
             proposals,
             identity_fingerprint: None,
@@ -139,8 +168,15 @@ impl<'a> Resolve<'a> {
         let fingerprint =
             resolution_identity_fingerprint(&typed, &keys, &inverse, &execution.prefixes);
         if reconsider && prior_identity_fingerprint.as_deref() == Some(&fingerprint) {
-            return Ok(empty(proposals));
+            let mut output = empty(proposals);
+            output.stats.fingerprint_skips = 1;
+            return Ok(output);
         }
+        let mut stats = ResolveStats {
+            identity_state_changes: usize::from(reconsider),
+            candidate_evaluations: 1,
+            ..Default::default()
+        };
         let overlay =
             crate::tools::ontology::overlay(&ontology, &execution.ctx, &proposals, usize::MAX)?;
         let reasoned = ontology
@@ -183,6 +219,12 @@ impl<'a> Resolve<'a> {
                     && pair_change_requires_judgment(old, &next);
                 if !judge && old != Some(&next) {
                     pairs.push((key, next));
+                    stats.pair_weakenings += 1;
+                }
+                if judge {
+                    stats.pair_changes += 1;
+                } else {
+                    stats.fingerprint_skips += 1;
                 }
                 judge
             });
@@ -218,6 +260,8 @@ impl<'a> Resolve<'a> {
             &execution.prefixes,
         );
         pairs.extend(context.pair_fingerprints.clone());
+        stats.decision_attempts = usize::from(!reconsider || !candidates.is_empty());
+        stats.conversations = usize::from(!candidates.is_empty());
         let (decision, corrections) = if candidates.is_empty() {
             (
                 IdentityResolution::Distinct {
@@ -238,15 +282,19 @@ impl<'a> Resolve<'a> {
                 .await?;
             (result.decision, result.corrections)
         };
+        // Preserve the offered full rows before mutations so a durable host can
+        // checkpoint a multi-entity merge one loser at a time.
+        if let IdentityResolution::Merge { canonical, .. } = &decision
+            && proposals.input_entity(canonical).is_none()
+            && let Some(entity) = execution.ctx.entity_by_path(canonical)?
+        {
+            proposals.stage_input_entity(entity);
+        }
+        let prepared_proposals = proposals.clone();
         if let IdentityResolution::Merge {
             canonical, same_as, ..
         } = &decision
         {
-            if proposals.input_entity(canonical).is_none()
-                && let Some(entity) = execution.ctx.entity_by_path(canonical)?
-            {
-                proposals.stage_input_entity(entity);
-            }
             for losing in std::iter::once(&typed.path).chain(same_as.iter()) {
                 if losing != canonical {
                     proposals.retarget(losing, canonical);
@@ -255,8 +303,10 @@ impl<'a> Resolve<'a> {
             }
         }
         Ok(ResolveOutput {
+            stats,
             decision: Some(decision),
             proposals,
+            prepared_proposals,
             identity_fingerprint: Some(fingerprint),
             pair_fingerprints: pairs,
             corrections,
@@ -271,6 +321,7 @@ impl Phase for Resolve<'_> {
     }
 }
 struct ResolveRun<'a, 'h> {
+    retrieval: Option<Arc<dyn crate::candidates::CandidateRetrieval>>,
     ctx: Arc<GraphSnapshot>,
     prefixes: PrefixMap,
     harness: &'a Harness<'h>,

@@ -78,7 +78,56 @@ impl Ontology {
         relation: Option<&str>,
         edge_limit: usize,
     ) -> Result<Option<GraphEntity>, Error> {
-        let pass = self.reason_snapshot(user_id).await?;
+        self.reason_snapshot(user_id)
+            .await?
+            .graph_entity(path, direction, relation, edge_limit)
+    }
+
+    pub async fn query_graph(
+        &self,
+        user_id: &str,
+        query: &str,
+        row_limit: usize,
+    ) -> Result<GraphQueryOutput, Error> {
+        self.reason_snapshot(user_id)
+            .await?
+            .query_graph(query, row_limit)
+    }
+}
+
+fn display_iri(prefixes: &PrefixMap, iri: &str) -> String {
+    prefixes.compact(iri).unwrap_or_else(|| iri.to_string())
+}
+
+fn display_term(prefixes: &PrefixMap, term: &Term) -> String {
+    match term {
+        Term::NamedNode(node) => path_from_individual(node.as_str())
+            .unwrap_or_else(|| display_iri(prefixes, node.as_str())),
+        Term::Literal(literal) => literal.value().to_string(),
+        Term::BlankNode(node) => format!("_:{}", node.as_str()),
+        #[allow(unreachable_patterns)]
+        _ => term.to_string(),
+    }
+}
+
+fn attribute(prefixes: &PrefixMap, property: &str, literal: &Literal) -> GraphAttribute {
+    GraphAttribute {
+        property: display_iri(prefixes, property),
+        value: literal.value().to_string(),
+        datatype: display_iri(prefixes, literal.datatype().as_str()),
+        language: literal.language().map(str::to_string),
+    }
+}
+
+impl super::ReasonPass {
+    pub fn graph_entity(
+        &self,
+        path: &str,
+        direction: GraphDirection,
+        relation: Option<&str>,
+        edge_limit: usize,
+    ) -> Result<Option<GraphEntity>, Error> {
+        let pass = self;
         let prefixes = pass.effective_ontology.prefixes();
         let individual = NamedNode::new(individual_iri(path))
             .map_err(|error| Error::Validation(format!("invalid entity path: {error}")))?;
@@ -205,14 +254,8 @@ impl Ontology {
             truncated,
         }))
     }
-
-    pub async fn query_graph(
-        &self,
-        user_id: &str,
-        query: &str,
-        row_limit: usize,
-    ) -> Result<GraphQueryOutput, Error> {
-        let pass = self.reason_snapshot(user_id).await?;
+    pub fn query_graph(&self, query: &str, row_limit: usize) -> Result<GraphQueryOutput, Error> {
+        let pass = self;
         let prefixes = pass.effective_ontology.prefixes();
         match sparql::query(&pass.reasoned.store, query, prefixes)? {
             QueryResults::Boolean(value) => Ok(GraphQueryOutput::Boolean { value }),
@@ -249,29 +292,5 @@ impl Ontology {
                 "memory_graph_sparql supports only SELECT and ASK queries".into(),
             )),
         }
-    }
-}
-
-fn display_iri(prefixes: &PrefixMap, iri: &str) -> String {
-    prefixes.compact(iri).unwrap_or_else(|| iri.to_string())
-}
-
-fn display_term(prefixes: &PrefixMap, term: &Term) -> String {
-    match term {
-        Term::NamedNode(node) => path_from_individual(node.as_str())
-            .unwrap_or_else(|| display_iri(prefixes, node.as_str())),
-        Term::Literal(literal) => literal.value().to_string(),
-        Term::BlankNode(node) => format!("_:{}", node.as_str()),
-        #[allow(unreachable_patterns)]
-        _ => term.to_string(),
-    }
-}
-
-fn attribute(prefixes: &PrefixMap, property: &str, literal: &Literal) -> GraphAttribute {
-    GraphAttribute {
-        property: display_iri(prefixes, property),
-        value: literal.value().to_string(),
-        datatype: display_iri(prefixes, literal.datatype().as_str()),
-        language: literal.language().map(str::to_string),
     }
 }

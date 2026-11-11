@@ -220,3 +220,5 @@ async fn reasoning_returns_new_inferred_edges_without_rewriting_snapshot() {
     assert_eq!(ontology.graph().links.len(), 1);
     assert_eq!(ontology.graph().links[0].from_entity_path, "a");
 }
+
+mod planning;

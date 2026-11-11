@@ -25,7 +25,9 @@ use frona_harness::{FailureKind, Harness, Incomplete, Run, RunOutcome, Text};
 mod prompts;
 pub use prompts::AssemblePrompts;
 mod interface;
-pub use interface::{Assemble, AssembleInput, AssembleOutput, AttributeOps};
+pub use interface::{
+    AdjudicationCheckpoint, Assemble, AssembleInput, AssembleOutput, AttributeOps,
+};
 use interface::{AssembleRun, Progress};
 
 fn schema_edit_mentions(edit: &SchemaEdit, term: &str) -> bool {
@@ -800,6 +802,7 @@ where
             .await?;
         // Bank only after independent re-gating and cumulative validation. Replay
         // banks the source decision, never an old claim that its edits remain valid.
+        self.checkpoint.record(&candidate.submission).await?;
         progress.bank_adjudication(&candidate.submission);
         Ok(best)
     }

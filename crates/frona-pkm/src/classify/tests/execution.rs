@@ -311,3 +311,57 @@ async fn entity_and_ontology_research_spend_the_same_allowance() {
         assert!(second_observation.contains("Research-tool budget exhausted (1 calls)"));
     }
 }
+
+#[tokio::test]
+async fn replay_rebuilds_an_accepted_classification_without_model_calls() {
+    let (phase, calls) = phase(vec![candidate()]);
+    let initial = phase.run(input()).await.unwrap();
+    let replay = phase
+        .replay(input(), initial.classification.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(calls.lock().unwrap().len(), 1);
+    assert_eq!(
+        replay.proposals.by_path["people/test"].classes,
+        ["schema:Person"]
+    );
+    assert_eq!(
+        replay.proposals.input_entity("people/test").unwrap().path,
+        "people/test"
+    );
+}
+
+#[derive(Default)]
+struct Diagnostics(std::sync::Mutex<Vec<Value>>);
+#[async_trait::async_trait]
+impl crate::classify::ClassificationDiagnostics for Diagnostics {
+    async fn record(&self, diagnostic: &Value) -> Result<(), Error> {
+        self.0.lock().unwrap().push(diagnostic.clone());
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn interrupted_classification_records_diagnostics_without_an_accepted_output() {
+    let mut invalid = candidate();
+    invalid["classes"] = json!([{"class":"frona:illegal term"}]);
+    let (harness, requests) = harness([
+        Ok(tool_output("submit", invalid)),
+        Err(frona_harness::inference::InferenceError::InferenceFailed(
+            "provider unavailable".into(),
+        )),
+    ]);
+    let phase = Classify::new(harness);
+    let diagnostics = Diagnostics::default();
+    let original = input();
+    let result = phase
+        .run_with_diagnostics(original.clone(), |run| run, &diagnostics)
+        .await;
+    assert!(result.is_err());
+    assert!(original.proposals.by_path.is_empty());
+    assert_eq!(requests.lock().unwrap().len(), 2);
+    let captured = diagnostics.0.lock().unwrap();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0]["validation"]["attempts"], 1);
+    assert_eq!(captured[0]["validation"]["failures"], 1);
+}

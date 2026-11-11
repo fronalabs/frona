@@ -213,3 +213,82 @@ async fn snapshot_recall_excludes_unrelated_rows_but_keeps_shared_assertions_and
         HashSet::from(["people/taylor", "accounts/card", "things/forced"])
     );
 }
+
+struct IndexedCandidates(Vec<EntityHit>);
+#[async_trait::async_trait]
+impl super::CandidateRetrieval for IndexedCandidates {
+    async fn retrieve(
+        &self,
+        subject: &Subject,
+        limit: usize,
+    ) -> Result<Vec<EntityHit>, crate::Error> {
+        assert_eq!(subject.path, "services/redis");
+        assert_eq!(limit, super::RESOLUTION_RETRIEVAL_LIMIT as usize);
+        Ok(self.0.clone())
+    }
+}
+
+#[tokio::test]
+async fn indexed_retrieval_is_authoritative_and_keeps_phase_type_filtering() {
+    use crate::{GraphSnapshot, model::KnowledgeConsolidationEntity};
+    use std::sync::Arc;
+    let mut unrelated = KnowledgeConsolidationEntity::pending(
+        "run",
+        "owner",
+        "services/postgres",
+        EntityCategory::Concept,
+        Vec::new(),
+        Default::default(),
+    );
+    unrelated.name = "postgres".into();
+    unrelated.description = "svc".into();
+    unrelated.rederive_search();
+    let graph = GraphSnapshot {
+        scope_id: "owner".into(),
+        entities: vec![unrelated],
+        ..Default::default()
+    };
+    let request = || super::Request {
+        subject: Subject {
+            description: "svc".into(),
+            ..Subject::new(
+                "services/redis",
+                "redis",
+                &["schema:SoftwareApplication"],
+                &[],
+            )
+        },
+        eligible_paths: None,
+        additional_candidates: Vec::new(),
+        forced_paths: Vec::new(),
+        limit: 8,
+    };
+    let broad = super::Search::new(graph.clone())
+        .find_candidates(request(), |_| {}, |_, _| Some(0))
+        .await
+        .unwrap();
+    assert_eq!(
+        broad.len(),
+        1,
+        "the fallback matches the shared description"
+    );
+    let indexed = super::Search::new(graph.clone())
+        .with_retrieval(Some(Arc::new(IndexedCandidates(Vec::new()))))
+        .find_candidates(request(), |_| {}, |_, _| Some(0))
+        .await
+        .unwrap();
+    assert!(
+        indexed.is_empty(),
+        "indexed recall must not union fallback matches"
+    );
+    let incompatible = hit("people/redis", "redis", &["schema:Person"], &[]).entity;
+    let filtered = super::Search::new(graph)
+        .with_retrieval(Some(Arc::new(IndexedCandidates(vec![incompatible]))))
+        .find_candidates(request(), |_| {}, |_, _| None)
+        .await
+        .unwrap();
+    assert!(
+        filtered.is_empty(),
+        "caller recall cannot bypass phase compatibility"
+    );
+}

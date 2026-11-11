@@ -67,6 +67,15 @@ impl Ontology {
         class_limit: usize,
     ) -> Result<SemanticSearchResult, Error> {
         let pass = self.reason_snapshot(user_id).await?;
+        self.search_reasoned_entities(&pass, query, canonical_path, class_limit)
+    }
+    pub fn search_reasoned_entities(
+        &self,
+        pass: &super::ReasonPass,
+        query: &str,
+        canonical_path: Option<&str>,
+        class_limit: usize,
+    ) -> Result<SemanticSearchResult, Error> {
         let normalized_query = normalize_identity_name(query);
         let query_tokens: BTreeSet<_> = normalized_query
             .split_whitespace()
@@ -153,7 +162,7 @@ impl Ontology {
                 });
         }
 
-        let resolution = self.resolve_published_class_query(&pass, query)?;
+        let resolution = self.resolve_published_class_query(pass, query)?;
         let mut class_interpretation = None;
         let mut class_truncated = false;
         if let ExactClassResolution::Ambiguous(terms) = &resolution {
@@ -165,7 +174,7 @@ impl Ontology {
             class_interpretation = Some(ClassInterpretation::Resolved {
                 terms: interpretation_terms(terms),
             });
-            let mut class_entities = class_entities(&pass, terms)?;
+            let mut class_entities = class_entities(pass, terms)?;
             class_entities.sort_by(|a, b| {
                 b.use_count
                     .cmp(&a.use_count)
@@ -204,11 +213,11 @@ impl Ontology {
         if query_tokens.len() > 1 {
             for token in &query_tokens {
                 let ExactClassResolution::Resolved(terms) =
-                    self.resolve_published_class_query(&pass, token)?
+                    self.resolve_published_class_query(pass, token)?
                 else {
                     continue;
                 };
-                for entity in class_entities(&pass, &terms)? {
+                for entity in class_entities(pass, &terms)? {
                     let matched = terms
                         .iter()
                         .find(|term| entity.kinds.iter().any(|kind| kind == &term.iri))

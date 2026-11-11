@@ -23,7 +23,7 @@ impl Diagnostic {
 
 pub struct Reasoned {
     pub store: Store,
-    pub(super) diagnostics: Vec<Diagnostic>,
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 impl Reasoned {
@@ -35,11 +35,7 @@ impl Reasoned {
 }
 
 /// Reason over `base ⊕ delta ⊕ abox` and return the queryable closure.
-pub(super) fn materialize(
-    base: &[Triple],
-    delta: &[Triple],
-    abox: &[Triple],
-) -> Result<Reasoned, Error> {
+pub fn materialize(base: &[Triple], delta: &[Triple], abox: &[Triple]) -> Result<Reasoned, Error> {
     let mut all = Vec::with_capacity(base.len() + delta.len() + abox.len());
     all.extend_from_slice(base);
     all.extend_from_slice(delta);
@@ -79,13 +75,13 @@ pub(super) fn materialize(
 /// inferred-link write-back and to validate facet bounds).
 pub struct ReasonPass {
     pub reasoned: Reasoned,
-    pub(super) entities: Vec<KnowledgeEntity>,
-    pub(super) asserted_links: Vec<KnowledgeEntityLink>,
-    pub(super) delta_ofn: String,
+    pub entities: Vec<KnowledgeEntity>,
+    pub asserted_links: Vec<KnowledgeEntityLink>,
+    pub delta_ofn: String,
     /// What this pass reasoned under. Carried so downstream steps
     /// (`validate`, the inferred-link write-back) compact IRIs through the *same*
     /// prefix map the ABox was built with, rather than the bundled one.
-    pub(super) effective_ontology: Arc<OntologyScope>,
+    pub effective_ontology: Arc<OntologyScope>,
 }
 
 impl ReasonPass {

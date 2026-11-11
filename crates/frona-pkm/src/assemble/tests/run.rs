@@ -161,3 +161,90 @@ async fn discarded_rows_do_not_introduce_schema_proposals() {
     let result = Assemble::new(h).run(i).await.unwrap();
     assert!(!result.ontology_delta.contains("discardedProperty"));
 }
+
+#[derive(Default)]
+struct Checkpoint {
+    recorded: std::sync::Mutex<Vec<AdjudicationResult>>,
+    fail: bool,
+}
+#[async_trait::async_trait]
+impl AdjudicationCheckpoint for Checkpoint {
+    async fn record(&self, result: &AdjudicationResult) -> Result<(), Error> {
+        if self.fail {
+            return Err(Error::Internal("checkpoint unavailable".into()));
+        }
+        self.recorded.lock().unwrap().push(result.clone());
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn accepted_batch_is_checkpointed_before_plan_is_returned() {
+    let (h, _) = harness(vec![submit(accepted(10))]);
+    let checkpoint = Checkpoint::default();
+    let output = Assemble::new(h)
+        .run_with_checkpoint(input(10), |run| run, &checkpoint)
+        .await
+        .unwrap();
+    assert_eq!(output.stamped, 10);
+    assert_eq!(checkpoint.recorded.lock().unwrap()[0].decisions.len(), 10);
+}
+
+#[tokio::test]
+async fn checkpoint_failure_prevents_publication_plan() {
+    let (h, requests) = harness(vec![submit(accepted(10))]);
+    let checkpoint = Checkpoint {
+        fail: true,
+        ..Default::default()
+    };
+    let result = Assemble::new(h)
+        .run_with_checkpoint(input(10), |run| run, &checkpoint)
+        .await;
+    assert!(matches!(result, Err(Error::Internal(message)) if message == "checkpoint unavailable"));
+    assert_eq!(requests.lock().unwrap().len(), 1);
+    assert!(checkpoint.recorded.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn failed_batch_without_retained_candidate_is_not_checkpointed() {
+    let (h, _) = crate::test_support::harness([Err(
+        frona_harness::inference::InferenceError::InferenceFailed("transport failed".into()),
+    )]);
+    let checkpoint = Checkpoint::default();
+    assert!(
+        Assemble::new(h)
+            .run_with_checkpoint(input(10), |run| run, &checkpoint)
+            .await
+            .is_err()
+    );
+    assert!(checkpoint.recorded.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn retained_source_is_checkpointed_but_only_regated_edits_enter_plan() {
+    let mut source = accepted(10);
+    source["decisions"][9]["term"] = json!("frona:NotOffered");
+    let (h, requests) = harness(vec![submit(source)]);
+    let checkpoint = Checkpoint::default();
+    let output = Assemble::new(h)
+        .submission_attempts(1)
+        .run_with_checkpoint(input(10), |run| run, &checkpoint)
+        .await
+        .unwrap();
+    assert_eq!(requests.lock().unwrap().len(), 1);
+    let recorded = checkpoint.recorded.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert!(
+        recorded[0]
+            .decisions
+            .iter()
+            .any(|decision| decision.term == "frona:NotOffered")
+    );
+    assert!(!output.ontology_delta.contains("NotOffered"));
+    assert!(
+        output
+            .types
+            .iter()
+            .all(|(_, kinds)| kinds.iter().all(|kind| !kind.contains("NotOffered")))
+    );
+}

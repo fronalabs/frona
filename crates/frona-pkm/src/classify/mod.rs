@@ -36,7 +36,15 @@ pub struct ClassifyOutput {
     pub diagnostic: serde_json::Value,
 }
 
+/// Receives completed attempt diagnostics, including interrupted conversations.
+/// Recording diagnostics does not accept a classification or advance a checkpoint.
+#[async_trait::async_trait]
+pub trait ClassificationDiagnostics: Send + Sync {
+    async fn record(&self, diagnostic: &serde_json::Value) -> Result<(), Error>;
+}
+
 pub struct Classify<'a> {
+    retrieval: Option<std::sync::Arc<dyn crate::candidates::CandidateRetrieval>>,
     harness: Harness<'a>,
     prompts: ClassifyPrompts,
     max_submissions: usize,
@@ -46,12 +54,21 @@ pub struct Classify<'a> {
 impl<'a> Classify<'a> {
     pub fn new(harness: Harness<'a>) -> Self {
         Self {
+            retrieval: None,
             harness,
             prompts: ClassifyPrompts::default(),
             max_submissions: 10,
             max_tool_turns: 10,
             research_tool_budget: usize::MAX,
         }
+    }
+    /// Use caller-owned indexed recall while retaining phase-owned filtering and ranking.
+    pub fn candidate_retrieval(
+        mut self,
+        retrieval: std::sync::Arc<dyn crate::candidates::CandidateRetrieval>,
+    ) -> Self {
+        self.retrieval = Some(retrieval);
+        self
     }
     pub fn prompts(mut self, prompts: ClassifyPrompts) -> Self {
         self.prompts = prompts;
@@ -69,6 +86,45 @@ impl<'a> Classify<'a> {
         self.research_tool_budget = maximum;
         self
     }
+    /// Rebuild a previously accepted classification against a fresh host snapshot.
+    /// This does not call the model. The caller must validate the resulting complete
+    /// projection before banking a replay or committing it.
+    pub async fn replay(
+        &self,
+        input: ClassifyInput,
+        classification: Classification,
+    ) -> Result<ClassifyOutput, Error> {
+        let entity = input
+            .graph
+            .entity_by_path_with(&input.proposals.entity_draft(), &input.path)?
+            .ok_or_else(|| Error::NotFound(format!("classification entity {}", input.path)))?;
+        let logic = logic::ClassifyLogic {
+            retrieval: self.retrieval.clone(),
+            prefixes: input.ontology.prefixes(),
+            input: std::sync::Arc::new(input.clone()),
+            prompts: self.prompts.clone(),
+        };
+        let mut output = ClassifyOutput {
+            classification: None,
+            proposals: input.proposals,
+            minted_paths: Vec::new(),
+            diagnostic: serde_json::Value::Null,
+        };
+        output.proposals.stage_input_entity(entity.clone());
+        if logic
+            .record_entity_proposal(
+                &input.ontology,
+                &entity,
+                &classification,
+                &mut output.proposals,
+                &mut output.minted_paths,
+            )
+            .await
+        {
+            output.classification = Some(classification);
+        }
+        Ok(output)
+    }
     pub async fn run(&self, input: ClassifyInput) -> Result<ClassifyOutput, Error> {
         self.run_with(input, |run| run).await
     }
@@ -82,7 +138,20 @@ impl<'a> Classify<'a> {
         'a: 'run,
         F: FnOnce(Run<'run, Text>) -> Run<'run, Text> + Send,
     {
-        run::run(self, input, configure).await
+        run::run(self, input, configure, None).await
+    }
+    /// Record diagnostics before returning either semantic output or execution failure.
+    pub async fn run_with_diagnostics<'run, F>(
+        &'run self,
+        input: ClassifyInput,
+        configure: F,
+        diagnostics: &'run dyn ClassificationDiagnostics,
+    ) -> Result<ClassifyOutput, Error>
+    where
+        'a: 'run,
+        F: FnOnce(Run<'run, Text>) -> Run<'run, Text> + Send,
+    {
+        run::run(self, input, configure, Some(diagnostics)).await
     }
 }
 impl Phase for Classify<'_> {

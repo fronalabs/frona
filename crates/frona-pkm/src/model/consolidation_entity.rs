@@ -378,7 +378,7 @@ impl KnowledgeConsolidationEntity {
     }
 }
 
-pub(crate) fn merge_consolidation_attribute_values(
+pub fn merge_consolidation_attribute_values(
     held: &mut serde_json::Value,
     incoming: &serde_json::Value,
 ) {
@@ -403,7 +403,7 @@ pub(crate) fn merge_consolidation_attribute_values(
 fn minimum_datetime() -> DateTime<Utc> {
     DateTime::<Utc>::MIN_UTC
 }
-pub(crate) fn normalize_identity_name(value: &str) -> String {
+pub fn normalize_identity_name(value: &str) -> String {
     value
         .split(|c: char| !c.is_alphanumeric())
         .filter(|token| !token.is_empty())

@@ -1,0 +1,25 @@
+# The user root: an ontology someone dropped in. Trusted fully - it is their
+# knowledge base - and it reaches into the shared root, which is the case that
+# falls through code paths written for the within-vocabulary case.
+
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex:   <http://example.org/mini/> .
+@prefix my:   <http://example.org/mine/> .
+
+<http://example.org/mine/> a owl:Ontology .
+
+my:Contractor a owl:Class ;
+    rdfs:subClassOf ex:Person ;
+    rdfs:label "contractor" .
+
+# Equivalence, not subsumption: a peer sits at the same level, so everything above
+# Contractor is above Freelancer too. `scm-eqc1` makes it subsumption both ways and
+# a plain parent walk misses it entirely.
+my:Freelancer a owl:Class ;
+    owl:equivalentClass my:Contractor ;
+    rdfs:label "freelancer" .
+
+# A union-list disjointness in a *user* file. The anonymous-class-expression check
+# has to carve this out, or it rejects the shape the shipped catalogue is built on.
+my:Contractor owl:disjointWith [ owl:unionOf ( ex:Organization ) ] .

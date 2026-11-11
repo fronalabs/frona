@@ -1,0 +1,7 @@
+# Two files, one identity. A stale copy left behind, or an artifact unpacked twice -
+# merging them would double every axiom while looking like it worked, so loading fails.
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix ex:  <http://example.org/same/> .
+
+<http://example.org/same/> a owl:Ontology .
+ex:X a owl:Class .

@@ -7,7 +7,7 @@ use crate::{
 use oxigraph::sparql::QueryResults;
 use oxrdf::{NamedOrBlankNode, Term, Triple};
 use std::sync::Arc;
-mod abox;
+pub mod abox;
 pub mod catalogue;
 mod composition;
 mod graph_query;
@@ -18,13 +18,13 @@ mod reasoning;
 mod retrieval;
 pub mod schema;
 pub mod sparql;
-mod validation;
+pub mod validation;
 pub use catalogue::{OntologyCatalogue, OntologyScope, VocabHit};
-pub use composition::{ComposedOntology, UserOntology};
+pub use composition::{ComposedOntology, UserOntology, seed_set};
 pub use graph_query::GraphDirection;
 pub use inspection::OntologyExport;
-pub use planning::{PlannedSchema, TypePlan};
-pub use prefixes::{PrefixMap, TermKind, individual_iri, path_from_individual};
+pub use planning::{PlannedSchema, TypePlan, normalize_types, plan_entity_type};
+pub use prefixes::{KB_NAMESPACE, PrefixMap, TermKind, individual_iri, path_from_individual};
 pub use retrieval::{ClassInterpretation, IdentityAmbiguity, SemanticCandidate, SemanticMatch};
 pub use schema::{AlignKind, Catalog, Characteristic, OverrideTarget, SchemaEdit};
 pub use validation::{
@@ -117,7 +117,7 @@ pub use graph_query::{GraphAttribute, GraphEdge, GraphEntity, GraphQueryOutput};
 pub use inspection::{
     OntologyPropertyInspection, OntologySearchHit, OntologyTermInspection, OntologyTermRelation,
 };
-pub use reasoning::{Diagnostic, ReasonPass, Reasoned};
+pub use reasoning::{Diagnostic, ReasonPass, Reasoned, materialize};
 pub use retrieval::{ClassTermInterpretation, SemanticSearchResult};
 pub use validation::ValidationDiagnosticGroup;
 

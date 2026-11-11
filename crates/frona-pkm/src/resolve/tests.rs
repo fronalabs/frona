@@ -110,6 +110,12 @@ async fn distinct_identity_returns_fingerprints_without_persisting() {
         out.decision,
         Some(IdentityResolution::Distinct { .. })
     ));
+    assert!(
+        out.prepared_proposals
+            .input_entity("people/candidate")
+            .is_some()
+    );
+    assert!(out.prepared_proposals.input_entity("people/test").is_some());
     assert_eq!(calls.lock().unwrap().len(), 1);
     assert!(out.identity_fingerprint.is_some());
     assert_eq!(out.pair_fingerprints.len(), 1);
@@ -182,6 +188,12 @@ async fn grounded_merge_returns_a_validated_uncommitted_projection() {
         Some(IdentityResolution::Merge { .. })
     ));
     assert_eq!(calls.lock().unwrap().len(), 1);
+    let unmerged = out
+        .prepared_proposals
+        .input_entity("people/candidate")
+        .unwrap();
+    assert!(!unmerged.source_memory_ids.contains(&"m1".into()));
+    assert!(out.prepared_proposals.input_entity("people/test").is_some());
     let survivor = out.proposals.input_entity("people/candidate").unwrap();
     assert!(survivor.source_memory_ids.contains(&"m1".into()));
     assert!(survivor.source_memory_ids.contains(&"m2".into()));

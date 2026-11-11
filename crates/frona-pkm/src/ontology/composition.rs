@@ -17,7 +17,7 @@ fn referenced_iris(triples: &[Triple]) -> Vec<String> {
     out
 }
 
-pub(super) fn seed_set(
+pub fn seed_set(
     catalogue: &OntologyCatalogue,
     delta_triples: &[Triple],
     referenced: &[String],

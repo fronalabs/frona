@@ -1,0 +1,94 @@
+# A stand-in catalogue for the test suite: the standard terms the server's own tests
+# reason over, and nothing else.
+#
+# It exists because the real catalogue is not in this repo - it is fetched into the
+# image from a pinned `frona-ontologies` release - and a suite that read it would fail
+# on a fresh clone. Scale is covered separately and opt-in, against the actual release,
+# by the `ONTOLOGY_DIST_DIR` tests in `catalogue.rs`.
+#
+# Two rules if you extend it:
+#
+#   * **Real IRIs, real edges.** `https://schema.org/Person` here has to mean what it
+#     means upstream, or a test asserting some class reaches `schema:CreativeWork`
+#     stops telling you anything about production. Add a term by copying its actual
+#     parents, not by inventing convenient ones.
+#   * **Add a term only when a test needs it.** This is not a schema.org subset anyone
+#     should grow toward completeness; the tests here are about reasoning across the
+#     catalogue/delta boundary.
+#
+# The disjointness below is the part that is *not* upstream. schema.org states one
+# disjoint pair across its ~1,000 classes, so nothing here would ever contradict
+# anything and every clash test would pass vacuously. The shipped catalogue gets 646
+# pairs from KBpedia's upper ontology; these stand in for them.
+
+@prefix owl:    <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix schema: <https://schema.org/> .
+@prefix strict: <http://example.org/strict/> .
+
+schema:Thing a owl:Class ;
+    rdfs:label "Thing" .
+
+schema:CreativeWork a owl:Class ;
+    rdfs:subClassOf schema:Thing ;
+    rdfs:label "CreativeWork" .
+
+schema:SoftwareApplication a owl:Class ;
+    rdfs:subClassOf schema:CreativeWork ;
+    rdfs:label "SoftwareApplication" .
+
+schema:Person a owl:Class ;
+    rdfs:subClassOf schema:Thing ;
+    rdfs:label "Person" .
+
+schema:Organization a owl:Class ;
+    rdfs:subClassOf schema:Thing ;
+    rdfs:label "Organization" .
+
+schema:Place a owl:Class ;
+    rdfs:subClassOf schema:Thing ;
+    rdfs:label "Place" .
+
+schema:Event a owl:Class ;
+    rdfs:subClassOf schema:Thing ;
+    rdfs:label "Event" .
+
+schema:Product a owl:Class ;
+    rdfs:subClassOf schema:Thing ;
+    rdfs:label "Product" .
+
+schema:Person       owl:disjointWith schema:Organization, schema:Place,
+                                     schema:Product, schema:Event, schema:CreativeWork .
+schema:Organization owl:disjointWith schema:Place, schema:Product,
+                                     schema:Event, schema:CreativeWork .
+schema:Place        owl:disjointWith schema:Event, schema:CreativeWork .
+schema:Event        owl:disjointWith schema:Product .
+
+schema:email a owl:DatatypeProperty ;
+    rdfs:domain schema:Thing ;
+    rdfs:label "email" .
+
+schema:roleName a owl:DatatypeProperty ;
+    rdfs:domain schema:Thing ;
+    rdfs:label "roleName" .
+
+# A strict catalogue property used to prove that a newly staged A-Box predicate pulls
+# its definition into the effective ontology before admission.
+strict:personLocation a owl:ObjectProperty ;
+    rdfs:domain schema:Person ;
+    rdfs:range schema:Place ;
+    rdfs:label "person location" .
+
+strict:Employee a owl:Class ;
+    rdfs:subClassOf schema:Person ;
+    rdfs:label "Employee" .
+
+strict:personCode a owl:DatatypeProperty ;
+    rdfs:domain schema:Person ;
+    rdfs:range <http://www.w3.org/2001/XMLSchema#string> ;
+    rdfs:label "person code" .
+
+strict:advisoryLocation a owl:ObjectProperty ;
+    schema:domainIncludes schema:Person ;
+    schema:rangeIncludes schema:Place ;
+    rdfs:label "advisory location" .

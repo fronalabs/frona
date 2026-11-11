@@ -1,0 +1,18 @@
+# An ontology stating an axiom against an anonymous class expression.
+#
+# Loading this would not fail - the graph simply drops the blank object, so
+# `ex:Supervisor` ends up with no parent at all and every subsumption question about
+# it returns a thin answer with nothing reporting a problem. Reachability is only
+# equal to OWL 2 RL while class expressions are absent, so this is refused at load.
+
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex:   <http://example.org/anon/> .
+
+ex:Person a owl:Class .
+ex:supervises a owl:ObjectProperty .
+
+ex:Supervisor a owl:Class ;
+    rdfs:subClassOf [ a owl:Restriction ;
+        owl:onProperty ex:supervises ;
+        owl:someValuesFrom ex:Person ] .

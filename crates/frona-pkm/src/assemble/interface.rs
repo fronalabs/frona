@@ -43,6 +43,22 @@ pub struct AssembleOutput {
     pub aligned: usize,
     pub deferred: usize,
 }
+/// Host checkpoint for source decisions after independent re-gating and validation.
+/// A source may include rejected decisions from a retained, incomplete conversation;
+/// it is replay material, not an accepted publication plan. Replay must validate it
+/// again against the current graph. Only `AssembleOutput` contains the final plan.
+/// A checkpoint failure stops the phase before later batches or publication.
+#[async_trait::async_trait]
+pub trait AdjudicationCheckpoint: Send + Sync {
+    async fn record(&self, result: &AdjudicationResult) -> Result<(), Error>;
+}
+struct NoCheckpoint;
+#[async_trait::async_trait]
+impl AdjudicationCheckpoint for NoCheckpoint {
+    async fn record(&self, _result: &AdjudicationResult) -> Result<(), Error> {
+        Ok(())
+    }
+}
 pub struct Assemble<'a> {
     harness: Harness<'a>,
     prompts: AssemblePrompts,
@@ -90,6 +106,23 @@ impl<'a> Assemble<'a> {
         'a: 'run,
         F: Fn(Run<'run, Text>) -> Run<'run, Text> + Send + Sync,
     {
+        self.run_with_checkpoint(input, configure, &NoCheckpoint)
+            .await
+    }
+
+    /// Record source decisions before beginning more work. The caller owns the
+    /// storage transaction. Sources are recorded after independent re-gating, but
+    /// can still include rejected decisions and require fresh validation on replay.
+    pub async fn run_with_checkpoint<'run, F>(
+        &'run self,
+        input: AssembleInput,
+        configure: F,
+        checkpoint: &'run dyn AdjudicationCheckpoint,
+    ) -> Result<AssembleOutput, Error>
+    where
+        'a: 'run,
+        F: Fn(Run<'run, Text>) -> Run<'run, Text> + Send + Sync,
+    {
         self.check_cancelled()?;
         let AssembleInput {
             graph,
@@ -130,6 +163,7 @@ impl<'a> Assemble<'a> {
             rows,
         };
         let run = AssembleRun {
+            checkpoint,
             harness: &self.harness,
             configure,
             gate: GateContext {
@@ -168,6 +202,7 @@ impl Phase for Assemble<'_> {
     }
 }
 pub(super) struct AssembleRun<'a, 'run, F> {
+    pub checkpoint: &'run dyn AdjudicationCheckpoint,
     pub harness: &'run Harness<'a>,
     pub configure: F,
     pub gate: GateContext,

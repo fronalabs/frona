@@ -24,3 +24,5 @@ fn prompt_evidence_keeps_quote_but_hides_infrastructure_ids() {
     assert!(rendered.contains("Casey Owner works at Example Corp"));
     assert!(!rendered.contains("019-"));
 }
+
+mod resources;

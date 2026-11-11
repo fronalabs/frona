@@ -93,14 +93,34 @@ pub struct Request {
     pub limit: usize,
 }
 
+/// Caller-owned indexed candidate recall. Returned hits are authoritative for
+/// lexical retrieval; the phase still applies category/type compatibility,
+/// identity ranking, explicit additional candidates, and forced graph identities.
+#[async_trait::async_trait]
+pub trait CandidateRetrieval: Send + Sync {
+    async fn retrieve(&self, subject: &Subject, limit: usize) -> Result<Vec<EntityHit>, Error>;
+}
+
 #[derive(Clone)]
 pub struct Search {
     repo: GraphSnapshot,
+    retrieval: Option<std::sync::Arc<dyn CandidateRetrieval>>,
 }
 
 impl Search {
     pub fn new(repo: GraphSnapshot) -> Self {
-        Self { repo }
+        Self {
+            repo,
+            retrieval: None,
+        }
+    }
+
+    pub fn with_retrieval(
+        mut self,
+        retrieval: Option<std::sync::Arc<dyn CandidateRetrieval>>,
+    ) -> Self {
+        self.retrieval = retrieval;
+        self
     }
 
     pub async fn find_candidates<P, F>(
@@ -121,38 +141,43 @@ impl Search {
         // The host supplies the searchable snapshot. Recall lexical or assertion
         // overlap before ranking, rather than treating every same-category row as
         // a plausible identity. Database-specific full-text retrieval stays outside
-        // this crate; callers can supply its hits as additional candidates.
-        let mut entities: Vec<EntityHit> = self
-            .repo
-            .knowledge_entities()
-            .into_iter()
-            .filter(|entity| {
-                entity
-                    .search_assertions
-                    .iter()
-                    .any(|a| subject.assertions.contains(a))
-                    || std::iter::once(entity.name.as_str())
-                        .chain(entity.aliases.iter().map(String::as_str))
-                        .chain([entity.description.as_str(), entity.body.as_str()])
-                        .any(|text| {
-                            normalize_identity_name(text)
-                                .split_whitespace()
-                                .any(|token| query_tokens.contains(token))
-                        })
-            })
-            .map(|entity| EntityHit {
-                path: entity.path,
-                origin: entity.origin,
-                category: entity.category,
-                kinds: entity.kinds,
-                name: entity.name,
-                description: entity.description,
-                aliases: entity.aliases,
-                body: entity.body,
-                search_name_tokens: entity.search_name_tokens,
-                search_assertions: entity.search_assertions,
-            })
-            .collect();
+        // this crate; a caller can supply an authoritative CandidateRetrieval.
+        let mut entities: Vec<EntityHit> = if let Some(retrieval) = &self.retrieval {
+            retrieval
+                .retrieve(&subject, RESOLUTION_RETRIEVAL_LIMIT as usize)
+                .await?
+        } else {
+            self.repo
+                .knowledge_entities()
+                .into_iter()
+                .filter(|entity| {
+                    entity
+                        .search_assertions
+                        .iter()
+                        .any(|a| subject.assertions.contains(a))
+                        || std::iter::once(entity.name.as_str())
+                            .chain(entity.aliases.iter().map(String::as_str))
+                            .chain([entity.description.as_str(), entity.body.as_str()])
+                            .any(|text| {
+                                normalize_identity_name(text)
+                                    .split_whitespace()
+                                    .any(|token| query_tokens.contains(token))
+                            })
+                })
+                .map(|entity| EntityHit {
+                    path: entity.path,
+                    origin: entity.origin,
+                    category: entity.category,
+                    kinds: entity.kinds,
+                    name: entity.name,
+                    description: entity.description,
+                    aliases: entity.aliases,
+                    body: entity.body,
+                    search_name_tokens: entity.search_name_tokens,
+                    search_assertions: entity.search_assertions,
+                })
+                .collect()
+        };
         let additional_paths: HashSet<_> = request
             .additional_candidates
             .iter()

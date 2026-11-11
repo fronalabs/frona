@@ -1,0 +1,16 @@
+{
+  "name": "ontology_term_search",
+  "description": "Search ontology terms before minting a new `frona:` term. The search includes terms that\nthe current user directly uses, terms declared or proposed in the user's schema, and the\nwhole ontology catalogue. Exact matches rank before partial matches. A directly used user\nterm ranks before an equally good unused catalogue match. Results include each term's kind,\norigin, user relevance, and label.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "term": {
+        "type": "string",
+        "description": "A word or partial name to search for, such as \"organization\", \"worksFor\", or \"email\". Matching is case-insensitive."
+      }
+    },
+    "required": [
+      "term"
+    ]
+  }
+}

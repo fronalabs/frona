@@ -1,0 +1,16 @@
+{
+  "name": "search_entities",
+  "description": "Search production entities overlaid with the current consolidation's pending entities. Returns\nexact entity paths, names, descriptions, and types. Results may not exist on disk yet. Pass\nany returned path to `read_entity` for its full effective state.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "A name or phrase to search for in the effective knowledge state."
+      }
+    },
+    "required": [
+      "query"
+    ]
+  }
+}

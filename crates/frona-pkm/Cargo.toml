@@ -1,0 +1,44 @@
+[package]
+name = "frona-pkm"
+version.workspace = true
+edition.workspace = true
+description = "Portable personal knowledge memory phases"
+license-file = "LICENSE"
+readme = false
+repository = "https://git.mcx.ai/mina/frona"
+
+[dependencies]
+rig-core.workspace = true
+async-trait = "0.1"
+frona-harness = { path = "../frona-harness", version = "2026.11.0" }
+frona-text = { path = "../frona-text", version = "2026.11.0", features = ["prompts", "redaction"] }
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+uuid = { workspace = true, features = ["v7"] }
+schemars = { version = "1", features = ["chrono04"] }
+deunicode = "1"
+url = "2"
+
+pulldown-cmark = { version = "0.13", default-features = false }
+sha2 = "0.11"
+hex = "0.4"
+regex = "1"
+similar = "3"
+tokio-util = { version = "0.7", features = ["rt"] }
+horned-owl = "4"
+reasonable = "0.4"
+oxsdatatypes = "0.2"
+oxrdf = "0.3"
+oxigraph = { version = "0.5", default-features = false }
+heck = "0.5"
+strsim = "0.11"
+flate2 = "1"
+frona-ontologies = { git = "https://github.com/fronalabs/frona-ontologies", rev = "cdabc3a8dba85f418c080d659da36d47b4a9c442", default-features = false }
+
+[dev-dependencies]
+tokio.workspace = true
+tempfile = "3"

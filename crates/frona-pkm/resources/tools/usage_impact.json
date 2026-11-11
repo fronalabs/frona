@@ -1,0 +1,16 @@
+{
+  "name": "usage_impact",
+  "description": "Report how many pages are currently typed with a class, and how many links use a relation — the blast radius of renaming, retyping, or removing a term. Consult it before proposing a schema edit that touches an in-use term, so you can weigh the cost of the change against the benefit.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "term": {
+        "type": "string",
+        "description": "A class or relation CURIE (e.g. `frona:Service`, `schema:worksFor`) to measure."
+      }
+    },
+    "required": [
+      "term"
+    ]
+  }
+}

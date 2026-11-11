@@ -1,0 +1,20 @@
+{
+  "name": "inspect_ontology_terms",
+  "description": "Inspect a bounded ontology hierarchy slice without querying the knowledge graph. The result\ncombines the whole ontology catalogue with the current user's committed and proposed schema.\nFor classes it returns direct parents, ancestors, capped direct children, equivalence, and\ndisjointness. For properties it also returns domain, range, and inverse terms. When several\nterms are supplied, the result compares each pair as same, equivalent, subclass, superclass,\ndisjoint, or unrelated.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "terms": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 10,
+        "description": "One to ten class or property CURIEs to inspect and compare."
+      }
+    },
+    "required": [
+      "terms"
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "test_edit",
+  "description": "Dry-run a set of proposed schema edits without committing them: reports any logical clash they would introduce (a class made unsatisfiable, a disjointness violation). An empty/\"consistent\" result means the edits are safe to commit. Always test a non-trivial edit — especially a new subclass, equivalence, or disjointness axiom — before adjudicating it.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "edits": {
+        "type": "array",
+        "description": "An array of proposed schema edits to dry-run. Each edit is an object with an `op` field and its operands, all CURIEs. Ops - `declare_class {class}`, `sub_class_of {sub, sup}`, `equivalent_classes {a, b}`, `disjoint_classes {a, b}`, `declare_object_property {property}`, `declare_data_property {property}`, `sub_property_of {sub, sup}`, `equivalent_properties {a, b}`, `inverse_properties {a, b}`, `object_property_domain {property, class}`, `object_property_range {property, class}`."
+      }
+    },
+    "required": [
+      "edits"
+    ]
+  }
+}

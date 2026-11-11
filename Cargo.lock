@@ -3560,6 +3560,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "frona-pkm"
+version = "2026.11.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "deunicode",
+ "flate2",
+ "frona-harness",
+ "frona-ontologies",
+ "frona-text",
+ "heck 0.5.0",
+ "hex",
+ "horned-owl",
+ "oxigraph",
+ "oxrdf",
+ "oxsdatatypes",
+ "pulldown-cmark",
+ "reasonable",
+ "regex",
+ "rig-core",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "similar",
+ "strsim",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "frona-server"
 version = "2026.11.0"
 dependencies = [

@@ -1,0 +1,16 @@
+{
+  "name": "validation_details",
+  "description": "Retrieve the complete structured witness for one projection-validation diagnostic. Use\nthe `diagnostic_id` shown in rejection feedback when the inline examples do not contain\nenough causal axioms, triples, pages, or values to choose a repair.\n\nArguments:\n- `diagnostic_id`: the stable diagnostic identifier from validation feedback.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "diagnostic_id": {
+        "type": "string",
+        "description": "Stable diagnostic identifier shown in graph-validation feedback."
+      }
+    },
+    "required": [
+      "diagnostic_id"
+    ]
+  }
+}

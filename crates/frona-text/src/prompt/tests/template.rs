@@ -49,3 +49,37 @@ fn defaults_remain_available_beyond_declared_invocation_arguments() {
         "Caller/Home"
     );
 }
+
+#[test]
+fn direct_source_preserves_contract_and_named_errors() {
+    let template = PromptTemplate::new("input", &["name"]);
+    for vars in [
+        vec![],
+        vec![("name", "a"), ("extra", "b")],
+        vec![("name", "a"), ("NAME", "b")],
+    ] {
+        assert!(matches!(
+            template.render_source("{{invalid}}", &vars),
+            Err(PromptError::Variables { name, .. }) if name == "input"
+        ));
+    }
+    assert_eq!(
+        template
+            .render_source("Hello {{name}}", &[("NAME", "Caller")])
+            .unwrap(),
+        "Hello Caller"
+    );
+    assert!(matches!(
+        template.render_source("{{name}}", &[("name", " \n")]),
+        Err(PromptError::Empty { name }) if name == "input"
+    ));
+    assert!(matches!(
+        template.render_source("{{missing}}", &[("name", "Caller")]),
+        Err(PromptError::Render { name: Some(name), .. }) if name == "input"
+    ));
+    assert!(matches!(
+        PromptTemplate::new("input", &["name", "NAME"])
+            .render_source("{{name}}", &[("name", "Caller")]),
+        Err(PromptError::Variables { .. })
+    ));
+}

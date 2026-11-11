@@ -1,4 +1,4 @@
-use super::{PromptError, PromptLoader};
+use super::{PromptError, PromptLoader, render_template};
 use std::collections::BTreeSet;
 
 /// A required named template and the exact invocation variables its caller supplies.
@@ -20,6 +20,36 @@ impl<'a> PromptTemplate<'a> {
         loader: &PromptLoader,
         vars: &[(&str, &str)],
     ) -> Result<String, PromptError> {
+        self.validate_variables(vars)?;
+        let rendered =
+            loader
+                .try_read_with_vars(self.name, vars)?
+                .ok_or_else(|| PromptError::Missing {
+                    name: self.name.into(),
+                })?;
+        self.validate_output(rendered)
+    }
+
+    /// Render an already-loaded source with the same argument and nonempty-output
+    /// contract as `render`. The template name identifies errors; no loader defaults
+    /// are applied.
+    pub fn render_source(
+        &self,
+        source: &str,
+        vars: &[(&str, &str)],
+    ) -> Result<String, PromptError> {
+        self.validate_variables(vars)?;
+        let rendered = render_template(source, vars).map_err(|error| match error {
+            PromptError::Render { source, .. } => PromptError::Render {
+                name: Some(self.name.into()),
+                source,
+            },
+            other => other,
+        })?;
+        self.validate_output(rendered)
+    }
+
+    fn validate_variables(&self, vars: &[(&str, &str)]) -> Result<(), PromptError> {
         let expected: BTreeSet<_> = self
             .variables
             .iter()
@@ -36,12 +66,10 @@ impl<'a> PromptTemplate<'a> {
                 supplied: vars.iter().map(|(k, _)| (*k).into()).collect(),
             });
         }
-        let rendered =
-            loader
-                .try_read_with_vars(self.name, vars)?
-                .ok_or_else(|| PromptError::Missing {
-                    name: self.name.into(),
-                })?;
+        Ok(())
+    }
+
+    fn validate_output(&self, rendered: String) -> Result<String, PromptError> {
         if rendered.trim().is_empty() {
             return Err(PromptError::Empty {
                 name: self.name.into(),

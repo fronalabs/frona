@@ -1,3 +1,5 @@
+#[path = "../../frona-harness/tests/helpers/rig.rs"]
+mod rig;
 #[path = "../../frona-harness/tests/helpers/execution.rs"]
 mod support;
 use support::*;

@@ -252,4 +252,4 @@ pub fn configured_run<'a>(model: Model<'a>, observations: &'a mut Vec<String>) -
 ///     tokio::spawn(future);
 /// }
 /// ```
-pub mod ownership {}
+pub mod ownership_contracts {}

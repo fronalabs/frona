@@ -604,7 +604,7 @@ async fn read_respects_filesystem_permissions_and_sandbox_denials() {
     for (path, is_directory) in [("unreadable", true), ("unreadable.txt", false)] {
         let resolved = workspace.join(path);
         let permissions = tokio::fs::metadata(&resolved).await.unwrap().permissions();
-        tokio::fs::set_permissions(&resolved, std::fs::Permissions::from_mode(0))
+        tokio::fs::set_permissions(&resolved, std::fs::Permissions::from_mode(0o0))
             .await
             .unwrap();
         // Capabilities and filesystem semantics, not the user's identity, determine

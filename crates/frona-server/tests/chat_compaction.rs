@@ -281,7 +281,7 @@ impl App {
         frona::db::init::setup_schema(&db).await.unwrap();
         let fixture = helpers::app_state::build(&db).await;
         let state = &fixture.state;
-        let events = events.unwrap_or_else(|| state.broadcast_service.clone().into());
+        let events = events.unwrap_or_else(|| state.broadcast_service.clone());
         // These tests exercise compaction on initialized histories; legacy
         // initialization has its own transactional tests in agent_context.rs.
         frona::db::repo::agent_context_snapshots::SurrealAgentContextSnapshotRepo(db.clone())
@@ -854,12 +854,14 @@ async fn repeated_compaction_incorporates_previous_summary_and_advances_only_pas
         compactor.load_conversation("chat").await.unwrap().messages,
         vec![newest]
     );
-    let inputs = summary.inputs.lock().unwrap();
-    assert_eq!(inputs.len(), 2);
-    assert!(inputs[1].contains("<conversation_summary>\\n[SUMMARY]\\n</conversation_summary>"));
-    assert!(inputs[1].contains("first active"));
-    assert!(!inputs[1].contains("old old"));
-    assert!(!inputs[1].contains("new active"));
+    {
+        let inputs = summary.inputs.lock().unwrap();
+        assert_eq!(inputs.len(), 2);
+        assert!(inputs[1].contains("<conversation_summary>\\n[SUMMARY]\\n</conversation_summary>"));
+        assert!(inputs[1].contains("first active"));
+        assert!(!inputs[1].contains("old old"));
+        assert!(!inputs[1].contains("new active"));
+    }
     assert_eq!(messages.find_by_chat_id("chat").await.unwrap().len(), 4);
 }
 

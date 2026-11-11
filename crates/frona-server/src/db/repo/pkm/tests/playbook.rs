@@ -56,7 +56,7 @@ async fn playbook_projection_and_checkpoint_transition_commit_together_and_repla
         memory_ids: vec![memory.clone()],
     };
 
-    r.commit_playbook_resolutions("u", &[write.clone()], &checkpoint)
+    r.commit_playbook_resolutions("u", std::slice::from_ref(&write), &checkpoint)
         .await
         .unwrap();
     let entity = r.entity_by_path("u", &write.path).await.unwrap().unwrap();
@@ -100,7 +100,7 @@ async fn playbook_projection_and_checkpoint_transition_commit_together_and_repla
     assert_eq!(working.category, EntityCategory::Playbook);
 
     checkpoint.updated_at = Utc::now();
-    r.commit_playbook_resolutions("u", &[write.clone()], &checkpoint)
+    r.commit_playbook_resolutions("u", std::slice::from_ref(&write), &checkpoint)
         .await
         .unwrap();
     assert_eq!(
@@ -202,7 +202,7 @@ async fn playbook_resolution_relocates_memory_from_its_provisional_candidate_pat
         memory_ids: vec![memory.clone()],
     };
 
-    r.commit_playbook_resolutions("u", &[write.clone()], &checkpoint)
+    r.commit_playbook_resolutions("u", std::slice::from_ref(&write), &checkpoint)
         .await
         .unwrap();
 
@@ -296,8 +296,10 @@ async fn entity_identity_merge_and_checkpoint_transition_commit_together() {
         Some(serde_json::json!({"reason": "same person"})),
     );
     losing.checkpoint_revision = 1;
-    let mut state = crate::memory::pkm::ConsolidationWorkState::default();
-    state.revision = 1;
+    let state = crate::memory::pkm::ConsolidationWorkState {
+        revision: 1,
+        ..Default::default()
+    };
     let checkpoint = KnowledgeConsolidationRecord {
         id: new_id(),
         consolidation_id: "identity-run".into(),

@@ -172,12 +172,12 @@ fn integration_registry_reuses_instances_and_rejects_duplicate_names() {
     let instance: Arc<dyn crate::credential::managed::integration::RegisteredIntegration> =
         Arc::new(TestIntegration);
     let registry = register([("test".into(), instance.clone())]).unwrap();
-    assert!(Arc::ptr_eq(&instance, &registry.get("test").unwrap()));
+    assert!(Arc::ptr_eq(&instance, registry.get("test").unwrap()));
     assert!(Arc::ptr_eq(
-        &registry.get("test").unwrap(),
-        &registry.clone().get("test").unwrap()
+        registry.get("test").unwrap(),
+        registry.clone().get("test").unwrap()
     ));
-    assert!(registry.get("missing").is_none());
+    assert!(!registry.contains_key("missing"));
     assert!(register([("".into(), instance.clone())]).is_err());
     assert!(
         register([

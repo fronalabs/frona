@@ -370,17 +370,6 @@ impl ToolManager {
     }
 }
 
-#[cfg(test)]
-mod initialization_tests {
-    use super::*;
-
-    #[test]
-    #[should_panic(expected = "AppState must initialize built-in tools before use")]
-    fn incomplete_assembly_does_not_silently_hide_tools() {
-        ToolManager::new(false).builtins();
-    }
-}
-
 fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
     use super::browser::tool::BrowserTool;
     use super::cli::CliTool;
@@ -542,4 +531,15 @@ fn create_builtin_tools(state: &AppState) -> Vec<Arc<dyn AgentTool>> {
     }
 
     tools
+}
+
+#[cfg(test)]
+mod initialization_tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "AppState must initialize built-in tools before use")]
+    fn incomplete_assembly_does_not_silently_hide_tools() {
+        ToolManager::new(false).builtins();
+    }
 }

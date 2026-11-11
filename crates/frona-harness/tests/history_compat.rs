@@ -185,7 +185,7 @@ fn legacy_signed_reasoning_uses_configured_wire_but_current_origins_are_untouche
 #[test]
 fn version_one_corruption_versions_and_unterminated_tail_keep_boundaries() {
     let first = opened(json!([{"type":"text","text":"hello"}]));
-    let mut encoded = bytes(&[first.clone()]);
+    let mut encoded = bytes(std::slice::from_ref(&first));
     let start = encoded.len();
     encoded.extend_from_slice(br#"{"version":1,"unfinished"#);
     let decoded = decode_jsonl(&encoded).unwrap();

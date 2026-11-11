@@ -598,7 +598,7 @@ mod tests {
                 crate::ModelRequest {
                     system: ("system").into(),
                     messages: vec![Message::user("hello")],
-                    tools: tools,
+                    tools,
                     schema: None,
                     max_tokens: None,
                     temperature: None,

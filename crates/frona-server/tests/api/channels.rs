@@ -549,7 +549,7 @@ async fn pairing_round_trip_flips_channel_to_connected() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/webhooks/channels/telegram/{}", &channel_id,))
+                .uri(format!("/api/webhooks/channels/telegram/{}", channel_id,))
                 .header("content-type", "application/json")
                 .body(Body::from(payload.to_string()))
                 .unwrap(),
@@ -1090,7 +1090,7 @@ async fn inbound_webhook_persists_message_via_stub_adapter() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/webhooks/channels/test/{}", &channel.id,))
+                .uri(format!("/api/webhooks/channels/test/{}", channel.id,))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from("from=%2B15551234567&text=hello"))
                 .unwrap(),
@@ -1203,7 +1203,7 @@ async fn delete_channel_cancels_spawned_task_and_invokes_on_disconnect() {
     let app = build_app(state.clone());
     let resp = app
         .oneshot(auth_delete(
-            &format!("/api/channels/{}", &channel.id),
+            &format!("/api/channels/{}", channel.id),
             &token,
         ))
         .await

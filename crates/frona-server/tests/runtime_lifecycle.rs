@@ -900,19 +900,20 @@ async fn task_shutdown_retains_partial_work_and_recovery_requires_a_valid_lifecy
         .unwrap();
     assert_eq!(saved.status, TaskStatus::Completed, "{saved:?}");
     assert_eq!(saved.result_summary.as_deref(), Some("7"));
-    let histories = resumed.history.lock().unwrap();
-    assert_eq!(histories.len(), 2);
-    assert!(
-        serde_json::to_string(&histories[0])
-            .unwrap()
-            .contains("saved before shutdown")
-    );
-    assert!(
-        serde_json::to_string(&histories[1])
-            .unwrap()
-            .contains("does not match")
-    );
-    drop(histories);
+    {
+        let histories = resumed.history.lock().unwrap();
+        assert_eq!(histories.len(), 2);
+        assert!(
+            serde_json::to_string(&histories[0])
+                .unwrap()
+                .contains("saved before shutdown")
+        );
+        assert!(
+            serde_json::to_string(&histories[1])
+                .unwrap()
+                .contains("does not match")
+        );
+    }
     shutdown(&runtime).await;
 }
 

@@ -412,8 +412,8 @@ async fn retiring_a_memory_re_dirties_the_entities_that_render_it() {
     // about one entity appear as a fact about another.
     clean_all(&r).await;
     let by_page = r.union_memory_entities("u", &new, &old).await.unwrap();
-    assert_eq!(by_page["svc/pg"], [old.clone()]);
-    assert_eq!(by_page["svc/redis"], [new.clone()]);
+    assert_eq!(by_page["svc/pg"], std::slice::from_ref(&old));
+    assert_eq!(by_page["svc/redis"], std::slice::from_ref(&new));
     assert!(
         r.entities_needing_reconciliation("u")
             .await

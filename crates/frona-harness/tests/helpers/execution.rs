@@ -2,6 +2,7 @@
 // Each consumer uses a different subset of steps and helpers.
 #![allow(dead_code)]
 
+use super::rig;
 use async_trait::async_trait;
 use frona_harness::{
     BudgetLimits, Capabilities, DefaultBudget, ExecutionControl, Handle, ModelAdapter, ModelOutput,
@@ -23,8 +24,6 @@ use rig_core::{
     test_utils::{MockFrame, MockStreamEvent},
     wire::Mode,
 };
-#[path = "rig.rs"]
-mod rig;
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},

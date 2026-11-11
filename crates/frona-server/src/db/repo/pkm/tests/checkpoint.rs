@@ -23,8 +23,10 @@ async fn consolidation_record_round_trips_through_every_stage() {
 
     // Every variant, including the unit ones - those are the shapes most likely to
     // round-trip differently from the tuple variants around them.
-    let mut classify = ConsolidationWorkState::default();
-    classify.revision = 2;
+    let classify = ConsolidationWorkState {
+        revision: 2,
+        ..Default::default()
+    };
     let playbook = PlaybookResolveState::default();
     for state in [
         ConsolidationStageState::Ingest(Default::default()),
@@ -88,8 +90,10 @@ async fn consolidation_record_round_trips_through_every_stage() {
 #[tokio::test]
 async fn invalid_entity_row_does_not_advance_the_checkpoint() {
     let committed = std::sync::Arc::new(repo().await);
-    let mut saved_state = crate::memory::pkm::ConsolidationWorkState::default();
-    saved_state.revision = 0;
+    let saved_state = crate::memory::pkm::ConsolidationWorkState {
+        revision: 0,
+        ..Default::default()
+    };
     let mut checkpoint = KnowledgeConsolidationRecord {
         id: new_id(),
         consolidation_id: "run-invalid-row".into(),
@@ -118,8 +122,10 @@ async fn invalid_entity_row_does_not_advance_the_checkpoint() {
     row.lifecycle = ConsolidationEntityLifecycle::Coalesced;
     row.searchable = false;
     row.checkpoint_revision = 1;
-    let mut next_state = crate::memory::pkm::ConsolidationWorkState::default();
-    next_state.revision = 1;
+    let next_state = crate::memory::pkm::ConsolidationWorkState {
+        revision: 1,
+        ..Default::default()
+    };
     checkpoint.state = crate::memory::pkm::ConsolidationStageState::Classify(next_state);
 
     assert!(
@@ -166,8 +172,10 @@ async fn invalid_checkpoint_scope_does_not_write_entity_rows() {
         PkmConsolidationStore::new(committed.clone()).scoped("run-invalid-checkpoint", "u");
     let mut wrong_checkpoint = saved.clone();
     wrong_checkpoint.user_id = "other-user".into();
-    let mut next_state = crate::memory::pkm::ConsolidationWorkState::default();
-    next_state.revision = 1;
+    let next_state = crate::memory::pkm::ConsolidationWorkState {
+        revision: 1,
+        ..Default::default()
+    };
     wrong_checkpoint.state = crate::memory::pkm::ConsolidationStageState::Classify(next_state);
     let mut row = KnowledgeConsolidationEntity::pending(
         "run-invalid-checkpoint",
@@ -298,8 +306,10 @@ async fn invalid_reconciliation_leaves_memory_projection_and_checkpoint_unchange
         .save_consolidation_record(&checkpoint)
         .await
         .unwrap();
-    let mut next_state = crate::memory::pkm::ConsolidationWorkState::default();
-    next_state.revision = 1;
+    let next_state = crate::memory::pkm::ConsolidationWorkState {
+        revision: 1,
+        ..Default::default()
+    };
     checkpoint.state = crate::memory::pkm::ConsolidationStageState::Classify(next_state);
     let row = KnowledgeConsolidationEntity::pending(
         "run-invalid-reconcile",

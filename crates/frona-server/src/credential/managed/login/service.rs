@@ -743,12 +743,7 @@ mod tests {
                 .is_err()
         );
         let other = "other-vault";
-        assert!(
-            service
-                .check_vault("user", second.id, &other)
-                .await
-                .is_err()
-        );
+        assert!(service.check_vault("user", second.id, other).await.is_err());
         assert!(
             service
                 .check_connection("user", second.id, "other")

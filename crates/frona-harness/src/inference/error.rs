@@ -217,6 +217,14 @@ impl InferenceError {
     }
 }
 
+fn format_fallback_errors(errors: &[InferenceError]) -> String {
+    errors
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 #[cfg(test)]
 mod tests {
     use rig_core::ProviderResponseError;
@@ -252,12 +260,4 @@ mod tests {
 
         assert!(!error.is_retryable());
     }
-}
-
-fn format_fallback_errors(errors: &[InferenceError]) -> String {
-    errors
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join("; ")
 }

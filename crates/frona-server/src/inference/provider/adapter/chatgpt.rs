@@ -317,7 +317,6 @@ mod tests {
     fn driver(server: &MockServer) -> Driver {
         Driver {
             api_endpoint: Some(server.uri()),
-            ..Default::default()
         }
     }
 
@@ -727,7 +726,7 @@ mod tests {
                     frona_harness::ModelRequest {
                         system: ("system").into(),
                         messages: history(),
-                        tools: tools,
+                        tools,
                         schema: None,
                         max_tokens: None,
                         temperature: None,
@@ -742,7 +741,7 @@ mod tests {
                     frona_harness::ModelRequest {
                         system: ("system").into(),
                         messages: history(),
-                        tools: tools,
+                        tools,
                         schema: None,
                         max_tokens: None,
                         temperature: None,
@@ -818,7 +817,7 @@ mod tests {
                         frona_harness::ModelRequest {
                             system: ("system").into(),
                             messages: history(),
-                            tools: tools,
+                            tools,
                             schema: None,
                             max_tokens: Some(1024),
                             temperature: Some(0.0),
@@ -836,7 +835,7 @@ mod tests {
                         frona_harness::ModelRequest {
                             system: ("system").into(),
                             messages: history(),
-                            tools: tools,
+                            tools,
                             schema: None,
                             max_tokens: Some(1024),
                             temperature: Some(0.0),

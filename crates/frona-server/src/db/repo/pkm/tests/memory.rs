@@ -53,7 +53,7 @@ async fn page_with_attributes(r: &PkmRepo, path: &str, attrs: serde_json::Value)
     )
     .await
     .unwrap();
-    seed_reconciled_entity(&r, "u", path, "", "", &attrs)
+    seed_reconciled_entity(r, "u", path, "", "", &attrs)
         .await
         .unwrap();
 }

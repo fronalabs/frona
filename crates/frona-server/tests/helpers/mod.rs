@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+
+type RequestSettings = (Option<u64>, Option<f64>);
 pub mod provider;
 #[path = "../../../frona-harness/tests/helpers/rig.rs"]
 pub mod rig;
@@ -251,7 +253,7 @@ pub struct MockModelProvider {
     tool_histories: Arc<Mutex<Vec<Vec<RigToolDefinition>>>>,
     system_prompts: Arc<Mutex<Vec<String>>>,
     model_names: Arc<Mutex<Vec<String>>>,
-    request_settings: Arc<Mutex<Vec<(Option<u64>, Option<f64>)>>>,
+    request_settings: Arc<Mutex<Vec<RequestSettings>>>,
     usage: Arc<Mutex<Usage>>,
 }
 

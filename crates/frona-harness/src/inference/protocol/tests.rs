@@ -70,8 +70,8 @@ async fn capture(provider: Arc<dyn ModelProvider>, model: &ModelConfig, stream: 
                 messages: vec![Message::user("hello")],
                 tools: vec![],
                 schema: None,
-                max_tokens: max_tokens,
-                temperature: temperature,
+                max_tokens,
+                temperature,
             },
             Some(tx),
         )
@@ -85,8 +85,8 @@ async fn capture(provider: Arc<dyn ModelProvider>, model: &ModelConfig, stream: 
                 messages: vec![Message::user("hello")],
                 tools: vec![],
                 schema: None,
-                max_tokens: max_tokens,
-                temperature: temperature,
+                max_tokens,
+                temperature,
             },
             None,
         )
@@ -123,7 +123,7 @@ async fn openai_defaults_to_responses_with_reasoning_and_tools() {
                 crate::ModelRequest {
                     system: ("system").into(),
                     messages: history,
-                    tools: tools,
+                    tools,
                     schema: None,
                     max_tokens: None,
                     temperature: None,
@@ -138,7 +138,7 @@ async fn openai_defaults_to_responses_with_reasoning_and_tools() {
                 crate::ModelRequest {
                     system: ("system").into(),
                     messages: history,
-                    tools: tools,
+                    tools,
                     schema: None,
                     max_tokens: None,
                     temperature: None,
@@ -651,7 +651,7 @@ async fn structured_and_tool_calls_keep_envelope_and_custom_body() {
         crate::ModelRequest {
             system: ("sys").into(),
             messages: vec![Message::user("hi")],
-            tools: tools,
+            tools,
             schema: None,
             max_tokens: None,
             temperature: None,

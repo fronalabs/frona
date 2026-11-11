@@ -379,7 +379,11 @@ mod tests {
             let peer = tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut hello = [0; 4096];
-                stream.read(&mut hello).await.unwrap();
+                let received = stream.read(&mut hello).await.unwrap();
+                assert!(
+                    received > 0,
+                    "client must send a TLS handshake before closing"
+                );
                 stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
             });
             let captured = capture_send(&client(), &endpoint, streaming).await;

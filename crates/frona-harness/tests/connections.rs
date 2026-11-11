@@ -157,7 +157,7 @@ async fn cohere_and_generic_compatibility_recipes_match_previous_native_construc
         }
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 4, "{brand}");
-        for pair in requests.chunks_exact(2) {
+        for pair in requests.as_chunks::<2>().0 {
             assert_eq!(pair[0].url, pair[1].url, "{brand}: route changed");
             assert_eq!(
                 pair[0].body_json::<Value>().unwrap(),
@@ -244,7 +244,7 @@ async fn anonymous_ollama_and_generic_gateway_keep_their_distinct_protocols() {
     }
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 4);
-    for pair in requests.chunks_exact(2) {
+    for pair in requests.as_chunks::<2>().0 {
         assert_eq!(pair[0].url.path(), "/api/chat");
         assert!(!pair[0].headers.contains_key("authorization"));
         let body: Value = pair[0].body_json().unwrap();

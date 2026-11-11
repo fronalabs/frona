@@ -65,6 +65,30 @@ pub async fn atomic_write(
     Ok(())
 }
 
+/// Convert portable read results into server-native content after authorization.
+fn file_output(output: frona_harness::tools::files::FileOutput) -> crate::tool::ToolOutput {
+    use frona_harness::tools::files::FileOutput;
+    match output {
+        FileOutput::Content {
+            text,
+            images,
+            success: true,
+        } => crate::tool::ToolOutput::mixed(text, images),
+        FileOutput::Content {
+            text,
+            success: false,
+            ..
+        } => crate::tool::ToolOutput::error(text),
+        FileOutput::Binary {
+            media_type,
+            size,
+            path,
+        } => crate::tool::ToolOutput::error(format!(
+            "Read got a binary file ({media_type}, {size} bytes) at {path}. Use produce_file to surface it to the user, or pass through CliTool if you need raw bytes."
+        )),
+    }
+}
+
 #[cfg(test)]
 mod resolve_path_tests {
     use super::*;
@@ -166,29 +190,5 @@ mod resolve_path_tests {
         assert!(s.contains("/users/alice/"), "missing user: {s}");
         assert!(s.contains("/agents/researcher/"), "missing agent: {s}");
         assert!(!s.contains("/users/researcher/"), "user-as-agent: {s}");
-    }
-}
-
-/// Convert portable read results into server-native content after authorization.
-fn file_output(output: frona_harness::tools::files::FileOutput) -> crate::tool::ToolOutput {
-    use frona_harness::tools::files::FileOutput;
-    match output {
-        FileOutput::Content {
-            text,
-            images,
-            success: true,
-        } => crate::tool::ToolOutput::mixed(text, images),
-        FileOutput::Content {
-            text,
-            success: false,
-            ..
-        } => crate::tool::ToolOutput::error(text),
-        FileOutput::Binary {
-            media_type,
-            size,
-            path,
-        } => crate::tool::ToolOutput::error(format!(
-            "Read got a binary file ({media_type}, {size} bytes) at {path}. Use produce_file to surface it to the user, or pass through CliTool if you need raw bytes."
-        )),
     }
 }

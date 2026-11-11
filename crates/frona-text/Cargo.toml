@@ -14,10 +14,13 @@ unicode_categories = "0.1"
 ignore = "0.4"
 serde = { workspace = true, optional = true }
 minijinja = { version = "3", optional = true }
+rtb-redact = { version = "0.6", optional = true }
+serde_json = { workspace = true, optional = true }
 
 [features]
 default = []
 prompts = ["dep:minijinja"]
+redaction = ["dep:rtb-redact", "dep:serde_json"]
 serde = ["dep:serde"]
 
 [dev-dependencies]

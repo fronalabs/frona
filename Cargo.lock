@@ -3695,7 +3695,9 @@ version = "2026.11.0"
 dependencies = [
  "ignore",
  "minijinja",
+ "rtb-redact",
  "serde",
+ "serde_json",
  "tempfile",
  "unicode-casefold",
  "unicode-normalization-alignments",

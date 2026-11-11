@@ -15,3 +15,6 @@ pub use search::walk_with_ignore;
 /// Named prompt loading, rendering, and variable contracts.
 #[cfg(feature = "prompts")]
 pub mod prompt;
+
+#[cfg(feature = "redaction")]
+pub mod redaction;

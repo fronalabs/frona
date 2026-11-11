@@ -83,3 +83,27 @@ fn direct_source_preserves_contract_and_named_errors() {
         Err(PromptError::Variables { .. })
     ));
 }
+
+#[test]
+fn source_defaults_preserve_contract_and_case_insensitive_invocation_precedence() {
+    let defaults = std::collections::HashMap::from([
+        ("SCHEMA_PATH".into(), "/runtime/schema".into()),
+        ("NAME".into(), "Default".into()),
+    ]);
+    let template = PromptTemplate::new("input", &["name"]);
+    let source = "{{schema_path}}/{{NAME}}";
+    assert!(matches!(
+        template.render_source_with_defaults(source, &[], &defaults),
+        Err(PromptError::Variables { .. })
+    ));
+    assert_eq!(
+        template
+            .render_source_with_defaults(source, &[("Name", "Caller")], &defaults)
+            .unwrap(),
+        "/runtime/schema/Caller"
+    );
+    assert!(matches!(
+        template.render_source_with_defaults(source, &[("name", "a"), ("NAME", "b")], &defaults),
+        Err(PromptError::Variables { .. })
+    ));
+}

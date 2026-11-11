@@ -1,5 +1,5 @@
 use super::{PromptError, PromptLoader, render_template};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 /// A required named template and the exact invocation variables its caller supplies.
 /// Default loader variables are additional context, not a substitute for these
@@ -39,6 +39,40 @@ impl<'a> PromptTemplate<'a> {
         vars: &[(&str, &str)],
     ) -> Result<String, PromptError> {
         self.validate_variables(vars)?;
+        self.render_validated_source(source, vars)
+    }
+
+    /// Render with additional default context. Invocation arguments remain mandatory
+    /// and override defaults using case-insensitive names.
+    pub fn render_source_with_defaults(
+        &self,
+        source: &str,
+        vars: &[(&str, &str)],
+        defaults: &HashMap<String, String>,
+    ) -> Result<String, PromptError> {
+        self.validate_variables(vars)?;
+        if defaults.is_empty() {
+            return self.render_validated_source(source, vars);
+        }
+        let mut merged = defaults
+            .iter()
+            .map(|(key, value)| (key.to_lowercase(), value.as_str()))
+            .collect::<HashMap<_, _>>();
+        for (key, value) in vars {
+            merged.insert(key.to_lowercase(), *value);
+        }
+        let vars = merged
+            .iter()
+            .map(|(key, value)| (key.as_str(), *value))
+            .collect::<Vec<_>>();
+        self.render_validated_source(source, &vars)
+    }
+
+    fn render_validated_source(
+        &self,
+        source: &str,
+        vars: &[(&str, &str)],
+    ) -> Result<String, PromptError> {
         let rendered = render_template(source, vars).map_err(|error| match error {
             PromptError::Render { source, .. } => PromptError::Render {
                 name: Some(self.name.into()),

@@ -192,7 +192,7 @@ impl McpServerService {
     pub fn register_agent_tool(
         self: &Arc<Self>,
         registry: &mut crate::tool::registry::AgentToolRegistry,
-        prompts: &crate::agent::prompt::PromptLoader,
+        prompts: &frona_text::prompt::PromptLoader,
     ) {
         registry.register(Arc::new(super::mcpctl::McpCtlTool::new(
             self.clone(),

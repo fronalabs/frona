@@ -12,7 +12,6 @@ use frona_harness::{ManualError, ModelError};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::harness::Harness;
-use crate::agent::prompt::PromptLoader;
 use crate::auth::user_service::UserService;
 use crate::core::Handle;
 use crate::core::config::MemoryConfig;
@@ -24,6 +23,7 @@ use crate::db::repo::pkm::{
 use crate::inference::provider::service::ModelProviderService;
 use crate::inference::usage::{InferenceKind, UsageContext};
 use frona_harness::inference::ModelGroup;
+use frona_text::prompt::PromptLoader;
 
 use super::consolidation::{
     ConsolidationContext, ConsolidationInference, ConsolidationScope, Ingest, PromptIds, PromptSpec,

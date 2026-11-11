@@ -1,6 +1,5 @@
 use serde_json::Value;
 
-use crate::agent::prompt::PromptLoader;
 use crate::agent::service::AgentService;
 use crate::agent::task::service::TaskService;
 use crate::chat::broadcast::BroadcastService;
@@ -11,6 +10,7 @@ use crate::inference;
 use crate::notification::models::{NotificationData, NotificationLevel};
 use crate::notification::service::NotificationService;
 use frona_derive::agent_tool;
+use frona_text::prompt::PromptLoader;
 use rig_core::completion::Message as RigMessage;
 
 use super::{InferenceContext, ToolOutput};

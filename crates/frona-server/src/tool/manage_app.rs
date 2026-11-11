@@ -1,6 +1,5 @@
 use serde_json::Value;
 
-use crate::agent::prompt::PromptLoader;
 use crate::app::models::{App, AppManifest, AppResponse};
 use crate::app::service::AppService;
 use crate::chat::broadcast::BroadcastService;
@@ -10,6 +9,7 @@ use crate::inference::tool_call::ToolStatus;
 use crate::notification::models::{NotificationData, NotificationLevel};
 use crate::notification::service::NotificationService;
 use crate::storage::StorageService;
+use frona_text::prompt::PromptLoader;
 
 use frona_derive::agent_tool;
 

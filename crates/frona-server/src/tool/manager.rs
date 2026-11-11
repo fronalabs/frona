@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::agent::models::Agent;
-use crate::agent::prompt::PromptLoader;
 use crate::agent::task::models::Task;
 use crate::agent::task::service::TaskService;
 use crate::chat::service::ChatService;
@@ -16,6 +15,7 @@ use crate::core::state::AppState;
 use crate::policy::models::PolicyAction;
 use crate::policy::service::PolicyService;
 use crate::storage::StorageService;
+use frona_text::prompt::PromptLoader;
 
 /// Passed to `ToolManager::build_agent_registry` when the chat is backed by
 /// an in-progress task; carries everything `TaskControlTool` and

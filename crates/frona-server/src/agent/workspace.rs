@@ -1,5 +1,5 @@
-use super::prompt::PromptLoader;
 use crate::storage::Workspace;
+use frona_text::prompt::PromptLoader;
 
 pub struct AgentPromptLoader<'a> {
     workspace: &'a Workspace,

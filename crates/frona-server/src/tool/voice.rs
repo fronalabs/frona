@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use twilio_async::{TwilioJson, TwilioRequest};
 
-use crate::agent::prompt::PromptLoader;
 use crate::auth::User;
 use crate::auth::token::models::TokenType;
 use crate::auth::token::service::{CreateTokenRequest, TokenService};
@@ -19,6 +18,7 @@ use crate::credential::keypair::service::KeyPairService;
 use crate::tool::{
     AgentTool, InferenceContext, ToolDefinition, ToolOutput, active_chat, load_tool_definition,
 };
+use frona_text::prompt::PromptLoader;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VoiceCallbackExtensions {
@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn send_dtmf_tool_name() {
-        use crate::agent::prompt::PromptLoader;
+        use frona_text::prompt::PromptLoader;
         use std::path::PathBuf;
         let prompts = PromptLoader::new(PathBuf::from("/tmp/nonexistent"));
         let tool = SendDtmfTool { prompts };
@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn hangup_call_tool_name() {
-        use crate::agent::prompt::PromptLoader;
+        use frona_text::prompt::PromptLoader;
         use std::path::PathBuf;
         let prompts = PromptLoader::new(PathBuf::from("/tmp/nonexistent"));
         let tool = HangupCallTool { prompts };
@@ -376,7 +376,7 @@ mod tests {
 
     #[tokio::test]
     async fn voice_call_tool_name() {
-        use crate::agent::prompt::PromptLoader;
+        use frona_text::prompt::PromptLoader;
         use std::path::PathBuf;
         let prompts = PromptLoader::new(PathBuf::from("/tmp/nonexistent"));
         let tool = VoiceCallTool {

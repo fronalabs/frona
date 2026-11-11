@@ -4,18 +4,16 @@ use crate::memory::pkm::{
     consolidation::{ConsolidationScope, inference::ConsolidationInference, tools::EntityToolView},
     storage::PkmStorage,
 };
-use crate::{
-    agent::prompt::PromptLoader,
-    tool::{
-        InferenceContext,
-        sdk_adapter::{AgentToolAdapter, content_result},
-    },
+use crate::tool::{
+    InferenceContext,
+    sdk_adapter::{AgentToolAdapter, content_result},
 };
 use frona_harness::{
     Capabilities, Handle, ModelAdapter, ModelOutput, ModelRequest, UsageReport,
     config::ProviderModel,
     inference::{InferenceError, ModelConfig, ModelGroup, provider::StreamToken},
 };
+use frona_text::prompt::PromptLoader;
 use rig_core::completion::{
     AssistantContent,
     message::{ToolCall, ToolFunction},

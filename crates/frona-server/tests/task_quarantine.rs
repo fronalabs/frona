@@ -3,7 +3,6 @@ mod helpers;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use frona::agent::prompt::PromptLoader;
 use frona::agent::task::models::Task;
 use frona::agent::task::schema::ResultSpec;
 use frona::agent::task::service::TaskService;
@@ -11,6 +10,7 @@ use frona::core::error::AppError;
 use frona::db::repo::generic::SurrealRepo;
 use frona::tool::AgentTool;
 use frona::tool::task_control::TaskControlTool;
+use frona_text::prompt::PromptLoader;
 use helpers::mock_context;
 use serde_json::{Value, json};
 use surrealdb::Surreal;

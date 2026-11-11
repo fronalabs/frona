@@ -1,9 +1,10 @@
 use super::*;
 use crate::{
-    agent::{prompt::PromptLoader, service::AgentService, skill::service::SkillService},
+    agent::{service::AgentService, skill::service::SkillService},
     policy::{models::PolicyAction, service::PolicyService},
     tool::mcp::{McpServerService, models::McpServerStatus},
 };
+use frona_text::prompt::PromptLoader;
 
 pub struct CatalogContextSource {
     pub agents: AgentService,

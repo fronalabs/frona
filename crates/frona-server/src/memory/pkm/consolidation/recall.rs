@@ -4,10 +4,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use frona_derive::agent_tool;
 use serde_json::Value;
 
-use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use crate::inference::tool_call::ToolCall;
 use crate::tool::{InferenceContext, ToolOutput, str_arg};
+use frona_text::prompt::PromptLoader;
 
 pub(crate) const RECALL_RESULT_TOKEN_CAP: usize = 4_000;
 

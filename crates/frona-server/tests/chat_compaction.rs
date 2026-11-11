@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use frona::agent::prompt::PromptLoader;
 use frona::chat::compactor::{
     ChatCompactor, ChatSummarizer, CompactionContext, CompactionOutcome, SummaryRequest,
 };
@@ -13,6 +12,7 @@ use frona::db::repo::generic::SurrealRepo;
 use frona::db::repo::messages::SurrealMessageRepo;
 use frona::db::repo::tool_calls::ToolCallRepository;
 use frona::inference::conversation::{ConversationBuilder, ConversationContext};
+use frona_text::prompt::PromptLoader;
 use surrealdb::{
     Surreal,
     engine::local::{Db, Mem},

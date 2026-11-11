@@ -9,7 +9,6 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::signal::SignalService;
 use crate::agent::task::executor::TaskExecutor;
 
-use crate::agent::prompt::PromptLoader;
 use crate::agent::service::AgentService;
 use crate::agent::skill::registry::SkillRegistryClient;
 use crate::agent::skill::resolver::SkillResolver;
@@ -44,6 +43,7 @@ use crate::tool::sandbox::driver::resource_monitor::SystemResourceManager;
 use crate::tool::sandbox::{SandboxFactory, SandboxManager};
 use crate::tool::voice::{VoiceProvider, create_voice_provider};
 use crate::tool::web_search::{SearchProvider, create_search_provider};
+use frona_text::prompt::PromptLoader;
 use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
 

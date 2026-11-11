@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use frona_derive::agent_tool;
 
-use crate::agent::prompt::PromptLoader;
 use crate::chat::message::models::{Message, MessageRole};
 use crate::chat::message::repository::MessageRepository;
 use crate::core::error::AppError;
@@ -22,6 +21,7 @@ use crate::memory::pkm::consolidation::view::EntityViewManager;
 use crate::memory::pkm::model::{EntityCategory, PLAYBOOK_KIND_IRI};
 use crate::memory::pkm::model::{EvidenceSource, KnowledgeMemory, memory_bullet};
 use crate::tool::{InferenceContext, ToolOutput, str_arg};
+use frona_text::prompt::PromptLoader;
 
 const REDACTED: &str = "[REDACTED]";
 

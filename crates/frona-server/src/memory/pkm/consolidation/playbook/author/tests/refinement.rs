@@ -1,9 +1,9 @@
 use super::super::*;
-use crate::agent::prompt::PromptLoader;
 use frona_harness::{
     BudgetLimits, Capabilities, ModelAdapter, ModelOutput, ModelRequest, UsageReport,
     inference::{InferenceError, Usage, provider::StreamToken},
 };
+use frona_text::prompt::PromptLoader;
 use rig_core::completion::{
     AssistantContent, Message,
     message::{ToolCall, ToolFunction, UserContent},

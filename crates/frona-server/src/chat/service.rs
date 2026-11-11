@@ -1,20 +1,21 @@
 pub(super) mod context;
 use crate::agent::config::parse_frontmatter;
 use crate::agent::context::AgentContextScope;
-use crate::agent::prompt::{AgentPromptBuilder, PromptLoader};
+use crate::agent::prompt::AgentPromptBuilder;
 use crate::agent::service::AgentService;
 use crate::agent::workspace::AgentPromptLoader;
 use crate::auth::UserService;
 use crate::chat::message::models::MessageCommand;
 use crate::core::error::AppError;
 use crate::core::repository::Repository;
-use crate::core::template::render_template;
 use crate::db::repo::chats::SurrealChatRepo;
 use crate::db::repo::messages::SurrealMessageRepo;
 use crate::inference::conversation::{ConversationContext, DefaultConversationBuilder};
 use crate::inference::provider::service::ModelProviderService;
 use crate::storage::StorageService;
 use context::effective_signature;
+use frona_text::prompt::PromptLoader;
+use frona_text::prompt::render_template;
 use rig_core::completion::Message as RigMessage;
 
 // Reasoning models may consume output tokens before emitting the short text

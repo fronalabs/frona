@@ -3,10 +3,10 @@ use std::sync::Arc;
 use frona_derive::agent_tool;
 use serde_json::Value;
 
-use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use crate::memory::pkm::model::{KnowledgeEntity, memory_bullet};
 use crate::tool::{InferenceContext, ToolOutput, str_arg};
+use frona_text::prompt::PromptLoader;
 
 use super::prompt_evidence;
 

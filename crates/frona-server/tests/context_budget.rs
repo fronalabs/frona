@@ -1,10 +1,10 @@
+use frona_text::prompt::PromptLoader;
 mod helpers;
 
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use frona::{
-    agent::prompt::PromptLoader,
     chat::{
         compactor::{ChatCompactor, ChatSummarizer},
         message::models::{Message, MessageRole},

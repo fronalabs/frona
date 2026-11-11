@@ -94,7 +94,7 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         .and_then(|p| p.parent())
         .unwrap()
         .join("resources/prompts");
-    let prompts = frona::agent::prompt::PromptLoader::new(prompts_dir);
+    let prompts = frona_text::prompt::PromptLoader::new(prompts_dir);
     state.prompts = prompts.clone();
 
     let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(

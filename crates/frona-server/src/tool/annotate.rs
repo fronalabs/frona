@@ -3,7 +3,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::agent::prompt::PromptLoader;
 use crate::agent::signal::{Annotation, CandidateEvent, SignalService};
 use crate::chat::service::ChatService;
 use crate::contact::service::ContactService;
@@ -12,6 +11,7 @@ use crate::space::service::SpaceService;
 use crate::tool::{
     AgentTool, InferenceContext, ToolDefinition, ToolOutput, active_chat, load_tool_definition,
 };
+use frona_text::prompt::PromptLoader;
 
 pub struct AnnotateTool {
     pub signal_service: Arc<SignalService>,

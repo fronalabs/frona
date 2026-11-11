@@ -1,5 +1,4 @@
 use super::*;
-use crate::agent::prompt::PromptLoader;
 use crate::memory::pkm::{
     consolidation::{
         ConsolidationScope, context::ConsolidationContext, inference::ConsolidationInference,
@@ -12,6 +11,7 @@ use frona_harness::{
     config::ProviderModel,
     inference::{InferenceError, ModelConfig, ModelGroup, provider::StreamToken},
 };
+use frona_text::prompt::PromptLoader;
 use rig_core::completion::{
     AssistantContent,
     message::{ToolCall, ToolFunction},

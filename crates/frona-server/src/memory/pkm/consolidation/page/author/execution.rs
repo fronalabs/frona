@@ -1,8 +1,6 @@
 use super::*;
 use crate::{
-    agent::{models::Agent, prompt::PromptLoader},
-    auth::models::User,
-    core::repository::Repository,
+    agent::models::Agent, auth::models::User, core::repository::Repository,
     db::repo::generic::SurrealRepo,
 };
 use crate::{
@@ -22,6 +20,7 @@ use frona_harness::{
         provider::{ModelProvider, group::ModelGroup},
     },
 };
+use frona_text::prompt::PromptLoader;
 use rig_core::completion::AssistantContent;
 use std::{
     collections::VecDeque,

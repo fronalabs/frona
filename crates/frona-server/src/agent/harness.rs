@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::prompt::PromptLoader;
 use crate::agent::service::AgentService;
 use crate::agent::task::service::TaskService;
 use crate::auth::UserService;
@@ -26,6 +25,7 @@ use crate::{
     storage::StorageService,
     tool::{manager::ToolManager, mcp::McpServerService, registry::ToolFilter},
 };
+use frona_text::prompt::PromptLoader;
 
 struct CommandPromptOverride {
     request_id: String,

@@ -13,9 +13,11 @@ unicode-casefold = "0.2"
 unicode_categories = "0.1"
 ignore = "0.4"
 serde = { workspace = true, optional = true }
+minijinja = { version = "3", optional = true }
 
 [features]
 default = []
+prompts = ["dep:minijinja"]
 serde = ["dep:serde"]
 
 [dev-dependencies]

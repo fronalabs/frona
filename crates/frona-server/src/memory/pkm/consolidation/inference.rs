@@ -6,11 +6,11 @@
 use std::sync::Arc;
 
 use crate::agent::harness::Harness;
-use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use crate::inference::usage::{InferenceKind, UsageContext};
 use crate::tool::{AgentTool, registry::ToolFilter};
 use frona_harness::inference::ModelGroup;
+use frona_text::prompt::PromptLoader;
 use tokio_util::sync::CancellationToken;
 
 use super::prompt::PromptSpec;

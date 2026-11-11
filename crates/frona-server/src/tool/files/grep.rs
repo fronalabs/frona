@@ -3,10 +3,10 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio::io::AsyncBufReadExt;
 
-use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use crate::storage::service::StorageService;
 use frona_derive::agent_tool;
+use frona_text::prompt::PromptLoader;
 
 use super::super::sandbox::SandboxManager;
 use super::super::{InferenceContext, ToolOutput};

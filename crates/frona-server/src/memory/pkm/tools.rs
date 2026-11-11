@@ -8,10 +8,10 @@ use serde_json::Value;
 
 use frona_derive::agent_tool;
 
-use crate::agent::prompt::PromptLoader;
 use crate::auth::user_service::UserService;
 use crate::core::error::AppError;
 use crate::tool::{InferenceContext, ToolOutput, active_chat, str_arg};
+use frona_text::prompt::PromptLoader;
 
 use super::ontology::{GraphDirection, OntologyManager};
 use super::search::MemorySearch;

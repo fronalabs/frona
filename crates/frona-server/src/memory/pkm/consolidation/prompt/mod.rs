@@ -12,10 +12,8 @@
 //! Missing files, empty files, render failures, and mismatched variable sets are errors;
 //! an incomplete prompt must not reach the model.
 
-use std::collections::BTreeSet;
-
-use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
+use frona_text::prompt::{PromptLoader, PromptTemplate};
 
 mod ids;
 
@@ -207,13 +205,14 @@ impl PromptSpec {
         prompts: &PromptLoader,
         vars: &[(&str, &str)],
     ) -> Result<RenderedPrompt, AppError> {
-        check_vars(self.dir, "input", self.vars, vars)?;
-        let system = read(prompts, &self.system_path())?;
-        let input = read_with(prompts, &self.input_path(), vars)?;
+        let system = PromptTemplate::new(&self.system_path(), &[]).render(prompts, &[])?;
+        let input = PromptTemplate::new(&self.input_path(), self.vars).render(prompts, vars)?;
         // Ingest must contain the actual transcript, not merely render a valid
         // template. Keep this check at rendering so every SDK entry preserves it.
         if *self == Self::INGEST
-            && let Some((_, transcript)) = vars.iter().find(|(key, _)| *key == "transcript")
+            && let Some((_, transcript)) = vars
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case("transcript"))
             && !input.contains(transcript.trim())
         {
             return Err(AppError::Internal(
@@ -239,8 +238,7 @@ impl PromptSpec {
                 self.dir
             ))
         })?;
-        check_vars(self.dir, "reject", declared, vars)?;
-        read_with(prompts, &self.reject_path(), vars)
+        Ok(PromptTemplate::new(&self.reject_path(), declared).render(prompts, vars)?)
     }
 
     pub fn advisory(
@@ -254,8 +252,7 @@ impl PromptSpec {
                 self.dir
             ))
         })?;
-        check_vars(self.dir, "promote", declared, vars)?;
-        read_with(prompts, &self.advisory_path(), vars)
+        Ok(PromptTemplate::new(&self.advisory_path(), declared).render(prompts, vars)?)
     }
 
     /// Render this stage's **unreadable-term** correction: one or more CURIEs it sent that
@@ -273,50 +270,8 @@ impl PromptSpec {
         let declared = self.bad_term_vars.ok_or_else(|| {
             AppError::Internal(format!("prompt `{}`: stage mints no terms", self.dir))
         })?;
-        check_vars(self.dir, "bad_term", declared, vars)?;
-        read_with(prompts, &self.bad_term_path(), vars)
+        Ok(PromptTemplate::new(&self.bad_term_path(), declared).render(prompts, vars)?)
     }
-}
-
-fn check_vars(
-    dir: &str,
-    file: &str,
-    declared: &[&str],
-    supplied: &[(&str, &str)],
-) -> Result<(), AppError> {
-    let got: BTreeSet<&str> = supplied.iter().map(|(k, _)| *k).collect();
-    let want: BTreeSet<&str> = declared.iter().copied().collect();
-    if got != want {
-        return Err(AppError::Internal(format!(
-            "prompt `pkm/{dir}/{file}.md`: variable mismatch — declared {want:?}, supplied {got:?}"
-        )));
-    }
-    Ok(())
-}
-
-fn read(prompts: &PromptLoader, path: &str) -> Result<String, AppError> {
-    prompts
-        .read(path)
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| {
-            AppError::Internal(format!("prompt `{path}`: missing, unrenderable, or empty"))
-        })
-}
-
-fn read_with(
-    prompts: &PromptLoader,
-    path: &str,
-    vars: &[(&str, &str)],
-) -> Result<String, AppError> {
-    prompts
-        .read_with_vars(path, vars)
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| {
-            AppError::Internal(format!(
-                "prompt `{path}`: failed to render — a placeholder the caller does not supply, \
-             or a missing file. Refusing to call the model with an empty prompt."
-            ))
-        })
 }
 
 #[cfg(test)]
@@ -342,6 +297,45 @@ mod tests {
     }
 
     #[test]
+    fn phase_contract_uses_shared_embedded_templates_and_rejects_duplicate_arguments() {
+        let loader = PromptLoader::embedded([
+            ("pkm/writeback/system.md", "Interpret the page edit"),
+            ("pkm/writeback/input.md", "{{memories}} / {{diff}}"),
+        ]);
+        let rendered = PromptSpec::WRITEBACK
+            .render(&loader, &[("memories", "facts"), ("diff", "changes")])
+            .unwrap();
+        assert_eq!(rendered.input, "facts / changes");
+        assert!(
+            PromptSpec::WRITEBACK
+                .render(
+                    &loader,
+                    &[
+                        ("memories", "facts"),
+                        ("diff", "changes"),
+                        ("diff", "replacement"),
+                    ]
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn phase_contract_preserves_named_render_errors() {
+        let loader = PromptLoader::embedded([
+            ("pkm/writeback/system.md", "Interpret the page edit"),
+            ("pkm/writeback/input.md", "{{undefined_variable}}"),
+        ]);
+        let error = PromptSpec::WRITEBACK
+            .render(&loader, &[("memories", "facts"), ("diff", "changes")])
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("pkm/writeback/input.md"), "{error}");
+        assert!(error.contains("undefined"), "{error}");
+    }
+
+    #[test]
     fn ingest_refuses_a_template_that_omits_its_transcript() {
         let dir = tempfile::tempdir().unwrap();
         let stage = dir.path().join("pkm/ingest");
@@ -355,6 +349,20 @@ mod tests {
             )
             .err()
             .expect("missing payload must fail before a model call");
+        assert!(
+            error
+                .to_string()
+                .contains("does not contain the transcript")
+        );
+        let mut vars = sample(PromptSpec::INGEST.vars);
+        vars.iter_mut()
+            .find(|(key, _)| *key == "transcript")
+            .unwrap()
+            .0 = "TRANSCRIPT";
+        let error = PromptSpec::INGEST
+            .render(&PromptLoader::new(dir.path()), &vars)
+            .err()
+            .expect("case-insensitive arguments must preserve the payload guard");
         assert!(
             error
                 .to_string()

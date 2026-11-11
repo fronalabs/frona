@@ -12,9 +12,9 @@ use oxigraph::sparql::QueryResults;
 use oxrdf::Triple;
 use serde_json::Value;
 
-use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use crate::tool::{AgentTool, InferenceContext, ToolOutput, str_arg};
+use frona_text::prompt::PromptLoader;
 
 use crate::memory::pkm::ontology::sparql::{self, term_lexical};
 use crate::memory::pkm::ontology::{OntologyManager, PrefixMap, SchemaEdit, ValidationDiagnostic};

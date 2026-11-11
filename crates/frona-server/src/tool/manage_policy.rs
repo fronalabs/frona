@@ -1,9 +1,9 @@
 use serde_json::Value;
 
-use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use crate::policy::schema::prepend_annotations;
 use crate::policy::service::PolicyService;
+use frona_text::prompt::PromptLoader;
 
 use frona_derive::agent_tool;
 

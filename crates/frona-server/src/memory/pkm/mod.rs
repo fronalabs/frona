@@ -63,7 +63,6 @@ use surrealdb::engine::local::Db;
 
 use std::time::Duration;
 
-use crate::agent::prompt::PromptLoader;
 use crate::core::config::MemoryConfig;
 use crate::core::error::AppError;
 use crate::db::repo::tool_calls::SurrealToolCallRepo;
@@ -72,6 +71,7 @@ use crate::memory::service::MemoryService;
 use crate::scheduler::Scheduler;
 use crate::storage::StorageService;
 use crate::tool::AgentTool;
+use frona_text::prompt::PromptLoader;
 
 use crate::db::repo::pkm::PkmRepo;
 

@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use crate::agent::prompt::PromptLoader;
 use crate::agent::service::AgentService;
 use crate::agent::task::executor::TaskExecutor;
 use crate::agent::task::models::{Task, TaskKind, TaskStatus};
@@ -12,6 +11,7 @@ use crate::contact::service::ContactService;
 use crate::core::error::AppError;
 use crate::policy::models::{PolicyAction, PolicyContact};
 use crate::policy::service::PolicyService;
+use frona_text::prompt::PromptLoader;
 
 use super::matcher::{Matcher, MatcherKind};
 use super::matchers::{CategoryMatcher, ChannelMatcher, ContactMatcher};

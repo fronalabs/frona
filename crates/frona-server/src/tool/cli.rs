@@ -5,7 +5,6 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::agent::prompt::PromptLoader;
 #[cfg(test)]
 use crate::agent::skill::service::SkillService;
 #[cfg(test)]
@@ -15,6 +14,7 @@ use crate::core::error::AppError;
 use crate::credential::keypair::service::KeyPairService;
 #[cfg(test)]
 use crate::policy::service::PolicyService;
+use frona_text::prompt::PromptLoader;
 
 use super::sandbox::SandboxManager;
 use super::{AgentTool, InferenceContext, ToolDefinition, ToolOutput, parse_frontmatter};

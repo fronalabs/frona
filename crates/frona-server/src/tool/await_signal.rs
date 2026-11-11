@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
 
-use crate::agent::prompt::PromptLoader;
 use crate::agent::signal::{SignalService, Watch};
 use crate::agent::task::models::SignalMode;
 use crate::agent::task::schema::validate_schema_doc;
@@ -14,6 +13,7 @@ use crate::core::error::AppError;
 use crate::tool::{
     AgentTool, InferenceContext, ToolDefinition, ToolOutput, active_chat, load_tool_definition,
 };
+use frona_text::prompt::PromptLoader;
 
 pub struct AwaitSignalTool {
     pub task_service: TaskService,

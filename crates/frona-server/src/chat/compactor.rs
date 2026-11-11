@@ -15,7 +15,6 @@ use chrono::Utc;
 use rig_core::completion::request::ToolDefinition as RigToolDefinition;
 use rig_core::completion::{AssistantContent, Message as RigMessage};
 
-use crate::agent::prompt::PromptLoader;
 use crate::chat::message::models::{Message, MessageCommand, MessageRole};
 use crate::chat::message::repository::MessageRepository;
 use crate::chat::models::ChatSummary;
@@ -33,6 +32,7 @@ use frona_harness::inference::{
     ModelGroup,
     context::{InputTokenEstimate, estimate_message_tokens, estimate_tokens},
 };
+use frona_text::prompt::PromptLoader;
 
 /// Trigger when the conversation exceeds this fraction of the available window.
 const COMPACT_TRIGGER_PCT: usize = 80;

@@ -1,11 +1,11 @@
 use chrono::{Duration, Utc};
 use serde_json::Value;
 
-use crate::agent::prompt::PromptLoader;
 use crate::agent::service::AgentService;
 use crate::core::error::AppError;
 use crate::storage::StorageService;
 use frona_derive::agent_tool;
+use frona_text::prompt::PromptLoader;
 
 use super::{InferenceContext, ToolOutput};
 

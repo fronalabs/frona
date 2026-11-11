@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::Url;
 
-use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use crate::inference::tool_call::ToolCall;
 use crate::tool::{InferenceContext, ToolOutput, str_arg};
+use frona_text::prompt::PromptLoader;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExecutionEvidenceClass {

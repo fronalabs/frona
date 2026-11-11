@@ -119,3 +119,9 @@ impl From<frona_harness::tools::files::FileError> for AppError {
         }
     }
 }
+
+impl From<frona_text::prompt::PromptError> for AppError {
+    fn from(error: frona_text::prompt::PromptError) -> Self {
+        Self::Internal(error.to_string())
+    }
+}

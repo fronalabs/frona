@@ -35,7 +35,7 @@ use crate::core::error::AppError;
 
 pub use crate::inference::request::{InferenceContext, active_chat};
 
-use crate::agent::prompt::PromptLoader;
+use frona_text::prompt::PromptLoader;
 
 /// Read a string argument out of a tool call: present, a string, and not blank once
 /// trimmed. `None` for anything else - a missing key, a non-string, or whitespace.

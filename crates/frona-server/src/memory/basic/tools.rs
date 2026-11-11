@@ -1,9 +1,9 @@
 use serde_json::Value;
 
-use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use crate::memory::basic::BasicMemoryService;
 use frona_derive::agent_tool;
+use frona_text::prompt::PromptLoader;
 
 use crate::tool::{InferenceContext, ToolOutput, active_chat, str_arg};
 

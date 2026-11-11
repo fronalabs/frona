@@ -1,8 +1,8 @@
 use serde_json::Value;
 
-use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use crate::credential::vault::service::VaultService;
+use frona_text::prompt::PromptLoader;
 
 use crate::inference::hitl::{Hitl, HitlOutcome, HitlRequest, HitlResponse};
 use crate::inference::tool_call::ToolStatus;

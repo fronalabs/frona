@@ -7,10 +7,10 @@ use backon::{ExponentialBuilder, Retryable};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use crate::tool::{InferenceContext, ToolOutput};
 use frona_derive::agent_tool;
+use frona_text::prompt::PromptLoader;
 
 #[derive(Debug, Clone)]
 pub struct SearchResult {

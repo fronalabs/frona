@@ -464,7 +464,7 @@ impl PlaybookAuthor {
 /// Domain content inspection; only explicit acceptance can enter page projection.
 fn inspect_submission(
     candidate: AuthoredPlaybook,
-    prompts: &crate::agent::prompt::PromptLoader,
+    prompts: &frona_text::prompt::PromptLoader,
 ) -> Result<Decision<AuthoredPlaybook>, AppError> {
     let mut missing = Vec::new();
     if candidate.name.trim().is_empty() {

@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use frona::agent::prompt::PromptLoader;
 use frona::chat::message::models::{Message, MessageDelivery, MessageRole};
 use frona::chat::message::repository::MessageRepository;
 use frona::core::repository::Repository;
@@ -15,6 +14,7 @@ use frona::memory::basic::models::MemorySourceType;
 use frona::memory::basic::repository::MemoryRepository;
 use frona::memory::service::MemoryService;
 use frona::storage::Attachment;
+use frona_text::prompt::PromptLoader;
 use surrealdb::{
     Surreal,
     engine::local::{Db, Mem},

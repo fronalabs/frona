@@ -1065,7 +1065,7 @@ async fn build_test_chat_service(message_id: Option<&str>) -> frona::chat::servi
     );
 
     let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(
-        frona::agent::prompt::PromptLoader::new(&base),
+        frona_text::prompt::PromptLoader::new(&base),
         storage.clone(),
         empty_memory_service(),
         skill_service,
@@ -1078,7 +1078,7 @@ async fn build_test_chat_service(message_id: Option<&str>) -> frona::chat::servi
         provider_registry,
         storage,
         user_service,
-        frona::agent::prompt::PromptLoader::new(&base),
+        frona_text::prompt::PromptLoader::new(&base),
         frona::chat::broadcast::BroadcastService::new(),
         presign_service,
         usage_service,

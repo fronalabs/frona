@@ -15,7 +15,6 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rig_core::completion::Message as RigMessage;
 
-use crate::agent::prompt::PromptLoader;
 use crate::chat::repository::ChatRepository;
 use crate::core::config::MemoryConfig;
 use crate::core::error::AppError;
@@ -33,6 +32,7 @@ use crate::{
     tool::AgentTool,
 };
 use frona_harness::inference::{ModelGroup, context::estimate_tokens};
+use frona_text::prompt::PromptLoader;
 
 /// The basic memory service: user/agent/space "blob" memory - stored entries
 /// rolled into a compacted summary, injected via `retrieve`. Implements the

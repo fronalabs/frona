@@ -99,7 +99,7 @@ async fn test_app_state_with_mock(mock: Arc<MockModelProvider>) -> (AppState, te
     let provider_registry = crate::helpers::test_model_service(providers, model_groups).await;
 
     let user_service = frona::auth::UserService::new(SurrealRepo::new(db.clone()), &config.cache);
-    let prompt_loader = frona::agent::prompt::PromptLoader::new(format!("{base}/prompts"));
+    let prompt_loader = frona_text::prompt::PromptLoader::new(format!("{base}/prompts"));
 
     let provider_registry_arc = Arc::new(provider_registry.clone());
     let memory_service: Arc<dyn frona::memory::service::MemoryService> =

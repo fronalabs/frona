@@ -3,9 +3,9 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::agent::prompt::PromptLoader;
 use crate::core::error::AppError;
 use frona_derive::agent_tool;
+use frona_text::prompt::PromptLoader;
 
 use super::browser::session::{BrowserSessionManager, run_with_reconnect};
 use super::{InferenceContext, ToolOutput};

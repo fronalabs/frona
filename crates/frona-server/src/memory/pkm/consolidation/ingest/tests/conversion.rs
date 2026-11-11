@@ -2,7 +2,6 @@ use std::collections::HashSet;
 
 use chrono::{TimeZone, Utc};
 
-use crate::agent::prompt::PromptLoader;
 use crate::memory::pkm::consolidation::ingest::cleanup::{
     remove_multi_entity_candidate_attributes, terminal_cleanup,
 };
@@ -21,6 +20,7 @@ use crate::memory::pkm::consolidation::{
 use crate::memory::pkm::model::{
     Episode, EpisodeStatus, EvidenceStrength, RelativeDuration, TemporalAnchor,
 };
+use frona_text::prompt::PromptLoader;
 
 pub(super) fn sources(text: &str) -> Vec<TranscriptEvidenceSource> {
     vec![transcript_source(

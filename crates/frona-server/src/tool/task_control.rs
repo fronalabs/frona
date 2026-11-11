@@ -3,13 +3,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::agent::prompt::PromptLoader;
 use crate::agent::task::models::TaskStatus;
 use crate::agent::task::schema::ResultSpec;
 use crate::core::error::AppError;
 use crate::inference::tool_call::TaskEvent;
 use crate::storage::resolve_workspace_attachment;
 use crate::storage::service::StorageService;
+use frona_text::prompt::PromptLoader;
 
 use super::{
     AgentTool, InferenceContext, ToolDefinition, ToolOutput, active_chat, load_tool_definition,

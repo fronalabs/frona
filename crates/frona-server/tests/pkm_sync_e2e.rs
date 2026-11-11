@@ -87,7 +87,7 @@ async fn setup(
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let harness = test_harness(&db, &config, mock).await;
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
     // The sync engine the API builds from `AppState` - same repo + storage + deps.
@@ -326,7 +326,7 @@ async fn concurrent_edits_with_one_base_revision_accept_only_one() {
         storage.clone(),
         memory_config.clone(),
         test_user_service(&db),
-        frona::agent::prompt::PromptLoader::new(resources_prompts()),
+        frona_text::prompt::PromptLoader::new(resources_prompts()),
         Arc::new(
             test_model_service_with_group(
                 "mock",

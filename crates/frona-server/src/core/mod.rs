@@ -11,7 +11,6 @@ pub mod runtime_config;
 pub mod shutdown;
 pub mod state;
 pub mod supervisor;
-pub mod template;
 pub mod user_config;
 
 pub use handle::Handle;

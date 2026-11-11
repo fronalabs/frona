@@ -355,7 +355,7 @@ async fn service_pipeline_consolidates_searches_reads_and_cites_entities_and_pla
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -811,7 +811,7 @@ async fn consolidation_routes_self_memories_persists_aliases_and_updates_user_pr
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -933,7 +933,7 @@ async fn self_entity_injects_user_profile() {
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -1067,7 +1067,7 @@ async fn self_entity_write_through_updates_user_timezone() {
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -1272,7 +1272,7 @@ async fn recovery_repairs_a_revision_that_does_not_match_the_file() {
         db.clone(),
         StorageService::new(&config),
         registry,
-        frona::agent::prompt::PromptLoader::new(resources_prompts()),
+        frona_text::prompt::PromptLoader::new(resources_prompts()),
         memory_config.clone(),
         test_user_service(&db),
         ontology_base(),
@@ -1424,7 +1424,7 @@ async fn recovery_relocates_deduplicates_and_rerenders() {
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -1562,7 +1562,7 @@ async fn recovery_relocates_a_renamed_directory() {
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         StorageService::new(&config),
@@ -1740,7 +1740,7 @@ async fn classify_types_entities_and_assemble_mints_schema() {
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -1906,7 +1906,7 @@ async fn classify_rejected_result(ending: ClassificationEnd) {
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -2028,7 +2028,7 @@ async fn consolidate_only_service(
         db.clone(),
         StorageService::new(&config),
         registry,
-        frona::agent::prompt::PromptLoader::new(resources_prompts()),
+        frona_text::prompt::PromptLoader::new(resources_prompts()),
         memory_config,
         test_user_service(db),
         ontology_base(),
@@ -2266,7 +2266,7 @@ async fn ontology_service(
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -4596,7 +4596,7 @@ async fn classify_loop_revises_after_reasoner_rejection() {
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -4878,7 +4878,7 @@ async fn term_that_cannot_be_written_is_pushed_back_before_it_reaches_the_schema
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -5015,7 +5015,7 @@ async fn adjudicated_term_matches_its_proposal_across_spellings() {
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -5193,7 +5193,7 @@ async fn unresolved_resolution(interruption: Option<ResolutionInterruption>) {
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -5433,7 +5433,7 @@ async fn memoryless_entity_is_only_a_resolve_candidate_and_link_target() {
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage.clone(),
@@ -5572,7 +5572,7 @@ async fn attribute_naming_an_entity_becomes_an_edge_without_inventing_an_inverse
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -5861,7 +5861,7 @@ async fn attribute_naming_an_unmaterialized_entity_mints_it_and_shares_the_fact(
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -6028,7 +6028,7 @@ async fn re_minting_the_same_entity_creates_no_duplicate() {
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -7337,7 +7337,7 @@ async fn assemble_align_case(cancelled: bool) {
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -7518,7 +7518,7 @@ async fn assemble_restrict_commits_when_existing_values_satisfy_the_facet() {
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -7629,7 +7629,7 @@ async fn reconcile_minted_data_property_is_declared_before_assemble_commit() {
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -7738,7 +7738,7 @@ async fn assemble_restrict_that_invalidates_existing_entities_is_rejected() {
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -7821,7 +7821,7 @@ async fn assemble_defer_keeps_the_validated_baseline_declaration() {
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
+    let prompts = frona_text::prompt::PromptLoader::new(resources_prompts());
     let service = PkmService::new(
         db.clone(),
         storage,
@@ -7923,7 +7923,7 @@ async fn episodic_reminder_is_grounded_without_current_attributes() {
         db.clone(),
         StorageService::new(&config),
         registry,
-        frona::agent::prompt::PromptLoader::new(resources_prompts()),
+        frona_text::prompt::PromptLoader::new(resources_prompts()),
         memory_config.clone(),
         test_user_service(&db),
         ontology_base(),
@@ -8160,7 +8160,7 @@ async fn task_lifecycle_episodes_require_the_applicable_task_dates() {
         db.clone(),
         StorageService::new(&config),
         registry,
-        frona::agent::prompt::PromptLoader::new(resources_prompts()),
+        frona_text::prompt::PromptLoader::new(resources_prompts()),
         memory_config.clone(),
         test_user_service(&db),
         ontology_base(),

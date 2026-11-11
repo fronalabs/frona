@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use frona::agent::prompt::PromptLoader;
 use frona::db::init as db;
 use frona::db::repo::basic_memory::SurrealMemoryEntryRepo;
 use frona::db::repo::generic::SurrealRepo;
@@ -9,6 +8,7 @@ use frona::memory::basic::models::{Memory, MemorySourceType};
 use frona::memory::basic::repository::MemoryEntryRepository;
 use frona::memory::basic::repository::MemoryRepository;
 use frona::tool::AgentTool;
+use frona_text::prompt::PromptLoader;
 use surrealdb::Surreal;
 use surrealdb::engine::local::{Db, Mem};
 

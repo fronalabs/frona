@@ -1,12 +1,12 @@
 use serde_json::Value;
 
 use crate::agent::models::CreateAgentRequest;
-use crate::agent::prompt::PromptLoader;
 use crate::agent::service::AgentService;
 use crate::chat::broadcast::BroadcastService;
 use crate::core::error::AppError;
 use crate::inference::InferenceEventKind;
 use crate::storage::service::StorageService;
+use frona_text::prompt::PromptLoader;
 
 use frona_derive::agent_tool;
 

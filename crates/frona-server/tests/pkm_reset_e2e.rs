@@ -247,7 +247,7 @@ async fn reset_rebuilds_only_the_authenticated_users_memory_on_a_later_sweep() {
     let registry = Arc::new(
         test_model_service_with_group("mock", mock.clone(), "test", test_model_group()).await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(resources().join("prompts"));
+    let prompts = frona_text::prompt::PromptLoader::new(resources().join("prompts"));
     let fixture =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ontology");
     let pkm = PkmService::new(

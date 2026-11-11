@@ -1,9 +1,9 @@
 use frona_derive::agent_tool;
+use frona_text::prompt::PromptLoader;
 use serde_json::Value;
 
 use super::service::McpServerService;
 use crate::{
-    agent::prompt::PromptLoader,
     core::error::AppError,
     tool::{InferenceContext, ToolOutput},
 };

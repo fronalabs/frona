@@ -1169,7 +1169,7 @@ async fn static_memory_guidance_is_independent_of_snapshot_signature() {
         SurrealRepo::new(app.db.clone()),
         SurrealRepo::new(app.db.clone()),
         Arc::new(state.chat_service.model_providers().clone()),
-        frona::agent::prompt::PromptLoader::new(dir.path()),
+        frona_text::prompt::PromptLoader::new(dir.path()),
         state.usage_service.clone(),
         frona::core::config::MemoryConfig::default(),
     );

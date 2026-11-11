@@ -4,7 +4,6 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use crate::agent::prompt::PromptLoader;
 use crate::agent::service::AgentService;
 use crate::agent::task::executor::TaskExecutor;
 use crate::agent::task::models::CreateTaskRequest;
@@ -13,6 +12,7 @@ use crate::core::error::AppError;
 use crate::policy::models::PolicyAction;
 use crate::policy::service::PolicyService;
 use frona_derive::agent_tool;
+use frona_text::prompt::PromptLoader;
 
 use super::{InferenceContext, ToolOutput, active_chat};
 

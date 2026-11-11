@@ -8,12 +8,13 @@
 
 use super::{ConsolidationInference, PromptSpec};
 use crate::{
-    agent::{background::PreparedAgentTools, prompt::PromptLoader},
+    agent::background::PreparedAgentTools,
     core::error::AppError,
     inference::usage::{UsageContext, UsageService},
     tool::{ToolOutput, sdk_adapter::content_result},
 };
 use frona_harness::{ExecutionStop, Run, Text};
+use frona_text::prompt::PromptLoader;
 use tokio_util::sync::CancellationToken;
 
 /// Reusable preparation, owned so runs can safely borrow the legacy tool context.

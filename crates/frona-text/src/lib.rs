@@ -11,3 +11,7 @@ pub use grounding::{GroundingError, GroundingMatch, GroundingText};
 pub use line_ending::LineEnding;
 pub use normalized_string::NormalizedString;
 pub use search::walk_with_ignore;
+
+/// Named prompt loading, rendering, and variable contracts.
+#[cfg(feature = "prompts")]
+pub mod prompt;

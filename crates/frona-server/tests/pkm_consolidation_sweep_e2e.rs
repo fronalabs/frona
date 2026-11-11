@@ -145,7 +145,7 @@ async fn setup_with_memory_config(
         )
         .await,
     );
-    let prompts = frona::agent::prompt::PromptLoader::new(
+    let prompts = frona_text::prompt::PromptLoader::new(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../resources/prompts"),
     );
     let fixture =

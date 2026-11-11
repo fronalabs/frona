@@ -84,7 +84,7 @@ serde_yaml = "0.9"
 rtb-redact = "0.6"
 config = { version = "0.15", features = ["yaml"] }
 frona-browser = { path = "../frona-browser" }
-frona-text = { path = "../frona-text" }
+frona-text = { path = "../frona-text", features = ["prompts"] }
 tokio-util = "0.7"
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
@@ -104,7 +104,6 @@ metrics-exporter-prometheus = { version = "0.18", default-features = false }
 vaultrs = { version = "0.8", default-features = false, features = ["rustls"] }
 keepass = "0.17"
 cookie = "0.18.1"
-minijinja = "3"
 schemars = { version = "1", features = ["chrono04"] }
 # Repairs the JSON some models emit as prose instead of a structured tool call - fences,
 # trailing commas, truncation, and braces inside string values. Replaces a brace-counting

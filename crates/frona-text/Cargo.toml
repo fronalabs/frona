@@ -2,7 +2,7 @@
 description = "Unicode-aware text matching, prompt templates, and configurable redaction"
 license = "MIT"
 readme = "README.md"
-repository = "https://git.mcx.ai/mina/frona"
+repository = "https://github.com/fronalabs/frona"
 documentation = "https://docs.rs/frona-text"
 keywords = ["unicode", "text", "prompts", "redaction"]
 categories = ["text-processing"]

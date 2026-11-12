@@ -2,7 +2,7 @@
 description = "Procedural macros for Frona harness tools and Frona application integration"
 license = "MIT"
 readme = "README.md"
-repository = "https://git.mcx.ai/mina/frona"
+repository = "https://github.com/fronalabs/frona"
 documentation = "https://docs.rs/frona-derive"
 keywords = ["derive", "macros", "tools"]
 categories = ["development-tools::procedural-macro-helpers"]

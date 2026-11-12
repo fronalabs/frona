@@ -2,7 +2,7 @@
 description = "Validated model metadata, parameter schemas, and cached catalog snapshots"
 license = "MIT"
 readme = "README.md"
-repository = "https://git.mcx.ai/mina/frona"
+repository = "https://github.com/fronalabs/frona"
 documentation = "https://docs.rs/frona-model-catalog"
 keywords = ["ai", "models", "catalog"]
 categories = ["data-structures", "caching"]

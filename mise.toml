@@ -60,10 +60,6 @@ run = "npm run lint"
 description = "Run all tests"
 run = "cargo test --workspace"
 
-[tasks."test:harness-sdk"]
-description = "Verify SDK features, server compatibility, and extracted packages"
-run = "python3 crates/frona-harness/verify_sdk.py"
-
 [tasks."test:e2e"]
 description = "Build the fake MCP server and run end-to-end tests"
 run = """

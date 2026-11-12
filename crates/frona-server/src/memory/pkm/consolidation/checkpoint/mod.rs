@@ -1,4 +1,8 @@
+mod concepts;
 mod ingest;
+mod playbook;
+pub use concepts::ConsolidationWorkState;
+pub use playbook::PlaybookResolveState;
 mod record;
 mod stage;
 
@@ -6,6 +10,5 @@ mod stage;
 mod tests;
 
 pub use ingest::IngestState;
-pub(crate) use ingest::prepare_ingest_batch;
 pub use record::{ConsolidationFailure, KnowledgeConsolidationRecord};
 pub use stage::ConsolidationStageState;

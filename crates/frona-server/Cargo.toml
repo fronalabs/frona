@@ -13,6 +13,7 @@ name = "frona"
 path = "src/main.rs"
 
 [dependencies]
+frona-pkm = { path = "../frona-pkm", version = "2026.11.0" }
 frona-harness = { path = "../frona-harness", version = "2026.11.0" }
 frona-cli-mcp = { path = "../frona-cli-mcp" }
 frona-model-catalog = { path = "../frona-model-catalog" }
@@ -30,7 +31,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 # Transliteration for page-path slugs. Already in the tree via surrealdb-core; declared
 # directly because `storage::slugify` depends on it by name, not by accident.
-deunicode = "1"
 arc-swap = "1"
 sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
@@ -40,8 +40,6 @@ ed25519-dalek = { version = "3", features = ["rand_core", "pkcs8"] }
 rand = "0.10"
 nanoid = "0.5"
 aes-gcm = "0.11"
-similar = "3"
-strsim = "0.11"
 sha2 = "0.11"
 blake3 = "1"
 sha1 = "0.11"
@@ -113,7 +111,6 @@ json_partial = "0.2"
 # `Soldering Iron`, `firmwareversion`) into the house convention. Already in the tree via
 # frona-derive; hand-rolling it produced a slug that lowercased whole words, which is how
 # `supportEmail` became `frona:supportemail`.
-heck = "0.5"
 tempfile = "3"
 ignore = "0.4.25"
 globset = "0.4"
@@ -129,32 +126,11 @@ xz2 = "0.1"
 inventory = "0.3"
 jsonschema = { version = "0.61", default-features = false }
 
-# horned-owl: typed OWL schema building + I/O; reasonable: OWL 2 RL materializer
-# + validation diagnostics; oxsdatatypes: XSD datatype/facet checks (code);
-# oxrdf: shared RDF term model; oxigraph (no default features → pure-Rust
-# in-memory store, no RocksDB C++) : SPARQL query + reactive substrate.
-horned-owl = "4"
-reasonable = "0.4"
-oxsdatatypes = "0.2"
+# RDF values and cached graph stores used by the persistence adapters.
 oxrdf = "0.3"
 oxigraph = { version = "0.5", default-features = false }
 # Artifacts ship gzipped; the catalogue streams them rather than decompressing to disk.
 flate2 = "1"
-
-# The graph extractor, shared rather than copied. `default-features = false` drops
-# the `cli` feature, leaving `graph` + `rdf` - whose only direct dependencies are
-# oxigraph, oxrdf, flate2 and anyhow, all already here. `ureq`, `reasonable` and
-# `owo-colors` stay behind, so this adds no new crates to the binary.
-#
-# Sharing is the point: `tests/equivalent_to_reasoner.rs` runs in that repo's CI and
-# asserts, in both directions, that the ancestor walk equals OWL 2 RL over the whole
-# catalogue. A reimplementation here would be a second implementation with no such
-# contract, drifting exactly where drift is silent.
-#
-# Pinned to a *commit*, not a release tag: tags mark artifact publications and the
-# extractor moves on a different clock. Nothing yet checks that the pinned crate and
-# the pinned artifacts agree - `metadata.json` carrying the building commit is the fix.
-frona-ontologies = { git = "https://github.com/fronalabs/frona-ontologies", rev = "cdabc3a8dba85f418c080d659da36d47b4a9c442", default-features = false }
 
 # Personal-WhatsApp adapter. Uses the stable-Rust `wa-rs` fork of
 # `whatsapp-rust` - the upstream requires nightly.

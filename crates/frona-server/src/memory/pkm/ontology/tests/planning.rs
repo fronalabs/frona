@@ -1,97 +1,3 @@
-/// The model is told not to return an implied class and is not trusted to comply.
-#[tokio::test]
-async fn normalization_keeps_only_the_most_specific_classes() {
-    let (mgr, _repo) = manager().await;
-    let got = mgr.normalize_types(&[iri("schema:Person"), iri("schema:Thing")], &[]);
-    assert_eq!(got, [iri("schema:Person")], "Thing is implied by Person");
-}
-
-#[tokio::test]
-async fn normalization_canonicalizes_before_deduplication_and_subsumption() {
-    let (mgr, _repo) = manager().await;
-    let catalogue = mgr.catalogue().unwrap();
-    let prefixes = catalogue.prefixes();
-    assert_eq!(prefixes.expand("schema:Person"), iri("schema:Person"));
-    assert_eq!(prefixes.expand("schema:Thing"), iri("schema:Thing"));
-    assert_eq!(
-        mgr.normalize_types(&["schema:Person".into(), iri("schema:Person")], &[],),
-        [iri("schema:Person")],
-        "a CURIE and its IRI are one class",
-    );
-    assert_eq!(
-        mgr.normalize_types(&["schema:Thing".into(), "schema:Person".into()], &[],),
-        [iri("schema:Person")],
-        "the more specific Person type makes Thing redundant",
-    );
-}
-
-#[tokio::test]
-async fn stamping_an_existing_type_repairs_a_mixed_curie_and_iri_pair() {
-    let (mgr, _repo) = manager().await;
-    let plan = mgr.plan_entity_type(
-        &["schema:Person".into(), iri("schema:Person")],
-        "schema:Person",
-        &[],
-    );
-    assert_eq!(
-        plan,
-        TypePlan::Write(vec![iri("schema:Person")]),
-        "an already-held type must not bypass canonicalization",
-    );
-}
-
-/// A class minted *this pass* exists only in the delta, so a catalogue-only check
-/// would keep both and defeat the whole exercise.
-#[tokio::test]
-async fn normalization_reads_subsumption_out_of_the_delta_too() {
-    let (mgr, _repo) = manager().await;
-    let engineer = "urn:frona:Engineer".to_string();
-    let delta = [Triple::new(
-        NamedOrBlankNode::NamedNode(oxrdf::NamedNode::new_unchecked(engineer.clone())),
-        oxrdf::NamedNode::new_unchecked(RDFS_SUBCLASS_OF.to_string()),
-        Term::NamedNode(oxrdf::NamedNode::new_unchecked(iri("schema:Person"))),
-    )];
-
-    assert_eq!(
-        mgr.normalize_types(&[iri("schema:Person"), engineer.clone()], &delta),
-        std::slice::from_ref(&engineer),
-        "the mint is more specific, so Person is implied"
-    );
-    // Without the delta the relationship is invisible and both must survive -
-    // dropping one on a subsumption we cannot see would be a guess.
-    assert_eq!(
-        mgr.normalize_types(&[iri("schema:Person"), engineer.clone()], &[]),
-        [iri("schema:Person"), engineer],
-    );
-}
-
-#[tokio::test]
-async fn normalization_leaves_unrelated_and_unknown_classes_alone() {
-    let (mgr, _repo) = manager().await;
-    let unrelated = [iri("schema:Person"), iri("schema:CreativeWork")];
-    assert_eq!(mgr.normalize_types(&unrelated, &[]), unrelated);
-
-    // A term no source declares has no known ancestors; keeping it is the only
-    // safe answer.
-    let unknown = [iri("schema:Person"), "urn:frona:Whatever".to_string()];
-    assert_eq!(mgr.normalize_types(&unknown, &[]), unknown);
-}
-
-/// Order survives, because "reject the newest on a clash" depends on it.
-#[tokio::test]
-async fn normalization_preserves_order_and_deduplicates() {
-    let (mgr, _repo) = manager().await;
-    let got = mgr.normalize_types(
-        &[
-            iri("schema:CreativeWork"),
-            iri("schema:Person"),
-            iri("schema:CreativeWork"),
-        ],
-        &[],
-    );
-    assert_eq!(got, [iri("schema:CreativeWork"), iri("schema:Person")]);
-}
-
 /// Arriving with something more specific retires the general one - the entity is
 /// still a `Person`, the reasoner just derives it rather than storing it.
 #[tokio::test]
@@ -211,7 +117,16 @@ async fn graph_validation_reports_candidate_witnesses() {
         .kinds
         .push(PrefixMap::standard().expand("schema:Person"));
     let report = mgr
-        .validate_graph("u", &entities, &[], &[], &[])
+        .portable("u")
+        .await
+        .unwrap()
+        .validate_graph(
+            "u",
+            &entities.iter().cloned().map(Into::into).collect::<Vec<_>>(),
+            &[],
+            &[],
+            &[],
+        )
         .await
         .unwrap();
     assert!(!report.is_valid());
@@ -247,7 +162,16 @@ async fn graph_validation_admits_terms_from_the_staged_abox() {
     }];
 
     let report = mgr
-        .validate_graph("u", &entities, &links, &[], &[])
+        .portable("u")
+        .await
+        .unwrap()
+        .validate_graph(
+            "u",
+            &entities.iter().cloned().map(Into::into).collect::<Vec<_>>(),
+            &links.iter().cloned().map(Into::into).collect::<Vec<_>>(),
+            &[],
+            &[],
+        )
         .await
         .unwrap();
     assert!(
@@ -301,7 +225,16 @@ async fn schema_includes_remain_advisory_after_catalogue_loading() {
     }];
 
     let report = mgr
-        .validate_graph("u", &entities, &links, &[], &[])
+        .portable("u")
+        .await
+        .unwrap()
+        .validate_graph(
+            "u",
+            &entities.iter().cloned().map(Into::into).collect::<Vec<_>>(),
+            &links.iter().cloned().map(Into::into).collect::<Vec<_>>(),
+            &[],
+            &[],
+        )
         .await
         .unwrap();
     assert!(
@@ -321,7 +254,16 @@ async fn graph_validation_admits_classes_from_the_staged_abox() {
         .push("http://example.org/strict/Employee".into());
 
     let report = mgr
-        .validate_graph("u", &entities, &[], &[], &[])
+        .portable("u")
+        .await
+        .unwrap()
+        .validate_graph(
+            "u",
+            &entities.iter().cloned().map(Into::into).collect::<Vec<_>>(),
+            &[],
+            &[],
+            &[],
+        )
         .await
         .unwrap();
     assert!(
@@ -348,7 +290,16 @@ async fn graph_validation_admits_data_properties_from_the_staged_abox() {
     });
 
     let report = mgr
-        .validate_graph("u", &entities, &[], &[], &[])
+        .portable("u")
+        .await
+        .unwrap()
+        .validate_graph(
+            "u",
+            &entities.iter().cloned().map(Into::into).collect::<Vec<_>>(),
+            &[],
+            &[],
+            &[],
+        )
         .await
         .unwrap();
     assert!(
@@ -371,7 +322,16 @@ async fn graph_validation_never_allows_undeclared_custom_usage() {
     seed_concept(&repo, "u", "services/db", "frona:Database").await;
     let entities = repo.list_entities("u").await.unwrap();
     let invalid = mgr
-        .validate_graph("u", &entities, &[], &[], &[])
+        .portable("u")
+        .await
+        .unwrap()
+        .validate_graph(
+            "u",
+            &entities.iter().cloned().map(Into::into).collect::<Vec<_>>(),
+            &[],
+            &[],
+            &[],
+        )
         .await
         .unwrap();
     assert!(
@@ -380,9 +340,12 @@ async fn graph_validation_never_allows_undeclared_custom_usage() {
         })
     );
     let valid = mgr
+        .portable("u")
+        .await
+        .unwrap()
         .validate_graph(
             "u",
-            &entities,
+            &entities.iter().cloned().map(Into::into).collect::<Vec<_>>(),
             &[],
             &[],
             &[SchemaEdit::SubClassOf {
@@ -423,7 +386,16 @@ async fn graph_validation_ignores_links_that_do_not_enter_the_abox() {
     }];
 
     let report = mgr
-        .validate_graph("u", &entities, &links, &[], &[])
+        .portable("u")
+        .await
+        .unwrap()
+        .validate_graph(
+            "u",
+            &entities.iter().cloned().map(Into::into).collect::<Vec<_>>(),
+            &links.iter().cloned().map(Into::into).collect::<Vec<_>>(),
+            &[],
+            &[],
+        )
         .await
         .unwrap();
     assert!(
@@ -494,8 +466,17 @@ async fn alignment_normalizes_the_entities_it_moves() {
     )
     .await
     .unwrap();
-    let planned = mgr.plan_schema("u", &[]).await.unwrap();
+    let planned = mgr
+        .portable("u")
+        .await
+        .unwrap()
+        .plan_schema("u", &[])
+        .await
+        .unwrap();
     let moved = mgr
+        .portable("u")
+        .await
+        .unwrap()
         .plan_retype(
             "u",
             "urn:frona:Company",

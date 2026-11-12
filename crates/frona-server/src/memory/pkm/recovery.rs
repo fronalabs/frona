@@ -26,10 +26,10 @@ use crate::core::error::AppError;
 use crate::db::repo::pkm::PkmRepo;
 
 use super::model::KnowledgeEntity;
-use super::projection::write_page_and_rev;
-use super::projection::{MarkdownPage, compose_page};
+use super::page::projection::write_page_and_rev;
 use super::storage::PkmStorage;
 use super::vault::VaultScope;
+use frona_pkm::page::projection::{MarkdownPage, compose_page};
 
 #[derive(Debug, Default)]
 pub struct ReconcileReport {
@@ -140,7 +140,7 @@ async fn adopt_legacy_file(
     let Some(content) = storage.read_page(vault, &page.path) else {
         return Ok(());
     };
-    let rev = super::projection::sha256_hex(&content);
+    let rev = frona_pkm::page::projection::sha256_hex(&content);
     repo.set_page_projection(&page.user_id, &page.path, &content, &rev)
         .await
 }
@@ -174,7 +174,7 @@ async fn render_page_from_db(
     if let Some(content) = page.sync_content.as_deref().filter(|content| {
         page.rev
             .as_deref()
-            .is_some_and(|rev| super::projection::sha256_hex(content) == rev)
+            .is_some_and(|rev| frona_pkm::page::projection::sha256_hex(content) == rev)
     }) {
         write_page_and_rev(repo, storage, vault, &page.user_id, &page.path, content).await?;
         return Ok(());
@@ -185,12 +185,12 @@ async fn render_page_from_db(
         .unwrap_or_default();
     let article = MarkdownPage::parse(&page.body);
     let file = compose_page(
-        page,
+        &page.clone().into(),
         &article,
         &page.attributes,
-        &links,
-        &crate::memory::pkm::ontology::PrefixMap::standard(),
-        vault,
+        &links.into_iter().map(Into::into).collect::<Vec<_>>(),
+        &frona_pkm::ontology::PrefixMap::standard(),
+        &frona_pkm::page::PageLayout::new(vault.directory())?,
     );
     write_page_and_rev(repo, storage, vault, &page.user_id, &page.path, &file).await?;
     Ok(())

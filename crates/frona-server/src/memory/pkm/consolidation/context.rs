@@ -7,13 +7,13 @@ use std::sync::Arc;
 use crate::core::error::AppError;
 use crate::db::repo::pkm::PkmConsolidationStore;
 use crate::db::repo::pkm::PkmRepo;
-use crate::memory::pkm::consolidation::view::EntityViewManager;
+use crate::memory::pkm::graph::EntityViewManager;
 
 use crate::memory::pkm::consolidation::inference::ConsolidationInference;
 use crate::memory::pkm::consolidation::{
     ConsolidationScope, ConsolidationStageState, ConsolidationStats, KnowledgeConsolidationRecord,
 };
-use crate::memory::pkm::projection::write_page_and_rev;
+use crate::memory::pkm::page::projection::write_page_and_rev;
 use crate::memory::pkm::rename;
 use crate::memory::pkm::storage::PkmStorage;
 

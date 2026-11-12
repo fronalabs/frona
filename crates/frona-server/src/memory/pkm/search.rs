@@ -1,3 +1,4 @@
+use frona_pkm::model::normalize_identity_name;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, OnceLock};
 
@@ -7,13 +8,12 @@ use serde::Serialize;
 use crate::core::error::AppError;
 use crate::db::repo::pkm::PkmRepo;
 
-use super::model::{
-    EntityCategory, EntityHit, EntityOrigin, RankedEntityHit, normalize_identity_name,
-};
-use super::ontology::{
-    ClassInterpretation, IdentityAmbiguity, OntologyManager, SemanticCandidate, SemanticMatch,
-};
+use super::model::{EntityCategory, EntityHit, EntityOrigin, RankedEntityHit};
+use super::ontology::OntologyManager;
 use super::vault::VaultScope;
+use frona_pkm::ontology::{
+    ClassInterpretation, IdentityAmbiguity, SemanticCandidate, SemanticMatch,
+};
 
 #[derive(Clone)]
 pub(crate) struct MemorySearch {
@@ -247,8 +247,8 @@ impl Candidate {
     fn from_semantic(candidate: &SemanticCandidate) -> Self {
         Self {
             path: candidate.entity.path.clone(),
-            origin: candidate.entity.origin,
-            category: candidate.entity.category,
+            origin: candidate.entity.origin.into(),
+            category: candidate.entity.category.into(),
             name: candidate.entity.name.clone(),
             description: candidate.entity.description.clone(),
             aliases: candidate.entity.aliases.iter().cloned().collect(),

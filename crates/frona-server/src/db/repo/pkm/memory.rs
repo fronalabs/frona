@@ -394,4 +394,53 @@ impl PkmRepo {
             .map(|m| m.content.trim().to_lowercase())
             .collect())
     }
+    /// Complete rejection snapshot, including paths whose entity rows were deleted.
+    pub async fn erroneous_contents_snapshot(
+        &self,
+        user_id: &str,
+    ) -> Result<std::collections::HashMap<String, std::collections::HashSet<String>>, AppError>
+    {
+        #[derive(Deserialize, Serialize, SurrealValue)]
+        #[surreal(crate = "surrealdb::types")]
+        struct Source {
+            entity_path: String,
+            memory_id: String,
+        }
+        let mut query = self
+            .db
+            .query(
+                "SELECT entity_path, memory_id FROM knowledge_entity_source WHERE user_id = $uid",
+            )
+            .bind(("uid", user_id.to_string()))
+            .await
+            .map_err(|e| Self::err("erroneous_snapshot_links", e))?;
+        let sources: Vec<Source> = query
+            .take(0)
+            .map_err(|e| Self::err("erroneous_snapshot_links_take", e))?;
+        let mut query = self
+            .db
+            .query(format!(
+                "{SELECT} FROM knowledge_memory WHERE user_id = $uid AND disposition = $disposition"
+            ))
+            .bind(("uid", user_id.to_string()))
+            .bind(("disposition", Disposition::Erroneous))
+            .await
+            .map_err(|e| Self::err("erroneous_snapshot_memories", e))?;
+        let memories: Vec<KnowledgeMemory> = query
+            .take(0)
+            .map_err(|e| Self::err("erroneous_snapshot_memories_take", e))?;
+        let contents: std::collections::HashMap<_, _> = memories
+            .into_iter()
+            .map(|memory| (memory.id, memory.content.trim().to_lowercase()))
+            .collect();
+        let mut out = std::collections::HashMap::<String, std::collections::HashSet<String>>::new();
+        for source in sources {
+            if let Some(content) = contents.get(&source.memory_id) {
+                out.entry(source.entity_path)
+                    .or_default()
+                    .insert(content.clone());
+            }
+        }
+        Ok(out)
+    }
 }

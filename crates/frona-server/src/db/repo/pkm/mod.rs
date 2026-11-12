@@ -17,9 +17,9 @@ use crate::memory::pkm::model::{
     EntityOrigin, KnowledgeEntity, KnowledgeEntityLink, KnowledgeEntitySource, KnowledgeMemory,
     KnowledgeOntology, KnowledgeShortMemory, LinkOrigin, MemoryEvidence, MemoryKind,
     MemoryRelation, PLAYBOOK_KIND_IRI, RankedEntityHit, RelationType, SELF_ENTITY_PATH,
-    derive_resolution_search, derive_search_text,
 };
 use crate::memory::pkm::{KnowledgeConsolidationRecord, PendingEntityContribution};
+use frona_pkm::model::{derive_resolution_search, derive_search_text};
 
 const SELECT: &str = "SELECT *, meta::id(id) as id";
 

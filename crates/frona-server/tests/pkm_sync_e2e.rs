@@ -15,14 +15,15 @@ use surrealdb::engine::local::{Db, Mem};
 
 use frona::core::config::{Config, StorageConfig};
 use frona::db::repo::pkm::{PkmConsolidationStore, PkmRepo};
+use frona::memory::pkm::PkmStorage;
 use frona::memory::pkm::model::{
     Disposition, EntityCategory, EntityOrigin, EvidenceSource, EvidenceStrength, MemoryEvidence,
     MemoryKind, classify_memories,
 };
 use frona::memory::pkm::sync::{EditGate, EditOp, EditResult, PkmSyncService};
-use frona::memory::pkm::{PkmStorage, sha256_hex};
 use frona::storage::StorageService;
 use frona_harness::inference::error::InferenceError;
+use frona_pkm::page::projection::sha256_hex;
 
 use helpers::{
     MockModelProvider, MockResponse, seed_asserted_entity_link, test_harness, test_model_group,

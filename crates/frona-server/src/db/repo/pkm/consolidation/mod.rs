@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use crate::core::error::AppError;
 use crate::memory::pkm::model::{
-    ConsolidationEntityLifecycle, EntityHit, KnowledgeConsolidationEntity, normalize_identity_name,
+    ConsolidationEntityLifecycle, EntityHit, KnowledgeConsolidationEntity,
 };
+use frona_pkm::model::normalize_identity_name;
 
 use super::PkmRepo;
 

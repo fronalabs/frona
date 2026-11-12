@@ -28,10 +28,8 @@ use std::collections::HashSet;
 use crate::memory::pkm::model::{
     EntityCategory, EntityOrigin, KnowledgeEntity, KnowledgeEntityLink, LinkOrigin,
 };
-use crate::memory::pkm::ontology::{
-    Characteristic, PrefixMap, SchemaEdit, abox, individual_iri, reasoning, schema, sparql,
-    validation,
-};
+use frona_pkm::ontology::{Characteristic, PrefixMap, SchemaEdit, individual_iri};
+use frona_pkm::ontology::{abox, schema, sparql};
 
 const USER: &str = "u1";
 
@@ -85,7 +83,7 @@ fn link(from: &str, relation: &str, to: &str) -> KnowledgeEntityLink {
 /// The outcome of one pass: what can be asked of the closure, and what the
 /// reasoner complained about.
 struct Closure {
-    reasoned: reasoning::Reasoned,
+    reasoned: frona_pkm::ontology::Reasoned,
 }
 
 impl Closure {
@@ -102,8 +100,12 @@ impl Closure {
         let px = PrefixMap::standard();
         let ofn = schema::apply_edits("", edits, &px).expect("apply edits");
         let delta = schema::delta_triples(&ofn).expect("lower delta");
-        let abox = abox::build_abox_triples(entities, links, &px);
-        let reasoned = reasoning::materialize(&[], &delta, &abox).expect("reason");
+        let abox = abox::build_abox_triples(
+            &entities.iter().cloned().map(Into::into).collect::<Vec<_>>(),
+            &links.iter().cloned().map(Into::into).collect::<Vec<_>>(),
+            &px,
+        );
+        let reasoned = frona_pkm::ontology::materialize(&[], &delta, &abox).expect("reason");
         Self { reasoned }
     }
 
@@ -133,11 +135,12 @@ impl Closure {
     /// quarantine. Runs the real `validate` pass, so it also covers the
     /// diagnostic-message → entity-path extraction.
     fn clash_subjects(&self, rule: &str) -> Vec<String> {
-        let mut out: Vec<String> = validation::validate(&self.reasoned, &PrefixMap::standard())
-            .into_iter()
-            .filter(|v| v.rule == rule)
-            .filter_map(|v| v.subject)
-            .collect();
+        let mut out: Vec<String> =
+            frona_pkm::ontology::validation::validate(&self.reasoned, &PrefixMap::standard())
+                .into_iter()
+                .filter(|v| v.rule == rule)
+                .filter_map(|v| v.subject)
+                .collect();
         out.sort();
         out.dedup();
         out
@@ -145,13 +148,19 @@ impl Closure {
 
     /// Non-reflexive `owl:sameAs` pairs - how far an identity rule reached.
     fn same_as_pairs(&self) -> usize {
-        sparql::count(
+        let oxigraph::sparql::QueryResults::Solutions(mut rows) = sparql::query(
             &self.reasoned.store,
             "SELECT (COUNT(*) AS ?n) WHERE { ?a owl:sameAs ?b . FILTER(?a != ?b) }",
-            "n",
             &PrefixMap::standard(),
         )
-        .expect("count")
+        .expect("count") else {
+            panic!("expected count solution");
+        };
+        let row = rows.next().expect("count row").expect("valid count row");
+        let oxrdf::Term::Literal(count) = row.get("n").expect("count binding") else {
+            panic!("expected numeric literal");
+        };
+        count.value().parse().expect("numeric count")
     }
 }
 

@@ -6,10 +6,8 @@
 //! Derived projections written by the background process; the agent never writes
 //! them.
 //!
-//! This module knows where files go and nothing about what is in them: composing and
-//! parsing the markdown is [`projection`](super::projection)'s job. The path grammar
-//! stays here because it is this module's own contract - [`normalize_path`] produces the
-//! form `write_page`/`read_page` project onto disk.
+//! This module owns filesystem paths and validates relative paths before I/O.
+//! Markdown composition and proposed-path normalization belong to `frona_pkm`.
 
 use std::io::{BufReader, Write};
 use std::path::PathBuf;
@@ -19,7 +17,7 @@ use crate::core::error::AppError;
 use crate::storage::StorageService;
 use crate::storage::path::validate_relative_path;
 
-use super::projection::parse_uid;
+use super::page::projection::parse_uid;
 use super::vault::VaultScope;
 
 #[derive(Clone)]
@@ -358,124 +356,11 @@ impl PkmStorage {
     }
 }
 
-/// Normalise an LLM-proposed path into the canonical vault-path grammar: lowercase,
-/// kebab segments, no leading slash, no `.md`, no `..`. Returns None if it reduces to
-/// nothing. This is the *produce* half of the path contract whose *verify* half is
-/// [`validate_relative_path`] (both reject `..`); a page's `path` is this form, and
-/// `write_page`/`read_page` project it to `<handle>/pkm/<vault-dir>/<path>.md`.
-pub fn normalize_path(raw: &str) -> Option<String> {
-    let cleaned = raw.trim().trim_start_matches('/').trim_end_matches(".md");
-    let segments: Vec<String> = cleaned
-        .split('/')
-        .map(slugify)
-        .filter(|s| !s.is_empty() && s != "..")
-        .collect();
-    if segments.is_empty() {
-        return None;
-    }
-    Some(segments.join("/"))
-}
-
-/// A single path segment → kebab-case ASCII slug (≤60 chars).
-///
-/// Non-ASCII is **transliterated**, not discarded. The slug is a page's identity key, its
-/// location on disk, and the target of every `[[wikilink]]` pointing at it, so it stays
-/// ASCII by design: a Unicode path would be compared as a string against a filename the
-/// filesystem may have normalised differently (NFC vs NFD), which would silently fork one
-/// page into two.
-///
-/// Discarding was the previous behaviour and it was worse than it looked. Every
-/// non-ASCII character became a space, so `"José García"` slugged to `"jos-garc"` and
-/// `"田中"` slugged to **nothing at all** - `normalize_path` then returned `None` and the
-/// caller skipped the page entirely. Any entity named in a non-Latin script was dropped
-/// without a trace; it only went unnoticed because the model tends to romanise.
-fn slugify(s: &str) -> String {
-    // Unrepresentable characters become a separator rather than deunicode's default
-    // `[?]` marker, which would otherwise survive as the literal word "tofu" glyphs.
-    let ascii = deunicode::deunicode_with_tofu(s, " ");
-    let lowered: String = ascii
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                ' '
-            }
-        })
-        .collect();
-    let words: Vec<&str> = lowered.split_whitespace().collect();
-    words
-        .join("-")
-        .chars()
-        .take(60)
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{PkmStorage, VaultScope, normalize_path, slugify};
+    use super::{PkmStorage, VaultScope};
     use crate::core::Handle;
     use crate::storage::StorageService;
-
-    /// A name written in any script has to reach a usable path. Before transliteration,
-    /// every non-ASCII character was replaced by a space - so a wholly non-Latin name
-    /// slugged to the empty string, `normalize_path` returned `None`, and `extract`
-    /// skipped the entity without a word. It only looked fine because the model tends to
-    /// romanise on its own.
-    #[test]
-    fn name_in_any_script_slugs_to_something_usable() {
-        for (raw, want) in [
-            ("田中", "tian-zhong"),
-            ("Ренат", "renat"),
-            ("Ελένη", "elene"),
-            ("محمد", "mhmd"),
-        ] {
-            let got = slugify(raw);
-            assert_eq!(got, want, "{raw}");
-            assert!(
-                normalize_path(&format!("people/{raw}")).is_some(),
-                "{raw} must reach a path rather than being dropped"
-            );
-        }
-    }
-
-    /// The commoner half of the same bug: accented Latin was mangled rather than lost.
-    /// `"José García"` used to slug to `"jos-garc"`, because every accented letter became
-    /// a word break.
-    #[test]
-    fn accents_are_transliterated_rather_than_cut_out() {
-        assert_eq!(slugify("José García"), "jose-garcia");
-        assert_eq!(slugify("Renée"), "renee");
-        assert_eq!(slugify("Ångström"), "angstrom");
-    }
-
-    /// Everything the slug already guaranteed still holds - it is a filesystem path and
-    /// a wikilink target, so it stays lowercase ASCII kebab with no traversal.
-    #[test]
-    fn slugs_stay_ascii_kebab_and_bounded() {
-        assert_eq!(slugify("PostgreSQL 15 (prod)"), "postgresql-15-prod");
-        assert_eq!(slugify("  spaced   out  "), "spaced-out");
-        assert!(slugify("日本").is_ascii(), "always ASCII");
-        assert!(
-            slugify(&"あ".repeat(200)).chars().count() <= 60,
-            "still capped"
-        );
-        assert_eq!(
-            normalize_path("/a/../b.md"),
-            Some("a/b".into()),
-            "no traversal survives"
-        );
-    }
-
-    /// A path with no alphanumeric content anywhere still yields `None` - the caller
-    /// logs and drops, which is the honest outcome when there is nothing to name a page.
-    #[test]
-    fn path_with_nothing_nameable_is_still_rejected() {
-        assert_eq!(normalize_path("///"), None);
-        assert_eq!(normalize_path("   "), None);
-    }
 
     fn test_storage() -> (PkmStorage, VaultScope, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();

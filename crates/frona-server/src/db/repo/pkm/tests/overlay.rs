@@ -294,7 +294,7 @@ async fn identity_search_can_retrieve_beyond_the_normal_entity_search_limit() {
 #[tokio::test]
 async fn resolution_candidates_recall_same_kind_name_and_generic_assertions() {
     use crate::db::repo::pkm::PkmConsolidationStore;
-    use crate::memory::pkm::model::derive_resolution_search;
+    use frona_pkm::model::derive_resolution_search;
 
     let committed = std::sync::Arc::new(repo().await);
     for index in 0..70 {

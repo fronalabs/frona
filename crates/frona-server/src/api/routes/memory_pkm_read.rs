@@ -591,7 +591,7 @@ fn graph_response(read: PkmGraphRead) -> Result<GraphResponse, AppError> {
         &direct_pairs,
     ));
     let legend = legend(&ontology, &nodes);
-    let revision = crate::memory::pkm::sha256_hex(
+    let revision = frona_pkm::page::projection::sha256_hex(
         &serde_json::to_string(&(&nodes, &edges))
             .map_err(|error| AppError::Internal(format!("pkm graph revision: {error}")))?,
     );
@@ -652,7 +652,9 @@ fn shared_memory_edges(
             };
             let id = format!(
                 "memory:{}",
-                crate::memory::pkm::sha256_hex(&format!("{from_entity_path}\0{to_entity_path}"))
+                frona_pkm::page::projection::sha256_hex(&format!(
+                    "{from_entity_path}\0{to_entity_path}"
+                ))
             );
             GraphEdge {
                 id,

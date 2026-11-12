@@ -15,6 +15,9 @@ async fn inspection_combines_catalogue_and_proposed_class_hierarchy() {
     ];
     let terms = vec!["frona:Dog".to_string(), "schema:Person".to_string()];
     let (inspections, relations) = mgr
+        .portable("u")
+        .await
+        .unwrap()
         .inspect_ontology_terms("u", &proposed, &HashSet::new(), &terms)
         .await
         .unwrap();
@@ -47,6 +50,9 @@ async fn search_prefers_an_active_user_term_for_an_equal_text_match() {
     .unwrap();
     let active = HashSet::from([iri("frona:Person")]);
     let hits = mgr
+        .portable("u")
+        .await
+        .unwrap()
         .search_ontology_terms("u", &[], &active, "person", 10)
         .await
         .unwrap();
@@ -75,6 +81,9 @@ async fn exact_catalogue_match_stays_above_an_active_partial_match() {
     .unwrap();
     let active = HashSet::from([iri("frona:PersonRecord")]);
     let hits = mgr
+        .portable("u")
+        .await
+        .unwrap()
         .search_ontology_terms("u", &[], &active, "person", 10)
         .await
         .unwrap();
@@ -109,6 +118,9 @@ async fn property_inspection_returns_user_schema_structure() {
         },
     ];
     let (inspections, _) = mgr
+        .portable("u")
+        .await
+        .unwrap()
         .inspect_ontology_terms(
             "u",
             &proposed,

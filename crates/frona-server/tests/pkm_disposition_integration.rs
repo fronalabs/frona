@@ -165,7 +165,10 @@ async fn memory_entity_union_does_not_persist_subordinate_entities() {
         .await
         .unwrap();
     let by_page = repo.union_memory_entities(U, &bio, &atom).await.unwrap();
-    assert_eq!(by_page["organization/former-corp"], [atom.clone()]);
+    assert_eq!(
+        by_page["organization/former-corp"],
+        std::slice::from_ref(&atom)
+    );
     assert_eq!(by_page["people/me"], [atom.clone(), bio.clone()]);
 
     // No speculative source link was written. Since this test directly persisted an

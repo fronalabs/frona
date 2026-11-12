@@ -9,7 +9,8 @@ use crate::db::repo::pkm::PkmRepo;
 use super::model::{
     EntityHit, KnowledgeEntity, KnowledgeEntityLink, KnowledgeEntitySource, KnowledgeMemory,
 };
-use super::ontology::{OntologyManager, UserOntology};
+use super::ontology::OntologyManager;
+use frona_pkm::ontology::UserOntology;
 
 const RDFS_LABEL: &str = "http://www.w3.org/2000/01/rdf-schema#label";
 const RDFS_SUBCLASS_OF: &str = "http://www.w3.org/2000/01/rdf-schema#subClassOf";

@@ -3982,8 +3982,10 @@ async fn sweep_preserves_a_parked_classify_checkpoint_when_no_chat_needs_mining(
     let mock = Arc::new(MockModelProvider::new(Vec::new()));
     let ctx = setup(mock.clone()).await;
     let repo = PkmRepo::new(ctx.db.clone(), 8);
-    let mut classify = ConsolidationWorkState::default();
-    classify.revision = 1;
+    let classify = ConsolidationWorkState {
+        revision: 1,
+        ..Default::default()
+    };
     let consolidation_id = frona::core::repository::new_id();
     let record = KnowledgeConsolidationRecord {
         id: frona::core::repository::new_id(),

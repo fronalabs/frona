@@ -35,3 +35,9 @@ pub use ontology::*;
 
 #[cfg(test)]
 mod tests;
+
+mod portable;
+
+use frona_pkm::model::{
+    derive_resolution_search, derive_search_text, merge_consolidation_attribute_values,
+};

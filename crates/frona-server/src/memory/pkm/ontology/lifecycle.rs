@@ -91,24 +91,4 @@ impl OntologyManager {
         self.invalidate_all_reasoned_graphs_after_catalogue_publish();
         Ok(())
     }
-
-    /// What this user reasons over. Use this (never a manager-wide one) whenever
-    /// expanding or compacting anything that came out of *their* entities.
-    pub(crate) async fn user_effective_ontology(
-        &self,
-        user_id: &str,
-    ) -> Result<Arc<OntologyScope>, AppError> {
-        Ok(self.load(user_id).await?.effective_ontology().clone())
-    }
-
-    /// Search the **catalogue** for a term to reuse.
-    ///
-    /// Finding a term brings it into scope, so a hit here always resolves.
-    pub(crate) fn search_vocab(&self, term: &str, limit: usize) -> Vec<VocabHit> {
-        self.catalogue
-            .load()
-            .as_ref()
-            .map(|catalogue| catalogue.search(term, limit))
-            .unwrap_or_default()
-    }
 }

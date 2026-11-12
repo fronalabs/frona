@@ -19,10 +19,10 @@ use frona::memory::pkm::model::{
     Disposition, EntityCategory, EvidenceSource, EvidenceStrength, LinkOrigin, MemoryEvidence,
     MemoryKind, classify_memories,
 };
-use frona::memory::pkm::ontology::SchemaEdit;
 use frona::memory::pkm::{ConsolidationScope, PkmService};
 use frona::memory::service::MemoryService;
 use frona::storage::StorageService;
+use frona_pkm::ontology::SchemaEdit;
 
 use helpers::{
     MockModelProvider, MockResponse, commit_checkpointed_extract_patch, mark_entity_rendered,
@@ -202,7 +202,7 @@ async fn full_pass(
             let (text, kind) = if let Some(text) = line.strip_prefix("Agent:") {
                 (
                     text.trim(),
-                    frona::memory::pkm::TranscriptEvidenceKind::AgentMessage {
+                    frona_pkm::TranscriptEvidenceKind::AgentMessage {
                         message_id: format!("test-message-{}", index + 1),
                         agent_id: scope.agent_id.clone(),
                         chat_id: chat_id.clone(),
@@ -211,7 +211,7 @@ async fn full_pass(
             } else {
                 (
                     line.strip_prefix("User:").unwrap_or(line).trim(),
-                    frona::memory::pkm::TranscriptEvidenceKind::UserMessage {
+                    frona_pkm::TranscriptEvidenceKind::UserMessage {
                         message_id: format!("test-message-{}", index + 1),
                         chat_id: chat_id.clone(),
                     },
@@ -219,7 +219,7 @@ async fn full_pass(
             };
             scope
                 .evidence_sources
-                .push(frona::memory::pkm::TranscriptEvidenceSource {
+                .push(frona_pkm::TranscriptEvidenceSource {
                     handle,
                     text: text.to_string(),
                     kind,
@@ -1311,7 +1311,7 @@ async fn recovery_repairs_a_revision_that_does_not_match_the_file() {
         .unwrap();
     assert_eq!(
         page.rev.as_deref(),
-        Some(frona::memory::pkm::sha256_hex(content).as_str()),
+        Some(frona_pkm::page::projection::sha256_hex(content).as_str()),
         "recovery must make the stored revision match the canonical file bytes",
     );
     assert_eq!(
@@ -1321,7 +1321,7 @@ async fn recovery_repairs_a_revision_that_does_not_match_the_file() {
     );
 
     let durable = "# Casey\n\nDatabase-authoritative bytes.";
-    let durable_rev = frona::memory::pkm::sha256_hex(durable);
+    let durable_rev = frona_pkm::page::projection::sha256_hex(durable);
     repo.set_page_projection("test-user", "people/casey", durable, &durable_rev)
         .await
         .unwrap();
@@ -1770,7 +1770,7 @@ async fn classify_types_entities_and_assemble_mints_schema() {
         .expect("postgres page exists");
     assert_eq!(
         pg.kinds,
-        [frona::memory::pkm::ontology::PrefixMap::standard().expand("frona:Service")],
+        [frona_pkm::ontology::PrefixMap::standard().expand("frona:Service")],
         "page re-keyed to the ontology class CURIE"
     );
 
@@ -1986,7 +1986,7 @@ async fn classify_rejected_result(ending: ClassificationEnd) {
         .unwrap();
     assert_eq!(
         entity.kinds,
-        [frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Organization"),]
+        [frona_pkm::ontology::PrefixMap::standard().expand("schema:Organization"),]
     );
 }
 
@@ -2289,7 +2289,7 @@ async fn memory_graph_get_reads_the_callers_reasoned_entity() {
     let mock = Arc::new(MockModelProvider::new(Vec::new()));
     let (service, _harness) = ontology_service(&db, &config, mock, &memory_config).await;
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    let prefixes = frona::memory::pkm::ontology::PrefixMap::standard();
+    let prefixes = frona_pkm::ontology::PrefixMap::standard();
 
     repo.upsert_entity_skeleton(
         "test-user",
@@ -2380,7 +2380,7 @@ async fn memory_search_merges_and_ranks_identity_semantic_metadata_and_body_matc
     let mock = Arc::new(MockModelProvider::new(Vec::new()));
     let (service, _harness) = ontology_service(&db, &config, mock, &memory_config).await;
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    let prefixes = frona::memory::pkm::ontology::PrefixMap::standard();
+    let prefixes = frona_pkm::ontology::PrefixMap::standard();
 
     service
         .ontology_manager()
@@ -2550,7 +2550,7 @@ async fn memory_search_ranks_structural_person_evidence_above_incidental_link_te
     let mock = Arc::new(MockModelProvider::new(Vec::new()));
     let (service, _harness) = ontology_service(&db, &config, mock, &memory_config).await;
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    let prefixes = frona::memory::pkm::ontology::PrefixMap::standard();
+    let prefixes = frona_pkm::ontology::PrefixMap::standard();
 
     for (path, class, name, description) in [
         (
@@ -2640,7 +2640,7 @@ async fn memory_graph_sparql_formats_reasoned_select_and_ask_results() {
     let mock = Arc::new(MockModelProvider::new(Vec::new()));
     let (service, _harness) = ontology_service(&db, &config, mock, &memory_config).await;
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    let prefixes = frona::memory::pkm::ontology::PrefixMap::standard();
+    let prefixes = frona_pkm::ontology::PrefixMap::standard();
     repo.upsert_entity_skeleton(
         "test-user",
         "people/sarah",
@@ -2760,7 +2760,7 @@ async fn resolve_merges_duplicate_mention() {
         "test-user",
         "people/me",
         EntityCategory::Concept,
-        &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person")],
+        &[frona_pkm::ontology::PrefixMap::standard().expand("schema:Person")],
         "Casey Owner",
         "the owner",
         &[],
@@ -2866,7 +2866,7 @@ async fn resolve_type_filter_blocks_cross_type() {
         "test-user",
         "people/mercury",
         EntityCategory::Concept,
-        &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person")],
+        &[frona_pkm::ontology::PrefixMap::standard().expand("schema:Person")],
         "Mercury",
         "the singer",
         &[],
@@ -2890,7 +2890,7 @@ async fn resolve_type_filter_blocks_cross_type() {
         "test-user",
         "people/me",
         EntityCategory::Concept,
-        &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person")],
+        &[frona_pkm::ontology::PrefixMap::standard().expand("schema:Person")],
         "Casey Owner",
         "the owner",
         &[],
@@ -2978,7 +2978,7 @@ async fn resolve_llm_merges_variant_name() {
         "test-user",
         "orgs/former-corp",
         EntityCategory::Concept,
-        &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Organization")],
+        &[frona_pkm::ontology::PrefixMap::standard().expand("schema:Organization")],
         "Former Corp",
         "the retailer",
         &[],
@@ -3014,7 +3014,7 @@ async fn resolve_llm_merges_variant_name() {
             "test-user",
             &path,
             EntityCategory::Concept,
-            &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:CreativeWork")],
+            &[frona_pkm::ontology::PrefixMap::standard().expand("schema:CreativeWork")],
             &format!("Former Corp artifact {index}"),
             "an unrelated named artifact",
             &[],
@@ -3214,7 +3214,7 @@ async fn resolve_accepts_grounded_distinction_evidence() {
     let (_tmp, config) = tmp_config();
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    let px = frona::memory::pkm::ontology::PrefixMap::standard();
+    let px = frona_pkm::ontology::PrefixMap::standard();
 
     for (path, kind, name, description) in [
         ("people/me", "schema:Person", "Casey Owner", "the owner"),
@@ -3330,7 +3330,7 @@ async fn resolve_accepts_grounding_from_effective_entity_state() {
     let (_tmp, config) = tmp_config();
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    let px = frona::memory::pkm::ontology::PrefixMap::standard();
+    let px = frona_pkm::ontology::PrefixMap::standard();
 
     repo.upsert_entity_skeleton(
         "test-user",
@@ -3493,7 +3493,7 @@ async fn resolve_revises_a_merge_that_invalidates_the_projected_graph() {
     let (_tmp, config) = tmp_config();
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    let px = frona::memory::pkm::ontology::PrefixMap::standard();
+    let px = frona_pkm::ontology::PrefixMap::standard();
 
     for (path, kind, name, description) in [
         ("people/me", "schema:Person", "Casey Owner", "the owner"),
@@ -3658,13 +3658,13 @@ async fn resolve_coalesces_multiple_existing_candidates() {
     let (_tmp, config) = tmp_config();
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    let person = frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person");
+    let person = frona_pkm::ontology::PrefixMap::standard().expand("schema:Person");
 
     repo.upsert_entity_skeleton(
         "test-user",
         "people/me",
         EntityCategory::Concept,
-        &[person.clone()],
+        std::slice::from_ref(&person),
         "Casey Owner",
         "the owner",
         &[],
@@ -3694,7 +3694,7 @@ async fn resolve_coalesces_multiple_existing_candidates() {
             "test-user",
             path,
             EntityCategory::Concept,
-            &[person.clone()],
+            std::slice::from_ref(&person),
             name,
             "a member of Casey Owner's family",
             &["Jordan".into()],
@@ -3850,14 +3850,13 @@ async fn resolve_later_subject_can_merge_an_unresolved_candidate() {
     let (tmp, config) = tmp_config();
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    let reservation =
-        frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Reservation");
+    let reservation = frona_pkm::ontology::PrefixMap::standard().expand("schema:Reservation");
 
     repo.upsert_entity_skeleton(
         "test-user",
         "bookings/canonical",
         EntityCategory::Concept,
-        &[reservation.clone()],
+        std::slice::from_ref(&reservation),
         "Canonical Reservation",
         "A reservation tracked under its canonical record.",
         &["identity bridge one".into()],
@@ -4081,8 +4080,7 @@ async fn reconcile_identity_change_resolves_and_reconciles_the_merge_winner() {
     let (_tmp, config) = tmp_config();
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    let reservation =
-        frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Reservation");
+    let reservation = frona_pkm::ontology::PrefixMap::standard().expand("schema:Reservation");
 
     repo.upsert_entity_skeleton(
         "test-user",
@@ -4370,13 +4368,12 @@ async fn resolve_merges_reversed_sports_event_participants() {
     let (_tmp, config) = tmp_config();
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    let sports_event =
-        frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:SportsEvent");
+    let sports_event = frona_pkm::ontology::PrefixMap::standard().expand("schema:SportsEvent");
 
     for (path, kind, name, description) in [
         (
             "people/me",
-            frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person"),
+            frona_pkm::ontology::PrefixMap::standard().expand("schema:Person"),
             "Casey Owner",
             "the owner",
         ),
@@ -4532,7 +4529,7 @@ async fn classify_loop_revises_after_reasoner_rejection() {
         "test-user",
         "people/me",
         EntityCategory::Concept,
-        &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person")],
+        &[frona_pkm::ontology::PrefixMap::standard().expand("schema:Person")],
         "Casey Owner",
         "the owner",
         &[],
@@ -4656,7 +4653,7 @@ async fn classify_loop_revises_after_reasoner_rejection() {
         .expect("acme page");
     assert_eq!(
         acme.kinds,
-        [frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Organization")],
+        [frona_pkm::ontology::PrefixMap::standard().expand("schema:Organization")],
         "loop revised to the consistent class"
     );
     let mems = repo
@@ -4676,7 +4673,7 @@ async fn classify_validates_minted_entities_in_the_same_submission() {
     let (_tmp, config) = tmp_config();
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    let px = frona::memory::pkm::ontology::PrefixMap::standard();
+    let px = frona_pkm::ontology::PrefixMap::standard();
 
     repo.upsert_entity_skeleton(
         "test-user",
@@ -4788,7 +4785,7 @@ async fn term_that_cannot_be_written_is_pushed_back_before_it_reaches_the_schema
     seed_identity(&db).await;
     let (_tmp, config) = tmp_config();
     let memory_config = frona::core::config::MemoryConfig::default();
-    let px = frona::memory::pkm::ontology::PrefixMap::standard();
+    let px = frona_pkm::ontology::PrefixMap::standard();
 
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
     repo.upsert_entity_skeleton(
@@ -4947,7 +4944,7 @@ async fn adjudicated_term_matches_its_proposal_across_spellings() {
     seed_identity(&db).await;
     let (_tmp, config) = tmp_config();
     let memory_config = frona::core::config::MemoryConfig::default();
-    let px = frona::memory::pkm::ontology::PrefixMap::standard();
+    let px = frona_pkm::ontology::PrefixMap::standard();
 
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
     repo.upsert_entity_skeleton(
@@ -5108,7 +5105,7 @@ async fn unresolved_resolution(interruption: Option<ResolutionInterruption>) {
             "test-user",
             path,
             EntityCategory::Concept,
-            &[frona::memory::pkm::ontology::PrefixMap::standard().expand(kind)],
+            &[frona_pkm::ontology::PrefixMap::standard().expand(kind)],
             name,
             "x",
             &[],
@@ -5350,7 +5347,7 @@ async fn memoryless_entity_is_only_a_resolve_candidate_and_link_target() {
         "test-user",
         "people/me",
         EntityCategory::Concept,
-        &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person")],
+        &[frona_pkm::ontology::PrefixMap::standard().expand("schema:Person")],
         "Casey Owner",
         "account owner",
         &[],
@@ -5517,7 +5514,7 @@ async fn attribute_naming_an_entity_becomes_an_edge_without_inventing_an_inverse
             "test-user",
             path,
             EntityCategory::Concept,
-            &[frona::memory::pkm::ontology::PrefixMap::standard().expand(kind)],
+            &[frona_pkm::ontology::PrefixMap::standard().expand(kind)],
             name,
             "x",
             &[],
@@ -5737,7 +5734,7 @@ async fn seed_mention(
     .await
     .unwrap();
     seed_reconciled_entity(
-        &db,
+        db,
         "test-user",
         path,
         "",
@@ -5778,7 +5775,7 @@ async fn attribute_naming_an_unmaterialized_entity_mints_it_and_shares_the_fact(
     seed_identity(&db).await;
     let (_tmp, config) = tmp_config();
     let memory_config = frona::core::config::MemoryConfig::default();
-    let px = frona::memory::pkm::ontology::PrefixMap::standard();
+    let px = frona_pkm::ontology::PrefixMap::standard();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
 
     repo.upsert_entity_skeleton(
@@ -5970,7 +5967,7 @@ async fn re_minting_the_same_entity_creates_no_duplicate() {
     seed_identity(&db).await;
     let (_tmp, config) = tmp_config();
     let memory_config = frona::core::config::MemoryConfig::default();
-    let px = frona::memory::pkm::ontology::PrefixMap::standard();
+    let px = frona_pkm::ontology::PrefixMap::standard();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
 
     repo.upsert_entity_skeleton(
@@ -6137,7 +6134,7 @@ async fn classify_keeps_every_returned_class_in_the_reasoned_entity() {
         "test-user",
         "people/me",
         EntityCategory::Concept,
-        &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person")],
+        &[frona_pkm::ontology::PrefixMap::standard().expand("schema:Person")],
         "Casey Owner",
         "x",
         &[],
@@ -6264,7 +6261,7 @@ async fn reconcile_rekeys_attributes_to_curies() {
         "test-user",
         "people/me",
         EntityCategory::Concept,
-        &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Person")],
+        &[frona_pkm::ontology::PrefixMap::standard().expand("schema:Person")],
         "Casey Owner",
         "x",
         &[],
@@ -6351,7 +6348,7 @@ async fn reconcile_revises_a_graph_edit_before_it_reaches_the_checkpoint() {
     let (_tmp, config) = tmp_config();
     let memory_config = frona::core::config::MemoryConfig::default();
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
-    let px = frona::memory::pkm::ontology::PrefixMap::standard();
+    let px = frona_pkm::ontology::PrefixMap::standard();
 
     repo.upsert_entity_skeleton(
         "test-user",
@@ -6719,7 +6716,7 @@ async fn reconciliation_advisory(outcome: AdvisoryOutcome) {
             "test-user",
             path,
             EntityCategory::Concept,
-            &[frona::memory::pkm::ontology::PrefixMap::standard().expand(kind)],
+            &[frona_pkm::ontology::PrefixMap::standard().expand(kind)],
             name,
             "x",
             &[],
@@ -6975,7 +6972,7 @@ async fn reconcile_returns_a_failed_relation_to_the_model_before_it_can_be_stage
         "test-user",
         "organizations/example-corp",
         EntityCategory::Concept,
-        &[frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Organization")],
+        &[frona_pkm::ontology::PrefixMap::standard().expand("schema:Organization")],
         "Example Corp",
         "x",
         &["Example Corporation".into()],
@@ -7227,27 +7224,27 @@ async fn mark_clean(
         "test-user",
         path,
         EntityCategory::Concept,
-        &[frona::memory::pkm::ontology::PrefixMap::standard().expand(kind)],
+        &[frona_pkm::ontology::PrefixMap::standard().expand(kind)],
         name,
         "x",
         &[],
     )
     .await
     .unwrap();
-    seed_reconciled_entity(&db, "test-user", path, "", "x", &attrs)
+    seed_reconciled_entity(db, "test-user", path, "", "x", &attrs)
         .await
         .unwrap();
-    mark_entity_rendered(&db, "test-user", path).await.unwrap();
+    mark_entity_rendered(db, "test-user", path).await.unwrap();
 }
 
 /// Mark a clean page dirty again so the next pass picks it up - re-setting the kind
 /// bumps `updated_at` past `rendered_at` without disturbing the attributes just seeded.
 async fn touch(db: &Surreal<Db>, path: &str, kind: &str) {
     seed_entity_kinds(
-        &db,
+        db,
         "test-user",
         path,
-        &[frona::memory::pkm::ontology::PrefixMap::standard().expand(kind)],
+        &[frona_pkm::ontology::PrefixMap::standard().expand(kind)],
     )
     .await
     .unwrap();
@@ -7398,17 +7395,18 @@ async fn assemble_align_case(cancelled: bool) {
         .unwrap()
         .unwrap();
     assert!(
-        newco.kinds.contains(
-            &frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Organization"),
-        ),
+        newco
+            .kinds
+            .contains(&frona_pkm::ontology::PrefixMap::standard().expand("schema:Organization"),),
         "stamped with the ADJUDICATED term: {:?}",
         newco.kinds,
     );
     assert!(
-        !newco.kinds.contains(
-            &frona::memory::pkm::ontology::PrefixMap::standard().expand("frona:Company"),
-        ),
-        "the proposed term was replaced: {:?}", newco.kinds,
+        !newco
+            .kinds
+            .contains(&frona_pkm::ontology::PrefixMap::standard().expand("frona:Company"),),
+        "the proposed term was replaced: {:?}",
+        newco.kinds,
     );
     let oldco = repo
         .entity_by_path("test-user", "orgs/oldco")
@@ -7417,7 +7415,7 @@ async fn assemble_align_case(cancelled: bool) {
         .unwrap();
     assert_eq!(
         oldco.kinds,
-        [frona::memory::pkm::ontology::PrefixMap::standard().expand("schema:Organization")],
+        [frona_pkm::ontology::PrefixMap::standard().expand("schema:Organization")],
         "a prior pass's page moved off the superseded term too"
     );
     let onto = repo
@@ -7848,7 +7846,7 @@ async fn assemble_defer_keeps_the_validated_baseline_declaration() {
         .unwrap();
     assert!(
         page.kinds
-            .contains(&frona::memory::pkm::ontology::PrefixMap::standard().expand("frona:Widget"),),
+            .contains(&frona_pkm::ontology::PrefixMap::standard().expand("frona:Widget"),),
         "the deferred term is still in use on the page: {:?}",
         page.kinds
     );
@@ -7941,17 +7939,17 @@ async fn episodic_reminder_is_grounded_without_current_attributes() {
             .storage()
             .vault_scope(frona::handle!("testuser"), "Memory")
             .unwrap(),
-        temporal_sources: vec![frona::memory::pkm::TemporalSource {
+        temporal_sources: vec![frona_pkm::TemporalSource {
             handle: "m1".into(),
             text: "I will give Buddy ear medication next week.".into(),
             created_at: at,
             task_event_at: None,
             task_target_at: None,
         }],
-        evidence_sources: vec![frona::memory::pkm::TranscriptEvidenceSource {
+        evidence_sources: vec![frona_pkm::TranscriptEvidenceSource {
             handle: "m1".into(),
             text: "I will give Buddy ear medication next week.".into(),
-            kind: frona::memory::pkm::TranscriptEvidenceKind::UserMessage {
+            kind: frona_pkm::TranscriptEvidenceKind::UserMessage {
                 message_id: "message-1".into(),
                 chat_id: "test-chat".into(),
             },
@@ -8187,14 +8185,14 @@ async fn task_lifecycle_episodes_require_the_applicable_task_dates() {
         chat_id: Some("test-chat".into()),
         vault: service.storage().vault_scope(frona::handle!("testuser"), "Memory").unwrap(),
         temporal_sources: vec![
-            frona::memory::pkm::TemporalSource {
+            frona_pkm::TemporalSource {
                 handle: "m1".into(),
                 text: "[task scheduled event_at=2030-01-01T10:00:00.000Z target_at=2030-01-02T10:00:00.000Z] Buddy's ear medication".into(),
                 created_at: scheduled_at,
                 task_event_at: Some(scheduled_at),
                 task_target_at: Some(target_at),
             },
-            frona::memory::pkm::TemporalSource {
+            frona_pkm::TemporalSource {
                 handle: "m2".into(),
                 text: "[task completed event_at=2030-01-03T10:00:00.000Z target_at=2030-01-02T10:00:00.000Z] Buddy's ear medication".into(),
                 created_at: completed_at,
@@ -8203,17 +8201,17 @@ async fn task_lifecycle_episodes_require_the_applicable_task_dates() {
             },
         ],
         evidence_sources: vec![
-            frona::memory::pkm::TranscriptEvidenceSource {
+            frona_pkm::TranscriptEvidenceSource {
                 handle: "m1".into(),
                 text: "[task scheduled event_at=2030-01-01T10:00:00.000Z target_at=2030-01-02T10:00:00.000Z] Buddy's ear medication".into(),
-                kind: frona::memory::pkm::TranscriptEvidenceKind::TaskLifecycle {
+                kind: frona_pkm::TranscriptEvidenceKind::TaskLifecycle {
                     message_id: "message-1".into(), chat_id: "test-chat".into(), task_id: "task-1".into(),
                 },
             },
-            frona::memory::pkm::TranscriptEvidenceSource {
+            frona_pkm::TranscriptEvidenceSource {
                 handle: "m2".into(),
                 text: "[task completed event_at=2030-01-03T10:00:00.000Z target_at=2030-01-02T10:00:00.000Z] Buddy's ear medication".into(),
-                kind: frona::memory::pkm::TranscriptEvidenceKind::TaskLifecycle {
+                kind: frona_pkm::TranscriptEvidenceKind::TaskLifecycle {
                     message_id: "message-2".into(), chat_id: "test-chat".into(), task_id: "task-1".into(),
                 },
             },

@@ -1,11 +1,13 @@
 use super::*;
 use crate::db::repo::pkm::test_support::{seed_asserted_entity_link, seed_reconciled_entity};
+use crate::memory::pkm::model::KnowledgeEntityLink;
 use crate::memory::pkm::model::{EntityCategory, LinkOrigin};
-use crate::memory::pkm::ontology::prefixes::{individual_iri, path_from_individual};
-use crate::memory::pkm::ontology::schema::{Characteristic, OverrideTarget};
-use crate::memory::pkm::ontology::sparql;
-use crate::memory::pkm::ontology::validation::ViolationSource;
-use oxrdf::{NamedNode, Term};
+use frona_pkm::ontology::schema::{Characteristic, OverrideTarget};
+use frona_pkm::ontology::sparql;
+use frona_pkm::ontology::{TypePlan, ValidationDiagnosticKind, ViolationSource};
+use frona_pkm::ontology::{individual_iri, path_from_individual};
+use oxigraph::sparql::QueryResults;
+use oxrdf::{NamedNode, NamedOrBlankNode, Term, Triple};
 use std::path::{Path, PathBuf};
 use surrealdb::Surreal;
 use surrealdb::engine::local::Mem;

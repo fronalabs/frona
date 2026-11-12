@@ -6,13 +6,14 @@
 //! through a pull-only tool surface. Selected at boot behind
 //! [`crate::memory::service::MemoryService`].
 //!
-//! Modules: `model` (records), `projection` (what a page is on disk - the markdown it
-//! composes to and the `rev` that identifies those bytes), `storage` (where that file
-//! goes), `consolidation` (the background pipeline and its LLM seam), `ontology` (the OWL
-//! layer), `recovery` (boot-time projection repair), `sync` (the Obsidian sync engine),
-//! and `tools` (foreground remember, search, cite, and graph tools).
-//! Classify's ontology tools are consolidation-internal and live in
-//! `consolidation::tools::ontology`,
+//! Ingest prepares source evidence and extracts memories. Consolidation coordinates
+//! durable concept and playbook work; page authors and persists canonical articles.
+//! Graph loads committed and working snapshots for the portable phases. Model owns
+//! persisted records, ontology owns catalogue and user-delta lifecycle, and sweep
+//! selects and resumes background work. Storage, recovery, and sync maintain the
+//! vault's filesystem projection. Tools expose foreground remember, search, cite,
+//! and graph operations.
+//! Phase reasoning and private research tools live in `frona_pkm`,
 //! never in the agent registry. The SurrealQL lives in `crate::db::repo::pkm`.
 //!
 //! # Naming
@@ -29,8 +30,10 @@ pub mod read;
 pub mod sync;
 
 mod consolidation;
+mod graph;
+mod ingest;
 mod operations;
-mod projection;
+mod page;
 mod recovery;
 mod rename;
 mod reset;
@@ -42,15 +45,14 @@ mod sweep;
 mod tools;
 mod vault;
 
-use consolidation::{ConsolidationContext, ConsolidationInference, Consolidator, Ingest};
+use consolidation::{ConsolidationContext, ConsolidationInference, Consolidator};
 pub use consolidation::{
     ConsolidationFailure, ConsolidationScope, ConsolidationStageState, ConsolidationStats,
     ConsolidationWorkState, IngestState, KnowledgeConsolidationRecord, PendingEntityContribution,
-    PlaybookResolveState, ResearchCoverageStats, TemporalSource, TranscriptEvidenceKind,
-    TranscriptEvidenceSource,
+    PlaybookResolveState, ResearchCoverageStats,
 };
+use ingest::Ingest;
 pub use model::PendingPlaybookCandidate;
-pub use projection::sha256_hex;
 pub use reset::{PkmResetState, PkmResetStatus};
 pub use storage::PkmStorage;
 pub use vault::VaultScope;

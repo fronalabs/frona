@@ -81,9 +81,21 @@ async fn usage_impact_counts_entities_and_links() {
         .await
         .unwrap();
 
-    let (entities, links) = mgr.usage_impact("u", "frona:Service").await.unwrap();
+    let (entities, links) = mgr
+        .portable("u")
+        .await
+        .unwrap()
+        .usage_impact("u", "frona:Service")
+        .await
+        .unwrap();
     assert_eq!((entities, links), (2, 0));
-    let (_, dep_links) = mgr.usage_impact("u", "frona:dependsOn").await.unwrap();
+    let (_, dep_links) = mgr
+        .portable("u")
+        .await
+        .unwrap()
+        .usage_impact("u", "frona:dependsOn")
+        .await
+        .unwrap();
     assert_eq!(dep_links, 1);
 }
 
@@ -91,6 +103,9 @@ async fn usage_impact_counts_entities_and_links() {
 async fn test_edits_distinguishes_consistent_and_incoherent_schema() {
     let (mgr, _repo) = manager().await;
     let ok = mgr
+        .portable("u")
+        .await
+        .unwrap()
         .test_edits(
             "u",
             &[SchemaEdit::SubClassOf {
@@ -103,6 +118,9 @@ async fn test_edits_distinguishes_consistent_and_incoherent_schema() {
     assert!(ok.incoherence.is_empty(), "consistent edit: {ok:?}");
 
     let bad = mgr
+        .portable("u")
+        .await
+        .unwrap()
         .test_edits(
             "u",
             &[
@@ -149,12 +167,21 @@ async fn edit_validation_sees_pending_edges_and_types_in_a_projected_abox() {
         },
     ];
 
-    let without_projection = mgr.test_edits("u", &edits).await.unwrap();
+    let without_projection = mgr
+        .portable("u")
+        .await
+        .unwrap()
+        .test_edits("u", &edits)
+        .await
+        .unwrap();
     assert!(
         without_projection.data_violations.is_empty(),
         "the committed graph has no edge yet, so it cannot expose the bad range"
     );
     let with_projection = mgr
+        .portable("u")
+        .await
+        .unwrap()
         .test_edits_with_abox("u", &edits, &projected)
         .await
         .unwrap();
@@ -190,7 +217,13 @@ async fn sparql_answers_employees_of_org() {
         individual_iri("orgs/acme")
     );
     let mut people = Vec::new();
-    if let QueryResults::Solutions(sols) = mgr.sparql("u", &q).await.unwrap() {
+    if let QueryResults::Solutions(sols) = sparql::query(
+        &mgr.cached_reason_user("u").await.unwrap().reasoned.store,
+        &q,
+        &mgr.prefixes(),
+    )
+    .unwrap()
+    {
         for s in sols {
             if let Some(Term::NamedNode(n)) = s.unwrap().get("p") {
                 people.push(path_from_individual(n.as_str()).unwrap());
@@ -213,8 +246,8 @@ async fn graph_queries_share_cache_until_consolidation_publishes() {
     let query = format!("ASK {{ <{alice}> a schema:Thing }}");
     assert!(
         matches!(
-            mgr.sparql("u", &query).await.unwrap(),
-            QueryResults::Boolean(false)
+            mgr.query_graph("u", &query, 100).await.unwrap(),
+            frona_pkm::ontology::GraphQueryOutput::Boolean { value: false }
         ),
         "the first query materializes and caches the committed graph"
     );
@@ -222,8 +255,8 @@ async fn graph_queries_share_cache_until_consolidation_publishes() {
     seed_concept(&repo, "u", "people/alice", "schema:Person").await;
     assert!(
         matches!(
-            mgr.sparql("u", &query).await.unwrap(),
-            QueryResults::Boolean(false)
+            mgr.query_graph("u", &query, 100).await.unwrap(),
+            frona_pkm::ontology::GraphQueryOutput::Boolean { value: false }
         ),
         "a direct database change is not visible before consolidation publishes"
     );
@@ -231,8 +264,8 @@ async fn graph_queries_share_cache_until_consolidation_publishes() {
     mgr.clone().publish_consolidated_graph("u");
     assert!(
         matches!(
-            mgr.sparql("u", &query).await.unwrap(),
-            QueryResults::Boolean(true)
+            mgr.query_graph("u", &query, 100).await.unwrap(),
+            frona_pkm::ontology::GraphQueryOutput::Boolean { value: true }
         ),
         "manager clones share invalidation and the next query rebuilds"
     );
@@ -254,8 +287,8 @@ async fn ontology_commit_waits_for_consolidation_publication() {
     let pg = individual_iri("services/pg");
     let query = format!("ASK {{ <{pg}> a schema:SoftwareApplication }}");
     assert!(matches!(
-        mgr.sparql("u", &query).await.unwrap(),
-        QueryResults::Boolean(false)
+        mgr.query_graph("u", &query, 100).await.unwrap(),
+        frona_pkm::ontology::GraphQueryOutput::Boolean { value: false }
     ));
 
     mgr.commit(
@@ -268,15 +301,15 @@ async fn ontology_commit_waits_for_consolidation_publication() {
     .await
     .unwrap();
     assert!(matches!(
-        mgr.sparql("u", &query).await.unwrap(),
-        QueryResults::Boolean(false)
+        mgr.query_graph("u", &query, 100).await.unwrap(),
+        frona_pkm::ontology::GraphQueryOutput::Boolean { value: false }
     ));
 
     mgr.clone().publish_consolidated_graph("u");
     assert!(
         matches!(
-            mgr.sparql("u", &query).await.unwrap(),
-            QueryResults::Boolean(true)
+            mgr.query_graph("u", &query, 100).await.unwrap(),
+            frona_pkm::ontology::GraphQueryOutput::Boolean { value: true }
         ),
         "the committed TBox becomes visible at the consolidation publication boundary"
     );
@@ -509,6 +542,9 @@ async fn ontology_edit_reports_data_violation_over_real_abox() {
     // Dry-run a min-1 bound: the schema stays coherent, but one existing entity
     // would be flagged - the facet-aware test_edit surfaces it over the real ABox.
     let impact = mgr
+        .portable("u")
+        .await
+        .unwrap()
         .test_edits(
             "u",
             &[SchemaEdit::RestrictDatatype {

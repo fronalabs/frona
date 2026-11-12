@@ -22,7 +22,7 @@ pub struct Consolidator {
     pub(super) ctx: Arc<ConsolidationContext>,
     pub(super) config: MemoryConfig,
     pub(super) ontology: crate::memory::pkm::ontology::OntologyManager,
-    pub(super) prefixes: crate::memory::pkm::ontology::PrefixMap,
+    pub(super) prefixes: frona_pkm::ontology::PrefixMap,
     tool_calls: Arc<crate::db::repo::tool_calls::SurrealToolCallRepo>,
     messages: crate::db::repo::messages::SurrealMessageRepo,
     pub(super) user_service: crate::auth::user_service::UserService,

@@ -305,6 +305,26 @@ impl ConsolidationStats {
     }
 }
 
+impl From<frona_pkm::ResearchCoverageStats> for ResearchCoverageStats {
+    fn from(value: frona_pkm::ResearchCoverageStats) -> Self {
+        Self {
+            messages: value.messages,
+            extracted: value.extracted,
+            no_durable_claim: value.no_durable_claim,
+            duplicate: value.duplicate,
+            unsupported: value.unsupported,
+            memories_added_by_repair: value.memories_added_by_repair,
+            citation_repairs: value.citation_repairs,
+            mixed_claim_splits: value.mixed_claim_splits,
+            claims: value.claims,
+            claims_extracted: value.claims_extracted,
+            claims_no_durable_claim: value.claims_no_durable_claim,
+            claims_duplicate: value.claims_duplicate,
+            claims_unsupported: value.claims_unsupported,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

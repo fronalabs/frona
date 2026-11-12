@@ -13,11 +13,12 @@ use crate::core::error::AppError;
 use crate::tool::{InferenceContext, ToolOutput, active_chat, str_arg};
 use frona_text::prompt::PromptLoader;
 
-use super::ontology::{GraphDirection, OntologyManager};
+use super::ontology::OntologyManager;
 use super::search::MemorySearch;
 use super::storage::PkmStorage;
 use super::vault::VaultScope;
 use crate::db::repo::pkm::PkmRepo;
+use frona_pkm::ontology::GraphDirection;
 
 pub fn all(
     repo: Arc<PkmRepo>,

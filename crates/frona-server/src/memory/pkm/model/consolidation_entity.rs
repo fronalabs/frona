@@ -440,36 +440,6 @@ impl KnowledgeConsolidationEntity {
     }
 }
 
-pub(crate) fn merge_consolidation_attribute_values(
-    held: &mut serde_json::Value,
-    incoming: &serde_json::Value,
-) {
-    let incoming_values: Vec<&serde_json::Value> = match incoming {
-        serde_json::Value::Array(values) => values.iter().collect(),
-        value => vec![value],
-    };
-    for value in incoming_values {
-        if held == value || held.as_array().is_some_and(|values| values.contains(value)) {
-            continue;
-        }
-        match held {
-            serde_json::Value::Array(values) => values.push(value.clone()),
-            _ => {
-                let first = std::mem::replace(held, serde_json::Value::Null);
-                *held = serde_json::Value::Array(vec![first, value.clone()]);
-            }
-        }
-    }
-}
-
 fn minimum_datetime() -> DateTime<Utc> {
     DateTime::<Utc>::MIN_UTC
-}
-pub(crate) fn normalize_identity_name(value: &str) -> String {
-    value
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|token| !token.is_empty())
-        .map(str::to_lowercase)
-        .collect::<Vec<_>>()
-        .join(" ")
 }

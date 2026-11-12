@@ -842,7 +842,7 @@ async fn completed_pass_keeps_exact_page_projection_in_database() {
         .sync_content
         .as_deref()
         .expect("completed page keeps its exact canonical bytes");
-    assert_eq!(frona::memory::pkm::sha256_hex(content), rev);
+    assert_eq!(frona_pkm::page::projection::sha256_hex(content), rev);
     let vault = ctx
         .pkm
         .storage()
@@ -1249,7 +1249,7 @@ async fn resume_banked_classification(change_graph: bool) {
         manager
             .commit(
                 USER,
-                &[frona::memory::pkm::ontology::SchemaEdit::SubClassOf {
+                &[frona_pkm::ontology::SchemaEdit::SubClassOf {
                     sub: "frona:Owner".into(),
                     sup: "schema:Person".into(),
                 }],
@@ -1327,7 +1327,7 @@ async fn resume_banked_classification(change_graph: bool) {
         manager
             .commit(
                 USER,
-                &[frona::memory::pkm::ontology::SchemaEdit::SubClassOf {
+                &[frona_pkm::ontology::SchemaEdit::SubClassOf {
                     sub: "frona:Owner".into(),
                     sup: "schema:Organization".into(),
                 }],
@@ -1523,7 +1523,7 @@ async fn no_entity_carries_a_class_the_schema_never_declared() {
         .chain(&catalog.data_properties)
         .cloned()
         .collect();
-    let px = frona::memory::pkm::ontology::PrefixMap::standard();
+    let px = frona_pkm::ontology::PrefixMap::standard();
 
     let mut typed = 0;
     let mut minted = 0;

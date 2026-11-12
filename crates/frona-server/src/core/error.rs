@@ -125,3 +125,20 @@ impl From<frona_text::prompt::PromptError> for AppError {
         Self::Internal(error.to_string())
     }
 }
+
+impl From<frona_pkm::Error> for AppError {
+    fn from(error: frona_pkm::Error) -> Self {
+        match error {
+            frona_pkm::Error::NotFound(message) => Self::NotFound(message),
+            frona_pkm::Error::BadRequest(message) | frona_pkm::Error::Validation(message) => {
+                Self::Validation(message)
+            }
+            frona_pkm::Error::Conflict(message) => Self::Conflict(message),
+            frona_pkm::Error::Internal(message) => Self::Internal(message),
+            frona_pkm::Error::Cancelled(message) => {
+                frona_harness::inference::InferenceError::Cancelled(message).into()
+            }
+            frona_pkm::Error::Io(error) => Self::Internal(error.to_string()),
+        }
+    }
+}

@@ -16,7 +16,7 @@ impl OntologyManager {
             .map(|ontology| (ontology.owl.clone(), ontology.version))
             .unwrap_or_else(|| (String::new(), 0));
         let delta_triples = schema::delta_triples(&ofn)?;
-        let seeds = composition::seed_set(
+        let seeds = frona_pkm::ontology::seed_set(
             &catalogue,
             &delta_triples,
             &self.repo.ontology_terms(user_id).await?,

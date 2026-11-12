@@ -327,7 +327,7 @@ mod tests {
         assert_eq!(repair, Path::new("/data/ontology/.release"));
         assert_eq!(repair.parent(), Some(user), "inside the user root...");
         assert!(
-            crate::memory::pkm::ontology::catalogue::format_of(&repair).is_none(),
+            frona_pkm::ontology::catalogue::format_of(&repair).is_none(),
             "...but not itself a source the scan would pick up"
         );
     }

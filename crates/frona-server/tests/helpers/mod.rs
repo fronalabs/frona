@@ -49,8 +49,7 @@ pub async fn seed_reconciled_entity(
     if renamed {
         aliases.insert(existing.name);
     }
-    let search_text =
-        frona::memory::pkm::model::derive_search_text(&final_name, description, &aliases);
+    let search_text = frona_pkm::model::derive_search_text(&final_name, description, &aliases);
     db.query(
         "UPDATE type::record('knowledge_entity', $id) SET
             name = $name, description = $description, search_text = $search_text,

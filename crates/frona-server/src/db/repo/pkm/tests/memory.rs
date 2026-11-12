@@ -276,3 +276,51 @@ async fn attribute_ops_for_a_vanished_entity_are_skipped_not_fatal() {
     );
 }
 use super::*;
+
+#[tokio::test]
+async fn erroneous_snapshot_includes_orphan_paths_and_isolates_users() {
+    let r = repo().await;
+    let rejected = r
+        .create_sourced_memory(
+            "u",
+            MemoryKind::Fact,
+            "  RETIRED fact  ",
+            &["missing/entity".into()],
+            human_evidence("RETIRED fact", "missing/entity"),
+        )
+        .await
+        .unwrap();
+    r.set_disposition("u", &rejected, Disposition::Erroneous)
+        .await
+        .unwrap();
+    let current = r
+        .create_sourced_memory(
+            "u",
+            MemoryKind::Fact,
+            "current fact",
+            &["missing/entity".into()],
+            human_evidence("current fact", "missing/entity"),
+        )
+        .await
+        .unwrap();
+    let other = r
+        .create_sourced_memory(
+            "other",
+            MemoryKind::Fact,
+            "private fact",
+            &["missing/entity".into()],
+            human_evidence("private fact", "missing/entity"),
+        )
+        .await
+        .unwrap();
+    r.set_disposition("other", &other, Disposition::Erroneous)
+        .await
+        .unwrap();
+    let snapshot = r.erroneous_contents_snapshot("u").await.unwrap();
+    assert_eq!(snapshot.len(), 1);
+    assert_eq!(
+        snapshot["missing/entity"],
+        std::collections::HashSet::from(["retired fact".into()])
+    );
+    assert_ne!(current, rejected);
+}

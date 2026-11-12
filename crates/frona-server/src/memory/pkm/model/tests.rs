@@ -319,3 +319,42 @@ fn legacy_agent_evidence_json_remains_readable() {
         matches!(evidence.source, EvidenceSource::AgentMessage { message_id, .. } if message_id == "m1")
     );
 }
+
+#[test]
+fn portable_memory_roundtrip_preserves_record_links_and_provenance() {
+    let original = mem(
+        "source",
+        Disposition::Outdated,
+        &[(RelationType::Replace, "survivor/with-space")],
+    );
+    let portable: frona_pkm::model::KnowledgeMemory = original.clone().into();
+    assert_eq!(portable.relations[0].to, "survivor/with-space");
+    let restored: KnowledgeMemory = portable.into();
+    assert_eq!(
+        serde_json::to_value(restored).unwrap(),
+        serde_json::to_value(original).unwrap()
+    );
+}
+
+#[test]
+fn portable_entity_roundtrip_preserves_checkpoint_progress() {
+    let mut original = KnowledgeConsolidationEntity::pending(
+        "run",
+        "user",
+        "people/casey",
+        EntityCategory::Concept,
+        Vec::new(),
+        Default::default(),
+    );
+    original.checkpoint_revision = 7;
+    original.progress.identity = IdentityProgress::Unresolved {
+        fingerprint: "fingerprint".into(),
+        diagnostic: serde_json::json!({"reason": "pending"}),
+    };
+    let portable: frona_pkm::model::KnowledgeConsolidationEntity = original.clone().into();
+    let restored: KnowledgeConsolidationEntity = portable.into();
+    assert_eq!(
+        serde_json::to_value(restored).unwrap(),
+        serde_json::to_value(original).unwrap()
+    );
+}

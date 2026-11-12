@@ -53,7 +53,7 @@ async fn stored_projection_reasons_without_the_catalogue() {
     assert_eq!(rebuilt.triples().len(), triples);
 
     let bob = individual_iri("people/bob");
-    let reasoned = super::super::reasoning::materialize(
+    let reasoned = frona_pkm::ontology::materialize(
         rebuilt.triples(),
         &[],
         &[type_triple(&bob, "https://schema.org/Person")],
@@ -253,7 +253,7 @@ async fn removing_a_source_leaves_existing_entities_reasoning() {
         "the departed source's triples are kept, not dropped"
     );
     let bob = individual_iri("people/bob");
-    let reasoned = super::super::reasoning::materialize(
+    let reasoned = frona_pkm::ontology::materialize(
         after.effective_ontology().triples(),
         &[],
         &[type_triple(&bob, "https://schema.org/Person")],
@@ -269,7 +269,7 @@ async fn removing_a_source_leaves_existing_entities_reasoning() {
     // symmetric axioms are stated on one end only, so a carry-forward that walked
     // in one direction would keep the taxonomy and quietly drop every ⊥, leaving a
     // scope that looks intact and cannot contradict anything.
-    let clash = super::super::reasoning::materialize(
+    let clash = frona_pkm::ontology::materialize(
         after.effective_ontology().triples(),
         &[],
         &[
@@ -321,9 +321,20 @@ async fn changed_catalogue_fingerprint_re_cuts() {
 /// "add one type" call any more, so a test that used one would be pinning a rule
 /// nothing enforces.
 pub(super) async fn stamp(mgr: &OntologyManager, repo: &PkmRepo, path: &str, class: &str) -> bool {
-    let planned = mgr.plan_schema("u", &[]).await.unwrap();
+    let planned = mgr
+        .portable("u")
+        .await
+        .unwrap()
+        .plan_schema("u", &[])
+        .await
+        .unwrap();
     let entity = repo.entity_by_path("u", path).await.unwrap().unwrap();
-    match mgr.plan_entity_type(&entity.kinds, class, &planned.triples) {
+    match frona_pkm::ontology::plan_entity_type(
+        &mgr.catalogue().unwrap(),
+        &entity.kinds,
+        class,
+        &planned.triples,
+    ) {
         TypePlan::Write(kinds) => {
             repo.commit_schema_and_types(
                 "u",

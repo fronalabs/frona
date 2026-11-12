@@ -1,9 +1,7 @@
 use serde::{Deserialize, Serialize};
 use surrealdb::types::SurrealValue;
 
-use super::IngestState;
-use crate::memory::pkm::consolidation::ConsolidationWorkState;
-use crate::memory::pkm::consolidation::playbook::PlaybookResolveState;
+use super::{ConsolidationWorkState, IngestState, PlaybookResolveState};
 
 /// Which stage the pass is in, and what that stage has finished.
 ///

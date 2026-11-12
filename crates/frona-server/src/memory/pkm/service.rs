@@ -121,7 +121,7 @@ impl PkmService {
     ) -> Result<bool, AppError> {
         let ctx = self.detached_context(scope, harness)?;
         let consolidation_id = ctx.view.consolidation_id().to_string();
-        let outcome = consolidation::PageAuthor {
+        let outcome = page::PageAuthor {
             ctx,
             prefixes: self.ontology_manager.prefixes(),
             concurrency: 1,

@@ -8,7 +8,6 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use frona_harness::inference::InferenceError;
-use frona_harness::{ManualError, ModelError};
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::harness::Harness;
@@ -21,19 +20,16 @@ use crate::db::repo::pkm::{
     PageEditBase, PageEditCommit, PageEditMemoryOp, PageEditWrite, PkmRepo,
 };
 use crate::inference::provider::service::ModelProviderService;
-use crate::inference::usage::{InferenceKind, UsageContext};
 use frona_harness::inference::ModelGroup;
 use frona_text::prompt::PromptLoader;
 
-use super::consolidation::{
-    ConsolidationContext, ConsolidationInference, ConsolidationScope, Ingest, PromptIds, PromptSpec,
-};
-use super::model::{Disposition, MemoryKind};
-use super::projection;
-use super::projection::sha256_hex;
+use super::consolidation::{ConsolidationContext, ConsolidationInference, ConsolidationScope};
+use super::ingest::Ingest;
+use super::page::projection;
 use super::rename;
 use super::storage::PkmStorage;
 use super::vault::VaultScope;
+use frona_pkm::page::projection::sha256_hex;
 
 /// The CAS decision for an incoming human edit - compares the client's `base_rev`
 /// to the page's current head. Pure (no mutation): the write-back (memory ops +
@@ -53,24 +49,6 @@ pub enum EditGate {
         head_rev: String,
         head_content: String,
     },
-}
-
-/// The unified diff a human edit yields - a `similar` line diff of the current head
-/// vs the incoming file, with the machine-owned `## History` stripped from both
-/// (a user editing/deleting a History line must not read as retracting a fact).
-/// This is what the LLM write-back consumes to decide memory ops.
-pub fn writeback_diff(head: &str, incoming: &str) -> String {
-    fn strip_history(s: &str) -> &str {
-        match s.find("\n## History") {
-            Some(i) => &s[..i],
-            None => s,
-        }
-    }
-    similar::TextDiff::from_lines(strip_history(head), strip_history(incoming))
-        .unified_diff()
-        .context_radius(3)
-        .header("head", "user-edited")
-        .to_string()
 }
 
 /// One push item on `/sync/edits`.
@@ -114,27 +92,6 @@ pub enum EditResult {
     Renamed {
         count: usize,
     },
-}
-
-/// The LLM write-back schema - memory ops distilled from a human's diff.
-#[derive(serde::Deserialize, schemars::JsonSchema)]
-struct WriteBackOps {
-    #[serde(default)]
-    ops: Vec<WbOp>,
-}
-
-#[derive(serde::Deserialize, schemars::JsonSchema)]
-struct WbOp {
-    /// `add` | `supersede` | `outdated` | `wrong`.
-    op: String,
-    #[serde(default)]
-    kind: String,
-    #[serde(default)]
-    content: String,
-    #[serde(default)]
-    memory_id: String,
-    #[serde(default)]
-    note: String,
 }
 
 /// One manifest entry - a Memory page's vault path (`<directory>/<path>`) + its `rev`.
@@ -459,7 +416,7 @@ impl PkmSyncService {
                 let write = PageEditWrite {
                     base,
                     new_page_name,
-                    body: super::projection::extract_body(&content),
+                    body: frona_pkm::page::projection::extract_body(&content),
                     content: content.clone(),
                     rev: rev.clone(),
                     memory_ops,
@@ -576,10 +533,10 @@ impl PkmSyncService {
             chat_id: None,
             vault: self.vault(user_id, handle).await?,
             temporal_sources: Vec::new(),
-            evidence_sources: vec![super::consolidation::TranscriptEvidenceSource {
+            evidence_sources: vec![frona_pkm::TranscriptEvidenceSource {
                 handle: "m1".to_string(),
                 text: content.to_string(),
-                kind: super::consolidation::TranscriptEvidenceKind::ExternalNote {
+                kind: frona_pkm::TranscriptEvidenceKind::ExternalNote {
                     note: note_path.to_string(),
                 },
             }],
@@ -601,7 +558,7 @@ impl PkmSyncService {
             self.storage.clone(),
             llm,
         ));
-        let transcript = super::consolidation::transcript::external_note(content);
+        let transcript = super::ingest::transcript::external_note(content);
         let batch = Ingest::new(ctx.clone()).run(&transcript).await?;
         let mut checkpoint = ctx.record().await;
         checkpoint.stats.absorb_ingest_batch(&batch);
@@ -629,129 +586,68 @@ impl PkmSyncService {
         head: &str,
         incoming: &str,
     ) -> Result<Vec<PageEditMemoryOp>, AppError> {
-        let diff = writeback_diff(head, incoming);
-        if diff.trim().is_empty() {
+        if frona_pkm::writeback::writeback_diff(head, incoming)
+            .trim()
+            .is_empty()
+        {
             return Ok(Vec::new());
         }
-        let memories: Vec<_> = self
-            .repo
-            .memories_for_entity(user_id, clean_path)
-            .await?
+        let memories = self.repo.memories_for_entity(user_id, clean_path).await?;
+        let inference = ConsolidationInference::with_cancel_token(
+            harness.clone(),
+            self.model_group()?,
+            self.prompts.clone(),
+            user_id.into(),
+            self.cancellation.clone(),
+        );
+        let defaults = frona_pkm::writeback::WritebackPrompts::default();
+        let phase = frona_pkm::writeback::Writeback::new(inference.harness()).prompts(
+            frona_pkm::writeback::WritebackPrompts {
+                defaults: inference.prompt_defaults(),
+                system: inference.prompt_source("pkm/writeback/system.md", &defaults.system)?,
+                input: inference.prompt_source("pkm/writeback/input.md", &defaults.input)?,
+            },
+        );
+        let operations = phase
+            .run_with(
+                frona_pkm::writeback::WritebackInput {
+                    path: clean_path.into(),
+                    head: head.into(),
+                    incoming: incoming.into(),
+                    memories: memories.into_iter().map(Into::into).collect(),
+                },
+                |run| inference.configure(run),
+            )
+            .await?;
+        Ok(operations
             .into_iter()
-            .filter(|m| m.disposition != Disposition::Erroneous)
-            .collect();
-        let valid_ids: HashSet<String> = memories.iter().map(|m| m.id.clone()).collect();
-        let prompt_ids = PromptIds::new("m", memories.iter().map(|memory| memory.id.clone()));
-        let mut mem_lines = String::new();
-        for m in &memories {
-            mem_lines.push_str(&format!(
-                "{} | {:?} | {}\n",
-                prompt_ids.local(&m.id),
-                m.kind,
-                m.content
-            ));
-        }
-        if mem_lines.is_empty() {
-            mem_lines.push_str("(none)");
-        }
-
-        let model_group = self.model_group()?;
-        // Same strict contract as the consolidation stages: a failed render is an error,
-        // not an empty prompt handed to a model that is obliged to answer.
-        let rendered = PromptSpec::WRITEBACK.render(
-            &self.prompts,
-            &[("memories", mem_lines.trim()), ("diff", diff.trim())],
-        )?;
-        let usage = UsageContext::new(InferenceKind::Memory, user_id, model_group.name.clone());
-        let sdk = frona_harness::Harness::new(frona_harness::Model::from_group(model_group));
-        let mut parsed = sdk
-            .run(rendered.input)
-            .instructions(rendered.system)
-            .observer(harness.usage_service.scoped(&usage))
-            .cancellation(self.cancellation.clone())
-            .structured::<WriteBackOps>()
-            // Preserve one-answer planning: no refinement inspector or domain repair.
-            // Provider retries/fallbacks retain their own admission checks.
-            .submission_attempts(1)
-            .await
-            .map_err(|incomplete| match incomplete.reason {
-                ManualError::Stop(stop) => AppError::Inference(Box::new(stop.into())),
-                ManualError::Model(ModelError::Provider(error)) => {
-                    AppError::Inference(Box::new(error))
-                }
-                reason => {
-                    AppError::Internal(format!("pkm writeback planning incomplete: {reason}"))
-                }
-            })?;
-        for operation in &mut parsed.ops {
-            if !operation.memory_id.trim().is_empty() {
-                operation.memory_id = prompt_ids.expand(&operation.memory_id)?;
-            }
-        }
-
-        Ok(self.validated_writeback_ops(clean_path, parsed, &valid_ids))
-    }
-
-    /// Convert model output to the small repository plan. Unknown memory ids, unknown
-    /// operations, and empty payloads are dropped before the transaction starts.
-    fn validated_writeback_ops(
-        &self,
-        clean_path: &str,
-        ops: WriteBackOps,
-        valid_ids: &HashSet<String>,
-    ) -> Vec<PageEditMemoryOp> {
-        let mut planned = Vec::new();
-        for op in ops.ops {
-            match op.op.trim() {
-                "add" => {
-                    let content = op.content.trim();
-                    if let Some(kind) = MemoryKind::parse(&op.kind).filter(|_| !content.is_empty())
-                    {
-                        planned.push(PageEditMemoryOp::Add {
-                            kind,
-                            content: content.to_string(),
-                        });
+            .map(|op| match op {
+                frona_pkm::writeback::PageEditMemoryOp::Add { kind, content } => {
+                    PageEditMemoryOp::Add {
+                        kind: kind.into(),
+                        content,
                     }
                 }
-                "supersede" => {
-                    let older = op.memory_id.trim();
-                    let content = op.content.trim();
-                    if valid_ids.contains(older)
-                        && !content.is_empty()
-                        && let Some(kind) = MemoryKind::parse(&op.kind)
-                    {
-                        planned.push(PageEditMemoryOp::Supersede {
-                            older_id: older.to_string(),
-                            kind,
-                            content: content.to_string(),
-                            note: op.note.trim().to_string(),
-                        });
-                    }
-                }
-                "outdated" => {
-                    let id = op.memory_id.trim();
-                    if valid_ids.contains(id) {
-                        planned.push(PageEditMemoryOp::SetDisposition {
-                            memory_id: id.to_string(),
-                            disposition: Disposition::Outdated,
-                        });
-                    }
-                }
-                "wrong" => {
-                    let id = op.memory_id.trim();
-                    if valid_ids.contains(id) {
-                        planned.push(PageEditMemoryOp::SetDisposition {
-                            memory_id: id.to_string(),
-                            disposition: Disposition::Erroneous,
-                        });
-                    }
-                }
-                other => {
-                    tracing::warn!(op = %other, path = %clean_path, "pkm writeback: unknown op, ignored")
-                }
-            }
-        }
-        planned
+                frona_pkm::writeback::PageEditMemoryOp::Supersede {
+                    older_id,
+                    kind,
+                    content,
+                    note,
+                } => PageEditMemoryOp::Supersede {
+                    older_id,
+                    kind: kind.into(),
+                    content,
+                    note,
+                },
+                frona_pkm::writeback::PageEditMemoryOp::SetDisposition {
+                    memory_id,
+                    disposition,
+                } => PageEditMemoryOp::SetDisposition {
+                    memory_id,
+                    disposition: disposition.into(),
+                },
+            })
+            .collect())
     }
 
     /// Rename/move a Memory page, preserving identity: rewrite the DB edges, move
@@ -898,30 +794,5 @@ impl PkmSyncService {
                 .await?
                 .unwrap_or_default(),
         )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn writeback_diff_shows_delta_and_ignores_history() {
-        let head = "---\nuid: 1\n---\n\n# Bob\n\nWorks at Acme.\n\n## History\n\n- (Fact) old\n";
-        let incoming =
-            "---\nuid: 1\n---\n\n# Bob\n\nWorks at Globex.\n\n## History\n\n- (Fact) DIFFERENT\n";
-        let d = writeback_diff(head, incoming);
-        assert!(
-            d.contains("-Works at Acme."),
-            "shows the removed line:\n{d}"
-        );
-        assert!(
-            d.contains("+Works at Globex."),
-            "shows the added line:\n{d}"
-        );
-        assert!(
-            !d.contains("DIFFERENT"),
-            "History is stripped, not diffed:\n{d}"
-        );
     }
 }

@@ -28,53 +28,34 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
-use oxigraph::sparql::QueryResults;
-use oxrdf::{NamedOrBlankNode, Term, Triple};
 
 use crate::core::error::AppError;
 use crate::db::repo::pkm::PkmRepo;
-use crate::memory::pkm::model::{KnowledgeEntity, KnowledgeEntityLink};
 
-mod abox;
-mod catalogue;
-mod prefixes;
+use frona_pkm::ontology::abox;
 mod release;
 mod retrieval;
-pub(crate) mod schema;
-pub(crate) mod sparql;
-mod validation;
+use frona_pkm::ontology::schema;
+use frona_pkm::ontology::sparql;
 
 mod commit;
 mod composition;
 mod graph_query;
 mod inspection;
 mod lifecycle;
-mod planning;
 mod reasoning;
 
-pub use catalogue::Roots;
-pub(crate) use catalogue::{OntologyCatalogue, OntologyScope, VocabHit};
-pub(crate) use composition::{ComposedOntology, UserOntology};
-pub(crate) use graph_query::GraphDirection;
-pub use inspection::OntologyExport;
-pub(crate) use planning::TypePlan;
-pub use prefixes::PrefixMap;
-pub(crate) use prefixes::{TermKind, individual_iri, path_from_individual};
-pub(crate) use retrieval::{
-    ClassInterpretation, IdentityAmbiguity, SemanticCandidate, SemanticMatch,
-};
-pub use schema::{AlignKind, Catalog, Characteristic, OverrideTarget, SchemaEdit};
-pub use validation::Violation;
-pub(crate) use validation::{EditImpact, GraphValidation, ValidationDiagnostic};
-#[cfg(test)]
-pub(crate) use validation::{ValidationDiagnosticKind, ViolationSource};
+mod roots;
+use frona_pkm::ontology::UserOntology;
+use frona_pkm::ontology::{Catalog, PrefixMap, SchemaEdit, Violation, individual_iri};
+use frona_pkm::ontology::{OntologyCatalogue, OntologyScope};
+pub use roots::Roots;
 
 /// The `knowledge_ontology.format` tag for the delta serialization.
 pub const DELTA_FORMAT: &str = "ofn";
 /// Bound on CAS reload-reapply attempts before giving up (single-writer in
 /// practice, so this is only ever hit under a real racing write).
 const COMMIT_ATTEMPTS: usize = 8;
-const RDFS_SUBCLASS_OF: &str = "http://www.w3.org/2000/01/rdf-schema#subClassOf";
 
 /// Loads and commits per-user ontology deltas against the ontology catalogue.
 /// Cheaply cloneable (every field is an `Arc`), so it can live on `AppState`.
@@ -99,3 +80,5 @@ pub struct OntologyManager {
 
 #[cfg(test)]
 mod tests;
+
+mod portable;

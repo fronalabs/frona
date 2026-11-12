@@ -42,7 +42,7 @@ pub(super) fn consolidation_windows(
             _ => "",
         };
         let text = if message.role == MessageRole::Agent {
-            crate::memory::pkm::consolidation::transcript::message_text(
+            crate::memory::pkm::ingest::transcript::message_text(
                 &message.id,
                 &message.content,
                 tool_calls,

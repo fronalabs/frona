@@ -9,6 +9,9 @@ async fn proposed_layer_composes_into_the_closure_without_persisting() {
         sup: "schema:SoftwareApplication".into(),
     }];
     let pass = mgr
+        .portable("u")
+        .await
+        .unwrap()
         .reason_user_with_proposed("u", &proposed, &[])
         .await
         .unwrap();
@@ -47,17 +50,23 @@ async fn proposed_layer_composes_into_the_closure_without_persisting() {
 #[tokio::test]
 async fn vocab_search_offers_terms_the_user_scope_does_not_yet_hold() {
     let (mgr, _repo) = manager().await;
-    let effective = mgr.user_effective_ontology("u").await.unwrap();
+    let effective = mgr
+        .portable("u")
+        .await
+        .unwrap()
+        .user_effective_ontology("u")
+        .await
+        .unwrap();
     assert!(effective.is_empty(), "an empty vault reasons over nothing");
 
-    let hits = mgr.search_vocab("organization", 25);
+    let hits = mgr.catalogue().unwrap().search("organization", 25);
     assert!(
         hits.iter()
             .any(|h| h.curie == "schema:Organization" && h.kind == "class"),
         "offered anyway, because the catalogue carries it: {hits:?}"
     );
     assert!(
-        mgr.search_vocab("zyzzyx", 25).is_empty(),
+        mgr.catalogue().unwrap().search("zyzzyx", 25).is_empty(),
         "a term no source declares is still not offered"
     );
 }
@@ -215,7 +224,13 @@ async fn retracting_a_transitive_claim_stops_deriving_and_removes_what_it_derive
         "the claim is deriving while it is in force"
     );
 
-    let targets = mgr.retractable("u").await.unwrap();
+    let targets = mgr
+        .portable("u")
+        .await
+        .unwrap()
+        .retractable("u")
+        .await
+        .unwrap();
     let target = OverrideTarget::Characteristic {
         property: "frona:partOf".into(),
         characteristic: Characteristic::Transitive,
@@ -252,7 +267,13 @@ async fn retracting_a_transitive_claim_stops_deriving_and_removes_what_it_derive
         "{asserted:?}"
     );
     assert!(
-        mgr.retractable("u").await.unwrap().is_empty(),
+        mgr.portable("u")
+            .await
+            .unwrap()
+            .retractable("u")
+            .await
+            .unwrap()
+            .is_empty(),
         "nothing left in force"
     );
 }

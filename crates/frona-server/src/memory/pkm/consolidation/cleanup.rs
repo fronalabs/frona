@@ -8,14 +8,14 @@ use tracing::warn;
 
 use crate::core::error::AppError;
 use crate::memory::pkm::model::{EntityCategory, classify_memories, decay_score};
-use crate::memory::pkm::projection::{MarkdownPage, compose_page};
+use frona_pkm::page::projection::{MarkdownPage, compose_page};
 
 use super::CleanupOutcome;
 use super::context::ConsolidationContext;
 
 pub(super) struct Cleanup {
     pub ctx: Arc<ConsolidationContext>,
-    pub prefixes: crate::memory::pkm::ontology::PrefixMap,
+    pub prefixes: frona_pkm::ontology::PrefixMap,
     /// Short-memory recency-decay half-life (seconds).
     pub half_life_secs: f32,
     /// Decay score below which a short memory is dropped.
@@ -159,12 +159,12 @@ impl Cleanup {
                 .unwrap_or_default();
             let article = MarkdownPage::parse(&entity.body);
             let file = compose_page(
-                entity,
+                &entity.clone().into(),
                 &article,
                 &entity.attributes,
-                &links,
+                &links.into_iter().map(Into::into).collect::<Vec<_>>(),
                 &self.prefixes,
-                &self.ctx.scope.vault,
+                &frona_pkm::page::PageLayout::new(self.ctx.scope.vault.directory())?,
             );
             self.ctx.write_page_and_rev(&entity.path, &file).await?;
         }

@@ -18,7 +18,7 @@ tokio = { version = "1", features = ["macros", "rt"] }
 This example uses a Rig OpenAI client and reads `OPENAI_API_KEY` from the environment.
 The model name is chosen by the application.
 
-```no_run
+```rust no_run
 use frona_harness::{Harness, Model};
 use rig_core::providers::openai::OpenAI;
 
@@ -43,7 +43,7 @@ recognizes `ToolContext` by type and excludes it from the model's argument schem
 Tools are installed explicitly; application authorization belongs in the tool or
 in a `before_tool` callback.
 
-```no_run
+```rust no_run
 use frona_harness::{Harness, ToolContext, ToolError, tool};
 
 /// Add two integers.
@@ -72,7 +72,7 @@ For application state, closure tools can borrow local values. See the `tools` an
 Add `serde` with its `derive` feature and `schemars` to your dependencies. The
 inspector can be asynchronous and can return a different accepted result type.
 
-```no_run
+```rust no_run
 use frona_harness::{Decision, Harness};
 use schemars::JsonSchema;
 use serde::Deserialize;

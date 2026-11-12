@@ -17,7 +17,7 @@ frona-harness = "0.1"
 Supply a configured harness and message-anchored evidence. This example accepts an
 existing harness so the application chooses its provider and credentials.
 
-```no_run
+```rust no_run
 use frona_harness::Harness;
 use frona_pkm::{
     TranscriptEvidenceKind, TranscriptEvidenceSource,

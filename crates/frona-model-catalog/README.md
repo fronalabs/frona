@@ -13,7 +13,7 @@ frona-model-catalog = "0.1"
 
 ## Read a local catalogue
 
-```no_run
+```rust no_run
 use frona_model_catalog::{ModelCatalogStore, loader};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

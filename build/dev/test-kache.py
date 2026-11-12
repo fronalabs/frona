@@ -3,6 +3,7 @@
 
 import hashlib
 import json
+import itertools
 import os
 from pathlib import Path
 import shutil
@@ -89,47 +90,65 @@ class KacheVersionTests(unittest.TestCase):
 
 class KacheInstallerTests(unittest.TestCase):
     def test_install_verifies_release_checksum(self):
-        for architecture in ("x86_64", "aarch64"):
-            for corrupt in (False, True):
-                with self.subTest(architecture=architecture, corrupt=corrupt), tempfile.TemporaryDirectory(
-                    prefix="frona-kache-install-"
-                ) as directory:
-                    root = Path(directory)
-                    bin_dir = root / "bin"
-                    bin_dir.mkdir()
-                    destination = root / "installed"
-                    destination.mkdir()
-                    binary = root / "kache"
-                    binary.write_text("#!/bin/sh\nprintf 'kache 1.2.2\\n'\n")
-                    binary.chmod(0o700)
-                    archive = root / f"kache-{architecture}-unknown-linux-musl.tar.gz"
-                    with tarfile.open(archive, "w:gz") as tar:
-                        tar.add(binary, arcname="kache")
-                    checksum = "0" * 64 if corrupt else hashlib.sha256(archive.read_bytes()).hexdigest()
-                    Path(str(archive) + ".sha256").write_text(f"{checksum}  {archive.name}\n")
-                    curl = bin_dir / "curl"
-                    curl.write_text(
-                        f"#!{sys.executable}\nimport shutil, sys\nfrom pathlib import Path\n"
-                        "url = sys.argv[sys.argv.index('-o') - 1]\n"
-                        "assert url.startswith('https://github.com/kunobi-ninja/kache/releases/download/v1.2.2/')\n"
-                        f"shutil.copyfile(Path({str(root)!r}) / url.rsplit('/', 1)[1], sys.argv[-1])\n"
-                    )
-                    curl.chmod(0o700)
-                    uname = bin_dir / "uname"
-                    uname.write_text(f"#!/bin/sh\nprintf '{architecture}\\n'\n")
-                    uname.chmod(0o700)
-                    result = subprocess.run(
-                        ["sh", str(BUILD_DIR / "dev/install-kache.sh"), str(destination)],
-                        env=dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", KACHE_VERSION="1.2.2"),
-                        capture_output=True, text=True, timeout=5,
-                    )
-                    if corrupt:
-                        self.assertNotEqual(result.returncode, 0)
-                        self.assertFalse((destination / "kache").exists())
-                    else:
-                        self.assertEqual(result.returncode, 0, result.stderr)
-                        self.assertIn("kache 1.2.2", result.stdout)
-
+        for architecture, corrupt, split in itertools.product(
+            ("x86_64", "aarch64"), (False, True), (False, True)
+        ):
+            with self.subTest(architecture=architecture, corrupt=corrupt, split=split), tempfile.TemporaryDirectory(
+                prefix="frona-kache-install-"
+            ) as directory:
+                root = Path(directory)
+                bin_dir = root / "bin"
+                bin_dir.mkdir()
+                destination = root / "installed"
+                destination.mkdir()
+                version = "2.0.0" if split else "1.2.2"
+                binary = root / "kache"
+                binary.write_text(
+                    '#!/bin/sh\n'
+                    'engine="$(dirname "$0")/kache-engine"\n'
+                    'if [ ! -x "$engine" ]; then\n'
+                    '  echo "error: locating kache-engine; missing or not executable" >&2\n'
+                    '  exit 1\n'
+                    'fi\n'
+                    'exec "$engine" "$@"\n'
+                )
+                engine = root / "kache-engine"
+                engine.write_text(f"#!/bin/sh\nprintf 'kache {version}\\n'\n")
+                if not split:
+                    binary.write_text(engine.read_text())
+                engine.chmod(0o700)
+                binary.chmod(0o700)
+                archive = root / f"kache-{architecture}-unknown-linux-musl.tar.gz"
+                with tarfile.open(archive, "w:gz") as tar:
+                    tar.add(binary, arcname="kache")
+                    if split:
+                        tar.add(engine, arcname="kache-engine")
+                checksum = "0" * 64 if corrupt else hashlib.sha256(archive.read_bytes()).hexdigest()
+                Path(str(archive) + ".sha256").write_text(f"{checksum}  {archive.name}\n")
+                curl = bin_dir / "curl"
+                curl.write_text(
+                    f"#!{sys.executable}\nimport shutil, sys\nfrom pathlib import Path\n"
+                    "url = sys.argv[sys.argv.index('-o') - 1]\n"
+                    f"assert url.startswith('https://github.com/kunobi-ninja/kache/releases/download/v{version}/')\n"
+                    f"shutil.copyfile(Path({str(root)!r}) / url.rsplit('/', 1)[1], sys.argv[-1])\n"
+                )
+                curl.chmod(0o700)
+                uname = bin_dir / "uname"
+                uname.write_text(f"#!/bin/sh\nprintf '{architecture}\\n'\n")
+                uname.chmod(0o700)
+                result = subprocess.run(
+                    ["sh", str(BUILD_DIR / "dev/install-kache.sh"), str(destination)],
+                    env=dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", KACHE_VERSION=version),
+                    capture_output=True, text=True, timeout=5,
+                )
+                if corrupt:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse((destination / "kache").exists())
+                    self.assertFalse((destination / "kache-engine").exists())
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(f"kache {version}", result.stdout)
+                    self.assertEqual((destination / "kache-engine").exists(), split)
 
 if __name__ == "__main__":
     unittest.main()

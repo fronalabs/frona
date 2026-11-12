@@ -13,7 +13,7 @@ esac
 stage=$(mktemp -d)
 archive="kache-${arch}-unknown-linux-musl.tar.gz"
 release="https://github.com/kunobi-ninja/kache/releases/download/v${KACHE_VERSION}"
-trap 'rm -f "$stage/$archive" "$stage/$archive.sha256" "$stage/kache"; rmdir "$stage"' EXIT
+trap 'rm -f "$stage/$archive" "$stage/$archive.sha256" "$stage/kache" "$stage/kache-engine"; rmdir "$stage"' EXIT
 curl --proto '=https' --tlsv1.2 -fsSL --retry 2 \
   "$release/$archive" -o "$stage/$archive"
 curl --proto '=https' --tlsv1.2 -fsSL --retry 2 \
@@ -22,5 +22,10 @@ curl --proto '=https' --tlsv1.2 -fsSL --retry 2 \
 checksum=$(awk 'NR == 1 {print $1}' "$stage/$archive.sha256")
 printf '%s  %s\n' "$checksum" "$stage/$archive" | sha256sum -c -
 tar -xzf "$stage/$archive" -C "$stage" kache
+# New releases ship a launcher and engine; older releases contain only kache.
+if tar -tzf "$stage/$archive" | grep -Fxq 'kache-engine'; then
+  tar -xzf "$stage/$archive" -C "$stage" kache-engine
+  install -m 0755 "$stage/kache-engine" "${1:-/usr/local/bin}/kache-engine"
+fi
 install -m 0755 "$stage/kache" "${1:-/usr/local/bin}/kache"
 "${1:-/usr/local/bin}/kache" --version

@@ -46,6 +46,7 @@ services:
       - ../crates:/app/crates
       - ../Cargo.toml:/app/Cargo.toml
       - ../Cargo.lock:/app/Cargo.lock
+      - ../.cargo:/app/.cargo:ro
       - ../bacon.toml:/app/bacon.toml:ro
       - ../target:/app/target
       - ${KACHE_LOCAL_DIR:-kache-local}:/cache/kache
@@ -87,9 +88,6 @@ services:
       - KACHE_RUNTIME_DIR=/tmp/dv-kache
       - KACHE_BUILD_SCRIPT_CACHE=0
       - KACHE_VERIFY_RESTORES=always
-      # GNU ld dominated backend restart time. LLVM lld is installed in the dev image.
-      - CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=clang
-      - CARGO_ENCODED_RUSTFLAGS=-Clink-arg=-fuse-ld=lld
       - SURREAL_SYNC_DATA=true
       - FRONA_VOICE_CALLBACK_BASE_URL
       - FRONA_VOICE_TWILIO_ACCOUNT_SID

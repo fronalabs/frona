@@ -1,8 +1,22 @@
 # Release Process
 
-## Versioning Scheme
+## Two versioning schemes
 
-Frona uses **CalVer** in the format `YYYY.M.PATCH`:
+The application and published Rust libraries have independent release versions.
+
+| Release | Version scheme | Version source | Preparation command |
+|---------|----------------|----------------|---------------------|
+| Frona application and container images | CalVer: `YYYY.M.PATCH` | Root `Cargo.toml` workspace version and frontend package files | `mise run release` or `mise run release:prepare` |
+| `frona-text`, `frona-derive`, `frona-model-catalog`, `frona-harness`, `frona-pkm` | SemVer: `MAJOR.MINOR.PATCH`, initially `0.1.0` | Each crate's own `Cargo.toml` | `mise run release:crates` |
+
+Application releases do not bump library versions. Library version preparation
+does not bump the application version or build container images. Libraries can
+have different versions and release independently. `frona-ontologies` is published
+from its own repository and consumed as a registry dependency.
+
+## Application versioning
+
+The application uses **CalVer** in the format `YYYY.M.PATCH`:
 
 - `YYYY` — full year of the release
 - `M` — month of the release (no zero-padding: `5`, not `05`)
@@ -10,11 +24,12 @@ Frona uses **CalVer** in the format `YYYY.M.PATCH`:
 
 So `2026.5.0` is the first May 2026 release, `2026.5.1` is the first follow-up patch in May, and `2026.6.0` opens June 2026.
 
-Frona ships as an application (Docker image to GHCR), not a library — there is no API-compatibility contract for SemVer to encode, so the date of the release is the more useful signal.
+The application ships as a Docker image to GHCR. Its version identifies an
+application release; the published libraries use SemVer to communicate API compatibility.
 
-## Quick Start
+## Application quick start
 
-```bash
+```nu
 mise run release                          # cut today's release; auto-rolls month or bumps PATCH
 mise run release patch                    # 2026.5.0 → 2026.5.1 (strict: errors on month change)
 mise run release alpha                    # start or advance an alpha pre-release
@@ -58,7 +73,7 @@ Commands are lowercase for ergonomics (`mise run release alpha`).
 
 ## Pre-release Workflow
 
-```bash
+```nu
 # Start a pre-release series (rolls to today's YYYY.M, bumps PATCH if same month)
 mise run release alpha                    # 2026.5.0 → 2026.5.1-ALPHA1
 
@@ -82,9 +97,9 @@ The default image is `ghcr.io/fronalabs/frona`, and its OCI source annotation is
 `https://github.com/fronalabs/frona`. Set these explicitly for a fork or another
 registry; neither value is inferred from the Git remote:
 
-```bash
-export FRONA_IMAGE=registry.example.com/team/frona
-export FRONA_SOURCE_URL=https://forge.example.com/team/frona
+```nu
+$env.FRONA_IMAGE = "registry.example.com/team/frona"
+$env.FRONA_SOURCE_URL = "https://forge.example.com/team/frona"
 mise run release
 ```
 
@@ -93,13 +108,16 @@ Staged preparation records that remote's push URL, the image repository, and the
 source URL in the artifact. Build and push workers use those recorded destinations,
 regardless of their own `origin` or environment overrides.
 
-## Version Sources
+## Application version sources
 
 The script updates these files in sync:
 
 - `Cargo.toml` — `version` under `[workspace.package]`
 - `web/package.json` — `"version"` field
 - `web/package-lock.json` — root `"version"` + `packages[""]` version
+
+It also refreshes the workspace `Cargo.lock`. The five publishable libraries
+declare explicit versions rather than inheriting `[workspace.package].version`.
 
 ## Safety Checks
 
@@ -145,7 +163,7 @@ process-wide Git configuration. Authentication stored only in the checkout's
 `.git/config` does not carry over. Keep credentials out of remote URLs because
 preparation records the push URL in the artifact.
 
-```bash
+```nu
 # For a fork, set FRONA_IMAGE and FRONA_SOURCE_URL before this command.
 # Output must be a new directory outside the source checkout.
 mise run release:prepare today --output /tmp/frona-release
@@ -177,14 +195,12 @@ login. It does not need a host Rust installation; image compilation remains in
 the existing Dockerfile. Authenticate Docker in each job using its temporary
 Docker config, then run:
 
-```bash
+```nu
 # AMD64 worker
-mise run release:build --release /tmp/frona-release --arch amd64 \
-  --output /tmp/amd64.json
+mise run release:build --release /tmp/frona-release --arch amd64 --output /tmp/amd64.json
 
 # ARM64 worker
-mise run release:build --release /tmp/frona-release --arch arm64 \
-  --output /tmp/arm64.json
+mise run release:build --release /tmp/frona-release --arch arm64 --output /tmp/arm64.json
 ```
 
 Jobs without Mise can call `bash build/release.sh build` with the same arguments.
@@ -210,9 +226,8 @@ After both workers succeed, give a final job the original prepared directory and
 both result files. Supply Git write credentials for the recorded remote and
 authenticate Docker to the recorded image registry. No Rust toolchain is needed.
 
-```bash
-mise run release:push --release /tmp/frona-release \
-  --results /tmp/amd64.json /tmp/arm64.json
+```nu
+mise run release:push --release /tmp/frona-release --results /tmp/amd64.json /tmp/arm64.json
 ```
 
 Frona verifies the bundle, result identities, both registry images' platforms,
@@ -251,14 +266,107 @@ an artifact's producer. Pass artifacts only between trusted jobs in the same run
 Prepared artifacts and build results now use schema 2; regenerate older schema 1
 artifacts and their build results before using these tools.
 
-## Release script tests
+## Library releases
 
-```bash
-mise run test:release
+Library versions are independent SemVer versions. The release command detects
+changes against crates.io, proposes versions, and includes libraries whose local
+dependency requirements need updating. You do not need to select crates manually.
+
+```nu
+mise run release:crates -- --dry-run          # preview auto versions, test and verify packages
+mise run release:crates                    # auto versions, commit, publish and push tags
+mise run release:crates minor              # override the bump for changed published crates
+mise run release:crates -- patch --dry-run    # verify an explicit override before releasing
 ```
 
-`build/test-release.sh` uses Bash and jq with actual temporary Git repositories
-and bare remotes with fake
-Cargo and Docker executables. They cover existing release commands and rollback,
-staged artifacts, explicit fork destinations, build/publish failures, validation,
-atomic Git push rejection, and retries. They do not build real images or publish a release.
+`auto` is the default; `patch`, `minor`, and `major` override the bump for selected
+published libraries, starting from their committed versions. An unpublished initial
+version stays at its declared version (initially `0.1.0`). Unchanged libraries are
+skipped. Additional dependency-only releases may receive an automatic patch bump.
+
+### Automatic versions
+
+Mise pins `release-plz`, `cargo-semver-checks`, and `cargo-edit`. Release-plz compares
+the packages with their published contents, checks library API compatibility, and
+uses commit messages to propose bumps. It also updates dependent requirements,
+including the server's, while leaving the application version unchanged.
+
+Use Conventional Commit messages to make intent explicit:
+
+- `fix(text): handle empty input` for fixes.
+- `feat(harness): add a new capability` for features.
+- `feat(pkm)!: change the phase interface` or a `BREAKING CHANGE:` footer for breaks.
+
+Existing area-prefixed messages such as `pkm: ...` still participate in change
+detection, but do not declare feature or breaking-change intent. API checks can
+find many breaking changes without that marker; they cannot detect every behavioral
+compatibility change. Review the proposal or use an explicit version override.
+
+Before `1.0.0`, the default policy bumps minor for breaking changes and patch for
+compatible changes, including features. From `1.0.0`, breaking changes bump major,
+features bump minor, and fixes bump patch. An explicit override is your decision;
+it can override the automatically recommended bump.
+
+### Preparation and publication
+
+All runs require a clean checkout. Publication requires `main`, Cargo credentials
+for crates.io, and permission to push the branch and tags to `origin`. Dry runs can
+run on another branch and do not need publication credentials. Install the pinned
+tools with `mise install`; the wrapper also uses Bash, Git, jq, curl, and flock.
+
+Preparation happens in a temporary clone containing the current committed state:
+
+1. Discover changes and propose versions, including dependent releases.
+2. Refresh the root and standalone harness fixture lockfiles.
+3. Run the selected libraries' tests and doctests with default features.
+4. Run `cargo publish --dry-run` for the selected libraries together, with build
+   verification enabled. Cargo resolves unpublished siblings through its temporary
+   registry.
+
+A dry run stops here, leaving the checkout, commits, tags, and registry untouched.
+Build outputs and `.crate` archives remain in `target`. Package and test failures
+also leave the original checkout untouched.
+
+A real release then creates a `release: libraries` commit, fast-forwards the local
+checkout to it, and publishes the selected versions in Cargo's dependency order.
+Finally, it creates annotated tags such as `frona-harness-v0.2.0` and atomically
+pushes the branch and those tags to `origin`. It does not create Gitea release
+entries or application images. The external `frona-ontologies` crate is not released
+by this command.
+
+### Retrying a failed release
+
+Once preparation succeeds, the wrapper saves the exact release commit and package
+versions under Git's `frona-crates-release` directory. It retains that journal if
+publication or the Git push fails. Do not delete it after a partial upload.
+
+Rerun the default command to resume:
+
+```nu
+mise run release:crates
+```
+
+The retry uses the same commit and versions, checks crates.io, skips versions already
+uploaded, and finishes the tags and Git push. It does not propose another bump.
+`--dry-run` verifies the remaining packages without advancing the pending release.
+Resume on the original branch, at either its original or prepared commit, with a
+clean checkout. Version overrides are rejected while a release is pending.
+
+Registry outages are errors, never interpreted as unpublished packages. Published
+versions cannot be rolled back, so a partial release is retained for completion
+instead of resetting the local release commit.
+
+## Release script tests
+
+```nu
+mise run test:release
+mise run test:release:crates
+```
+
+`build/test-release.sh` covers application releases using temporary repositories,
+bare remotes, and fake Cargo/Docker executables.
+
+`build/test-release-crates.sh` covers library selection, overrides, dry runs,
+verification failures, partial uploads, push failures, and retries using real Git
+repositories with fake Cargo, release-plz, and registry responses. These tests do
+not upload packages and do not replace real package verification.

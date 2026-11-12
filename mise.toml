@@ -1,6 +1,9 @@
 [tools]
 rust = { version = "1.99.1", components = ["rust-src", "rust-analyzer"] }
 node = "24.22.1"
+"cargo:cargo-edit" = { version = "0.13.14", default-features = false, features = ["set-version"] }
+"github:release-plz/release-plz" = "release-plz-v0.4.3"
+"github:obi1kenobi/cargo-semver-checks" = "0.51.0"
 
 [env]
 FRONA_DATABASE_PATH = "data/db"
@@ -101,6 +104,14 @@ run = "build/release.sh push"
 [tasks."test:release"]
 description = "Test release scripts with temporary Git repositories and fake build tools"
 run = "bash build/test-release.sh"
+
+[tasks."release:crates"]
+description = "Detect, verify and publish changed libraries (auto|patch|minor|major; --dry-run verifies only)"
+run = "bash build/release-crates.sh"
+
+[tasks."test:release:crates"]
+description = "Test library release preparation, publication and recovery in temporary repositories"
+run = "bash build/test-release-crates.sh"
 
 [tasks."container:publish"]
 description = "Build production image and push to GHCR"

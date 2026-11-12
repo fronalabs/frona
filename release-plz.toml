@@ -1,0 +1,28 @@
+[workspace]
+release = false
+changelog_update = false
+dependencies_update = false
+semver_check = true
+# The wrapper publishes packages and atomically pushes its commit and tags.
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "frona-text"
+release = true
+
+[[package]]
+name = "frona-derive"
+release = true
+
+[[package]]
+name = "frona-model-catalog"
+release = true
+
+[[package]]
+name = "frona-harness"
+release = true
+
+[[package]]
+name = "frona-pkm"
+release = true

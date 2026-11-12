@@ -3465,7 +3465,7 @@ dependencies = [
 
 [[package]]
 name = "frona-derive"
-version = "2026.11.0"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "heck 0.5.0",
@@ -3477,7 +3477,7 @@ dependencies = [
 
 [[package]]
 name = "frona-harness"
-version = "2026.11.0"
+version = "0.1.0"
 dependencies = [
  "approx",
  "async-trait",
@@ -3531,7 +3531,7 @@ dependencies = [
 
 [[package]]
 name = "frona-model-catalog"
-version = "2026.11.0"
+version = "0.1.0"
 dependencies = [
  "arc-swap",
  "chrono",
@@ -3551,7 +3551,8 @@ dependencies = [
 [[package]]
 name = "frona-ontologies"
 version = "0.1.0"
-source = "git+https://github.com/fronalabs/frona-ontologies?rev=cdabc3a8dba85f418c080d659da36d47b4a9c442#cdabc3a8dba85f418c080d659da36d47b4a9c442"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "557e9baa9aa524988864747bcd27bab24a073cb1e442dc8ad8b5b2d81fb8f5cd"
 dependencies = [
  "anyhow",
  "flate2",
@@ -3561,7 +3562,7 @@ dependencies = [
 
 [[package]]
 name = "frona-pkm"
-version = "2026.11.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3721,7 +3722,7 @@ dependencies = [
 
 [[package]]
 name = "frona-text"
-version = "2026.11.0"
+version = "0.1.0"
 dependencies = [
  "ignore",
  "minijinja",

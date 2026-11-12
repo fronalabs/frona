@@ -1157,7 +1157,7 @@ dependencies = [
 
 [[package]]
 name = "frona-derive"
-version = "2026.11.0"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "heck",
@@ -1169,7 +1169,7 @@ dependencies = [
 
 [[package]]
 name = "frona-harness"
-version = "2026.11.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -1214,7 +1214,7 @@ dependencies = [
 
 [[package]]
 name = "frona-model-catalog"
-version = "2026.11.0"
+version = "0.1.0"
 dependencies = [
  "arc-swap",
  "chrono",
@@ -1232,7 +1232,7 @@ dependencies = [
 
 [[package]]
 name = "frona-text"
-version = "2026.11.0"
+version = "0.1.0"
 dependencies = [
  "ignore",
  "unicode-casefold",

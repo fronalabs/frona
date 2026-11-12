@@ -1,5 +1,4 @@
-//! Validated external model metadata and persistent catalog downloads.
-//! Provider execution, account access and server configuration are not catalog policy.
+#![doc = include_str!("../README.md")]
 
 pub mod catalog;
 pub mod loader;

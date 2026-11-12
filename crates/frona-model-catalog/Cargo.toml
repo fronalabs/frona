@@ -1,11 +1,14 @@
 [package]
-description = "Provider-independent model catalog, validation, and cached snapshots"
-license-file = "LICENSE"
+description = "Validated model metadata, parameter schemas, and cached catalog snapshots"
+license = "MIT"
 readme = "README.md"
 repository = "https://git.mcx.ai/mina/frona"
+documentation = "https://docs.rs/frona-model-catalog"
+keywords = ["ai", "models", "catalog"]
+categories = ["data-structures", "caching"]
 name = "frona-model-catalog"
 edition.workspace = true
-version.workspace = true
+version = "0.1.0"
 
 [dependencies]
 serde = { workspace = true }
@@ -24,3 +27,6 @@ jsonschema = { version = "0.61", default-features = false }
 [dev-dependencies]
 wiremock = "0.6"
 
+
+[package.metadata.docs.rs]
+all-features = true

@@ -1,4 +1,4 @@
-//! Shared text/search primitives for frona.
+#![doc = include_str!("../README.md")]
 
 mod edit;
 mod grounding;

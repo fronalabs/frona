@@ -1,17 +1,5 @@
-//! Portable PKM phases. The caller prepares scoped inputs and commits outputs.
-//! No phase owns application records, storage, scheduling, or watermarks.
-//!
-//! The host composes [`ingest::Ingest`], [`classify::Classify`],
-//! [`resolve::Resolve`], [`reconcile::Reconcile`], and [`assemble::Assemble`]
-//! around its own worklist and atomic commits. [`page::PageAuthor`],
-//! [`playbook::resolve::PlaybookResolve`], [`playbook::author::PlaybookAuthor`],
-//! and [`writeback::Writeback`] handle page and procedural knowledge workflows.
-//!
-//! Inputs must describe a consistent, authorized snapshot. Successful outputs are
-//! proposals, not persisted progress; the caller checks revisions and commits them.
-//! Each phase has embedded, replaceable prompts and accepts harness configuration
-//! through `run_with`, including shared budgets. Prompt loading and rendering use
-//! `frona_text::prompt`; server wiring remains the caller's responsibility.
+#![doc = include_str!("../README.md")]
+
 pub mod evidence;
 pub mod ingest;
 pub mod model;

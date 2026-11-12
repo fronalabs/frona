@@ -1,11 +1,14 @@
 [package]
-description = "Unicode-aware text matching and workspace search primitives"
-license-file = "LICENSE"
-readme = false
+description = "Unicode-aware text matching, prompt templates, and configurable redaction"
+license = "MIT"
+readme = "README.md"
 repository = "https://git.mcx.ai/mina/frona"
+documentation = "https://docs.rs/frona-text"
+keywords = ["unicode", "text", "prompts", "redaction"]
+categories = ["text-processing"]
 name = "frona-text"
 edition.workspace = true
-version.workspace = true
+version = "0.1.0"
 
 [dependencies]
 unicode-normalization-alignments = "0.1"
@@ -25,3 +28,6 @@ serde = ["dep:serde"]
 
 [dev-dependencies]
 tempfile = "3"
+
+[package.metadata.docs.rs]
+all-features = true

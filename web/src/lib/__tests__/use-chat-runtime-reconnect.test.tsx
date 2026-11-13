@@ -106,3 +106,22 @@ it("retains an optimistic pending send when reconnect returns older completed hi
   expect(thread.messages.some((message) => message.role === "user" && message.content.some((part) => part.type === "text" && part.text === "My pending question"))).toBe(true);
   hook.unmount();
 });
+
+it("renders concurrent tool calls and out-of-order results while the response is still streaming", async () => {
+  const hook = renderHook(() => useChatRuntime({ chatId: "chat-1", agentId: "agent-1" }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  await emit("token", { content: "Working" });
+  await emit("tool_call", { id: "row-1", provider_call_id: "call-1", name: "search", arguments: {} });
+  await emit("tool_call", { id: "row-2", provider_call_id: "call-2", name: "search", arguments: {} });
+  const parts = () => hook.result.current.runtime.thread.getState().messages.filter(message => message.role === "assistant").flatMap(message => message.content);
+  expect(parts()).toContainEqual(expect.objectContaining({ type: "tool-call", toolCallId: "row-1" }));
+  expect(parts()).toContainEqual(expect.objectContaining({ type: "tool-call", toolCallId: "row-2" }));
+  await emit("tool_result", { id: "row-2", name: "search", success: true, summary: "second result" });
+  expect(parts()).toContainEqual(expect.objectContaining({ type: "tool-call", toolCallId: "row-2", result: "second result" }));
+  await emit("tool_result", { id: "row-1", name: "search", success: true, summary: "first result" });
+  expect(parts()).toContainEqual(expect.objectContaining({ type: "tool-call", toolCallId: "row-1", result: "first result" }));
+  await emit("token", { content: "Finished searching" });
+  expect(parts().some(part => part.type === "text" && part.text.includes("Finished searching"))).toBe(true);
+  expect(hook.result.current.runtime.thread.getState().isRunning).toBe(true);
+  hook.unmount();
+});

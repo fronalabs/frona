@@ -962,6 +962,7 @@ async fn handle_outbound_event(
                     );
                 }
                 InferenceEventKind::ToolResult {
+                    id: _,
                     name,
                     success,
                     result,

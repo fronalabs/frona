@@ -76,6 +76,7 @@ impl<'a> Harness<'a> {
                 submission: None,
                 setup_error: None,
                 tool_hook: None,
+                max_concurrent_tool_calls: self.model.tool_concurrency(),
                 compaction: self.model.compaction_config(),
                 compaction_configured: false,
                 observer: None,
@@ -196,6 +197,13 @@ impl<'a, Mode> Run<'a, Mode> {
             maximum,
             remaining: maximum,
         });
+        self
+    }
+
+    /// Bound tool calls per response. Defaults to available CPUs clamped to
+    /// 2–8. One restores sequential execution; mutable instances remain serial.
+    pub fn max_concurrent_tool_calls(mut self, maximum: NonZeroUsize) -> Self {
+        self.core.max_concurrent_tool_calls = maximum;
         self
     }
 
@@ -459,6 +467,14 @@ impl<'a, Mode> ManualSession<'a, Mode> {
     ) -> Result<ActionResolution, ManualError> {
         self.core.execute(action).await
     }
+    /// Execute sibling ordinary calls using this run's concurrency limit.
+    pub async fn execute_tools(
+        &mut self,
+        actions: &[PendingAction],
+    ) -> Result<Vec<ActionResolution>, ManualError> {
+        self.core.execute_tools(actions).await
+    }
+
     pub fn reject(
         &mut self,
         action: PendingAction,
@@ -617,6 +633,7 @@ pub(super) struct SessionCore<'a> {
     submission: Option<ToolDefinition>,
     setup_error: Option<ManualError>,
     tool_hook: Option<Box<dyn ToolCallHook + 'a>>,
+    max_concurrent_tool_calls: NonZeroUsize,
     compaction: super::CompactionConfig,
     compaction_configured: bool,
     observer: Option<Box<dyn crate::inference::observation::InferenceObserver + 'a>>,
@@ -885,6 +902,33 @@ impl SessionCore<'_> {
             model
                 .invoke_with_origin(request, None, observations, execution)
                 .await
+        }
+    }
+
+    async fn execute_tools(
+        &mut self,
+        actions: &[PendingAction],
+    ) -> Result<Vec<ActionResolution>, ManualError> {
+        self.check_active()?;
+        let execution = ExecutionControl::new(&*self.budget)
+            .with_cancellation(&self.cancellation)
+            .with_report(&self.recorder.0);
+        match self
+            .conversation
+            .execute_tools_with_hook(
+                actions,
+                &mut self.tools,
+                execution,
+                self.max_concurrent_tool_calls,
+                self.tool_hook
+                    .as_mut()
+                    .map(|hook| &mut **hook as &mut dyn ToolCallHook),
+            )
+            .await
+        {
+            Err(ToolDispatchError::Stop(stop)) => Err(self.fail(stop.into())),
+            Err(error @ ToolDispatchError::ToolHook(_)) => Err(self.fail(error.into())),
+            result => self.result(result),
         }
     }
 

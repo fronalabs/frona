@@ -70,16 +70,18 @@ async fn drive_text(session: &mut ManualSession<'_, Text>) -> Result<String, Man
         if turn.actions.is_empty() {
             return session.finish();
         }
+        let mut tools = Vec::new();
         for action in turn.actions {
             match session.action(&action)?.kind {
                 ActionKind::Tool => {
-                    session.execute(action).await?;
+                    tools.push(action);
                 }
                 ActionKind::Submission => {
                     session.reject(action, "Structured submission was not offered. Reply with your final answer as text.")?;
                 }
             }
         }
+        session.execute_tools(&tools).await?;
     }
 }
 
@@ -100,14 +102,16 @@ pub(super) async fn next_submission<T: DeserializeOwned + JsonSchema>(
         let mut submissions = Vec::new();
         // Finish sibling tool effects before choosing any output. A terminal
         // tool stop cannot turn an earlier valid-looking submission into success.
+        let mut tools = Vec::new();
         for action in turn.actions {
             match session.action(&action)?.kind {
                 ActionKind::Tool => {
-                    session.execute(action).await?;
+                    tools.push(action);
                 }
                 ActionKind::Submission => submissions.push(action),
             }
         }
+        session.execute_tools(&tools).await?;
         if submissions.is_empty() {
             // A resumed mixed batch may already contain a repaired/rejected
             // submission. Its remaining tool siblings do not imply missing submit.

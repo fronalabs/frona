@@ -64,6 +64,7 @@
 
 # inference:
 #   max_tool_turns: 200
+#   max_concurrent_tool_calls: 4  # Default: available CPUs clamped to 2–8; 1 = sequential
 #   default_max_tokens: 8192
 #   compaction_trigger_pct: 80
 #   history_truncation_pct: 90

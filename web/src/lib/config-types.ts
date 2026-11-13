@@ -158,6 +158,7 @@ export interface ModelProviderConfig {
 
 export interface InferenceConfig {
   max_tool_turns: number;
+  max_concurrent_tool_calls: number;
   default_max_tokens: number;
   compaction_trigger_pct: number;
   history_truncation_pct: number;

@@ -1,4 +1,9 @@
-//! Individual action dispatch shared by manual, automatic, and recovery drivers.
+//! Individual and bounded batch dispatch shared by execution drivers.
+
+use futures::{StreamExt, stream::FuturesUnordered};
+use std::{collections::VecDeque, num::NonZeroUsize};
+use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     ActionKind, ActionResolution, ActionStatus, Conversation, ConversationError,
@@ -54,6 +59,155 @@ impl Conversation {
     ) -> Result<ActionResolution, ToolDispatchError> {
         self.dispatch_tool(handle, tools, execution, None, false)
             .await
+    }
+
+    /// Execute a response batch with bounded concurrency. Mutable instances are
+    /// serialized individually; distinct tools overlap. Returned results retain
+    /// proposal order, while history records each completion as it arrives.
+    pub async fn execute_tools(
+        &mut self,
+        actions: &[PendingAction],
+        tools: &mut ToolRegistry<'_>,
+        execution: ExecutionControl<'_>,
+        maximum: NonZeroUsize,
+    ) -> Result<Vec<ActionResolution>, ToolDispatchError> {
+        self.execute_tools_with_hook(actions, tools, execution, maximum, None)
+            .await
+    }
+
+    pub(crate) async fn execute_tools_with_hook(
+        &mut self,
+        actions: &[PendingAction],
+        tools: &mut ToolRegistry<'_>,
+        execution: ExecutionControl<'_>,
+        maximum: NonZeroUsize,
+        hook: Option<&mut dyn ToolCallHook>,
+    ) -> Result<Vec<ActionResolution>, ToolDispatchError> {
+        let tools = tools.locked();
+        let calls = actions
+            .iter()
+            .map(|action| {
+                let name = &self.action(action)?.call.function.name;
+                Ok((action, tools.get(name.as_str())))
+            })
+            .collect::<Result<Vec<_>, ToolDispatchError>>()?;
+        self.dispatch_batch(calls, execution, maximum, hook).await
+    }
+
+    /// Execute call-local tool instances under the same batch scheduler. This is
+    /// useful for hosts whose tools carry per-invocation persistence state.
+    /// Each instance's definition must match its proposed tool name.
+    pub async fn execute_tool_instances(
+        &mut self,
+        calls: &mut [(&PendingAction, Box<dyn crate::Tool + '_>)],
+        execution: ExecutionControl<'_>,
+        maximum: NonZeroUsize,
+    ) -> Result<Vec<ActionResolution>, ToolDispatchError> {
+        for (action, tool) in calls.iter() {
+            if self.action(action)?.call.function.name != tool.definition().name {
+                return Err(ToolDispatchError::ToolHook(
+                    "tool instance does not match proposal".into(),
+                ));
+            }
+        }
+        let tools: Vec<_> = calls
+            .iter_mut()
+            .map(|(action, tool)| (*action, Mutex::new(tool.as_mut())))
+            .collect();
+        self.dispatch_batch(
+            tools
+                .iter()
+                .map(|(action, tool)| (*action, Some(tool)))
+                .collect(),
+            execution,
+            maximum,
+            None,
+        )
+        .await
+    }
+
+    async fn dispatch_batch<'tool>(
+        &mut self,
+        calls: Vec<(
+            &PendingAction,
+            Option<&Mutex<&mut (dyn crate::Tool + 'tool)>>,
+        )>,
+        execution: ExecutionControl<'_>,
+        maximum: NonZeroUsize,
+        hook: Option<&mut dyn ToolCallHook>,
+    ) -> Result<Vec<ActionResolution>, ToolDispatchError> {
+        let mut results = vec![None; calls.len()];
+        let conversation = Mutex::new(self);
+        let hook = Mutex::new(hook);
+        let mut pending: VecDeque<_> = calls.into_iter().enumerate().collect();
+        let admission = CancellationToken::new();
+        let mut running = FuturesUnordered::new();
+        let mut failure = None;
+        loop {
+            while failure.is_none() && running.len() < maximum.get() {
+                // Reserve an available instance before enqueueing its future.
+                // Calls waiting for that instance do not occupy running slots.
+                let next = pending
+                    .iter()
+                    .enumerate()
+                    .find_map(|(position, (_, (_, tool)))| match *tool {
+                        Some(tool) => tool.try_lock().ok().map(|guard| (position, Some(guard))),
+                        None => Some((position, None)),
+                    });
+                let Some((position, mut tool)) = next else {
+                    break;
+                };
+                let (index, (action, _)) = pending.remove(position).unwrap();
+                let conversation = &conversation;
+                let hook = &hook;
+                let admission = &admission;
+                running.push(async move {
+                    let result = Self::dispatch_tool_inner(
+                        conversation,
+                        action,
+                        tool.as_mut()
+                            .map(|tool| &mut ***tool as &mut (dyn crate::Tool + 'tool)),
+                        execution,
+                        hook,
+                        admission,
+                        false,
+                    )
+                    .await;
+                    (index, result)
+                });
+            }
+            let Some((index, result)) = running.next().await else {
+                break;
+            };
+            match result {
+                Ok(result) => results[index] = result,
+                Err(error) => {
+                    // Budget refusal does not revoke already admitted calls.
+                    // Other terminal failures abandon in-flight work, retaining
+                    // Started records and settling permits through their guards.
+                    let drain = matches!(
+                        error,
+                        ToolDispatchError::Stop(ExecutionStop::BudgetExhausted(_))
+                    );
+                    admission.cancel();
+                    if failure.is_none() || !drain {
+                        failure = Some(error);
+                    }
+                    if !drain {
+                        break;
+                    }
+                }
+            }
+        }
+        drop(running);
+        let conversation = conversation.into_inner();
+        Self::finish_dispatch(
+            conversation,
+            match failure {
+                Some(error) => Err(error),
+                None => Ok(results.into_iter().map(Option::unwrap).collect()),
+            },
+        )
     }
 
     /// Explicitly retry interrupted ordinary calls, in proposal order, using
@@ -177,14 +331,72 @@ impl Conversation {
         hook: Option<&mut dyn ToolCallHook>,
         recovery: bool,
     ) -> Result<ActionResolution, ToolDispatchError> {
-        self.require_storage_ready()?;
-        if recovery {
-            self.require_recovery_tool(handle, tools)?;
-        } else {
-            self.require_tool_proposal(handle)?;
+        let conversation = Mutex::new(self);
+        let hook = Mutex::new(hook);
+        let tool = tools.get_mut(
+            &conversation
+                .lock()
+                .await
+                .action(handle)?
+                .call
+                .function
+                .name
+                .clone(),
+        );
+        let result = Self::dispatch_tool_inner(
+            &conversation,
+            handle,
+            tool,
+            execution,
+            &hook,
+            &CancellationToken::new(),
+            recovery,
+        )
+        .await
+        .map(|result| result.expect("single-call admission stays open"));
+        let conversation = conversation.into_inner();
+        Self::finish_dispatch(conversation, result)
+    }
+
+    fn finish_dispatch<T>(
+        conversation: &mut Conversation,
+        result: Result<T, ToolDispatchError>,
+    ) -> Result<T, ToolDispatchError> {
+        result.map_err(|error| match error {
+            ToolDispatchError::Stop(_) | ToolDispatchError::ToolHook(_) => {
+                conversation.stop_dispatch_error(error)
+            }
+            error => error,
+        })
+    }
+
+    async fn dispatch_tool_inner<'tool>(
+        conversation: &Mutex<&mut Conversation>,
+        handle: &PendingAction,
+        tool: Option<&mut (dyn crate::Tool + 'tool)>,
+        execution: ExecutionControl<'_>,
+        hook: &Mutex<Option<&mut dyn ToolCallHook>>,
+        admission: &CancellationToken,
+        recovery: bool,
+    ) -> Result<Option<ActionResolution>, ToolDispatchError> {
+        if admission.is_cancelled() {
+            return Ok(None);
         }
-        self.check_dispatch_cancellation(execution)?;
-        let view = self.action(handle)?;
+        let mut state = conversation.lock().await;
+        state.require_storage_ready()?;
+        if recovery {
+            state.next_invocation(handle, true)?;
+        } else {
+            state.require_tool_proposal(handle)?;
+        }
+        execution.check_cancellation().map_err(|error| {
+            ToolDispatchError::Stop(
+                error
+                    .into_execution_stop()
+                    .expect("cancellation is terminal"),
+            )
+        })?;
+        let view = state.action(handle)?;
         let call = view.call.clone();
         let name = call.function.name.clone();
         if !view
@@ -192,46 +404,71 @@ impl Conversation {
             .iter()
             .any(|definition| definition.name == name)
         {
-            return self.reject_tool(
-                handle,
-                ToolOutput::text(format!("Tool '{name}' was not offered for this request.")),
-            );
+            return state
+                .reject_tool(
+                    handle,
+                    ToolOutput::text(format!("Tool '{name}' was not offered for this request.")),
+                )
+                .map(Some);
         }
-        let Some(tool) = tools.get_mut(&name) else {
-            return self.reject_tool(
-                handle,
-                ToolOutput::text(format!("Tool '{name}' is not registered.")),
-            );
+        let Some(tool) = tool else {
+            return state
+                .reject_tool(
+                    handle,
+                    ToolOutput::text(format!("Tool '{name}' is not registered.")),
+                )
+                .map(Some);
         };
-        if let Some(hook) = hook {
-            let decision = tokio::select! {
-                biased;
-                _ = execution.cancelled() => Err(ToolDispatchError::Stop(
-                    ExecutionStop::Cancelled("execution cancelled during tool hook".into())
-                )),
-                result = hook.decide(&call) => result.map_err(|e| ToolDispatchError::ToolHook(e.to_string())),
-            };
-            // Synchronously ready policy may cancel while returning Reject.
-            self.check_dispatch_cancellation(execution)?;
-            match decision {
-                Ok(ToolDecision::Execute) => {}
-                Ok(ToolDecision::Reject(feedback)) if !recovery => {
-                    return self.reject_tool(handle, ToolOutput::text(feedback));
+        drop(state);
+        {
+            let mut hook = hook.lock().await;
+            if let Some(hook) = hook.as_deref_mut() {
+                let decision = tokio::select! {
+                    biased;
+                    _ = admission.cancelled() => return Ok(None),
+                    _ = execution.cancelled() => Err(ToolDispatchError::Stop(
+                        ExecutionStop::Cancelled("execution cancelled during tool hook".into())
+                    )),
+                    result = hook.decide(&call) => result.map_err(|e| ToolDispatchError::ToolHook(e.to_string())),
+                };
+                // Synchronously ready policy may cancel while returning Reject.
+                execution.check_cancellation().map_err(|error| {
+                    ToolDispatchError::Stop(
+                        error
+                            .into_execution_stop()
+                            .expect("cancellation is terminal"),
+                    )
+                })?;
+                match decision {
+                    Ok(ToolDecision::Execute) => {}
+                    Ok(ToolDecision::Reject(feedback)) if !recovery => {
+                        return conversation
+                            .lock()
+                            .await
+                            .reject_tool(handle, ToolOutput::text(feedback))
+                            .map(Some);
+                    }
+                    Ok(ToolDecision::Reject(reason) | ToolDecision::Stop(reason)) => {
+                        return Err(ExecutionStop::Stopped(reason).into());
+                    }
+                    Err(error) => return Err(error),
                 }
-                Ok(ToolDecision::Reject(reason) | ToolDecision::Stop(reason)) => {
-                    return Err(self.stop_dispatch_error(ExecutionStop::Stopped(reason).into()));
-                }
-                Err(error) => return Err(self.stop_dispatch_error(error)),
             }
+        }
+        if admission.is_cancelled() {
+            return Ok(None);
         }
         // Admission occurs only after policy. Both initial and recovery attempts
         // use this one dispatch boundary, including nested controls and storage.
-        let execution = execution.with_action(self.action_position(handle)?);
+        let execution = execution.with_action(conversation.lock().await.action_position(handle)?);
         let context = ToolContext::for_execution(call.id.to_string(), execution);
         let result = execution
             .with_cancellation(&context.cancellation)
             .tool_attempt(&name, || async {
-                self.start_invocation(handle, recovery)
+                conversation
+                    .lock()
+                    .await
+                    .start_invocation(handle, recovery)
                     .map_err(|error| match error {
                         ConversationError::Storage(failure) => {
                             ToolError::Stop(ExecutionStop::Storage(Box::new((*failure).clone())))
@@ -246,7 +483,8 @@ impl Conversation {
                 .await
             })
             .await;
-        if let Some(failure) = self.history_failure() {
+        let mut state = conversation.lock().await;
+        if let Some(failure) = state.history_failure() {
             return Err(ExecutionStop::Storage(Box::new(failure.clone())).into());
         }
         let resolution = match result {
@@ -255,11 +493,17 @@ impl Conversation {
             Err(ToolError::Failed(error)) => {
                 ActionResolution::Failed(ToolOutput::text(error.to_string()))
             }
-            Err(ToolError::Stop(stop)) => return Err(self.stop_dispatch_error(stop.into())),
+            Err(ToolError::Stop(stop)) => return Err(stop.into()),
         };
-        self.resolve(handle, resolution.clone())?;
-        self.check_dispatch_cancellation(execution)?;
-        Ok(resolution)
+        state.resolve(handle, resolution.clone())?;
+        execution.check_cancellation().map_err(|error| {
+            ToolDispatchError::Stop(
+                error
+                    .into_execution_stop()
+                    .expect("cancellation is terminal"),
+            )
+        })?;
+        Ok(Some(resolution))
     }
 
     fn check_dispatch_cancellation(

@@ -528,6 +528,10 @@ impl Default for ModelProviderConfig {
 pub struct InferenceConfig {
     #[schemars(description = "Maximum number of tool-use turns per inference loop.")]
     pub max_tool_turns: usize,
+    #[schemars(
+        description = "Maximum concurrent tool calls per response. Defaults to available CPUs clamped to 2–8. Set to 1 for sequential execution."
+    )]
+    pub max_concurrent_tool_calls: std::num::NonZeroUsize,
     #[schemars(description = "Default max tokens when not specified by model group.")]
     pub default_max_tokens: u64,
     #[schemars(description = "Percentage of context window usage that triggers compaction.")]
@@ -540,6 +544,7 @@ impl Default for InferenceConfig {
     fn default() -> Self {
         Self {
             max_tool_turns: 200,
+            max_concurrent_tool_calls: default_tool_concurrency(),
             default_max_tokens: 8192,
             compaction_trigger_pct: 80,
             history_truncation_pct: 90,
@@ -567,4 +572,15 @@ impl CredentialMethod {
             Self::Anonymous => "anonymous",
         }
     }
+}
+
+/// Tool work is commonly I/O-bound: allow overlap even on one CPU, but cap the
+/// default fan-out on large hosts. Explicit configuration may exceed this cap.
+pub fn default_tool_concurrency() -> std::num::NonZeroUsize {
+    std::num::NonZeroUsize::new(
+        std::thread::available_parallelism()
+            .map_or(2, |cpus| cpus.get())
+            .clamp(2, 8),
+    )
+    .unwrap()
 }

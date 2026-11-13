@@ -85,6 +85,13 @@ impl<'a> ToolRegistry<'a> {
         }
     }
 
+    pub(crate) fn locked(&mut self) -> BTreeMap<String, tokio::sync::Mutex<&mut (dyn Tool + 'a)>> {
+        self.tools
+            .iter_mut()
+            .map(|(name, entry)| (name.clone(), tokio::sync::Mutex::new(entry.tool.as_mut())))
+            .collect()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
     }

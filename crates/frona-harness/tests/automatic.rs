@@ -500,3 +500,39 @@ async fn incomplete_turns_cannot_promote_submissions_or_dispatch_tools_but_charg
         assert_eq!(budget.snapshot().tool_calls, 0);
     }
 }
+
+#[tokio::test]
+async fn automatic_runs_enable_concurrency_for_sibling_tools_by_default() {
+    let (model, requests) = model(vec![
+        Ok(output(vec![
+            call("a", "a", json!({})),
+            call("b", "b", json!({})),
+        ])),
+        Ok(text("done")),
+    ]);
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let mut tools = frona_harness::ToolRegistry::default();
+    for name in ["a", "b"] {
+        let barrier = barrier.clone();
+        tools
+            .register(
+                tool(name, "probe", move |_: Value| {
+                    let barrier = barrier.clone();
+                    async move {
+                        barrier.wait().await;
+                        Ok(name)
+                    }
+                })
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        Harness::new(model).run("go").tools(tools).await
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(result, "done");
+    assert_eq!(requests.lock().unwrap().len(), 2);
+}

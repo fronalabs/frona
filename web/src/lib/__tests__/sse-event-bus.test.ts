@@ -142,6 +142,7 @@ describe("SSEEventBus: chat event routing", () => {
     const iter = bus.subscribe("chat-1", controller.signal)[Symbol.asyncIterator]();
 
     bus.routeEvent("tool_result", "chat-1", {
+      id: "te-1",
       name: "web_search",
       success: true,
       summary: "Done",
@@ -150,6 +151,7 @@ describe("SSEEventBus: chat event routing", () => {
     const r = await iter.next();
     expect(r.value).toEqual({
       type: "tool_result",
+      id: "te-1",
       name: "web_search",
       success: true,
       summary: "Done",

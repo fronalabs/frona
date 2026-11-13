@@ -276,22 +276,18 @@ async fn rich_success_and_failure_keep_raw_calls_but_project_canonical_requests(
         )
         .await
         .unwrap();
-        let first = dispatcher
-            .execute(
+        let mut results = dispatcher
+            .execute_batch(
                 &mut conversation,
-                &actions[0],
+                &actions,
                 ExecutionControl::new(&budget),
+                std::num::NonZeroUsize::new(2).unwrap(),
             )
             .await
-            .unwrap();
-        let second = dispatcher
-            .execute(
-                &mut conversation,
-                &actions[1],
-                ExecutionControl::new(&budget),
-            )
-            .await
-            .unwrap();
+            .unwrap()
+            .into_iter();
+        let first = results.next().unwrap();
+        let second = results.next().unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert_ne!(first.result().record.id, second.result().record.id);
         assert_eq!(
@@ -897,4 +893,207 @@ async fn cancellation_after_required_begin_preserves_row_without_invoking_tool()
     assert!(!rows[0].success);
     assert!(events.try_recv().is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+struct ConcurrentProbe {
+    started: tokio::sync::mpsc::UnboundedSender<usize>,
+    next: AtomicUsize,
+    release: Vec<tokio::sync::Semaphore>,
+}
+
+#[async_trait]
+impl AgentTool for ConcurrentProbe {
+    fn name(&self) -> &str {
+        "probe"
+    }
+    fn definitions(&self) -> Vec<ToolDefinition> {
+        vec![ToolDefinition {
+            id: "probe".into(),
+            provider_id: String::new(),
+            description: "probe".into(),
+            parameters: json!({"type":"object"}),
+        }]
+    }
+    async fn execute(
+        &self,
+        _: &str,
+        arguments: Value,
+        _: &InferenceContext,
+    ) -> Result<ToolOutput, AppError> {
+        assert!(arguments.get("description").is_none());
+        let id = self.next.fetch_add(1, Ordering::SeqCst);
+        self.started.send(id).unwrap();
+        self.release[id].acquire().await.unwrap().forget();
+        Ok(ToolOutput::text(format!("result {id}")))
+    }
+}
+
+#[tokio::test]
+async fn concurrent_repeated_server_calls_preserve_rows_and_turn_metadata() {
+    let (fixture, ctx, message) = setup().await;
+    let service = &fixture.state.chat_service;
+    let (tx, mut started) = tokio::sync::mpsc::unbounded_channel();
+    let probe = Arc::new(ConcurrentProbe {
+        started: tx,
+        next: AtomicUsize::new(0),
+        release: (0..3).map(|_| tokio::sync::Semaphore::new(0)).collect(),
+    });
+    let mut registry = AgentToolRegistry::empty();
+    registry.register(probe.clone());
+    let mut conversation = Conversation::default();
+    let actions = record(&mut conversation, &["probe", "probe", "probe"], &registry);
+    let budget = DefaultBudget::default();
+    let mut dispatcher = PersistentToolDispatcher::new(
+        service,
+        &registry,
+        &ctx,
+        &message,
+        4,
+        Some("turn text".into()),
+        None,
+    )
+    .await
+    .unwrap();
+    let (results, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(
+            dispatcher.execute_batch(
+                &mut conversation,
+                &actions,
+                ExecutionControl::new(&budget),
+                std::num::NonZeroUsize::new(2).unwrap()
+            ),
+            async {
+                assert_eq!(started.recv().await, Some(0));
+                assert_eq!(started.recv().await, Some(1));
+                assert!(started.try_recv().is_err());
+                probe.release[1].add_permits(1);
+                assert_eq!(started.recv().await, Some(2));
+                probe.release[2].add_permits(1);
+                probe.release[0].add_permits(1);
+            }
+        )
+    })
+    .await
+    .unwrap();
+    let results = results.unwrap();
+    assert_eq!(results.len(), 3);
+    assert_eq!(conversation.pending_count(), 0);
+    assert_eq!(budget.snapshot().tool_calls, 3);
+    assert_eq!(budget.snapshot().in_flight, 0);
+    assert_eq!(
+        results[0].result().record.turn_text.as_deref(),
+        Some("turn text")
+    );
+    assert!(
+        results[1..]
+            .iter()
+            .all(|result| result.result().record.turn_text.is_none())
+    );
+    let rows = service.get_tool_calls_by_message(&message).await.unwrap();
+    assert_eq!(rows.len(), 3);
+    assert!(
+        rows.iter()
+            .all(|row| row.success && row.result.starts_with("result "))
+    );
+    assert_eq!(rows.iter().filter(|row| row.turn_text.is_some()).count(), 1);
+}
+
+#[tokio::test]
+async fn stopped_batch_retains_attachments_from_completed_calls() {
+    let (fixture, ctx, message) = setup().await;
+    let (registry, calls) = registry("success");
+    let mut conversation = Conversation::default();
+    let actions = record(&mut conversation, &["probe", "probe"], &registry);
+    let budget = DefaultBudget::new(BudgetLimits {
+        tool_calls: Some(1),
+        ..Default::default()
+    });
+    let mut dispatcher = PersistentToolDispatcher::new(
+        &fixture.state.chat_service,
+        &registry,
+        &ctx,
+        &message,
+        0,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let failure = dispatcher
+        .execute_batch(
+            &mut conversation,
+            &actions,
+            ExecutionControl::new(&budget),
+            std::num::NonZeroUsize::new(2).unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        failure.error,
+        ToolDispatchError::Stop(ExecutionStop::BudgetExhausted(_))
+    ));
+    assert_eq!(failure.attachments.len(), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        conversation.responses()[0].actions()[0].status(),
+        ActionStatus::Resolved
+    );
+    assert_eq!(
+        conversation.responses()[0].actions()[1].status(),
+        ActionStatus::Proposed
+    );
+    assert_eq!(budget.snapshot().in_flight, 0);
+}
+
+#[tokio::test]
+async fn concurrent_storage_failure_stops_admission_and_preserves_unfinished_calls() {
+    for event in ["CREATE", "UPDATE"] {
+        let (fixture, ctx, message) = setup().await;
+        let (registry, calls) = registry("success");
+        let mut conversation = Conversation::default();
+        let actions = record(&mut conversation, &["probe", "probe", "probe"], &registry);
+        let budget = DefaultBudget::default();
+        let mut dispatcher = PersistentToolDispatcher::new(
+            &fixture.state.chat_service,
+            &registry,
+            &ctx,
+            &message,
+            0,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        fixture.state.db.query(format!("DEFINE EVENT refuse ON TABLE tool_call WHEN $event = '{event}' THEN {{ THROW 'required storage unavailable'; }};")).await.unwrap().check().unwrap();
+        let failure = dispatcher
+            .execute_batch(
+                &mut conversation,
+                &actions,
+                ExecutionControl::new(&budget),
+                std::num::NonZeroUsize::new(2).unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            failure.error,
+            ToolDispatchError::Stop(ExecutionStop::Storage(_))
+        ));
+        assert_eq!(conversation.status(), ConversationStatus::Stopped);
+        assert_eq!(
+            conversation.responses()[0].actions()[2].status(),
+            ActionStatus::Proposed
+        );
+        assert!(
+            conversation.responses()[0]
+                .actions()
+                .iter()
+                .all(|action| action.resolution().is_none())
+        );
+        assert_eq!(budget.snapshot().in_flight, 0);
+        if event == "CREATE" {
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+        } else {
+            assert!((1..=2).contains(&calls.load(Ordering::SeqCst)));
+        }
+    }
 }

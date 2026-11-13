@@ -326,6 +326,18 @@ describe("ChatStore", () => {
       expect(result.result).toBe("Done");
     });
 
+    it("matches out-of-order results by canonical ID for repeated tool names", () => {
+      store.handleEvent({ type: "tool_call", id: "te-1", provider_call_id: "tc-1", name: "cli", arguments: "{}" });
+      store.handleEvent({ type: "tool_call", id: "te-2", provider_call_id: "tc-2", name: "cli", arguments: "{}" });
+      store.handleEvent({ type: "tool_result", id: "te-2", name: "cli", success: false, summary: "second" });
+      expect(store.streamingToolResults.has("te-1")).toBe(false);
+      expect(store.streamingToolResults.get("te-2")).toEqual({ result: "second", isError: true });
+      store.handleEvent({ type: "tool_result", id: "unknown", name: "cli", success: true });
+      expect(store.streamingToolResults.has("te-1")).toBe(false);
+      store.handleEvent({ type: "tool_result", id: "te-1", name: "cli", success: true, summary: "first" });
+      expect(store.streamingToolResults.get("te-1")).toEqual({ result: "first", isError: false });
+    });
+
     it("matches multiple tool calls of the same name in order", () => {
       store.handleEvent({ type: "tool_call", id: "te-1", provider_call_id: "tc-1", name: "cli", arguments: "{}" });
       store.handleEvent({ type: "tool_call", id: "te-2", provider_call_id: "tc-2", name: "cli", arguments: "{}" });

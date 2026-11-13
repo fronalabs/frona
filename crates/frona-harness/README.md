@@ -67,6 +67,25 @@ let answer = harness.run("Add 2 and 3").tool(add).tool(invocation).await?;
 For application state, closure tools can borrow local values. See the `tools` and
 `manual` examples. Spawning execution requires an owned, `Send`, `'static` future.
 
+## Concurrent tool execution
+
+Automatic runs execute sibling tool calls concurrently, up to the available CPU
+count clamped to 2–8. Override the limit with
+`.max_concurrent_tool_calls(NonZeroUsize::new(4).unwrap())`; use `1` for sequential
+execution. Manual loops can use `session.execute_tools(&actions).await`.
+
+Distinct tool instances overlap. Repeated calls to the same registered mutable
+`Tool` stay serial, preserving borrowed application state. Tools finish in any
+order; the next model request retains proposal order. Cancellation and terminal
+failures leave interrupted calls unfinished. Budget refusal lets already admitted
+calls finish, without starting queued calls.
+
+The server uses separate invocation instances, allowing repeated calls to the
+same server tool to overlap. Configure `inference.max_concurrent_tool_calls` in
+server settings or YAML; zero is invalid. The limit applies per response batch,
+not globally across chats or nested runs. Tools sharing external mutable resources
+must coordinate access, or the application can select sequential execution.
+
 ## Structured feedback loops
 
 Add `serde` with its `derive` feature and `schemars` to your dependencies. The

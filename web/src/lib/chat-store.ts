@@ -373,9 +373,9 @@ export class ChatStore {
       }
 
       case "tool_result": {
-        // Match by tool name to the first unresolved tool call
+        // Use canonical IDs for concurrent results; retain compatibility with older servers.
         for (const [id, tc] of this.streamingToolCalls) {
-          if (tc.toolName === event.name && !this.streamingToolResults.has(id)) {
+          if ((event.id ? id === event.id : tc.toolName === event.name) && !this.streamingToolResults.has(id)) {
             this.streamingToolResults.set(id, {
               result: event.summary ?? (event.success ? "Done" : "Error"),
               isError: !event.success,

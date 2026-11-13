@@ -6,7 +6,7 @@ export type ChatSSEEvent =
   | { type: "token"; content: string }
   | { type: "reasoning"; content: string }
   | { type: "tool_call"; id: string; provider_call_id: string; name: string; arguments: unknown; description?: string }
-  | { type: "tool_result"; name: string; success: boolean; summary?: string }
+  | { type: "tool_result"; id?: string; name: string; success: boolean; summary?: string }
   | { type: "chat_message"; message: MessageResponse }
   | { type: "retry"; retryAfterSecs: number; reason: string }
   | { type: "inference_start" }
@@ -308,6 +308,7 @@ export class SSEEventBus {
       case "tool_result":
         this.dispatchChat(chatId, {
           type: "tool_result",
+          id: parsed.id as string | undefined,
           name: parsed.name as string,
           success: parsed.success as boolean,
           summary: parsed.summary as string | undefined,

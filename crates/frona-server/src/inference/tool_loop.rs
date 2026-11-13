@@ -29,6 +29,7 @@ pub enum InferenceEventKind {
         description: Option<String>,
     },
     ToolResult {
+        id: String,
         name: String,
         result: String,
         success: bool,
@@ -374,23 +375,32 @@ pub async fn run_tool_loop_controlled(
         let mut pending = Vec::new();
         let mut task_event = None;
         let mut prompts = Vec::new();
-        for action in &actions.actions {
-            let result = match dispatcher
-                .execute(&mut conversation, action, execution)
-                .await
-            {
-                Ok(result) => result,
-                Err(frona_harness::ToolDispatchError::Stop(stop)) => {
-                    return stopped(
-                        &mut conversation,
-                        stop,
-                        turn_text,
-                        all_attachments,
-                        last_reasoning,
-                    );
-                }
-                Err(error) => return Err(protocol_error(error)),
-            };
+        let results = match dispatcher
+            .execute_batch(
+                &mut conversation,
+                &actions.actions,
+                execution,
+                model_group.inference.max_concurrent_tool_calls,
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(failure) => {
+                extend_unique_attachments(&mut all_attachments, &failure.attachments);
+                let stop = match failure.error {
+                    frona_harness::ToolDispatchError::Stop(stop) => stop,
+                    error => return Err(protocol_error(error)),
+                };
+                return stopped(
+                    &mut conversation,
+                    stop,
+                    turn_text,
+                    all_attachments,
+                    last_reasoning,
+                );
+            }
+        };
+        for result in results {
             extend_unique_attachments(&mut all_attachments, &result.result().attachments);
             match result {
                 PersistentToolOutcome::Pending(result) => pending.push(result.record),

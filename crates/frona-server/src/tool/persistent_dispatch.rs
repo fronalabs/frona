@@ -66,6 +66,30 @@ impl PersistentToolOutcome {
     }
 }
 
+/// A stopped batch retains attachments from calls that already finished.
+#[derive(Debug, thiserror::Error)]
+#[error("{error}")]
+pub struct PersistentToolBatchError {
+    #[source]
+    pub error: ToolDispatchError,
+    pub attachments: Vec<Attachment>,
+}
+
+impl From<ToolDispatchError> for PersistentToolBatchError {
+    fn from(error: ToolDispatchError) -> Self {
+        Self {
+            error,
+            attachments: Vec::new(),
+        }
+    }
+}
+
+impl From<harness::ConversationError> for PersistentToolBatchError {
+    fn from(error: harness::ConversationError) -> Self {
+        ToolDispatchError::from(error).into()
+    }
+}
+
 /// Bound to a real executing Agent message, checked against canonical ownership.
 /// Construct one per provider turn so text/reasoning are stamped on its first row.
 pub struct PersistentToolDispatcher<'a> {
@@ -186,6 +210,124 @@ impl<'a> PersistentToolDispatcher<'a> {
         } else {
             PersistentToolOutcome::Continue(result)
         })
+    }
+
+    /// Run a provider batch using the harness scheduler. Every invocation owns
+    /// its persistence state, so repeated calls to the same server tool overlap.
+    pub async fn execute_batch(
+        &mut self,
+        conversation: &mut Conversation,
+        actions: &[PendingAction],
+        execution: ExecutionControl<'_>,
+        maximum: std::num::NonZeroUsize,
+    ) -> Result<Vec<PersistentToolOutcome>, PersistentToolBatchError> {
+        // Preserve the existing rejection path (including canonical error rows)
+        // for malformed batches. Normal offered calls use concurrent dispatch.
+        let mut definitions = Vec::new();
+        for action in actions {
+            let proposal = conversation.action_proposal(action)?;
+            let name = &proposal.call.function.name;
+            let definition = self
+                .registry
+                .definitions()
+                .iter()
+                .find(|tool| tool.id == *name);
+            if !proposal.offered_tools.iter().any(|tool| tool.name == *name) || definition.is_none()
+            {
+                let mut results = Vec::new();
+                for action in actions {
+                    match self.execute(conversation, action, execution).await {
+                        Ok(result) => results.push(result),
+                        Err(error) => {
+                            return Err(PersistentToolBatchError {
+                                error,
+                                attachments: results
+                                    .iter()
+                                    .flat_map(|result| result.result().attachments.clone())
+                                    .collect(),
+                            });
+                        }
+                    }
+                }
+                return Ok(results);
+            }
+            conversation.tool_proposal(action)?;
+            definitions.push((proposal.call.clone(), definition.unwrap().clone()));
+        }
+        let mut dispatchers: Vec<_> = (0..actions.len())
+            .map(|index| Self {
+                service: self.service,
+                registry: self.registry,
+                context: self.context,
+                events: self.events.clone(),
+                message_id: self.message_id.clone(),
+                turn: self.turn,
+                turn_text: self.turn_text.clone(),
+                reasoning: self.reasoning.clone(),
+                metadata_saved: self.metadata_saved || index != 0,
+            })
+            .collect();
+        let mut returned: Vec<Option<Returned>> = (0..actions.len()).map(|_| None).collect();
+        let mut calls = Vec::new();
+        for (((action, (call, definition)), dispatcher), returned) in actions
+            .iter()
+            .zip(definitions)
+            .zip(&mut dispatchers)
+            .zip(&mut returned)
+        {
+            calls.push((
+                action,
+                Box::new(PersistentInvocation {
+                    definition: ToolDefinition {
+                        name: definition.id.try_into().map_err(|_| {
+                            ToolDispatchError::ToolHook("tool name cannot be empty".into())
+                        })?,
+                        description: definition.description,
+                        parameters: definition.parameters,
+                        annotations: Default::default(),
+                    },
+                    dispatcher,
+                    call,
+                    returned,
+                }) as Box<dyn Tool>,
+            ));
+        }
+        let resolutions = conversation
+            .execute_tool_instances(&mut calls, execution, maximum)
+            .await;
+        drop(calls);
+        if let Some(first) = dispatchers.first() {
+            self.metadata_saved = first.metadata_saved;
+        }
+        let resolutions = resolutions.map_err(|error| PersistentToolBatchError {
+            error,
+            attachments: returned
+                .iter()
+                .flatten()
+                .flat_map(|(_, attachments, _)| attachments.clone())
+                .collect(),
+        })?;
+        Ok(resolutions
+            .into_iter()
+            .zip(returned)
+            .map(|(resolution, returned)| {
+                let (record, attachments, pending_external) =
+                    returned.expect("resolved invocation has a canonical result");
+                let has_task = record.task_event.is_some();
+                let result = PersistentToolResult {
+                    record,
+                    resolution,
+                    attachments,
+                };
+                if pending_external {
+                    PersistentToolOutcome::Pending(result)
+                } else if has_task {
+                    PersistentToolOutcome::Task(result)
+                } else {
+                    PersistentToolOutcome::Continue(result)
+                }
+            })
+            .collect())
     }
 
     /// Persist paired rejection without invoking a tool or consuming allowance.
@@ -326,6 +468,7 @@ impl<'a> PersistentToolDispatcher<'a> {
         if !pending(output) {
             self.events.send(InferenceEvent {
                 kind: InferenceEventKind::ToolResult {
+                    id: record.id.clone(),
                     name: record.name.clone(),
                     result: text,
                     success: record.success,

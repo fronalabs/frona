@@ -220,6 +220,7 @@ pub(crate) fn map_event_to_sse(event: &BroadcastEvent) -> Option<Event> {
                     serde_json::json!({ "chat_id": chat_id, "content": text }),
                 )),
                 InferenceEventKind::ToolResult {
+                    id,
                     name,
                     result,
                     success,
@@ -227,7 +228,7 @@ pub(crate) fn map_event_to_sse(event: &BroadcastEvent) -> Option<Event> {
                     let summary: String = result.chars().take(200).collect();
                     Some(sse_event(
                         "tool_result",
-                        serde_json::json!({ "chat_id": chat_id, "name": name, "success": success, "summary": summary }),
+                        serde_json::json!({ "chat_id": chat_id, "id": id, "name": name, "success": success, "summary": summary }),
                     ))
                 }
                 InferenceEventKind::EntityUpdated {

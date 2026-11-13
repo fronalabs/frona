@@ -341,6 +341,13 @@ impl<'a> Model<'a> {
         }
     }
 
+    pub(super) fn tool_concurrency(&self) -> std::num::NonZeroUsize {
+        match &self.backend {
+            ModelBackend::Group(group) => group.inference.max_concurrent_tool_calls,
+            ModelBackend::Adapter(_) => crate::config::default_tool_concurrency(),
+        }
+    }
+
     pub(super) fn compaction_config(&self) -> super::CompactionConfig {
         match &self.backend {
             ModelBackend::Group(group) => super::CompactionConfig {

@@ -28,6 +28,14 @@ export function AdvancedSection({ inference, scheduler, app, onChange }: Advance
         />
 
         <NumberInput
+          label="Max Concurrent Tool Calls"
+          description="Maximum tool calls running at once per response; set to 1 for sequential execution"
+          value={inference.max_concurrent_tool_calls}
+          onChange={(max_concurrent_tool_calls) => onChange({ inference: { ...inference, max_concurrent_tool_calls } })}
+          min={1}
+        />
+
+        <NumberInput
           label="Default Max Tokens"
           description="Default maximum tokens for LLM responses"
           value={inference.default_max_tokens}

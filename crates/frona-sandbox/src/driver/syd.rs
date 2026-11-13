@@ -2,7 +2,7 @@ use std::net::{IpAddr, ToSocketAddrs};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use crate::core::error::AppError;
+use crate::Error;
 
 use super::{ETC_READ_ALLOWLIST, SandboxConfig, SandboxDriver, linux};
 
@@ -125,7 +125,7 @@ impl SandboxDriver for SydDriver {
         program: &str,
         args: &[&str],
         config: &SandboxConfig,
-    ) -> Result<Command, AppError> {
+    ) -> Result<Command, Error> {
         let syd_args = SydArgsBuilder::new()
             .filesystem_rules(config)
             .network_rules(config, &self.dns_servers, &self.dest_cache)

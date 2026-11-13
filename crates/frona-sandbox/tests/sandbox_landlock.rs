@@ -1,24 +1,18 @@
 #![cfg(target_os = "linux")]
 
-use frona::tool::sandbox::SandboxFactory;
-use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
+use frona_sandbox::SandboxFactory;
 use std::path::PathBuf;
-use std::sync::Arc;
-
-fn test_resource_manager() -> Arc<SystemResourceManager> {
-    Arc::new(SystemResourceManager::new(60.0, 60.0, 60.0, 60.0))
-}
 
 fn test_manager() -> (SandboxFactory, PathBuf) {
     let base = std::env::temp_dir()
         .join("frona_test_landlock")
         .join(uuid::Uuid::new_v4().to_string());
-    (SandboxFactory::new(false, test_resource_manager()), base)
+    (SandboxFactory::new(false), base)
 }
 
 fn relative_path_manager() -> (SandboxFactory, PathBuf) {
     let base = PathBuf::from(format!("target/test_landlock_{}", uuid::Uuid::new_v4()));
-    (SandboxFactory::new(false, test_resource_manager()), base)
+    (SandboxFactory::new(false), base)
 }
 
 #[tokio::test]
@@ -410,7 +404,7 @@ async fn test_sandbox_fallback_on_unsupported_fs() {
         return;
     }
 
-    let mgr = SandboxFactory::new(false, test_resource_manager());
+    let mgr = SandboxFactory::new(false);
     let ws = mgr.get_sandbox(base, "landlock-fallback", false, vec![]);
 
     let output = ws

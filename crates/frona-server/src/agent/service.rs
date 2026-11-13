@@ -8,7 +8,7 @@ use crate::core::repository::Repository;
 use crate::db::repo::agents::SurrealAgentRepo;
 use crate::policy::sandbox::SandboxPolicy;
 use crate::policy::service::PolicyService;
-use crate::tool::sandbox::driver::resource_monitor::SystemResourceManager;
+use crate::tool::sandbox::resource_monitor::SystemResourceManager;
 
 use super::config::parse_frontmatter;
 use super::models::Agent;
@@ -52,7 +52,7 @@ impl AgentService {
         let agents = self.repo.find_all().await?;
         for agent in agents {
             if let Some(ref limits) = agent.sandbox_limits {
-                self.resource_manager.set_agent_limits(
+                self.resource_manager.set_owner_limits(
                     &agent.id,
                     Some(limits.max_cpu_pct),
                     Some(limits.max_memory_pct),
@@ -64,7 +64,7 @@ impl AgentService {
 
     fn push_agent_limits(&self, agent_id: &str, agent: &Agent) {
         if let Some(ref limits) = agent.sandbox_limits {
-            self.resource_manager.set_agent_limits(
+            self.resource_manager.set_owner_limits(
                 agent_id,
                 Some(limits.max_cpu_pct),
                 Some(limits.max_memory_pct),

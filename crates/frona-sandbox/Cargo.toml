@@ -1,0 +1,25 @@
+[package]
+name = "frona-sandbox"
+version = "0.1.0"
+edition.workspace = true
+description = "Portable process sandbox execution and resource management"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/fronalabs/frona"
+documentation = "https://docs.rs/frona-sandbox"
+
+[dependencies]
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+moka.workspace = true
+tokio-util = "0.7"
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
+
+[dev-dependencies]
+uuid.workspace = true
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }

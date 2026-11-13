@@ -38,14 +38,13 @@ async fn build_mcp_supervisor() -> (
         ..Default::default()
     });
 
-    let factory = Arc::new(frona::tool::sandbox::SandboxFactory::new(
-        true,
-        Arc::new(
-            frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+    let factory = Arc::new(
+        frona::tool::sandbox::SandboxFactory::new(true).with_resource_monitor(Arc::new(
+            frona::tool::sandbox::resource_monitor::SystemResourceManager::new(
                 80.0, 80.0, 90.0, 90.0,
             ),
-        ),
-    ));
+        )),
+    );
     let policy_schema = frona::policy::schema::build_schema();
     let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> = Arc::new(
         SurrealRepo::<frona::policy::models::Policy>::new(db.clone()),
@@ -119,6 +118,11 @@ async fn build_mcp_supervisor() -> (
     );
     let sandbox_manager = Arc::new(frona::tool::sandbox::SandboxManager::new(
         factory,
+        Arc::new(
+            frona::tool::sandbox::resource_monitor::SystemResourceManager::new(
+                80.0, 80.0, 90.0, 90.0,
+            ),
+        ),
         policy_service.clone(),
         supervisor_skill_service,
         storage.clone(),

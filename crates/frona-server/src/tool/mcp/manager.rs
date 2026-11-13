@@ -16,7 +16,7 @@ pub struct McpConnection {
     pub handle: crate::core::Handle,
     pub user_id: String,
     pub client: McpClient,
-    pub child: Option<tokio::process::Child>,
+    pub child: Option<frona_sandbox::TrackedChild>,
     pub port: Option<u16>,
     pub restart_count: u32,
     pub log_path: Option<std::path::PathBuf>,
@@ -206,15 +206,17 @@ impl McpManager {
             .open(&log_path)
             .map_err(|e| AppError::Tool(format!("opening {}: {e}", log_path.display())))?;
 
-        let mut child = sandbox.spawn(
-            &server.command,
-            &args_refs,
-            Some(&server.workspace_dir),
-            Vec::new(),
-            Some(std::process::Stdio::piped()),
-            std::process::Stdio::piped(),
-            std::process::Stdio::from(log_file),
-        )?;
+        let mut child = sandbox
+            .spawn(
+                &server.command,
+                &args_refs,
+                Some(&server.workspace_dir),
+                Vec::new(),
+                Some(std::process::Stdio::piped()),
+                std::process::Stdio::piped(),
+                std::process::Stdio::from(log_file),
+            )
+            .await?;
 
         let stdin = child
             .stdin
@@ -280,15 +282,17 @@ impl McpManager {
             .try_clone()
             .map_err(|e| AppError::Tool(format!("cloning log fd: {e}")))?;
 
-        let child = sandbox.spawn(
-            &server.command,
-            &args_refs,
-            Some(&server.workspace_dir),
-            Vec::new(),
-            None,
-            std::process::Stdio::from(log_file),
-            std::process::Stdio::from(log_file_clone),
-        )?;
+        let child = sandbox
+            .spawn(
+                &server.command,
+                &args_refs,
+                Some(&server.workspace_dir),
+                Vec::new(),
+                None,
+                std::process::Stdio::from(log_file),
+                std::process::Stdio::from(log_file_clone),
+            )
+            .await?;
 
         let path = endpoint_path.unwrap_or("/mcp");
         let url = format!("http://127.0.0.1:{port}{path}");
@@ -342,7 +346,7 @@ impl McpManager {
         &self,
         server: &McpServer,
         client: McpClient,
-        child: Option<tokio::process::Child>,
+        child: Option<frona_sandbox::TrackedChild>,
         port: Option<u16>,
         log_path_override: Option<std::path::PathBuf>,
         token_guard: Option<EphemeralTokenGuard>,

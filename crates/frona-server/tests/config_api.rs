@@ -116,9 +116,7 @@ async fn test_runtime_config_operations() {
     let config = Config::default();
     let storage = frona::storage::StorageService::new(&config);
     let resource_manager = std::sync::Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
-            80.0, 80.0, 90.0, 90.0,
-        ),
+        frona::tool::sandbox::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
     );
     let state = frona::core::state::AppState::new(
         db.clone(),

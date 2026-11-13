@@ -13,6 +13,7 @@ name = "frona"
 path = "src/main.rs"
 
 [dependencies]
+frona-sandbox = { path = "../frona-sandbox", version = "0.1.0" }
 frona-pkm = { path = "../frona-pkm", version = "0.1.0" }
 frona-harness = { path = "../frona-harness", version = "0.1.0" }
 frona-cli-mcp = { path = "../frona-cli-mcp" }
@@ -146,8 +147,6 @@ presage = { workspace = true }
 presage-store-sqlite = { workspace = true }
 smol_str = { version = "0.3.6", features = ["serde"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-landlock = "0.4"
 
 [[test]]
 name = "mcp_e2e"

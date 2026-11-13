@@ -4,9 +4,9 @@ pub mod landlock;
 /// syd/landlock drivers and the in-process `Sandbox::is_readable` checks.
 /// The constants are just `&[&str]` so they're cheap to compile everywhere.
 pub mod linux;
-pub mod macos;
+#[cfg(any(target_os = "macos", test))]
+mod macos;
 pub mod noop;
-pub mod resource_monitor;
 #[cfg(target_os = "linux")]
 pub mod syd;
 
@@ -58,7 +58,7 @@ pub const ETC_READ_ALLOWLIST: &[&str] = &[
     "/etc/group",
 ];
 
-use crate::core::error::AppError;
+use crate::Error;
 
 pub struct SandboxConfig {
     pub workspace_dir: String,
@@ -118,7 +118,7 @@ pub trait SandboxDriver: Send + Sync {
         program: &str,
         args: &[&str],
         config: &SandboxConfig,
-    ) -> Result<Command, AppError>;
+    ) -> Result<Command, Error>;
 }
 
 pub fn create_driver(disabled: bool) -> Box<dyn SandboxDriver> {
@@ -199,6 +199,7 @@ async fn run_sandbox_probe(probe_dir: &std::path::Path) -> Result<(), String> {
         None,
         None,
         None,
+        crate::ExecutionLease::new(),
     )
     .await
     .map_err(|e| format!("Sandbox probe spawn failed: {e}"))?;
@@ -223,6 +224,7 @@ async fn run_sandbox_probe(probe_dir: &std::path::Path) -> Result<(), String> {
         None,
         None,
         None,
+        crate::ExecutionLease::new(),
     )
     .await
     .map_err(|e| format!("Sandbox probe spawn failed: {e}"))?;
@@ -246,9 +248,10 @@ pub async fn execute_sandboxed(
     on_stdout: Option<mpsc::Sender<String>>,
     stdin_rx: Option<mpsc::Receiver<String>>,
     cancel_token: Option<CancellationToken>,
-    resource_manager: Option<&resource_monitor::SystemResourceManager>,
-    agent_id: Option<&str>,
-) -> Result<SandboxOutput, AppError> {
+    resource_monitor: Option<std::sync::Arc<dyn crate::ResourceMonitor>>,
+    owner_id: Option<&str>,
+    lease: crate::ExecutionLease,
+) -> Result<SandboxOutput, Error> {
     let mut std_cmd = sandbox.sandboxed_command(program, args, config)?;
 
     std_cmd.env_clear();
@@ -295,21 +298,31 @@ pub async fn execute_sandboxed(
     std_cmd.stderr(std::process::Stdio::piped());
 
     let mut cmd = tokio::process::Command::from(std_cmd);
-    let mut child = cmd
+    let child = cmd
         .spawn()
-        .map_err(|e| AppError::Tool(format!("Failed to spawn process: {e}")))?;
+        .map_err(|e| Error::Tool(format!("Failed to spawn process: {e}")))?;
+    let mut child =
+        crate::TrackedChild::new(child, resource_monitor, owner_id.unwrap_or(""), lease);
 
-    if let Some(mut rx) = stdin_rx {
+    struct StdinTask(tokio::task::JoinHandle<()>);
+    impl Drop for StdinTask {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let _stdin_task = if let Some(mut rx) = stdin_rx {
         let mut stdin_pipe = child.stdin.take().expect("stdin pipe was configured");
-        tokio::spawn(async move {
+        Some(StdinTask(tokio::spawn(async move {
             use tokio::io::AsyncWriteExt;
             while let Some(data) = rx.recv().await {
                 if stdin_pipe.write_all(data.as_bytes()).await.is_err() {
                     break;
                 }
             }
-        });
-    }
+        })))
+    } else {
+        None
+    };
 
     let stdout_pipe = child.stdout.take().expect("stdout pipe was configured");
     let mut stdout_reader = tokio::io::BufReader::new(stdout_pipe).lines();
@@ -320,64 +333,73 @@ pub async fn execute_sandboxed(
     let mut stdout_lines: Vec<String> = Vec::new();
     let mut timed_out = false;
     let mut cancelled = false;
-    let mut resource_killed = false;
-
-    let tracked_pid = child.id();
-    if let (Some(rm), Some(aid), Some(pid)) = (resource_manager, agent_id, tracked_pid) {
-        rm.register(pid, aid);
-    }
 
     use tokio::io::AsyncBufReadExt;
 
     let timeout_sleep = tokio::time::sleep(timeout);
     tokio::pin!(timeout_sleep);
 
-    loop {
+    let mut stdout_closed = false;
+    let mut stderr_closed = false;
+    let mut stderr_pipe = child.stderr.take().expect("stderr pipe was configured");
+    let mut stderr_bytes = Vec::new();
+    let mut stderr_chunk = [0u8; 8192];
+    let mut status = None;
+    use tokio::io::AsyncReadExt;
+    while status.is_none() || !stdout_closed || !stderr_closed {
         tokio::select! {
             biased;
             _ = &mut timeout_sleep, if !timeout.is_zero() => {
                 timed_out = true;
-                kill_process_group(&mut child).await;
+                child.kill().await.ok();
                 break;
             }
             _ = async {
-                if let Some(token) = &cancel_token {
-                    token.cancelled().await;
-                } else {
-                    std::future::pending::<()>().await;
-                }
+                if let Some(token) = &cancel_token { token.cancelled().await; }
+                else { std::future::pending::<()>().await; }
             } => {
                 cancelled = true;
-                kill_process_group(&mut child).await;
+                child.kill().await.ok();
                 break;
             }
-            line = stdout_reader.next_line() => {
+            result = child.wait(), if status.is_none() && stdout_closed && stderr_closed => {
+                status = Some(result.map_err(|e| Error::Tool(format!("Failed to wait for process: {e}")))?);
+            }
+            line = stdout_reader.next_line(), if !stdout_closed => {
                 match line {
                     Ok(Some(line)) => {
                         if let Some(tx) = &on_stdout {
-                            let _ = tx.send(line.clone()).await;
+                            // A slow consumer must not disable cancellation/deadlines.
+                            tokio::select! {
+                                _ = tx.send(line.clone()) => {},
+                                _ = &mut timeout_sleep, if !timeout.is_zero() => {
+                                    timed_out = true;
+                                    child.kill().await.ok();
+                                }
+                                _ = async {
+                                    if let Some(token) = &cancel_token { token.cancelled().await; }
+                                    else { std::future::pending::<()>().await; }
+                                } => {
+                                    cancelled = true;
+                                    child.kill().await.ok();
+                                }
+                            }
                         }
                         stdout_lines.push(line);
+                        if timed_out || cancelled { break; }
                     }
-                    Ok(None) => break,
-                    Err(_) => break,
+                    Ok(None) | Err(_) => stdout_closed = true,
+                }
+            }
+            read = stderr_pipe.read(&mut stderr_chunk), if !stderr_closed => {
+                match read {
+                    Ok(0) | Err(_) => stderr_closed = true,
+                    Ok(n) => stderr_bytes.extend_from_slice(&stderr_chunk[..n]),
                 }
             }
         }
     }
-
-    if let (Some(rm), Some(pid)) = (resource_manager, tracked_pid) {
-        resource_killed = rm.is_killed(pid);
-        rm.unregister(pid);
-    }
-
-    let status = child.wait().await.ok();
-
-    let mut stderr_bytes = Vec::new();
-    if let Some(mut err) = child.stderr.take() {
-        use tokio::io::AsyncReadExt;
-        let _ = err.read_to_end(&mut stderr_bytes).await;
-    }
+    let resource_killed = child.is_resource_killed();
 
     let stdout = stdout_lines.join("\n");
     let stdout = if !stdout.is_empty() && !stdout_lines.is_empty() {
@@ -404,19 +426,6 @@ pub async fn execute_sandboxed(
         cancelled,
         resource_killed,
     })
-}
-
-async fn kill_process_group(child: &mut tokio::process::Child) {
-    #[cfg(unix)]
-    if let Some(pid) = child.id() {
-        unsafe {
-            libc::kill(-(pid as i32), libc::SIGKILL);
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = child.kill().await;
-    }
 }
 
 fn truncate_output(s: String, max_bytes: usize) -> String {
@@ -464,6 +473,7 @@ mod tests {
             None,
             None,
             None,
+            crate::ExecutionLease::new(),
         )
         .await
         .unwrap();
@@ -490,6 +500,7 @@ mod tests {
             None,
             None,
             None,
+            crate::ExecutionLease::new(),
         )
         .await
         .unwrap();
@@ -538,6 +549,7 @@ mod tests {
             None,
             None,
             None,
+            crate::ExecutionLease::new(),
         )
         .await
         .unwrap();
@@ -564,6 +576,7 @@ mod tests {
             None,
             None,
             None,
+            crate::ExecutionLease::new(),
         )
         .await
         .unwrap();
@@ -588,6 +601,7 @@ mod tests {
             None,
             None,
             None,
+            crate::ExecutionLease::new(),
         )
         .await
         .unwrap();
@@ -624,6 +638,7 @@ mod tests {
             Some(token),
             None,
             None,
+            crate::ExecutionLease::new(),
         )
         .await
         .unwrap();
@@ -654,6 +669,7 @@ mod tests {
             Some(token),
             None,
             None,
+            crate::ExecutionLease::new(),
         )
         .await
         .unwrap();
@@ -681,6 +697,7 @@ mod tests {
             None,
             None,
             None,
+            crate::ExecutionLease::new(),
         )
         .await
         .unwrap();
@@ -708,6 +725,7 @@ mod tests {
             None,
             None,
             None,
+            crate::ExecutionLease::new(),
         )
         .await
         .unwrap();
@@ -732,6 +750,7 @@ mod tests {
             None,
             None,
             None,
+            crate::ExecutionLease::new(),
         )
         .await
         .unwrap();
@@ -754,6 +773,7 @@ mod tests {
             None,
             None,
             None,
+            crate::ExecutionLease::new(),
         )
         .await
         .unwrap();

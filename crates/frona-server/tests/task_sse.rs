@@ -59,9 +59,7 @@ async fn test_app_state_with_mock(mock: Arc<MockModelProvider>) -> (AppState, te
 
     let storage = StorageService::new(&config);
     let resource_manager = Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
-            80.0, 80.0, 90.0, 90.0,
-        ),
+        frona::tool::sandbox::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
     );
     let user_service = frona::auth::UserService::new(SurrealRepo::new(db.clone()), &config.cache);
     let policy_service = {

@@ -438,7 +438,7 @@ async fn e2e_policy_changes_invalidate_sandbox_cache() {
 
 #[tokio::test]
 async fn e2e_apply_to_sandbox_config_merges_correctly() {
-    use frona::tool::sandbox::driver::SandboxConfig;
+    use frona_sandbox::SandboxConfig;
 
     let (_db, service) = setup().await;
     service

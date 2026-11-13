@@ -44,7 +44,7 @@ pub async fn build_configured(db: &Surreal<Db>, configure: impl FnOnce(&mut Conf
         frona::storage::StorageService::new(&config),
         frona::core::metrics::setup_metrics_recorder(),
         Arc::new(
-            frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+            frona::tool::sandbox::resource_monitor::SystemResourceManager::new(
                 80.0, 80.0, 90.0, 90.0,
             ),
         ),

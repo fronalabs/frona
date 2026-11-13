@@ -24,8 +24,8 @@ use frona::credential::key_rotation::KeyRotation;
 use frona::db::init as db;
 use frona::scheduler::Scheduler;
 use frona::storage::StorageService;
-use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
-use frona::tool::sandbox::driver::verify_sandbox;
+use frona::tool::sandbox::resource_monitor::SystemResourceManager;
+use frona_sandbox::verify_sandbox;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     verify_sandbox(users_root.to_string_lossy().as_ref(), config.sandbox.disabled)
         .expect("Sandbox verification failed — filesystem may not support sandboxing. Set FRONA_SANDBOX_DISABLED=true to bypass.");
 
-    frona::tool::sandbox::driver::resource_monitor::log_system_resources();
+    frona::tool::sandbox::resource_monitor::log_system_resources();
 
     let storage = StorageService::new(&config);
     frona::auth::ephemeral_token::prepare_runtime_dir(&storage.users_root());

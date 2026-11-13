@@ -3,7 +3,7 @@ use cedar_policy::{Entities, Entity, PolicySet};
 use crate::core::error::AppError;
 use crate::storage::StorageService;
 use crate::storage::path::{Namespace, VirtualPath};
-use crate::tool::sandbox::driver::SandboxConfig;
+use frona_sandbox::SandboxConfig;
 
 use super::schema::{action_entity_uid, entity_type_name};
 

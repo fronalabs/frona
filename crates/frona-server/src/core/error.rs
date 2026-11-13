@@ -142,3 +142,9 @@ impl From<frona_pkm::Error> for AppError {
         }
     }
 }
+
+impl From<frona_sandbox::Error> for AppError {
+    fn from(error: frona_sandbox::Error) -> Self {
+        Self::Tool(error.to_string())
+    }
+}

@@ -139,9 +139,7 @@ async fn setup(
     let config = test_config(&tmp);
     let storage = StorageService::new(&config);
     let resource_manager = Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
-            80.0, 80.0, 90.0, 90.0,
-        ),
+        frona::tool::sandbox::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
     let state = frona::core::state::AppState::new(

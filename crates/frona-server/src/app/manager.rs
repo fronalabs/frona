@@ -22,7 +22,7 @@ pub enum ProcessStatus {
 }
 
 pub struct ManagedProcess {
-    pub child: tokio::process::Child,
+    pub child: frona_sandbox::TrackedChild,
     pub port: u16,
     pub agent_id: String,
     pub user_id: String,
@@ -318,7 +318,7 @@ impl AppManager {
         port: u16,
         manifest: &AppManifest,
         credential_env_vars: &[(String, String)],
-    ) -> Result<(tokio::process::Child, PathBuf), AppError> {
+    ) -> Result<(frona_sandbox::TrackedChild, PathBuf), AppError> {
         let user = self
             .user_service
             .find_by_id(user_id)
@@ -374,21 +374,23 @@ impl AppManager {
             .try_clone()
             .map_err(|e| AppError::Tool(format!("Failed to clone log file handle: {e}")))?;
 
-        let child = sandbox.spawn(
-            "bash",
-            &["-c", command],
-            Some(&app_dir_str),
-            extra_path_dirs,
-            None,
-            std::process::Stdio::from(log_file),
-            std::process::Stdio::from(log_file_clone),
-        )?;
+        let child = sandbox
+            .spawn(
+                "bash",
+                &["-c", command],
+                Some(&app_dir_str),
+                extra_path_dirs,
+                None,
+                std::process::Stdio::from(log_file),
+                std::process::Stdio::from(log_file_clone),
+            )
+            .await?;
 
         Ok((child, log_path))
     }
 }
 
-async fn kill_process_group(child: &mut tokio::process::Child) {
+async fn kill_process_group(child: &mut frona_sandbox::TrackedChild) {
     #[cfg(unix)]
     if let Some(pid) = child.id() {
         // Sandbox::spawn calls setsid(), making the tracked child the process-group
@@ -435,11 +437,11 @@ mod tests {
             .unwrap();
         crate::db::init::setup_schema(&db).await.unwrap();
         let rm = Arc::new(
-            crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+            crate::tool::sandbox::resource_monitor::SystemResourceManager::new(
                 60.0, 60.0, 60.0, 60.0,
             ),
         );
-        let factory = Arc::new(SandboxFactory::new(true, rm));
+        let factory = Arc::new(SandboxFactory::new(true).with_resource_monitor(rm));
 
         let user_service = crate::auth::UserService::new(
             crate::db::repo::generic::SurrealRepo::new(db.clone()),
@@ -512,6 +514,11 @@ mod tests {
 
         Arc::new(crate::tool::sandbox::SandboxManager::new(
             factory,
+            Arc::new(
+                crate::tool::sandbox::resource_monitor::SystemResourceManager::new(
+                    80.0, 80.0, 90.0, 90.0,
+                ),
+            ),
             policy_service,
             skill_service,
             storage,
@@ -589,7 +596,7 @@ mod tests {
             repo,
             &crate::core::config::CacheConfig::default(),
             std::sync::Arc::new(
-                crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+                crate::tool::sandbox::resource_monitor::SystemResourceManager::new(
                     60.0, 60.0, 60.0, 60.0,
                 ),
             ),
@@ -704,8 +711,20 @@ mod tests {
             crate::build_http_client(),
         );
 
-        let child = tokio::process::Command::new("true")
-            .spawn()
+        let child = SandboxFactory::new(true)
+            .get_sandbox(workspaces.to_path_buf(), "test", false, vec![])
+            .without_venv()
+            .without_node()
+            .spawn(
+                "true",
+                &[],
+                None,
+                vec![],
+                None,
+                std::process::Stdio::null(),
+                std::process::Stdio::null(),
+            )
+            .await
             .expect("failed to spawn dummy process");
 
         let manifest = crate::app::models::AppManifest {

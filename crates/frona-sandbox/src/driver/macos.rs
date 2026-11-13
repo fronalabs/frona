@@ -1,7 +1,10 @@
+#[cfg(target_os = "macos")]
 use std::process::Command;
 
-use crate::core::error::AppError;
+#[cfg(target_os = "macos")]
+use crate::Error;
 
+#[cfg(target_os = "macos")]
 use super::{SandboxConfig, SandboxDriver};
 
 enum ReadRule {
@@ -160,8 +163,10 @@ impl SandboxProfileBuilder {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub struct MacosDriver;
 
+#[cfg(target_os = "macos")]
 impl SandboxDriver for MacosDriver {
     fn driver_id(&self) -> &'static str {
         "macos"
@@ -172,7 +177,7 @@ impl SandboxDriver for MacosDriver {
         program: &str,
         args: &[&str],
         config: &SandboxConfig,
-    ) -> Result<Command, AppError> {
+    ) -> Result<Command, Error> {
         let mut builder = SandboxProfileBuilder::new()
             .system_reads()
             .workspace(&config.workspace_dir)

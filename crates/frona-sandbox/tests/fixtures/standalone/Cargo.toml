@@ -1,0 +1,17 @@
+[package]
+name = "sandbox-standalone-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Resolve without the server's dependencies or workspace feature unification.
+[workspace]
+
+[dependencies]
+frona-sandbox = { path = "../../.." }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tempfile = "3"
+
+[[bin]]
+name = "sandbox-standalone-consumer"
+path = "../../../examples/standalone.rs"

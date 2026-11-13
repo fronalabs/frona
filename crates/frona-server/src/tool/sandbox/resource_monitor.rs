@@ -18,7 +18,7 @@ pub struct AgentLimits {
 }
 
 pub struct TrackedProcess {
-    pub agent_id: String,
+    pub owner_id: String,
     pub killed: AtomicBool,
 }
 
@@ -29,6 +29,7 @@ pub struct Usage {
 }
 
 impl Usage {
+    #[cfg(test)]
     pub fn new(cpu: f64, mem: f64) -> Self {
         Self { cpu, mem }
     }
@@ -40,31 +41,31 @@ impl Usage {
 }
 
 pub struct SystemResourceManager {
-    pub max_agent_cpu_pct: f64,
-    pub max_agent_memory_pct: f64,
+    pub max_owner_cpu_pct: f64,
+    pub max_owner_memory_pct: f64,
     pub max_total_cpu_pct: f64,
     pub max_total_memory_pct: f64,
     num_cpus: f64,
-    agent_limits: DashMap<String, AgentLimits>,
+    owner_limits: DashMap<String, AgentLimits>,
     tracked: DashMap<u32, TrackedProcess>,
     cancel_token: CancellationToken,
 }
 
 impl SystemResourceManager {
     pub fn new(
-        max_agent_cpu_pct: f64,
-        max_agent_memory_pct: f64,
+        max_owner_cpu_pct: f64,
+        max_owner_memory_pct: f64,
         max_total_cpu_pct: f64,
         max_total_memory_pct: f64,
     ) -> Self {
         let num_cpus = detect_num_cpus();
         Self {
-            max_agent_cpu_pct,
-            max_agent_memory_pct,
+            max_owner_cpu_pct,
+            max_owner_memory_pct,
             max_total_cpu_pct,
             max_total_memory_pct,
             num_cpus,
-            agent_limits: DashMap::new(),
+            owner_limits: DashMap::new(),
             tracked: DashMap::new(),
             cancel_token: CancellationToken::new(),
         }
@@ -82,30 +83,30 @@ impl SystemResourceManager {
         self
     }
 
-    pub fn set_agent_limits(&self, agent_id: &str, cpu_pct: Option<f64>, mem_pct: Option<f64>) {
+    pub fn set_owner_limits(&self, owner_id: &str, cpu_pct: Option<f64>, mem_pct: Option<f64>) {
         if cpu_pct.is_some() || mem_pct.is_some() {
-            self.agent_limits.insert(
-                agent_id.to_string(),
+            self.owner_limits.insert(
+                owner_id.to_string(),
                 AgentLimits {
-                    cpu_pct: cpu_pct.unwrap_or(self.max_agent_cpu_pct),
-                    mem_pct: mem_pct.unwrap_or(self.max_agent_memory_pct),
+                    cpu_pct: cpu_pct.unwrap_or(self.max_owner_cpu_pct),
+                    mem_pct: mem_pct.unwrap_or(self.max_owner_memory_pct),
                 },
             );
         }
     }
 
-    pub fn effective_agent_limits(&self, agent_id: &str) -> (f64, f64) {
-        match self.agent_limits.get(agent_id) {
+    pub fn effective_owner_limits(&self, owner_id: &str) -> (f64, f64) {
+        match self.owner_limits.get(owner_id) {
             Some(l) => (l.cpu_pct, l.mem_pct),
-            None => (self.max_agent_cpu_pct, self.max_agent_memory_pct),
+            None => (self.max_owner_cpu_pct, self.max_owner_memory_pct),
         }
     }
 
-    pub fn register(&self, pid: u32, agent_id: &str) {
+    pub fn register(&self, pid: u32, owner_id: &str) {
         self.tracked.insert(
             pid,
             TrackedProcess {
-                agent_id: agent_id.to_string(),
+                owner_id: owner_id.to_string(),
                 killed: AtomicBool::new(false),
             },
         );
@@ -166,6 +167,7 @@ impl UsageTracker {
         }
     }
 
+    #[cfg(test)]
     pub fn with_alpha(mut self, alpha: f64) -> Self {
         assert!(
             alpha > 0.0 && alpha <= 1.0,
@@ -175,21 +177,23 @@ impl UsageTracker {
         self
     }
 
+    #[cfg(test)]
     pub fn alpha(&self) -> f64 {
         self.alpha
     }
 
+    #[cfg(test)]
     pub fn global_usage(&self) -> Usage {
         self.global_usage
     }
 
     #[cfg(test)]
-    pub(crate) fn agent_usage_value(&self, agent_id: &str) -> Option<Usage> {
-        self.agent_usage.get(agent_id).copied()
+    pub(crate) fn agent_usage_value(&self, owner_id: &str) -> Option<Usage> {
+        self.agent_usage.get(owner_id).copied()
     }
 
-    fn update_agent_usage(&mut self, agent_id: &str, sample: Usage) -> Usage {
-        let entry = self.agent_usage.entry(agent_id.to_string()).or_default();
+    fn update_agent_usage(&mut self, owner_id: &str, sample: Usage) -> Usage {
+        let entry = self.agent_usage.entry(owner_id.to_string()).or_default();
         entry.update(sample, self.alpha);
         *entry
     }
@@ -245,7 +249,10 @@ impl UsageTracker {
         }
 
         for pid in &dead_pids {
-            mgr.tracked.remove(pid);
+            // The sandbox reads this flag after reaping. Keep killed records
+            // until its lifecycle guard explicitly unregisters them.
+            mgr.tracked
+                .remove_if(pid, |_, process| !process.killed.load(Relaxed));
         }
 
         if total_memory == 0 {
@@ -261,7 +268,7 @@ impl UsageTracker {
             }
             if let Some(&(cpu, mem_bytes)) = per_pid.get(&pid) {
                 let mem_pct = (mem_bytes as f64 / total_memory as f64) * 100.0;
-                pid_usage.push((pid, tracked.agent_id.clone(), cpu, mem_pct, mem_bytes));
+                pid_usage.push((pid, tracked.owner_id.clone(), cpu, mem_pct, mem_bytes));
             }
         }
 
@@ -291,22 +298,22 @@ impl UsageTracker {
         mgr: &SystemResourceManager,
         pid_usage: &[(u32, String, f64, f64, u64)],
     ) {
-        let mut agent_ids: Vec<String> =
+        let mut owner_ids: Vec<String> =
             pid_usage.iter().map(|(_, a, _, _, _)| a.clone()).collect();
-        agent_ids.sort();
-        agent_ids.dedup();
+        owner_ids.sort();
+        owner_ids.dedup();
 
         // Phase 1 — per-agent enforcement, accumulating raw global total.
         let mut raw_global = Usage::default();
-        for agent_id in &agent_ids {
-            let (max_cpu, max_mem) = mgr.effective_agent_limits(agent_id);
+        for owner_id in &owner_ids {
+            let (max_cpu, max_mem) = mgr.effective_owner_limits(owner_id);
 
             let mut agent_total = Usage::default();
             let mut largest_mem_pid: Option<(u32, u64)> = None;
             let mut largest_cpu_pid: Option<(u32, f64)> = None;
 
             for &(pid, ref aid, cpu, mem_pct, mem_bytes) in pid_usage {
-                if aid != agent_id {
+                if aid != owner_id {
                     continue;
                 }
                 if mgr
@@ -332,7 +339,7 @@ impl UsageTracker {
             // spawn) doesn't trigger a kill — sustained pressure does.
             // Memory is replaced raw; it grows monotonically so any
             // crossing of the limit should be acted on immediately.
-            let smoothed = self.update_agent_usage(agent_id, agent_total);
+            let smoothed = self.update_agent_usage(owner_id, agent_total);
 
             // Memory takes priority over CPU. Kill at most one PID per
             // agent per tick; subsequent polls re-evaluate.
@@ -340,7 +347,7 @@ impl UsageTracker {
                 && let Some((pid, _)) = largest_mem_pid
             {
                 tracing::warn!(
-                    pid, agent = %agent_id,
+                    pid, agent = %owner_id,
                     "Killing process: agent memory smoothed {:.1}% > {max_mem:.1}% (raw {:.1}%)",
                     smoothed.mem, agent_total.mem,
                 );
@@ -352,7 +359,7 @@ impl UsageTracker {
                 && let Some((pid, _)) = largest_cpu_pid
             {
                 tracing::warn!(
-                    pid, agent = %agent_id,
+                    pid, agent = %owner_id,
                     "Killing process: agent CPU smoothed {:.1}% > {max_cpu:.1}% (raw {:.1}%)",
                     smoothed.cpu, agent_total.cpu,
                 );
@@ -399,8 +406,8 @@ impl UsageTracker {
             candidates.sort_by_key(|c| std::cmp::Reverse(c.3));
         }
 
-        if let Some((pid, agent_id, _, _)) = candidates.into_iter().next() {
-            tracing::warn!(pid, agent = %agent_id, "Killing process: {reason}");
+        if let Some((pid, owner_id, _, _)) = candidates.into_iter().next() {
+            tracing::warn!(pid, agent = %owner_id, "Killing process: {reason}");
             if let Some(entry) = mgr.tracked.get(&pid) {
                 entry.killed.store(true, Relaxed);
             }
@@ -503,30 +510,30 @@ mod tests {
     }
 
     #[test]
-    fn test_set_agent_limits() {
+    fn test_set_owner_limits() {
         let manager = SystemResourceManager::new(80.0, 80.0, 90.0, 90.0);
-        manager.set_agent_limits("agent_1", Some(50.0), Some(60.0));
+        manager.set_owner_limits("agent_1", Some(50.0), Some(60.0));
 
-        let limits = manager.agent_limits.get("agent_1").unwrap();
+        let limits = manager.owner_limits.get("agent_1").unwrap();
         assert!((limits.cpu_pct - 50.0).abs() < f64::EPSILON);
         assert!((limits.mem_pct - 60.0).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn test_set_agent_limits_partial() {
+    fn test_set_owner_limits_partial() {
         let manager = SystemResourceManager::new(80.0, 80.0, 90.0, 90.0);
-        manager.set_agent_limits("agent_1", Some(50.0), None);
+        manager.set_owner_limits("agent_1", Some(50.0), None);
 
-        let limits = manager.agent_limits.get("agent_1").unwrap();
+        let limits = manager.owner_limits.get("agent_1").unwrap();
         assert!((limits.cpu_pct - 50.0).abs() < f64::EPSILON);
         assert!((limits.mem_pct - 80.0).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn test_set_agent_limits_no_overrides() {
+    fn test_set_owner_limits_no_overrides() {
         let manager = SystemResourceManager::new(80.0, 80.0, 90.0, 90.0);
-        manager.set_agent_limits("agent_1", None, None);
-        assert!(!manager.agent_limits.contains_key("agent_1"));
+        manager.set_owner_limits("agent_1", None, None);
+        assert!(!manager.owner_limits.contains_key("agent_1"));
     }
 
     #[tokio::test]
@@ -548,6 +555,23 @@ mod tests {
         tracker.poll_once(&manager, &mut sys);
 
         assert!(!manager.tracked.contains_key(&999_999_999));
+    }
+
+    #[test]
+    fn killed_status_survives_process_exit_until_unregister() {
+        let manager = SystemResourceManager::new(80.0, 80.0, 90.0, 90.0);
+        let pid = 999_999_999;
+        manager.register(pid, "owner");
+        manager
+            .tracked
+            .get(&pid)
+            .unwrap()
+            .killed
+            .store(true, Relaxed);
+        UsageTracker::new().poll_once(&manager, &mut System::new().unwrap());
+        assert!(manager.is_killed(pid));
+        manager.unregister(pid);
+        assert!(!manager.is_killed(pid));
     }
 
     #[test]
@@ -769,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn test_enforce_agent_limits_below_threshold_no_kill() {
+    fn test_enforce_owner_limits_below_threshold_no_kill() {
         let mut c1 = spawn_sleep();
         let mut c2 = spawn_sleep();
         let p1 = c1.id();
@@ -798,7 +822,7 @@ mod tests {
     }
 
     #[test]
-    fn test_enforce_agent_limits_cpu_exceeded_kills_largest() {
+    fn test_enforce_owner_limits_cpu_exceeded_kills_largest() {
         let mut c1 = spawn_sleep();
         let mut c2 = spawn_sleep();
         let p1 = c1.id();
@@ -826,7 +850,7 @@ mod tests {
     }
 
     #[test]
-    fn test_enforce_agent_limits_memory_exceeded_kills_largest() {
+    fn test_enforce_owner_limits_memory_exceeded_kills_largest() {
         let mut c1 = spawn_sleep();
         let mut c2 = spawn_sleep();
         let p1 = c1.id();
@@ -854,13 +878,13 @@ mod tests {
     }
 
     #[test]
-    fn test_enforce_agent_limits_respects_custom_limits() {
+    fn test_enforce_owner_limits_respects_custom_limits() {
         let mut c1 = spawn_sleep();
         let p1 = c1.id();
 
         let manager = SystemResourceManager::new(80.0, 80.0, 999.0, 999.0);
         let mut tracker = UsageTracker::new().with_alpha(1.0);
-        manager.set_agent_limits("agent_1", Some(30.0), None);
+        manager.set_owner_limits("agent_1", Some(30.0), None);
         manager.register(p1, "agent_1");
 
         // CPU 35 > custom limit 30
@@ -873,7 +897,7 @@ mod tests {
     }
 
     #[test]
-    fn test_enforce_agent_limits_isolates_agents() {
+    fn test_enforce_owner_limits_isolates_agents() {
         let mut c1 = spawn_sleep();
         let mut c2 = spawn_sleep();
         let p1 = c1.id();
@@ -1409,5 +1433,17 @@ mod tests {
         let _ = c1.wait();
         let _ = c2.wait();
         let _ = c3.wait();
+    }
+}
+
+impl frona_sandbox::ResourceMonitor for SystemResourceManager {
+    fn register(&self, pid: u32, owner_id: &str) {
+        self.register(pid, owner_id);
+    }
+    fn is_resource_killed(&self, pid: u32) -> bool {
+        self.is_killed(pid)
+    }
+    fn unregister(&self, pid: u32) {
+        self.unregister(pid);
     }
 }

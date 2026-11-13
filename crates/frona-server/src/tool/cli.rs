@@ -131,8 +131,8 @@ impl AgentTool for CliTool {
             .map(|l| l.timeout_secs)
             .unwrap_or_else(|| self.sandbox_manager.factory().default_timeout_secs());
 
-        let rm = self.sandbox_manager.factory().resource_manager();
-        let (eff_cpu, eff_mem) = rm.effective_agent_limits(agent_id);
+        let rm = self.sandbox_manager.resource_manager();
+        let (eff_cpu, eff_mem) = rm.effective_owner_limits(agent_id);
 
         tracing::debug!(
             agent = %agent_id,
@@ -446,18 +446,22 @@ mod tests {
     }
 
     async fn mock_sandbox_manager() -> Arc<SandboxManager> {
-        let factory = Arc::new(crate::tool::sandbox::SandboxFactory::new(
-            false,
-            Arc::new(
-                crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+        let factory = Arc::new(
+            crate::tool::sandbox::SandboxFactory::new(false).with_resource_monitor(Arc::new(
+                crate::tool::sandbox::resource_monitor::SystemResourceManager::new(
                     60.0, 60.0, 60.0, 60.0,
                 ),
-            ),
-        ));
+            )),
+        );
         let storage = crate::storage::StorageService::new(&crate::core::config::Config::default());
         let (tokens, keypair, vault) = mock_token_services().await;
         Arc::new(SandboxManager::new(
             factory,
+            Arc::new(
+                crate::tool::sandbox::resource_monitor::SystemResourceManager::new(
+                    80.0, 80.0, 90.0, 90.0,
+                ),
+            ),
             mock_policy_service().await,
             mock_skill_service(),
             storage,
@@ -555,16 +559,20 @@ mod tests {
         config_obj.storage.data_dir = tmp.to_string_lossy().into_owned();
         let storage = crate::storage::StorageService::new(&config_obj);
         let (tokens, keypair, vault) = mock_token_services().await;
-        let factory = Arc::new(crate::tool::sandbox::SandboxFactory::new(
-            false,
-            Arc::new(
-                crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+        let factory = Arc::new(
+            crate::tool::sandbox::SandboxFactory::new(false).with_resource_monitor(Arc::new(
+                crate::tool::sandbox::resource_monitor::SystemResourceManager::new(
                     60.0, 60.0, 60.0, 60.0,
                 ),
-            ),
-        ));
+            )),
+        );
         let wm = Arc::new(SandboxManager::new(
             factory,
+            Arc::new(
+                crate::tool::sandbox::resource_monitor::SystemResourceManager::new(
+                    80.0, 80.0, 90.0, 90.0,
+                ),
+            ),
             mock_policy_service().await,
             mock_skill_service(),
             storage,

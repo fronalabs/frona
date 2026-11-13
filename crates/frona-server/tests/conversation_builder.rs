@@ -12,7 +12,7 @@ use frona::inference::conversation::{
 };
 use frona::{
     inference::tool_call::ToolCall, policy::service::PolicyService, storage::StorageService,
-    tool::sandbox::driver::resource_monitor::SystemResourceManager,
+    tool::sandbox::resource_monitor::SystemResourceManager,
 };
 use frona_harness::inference::provider::ModelConfig;
 use rig_core::completion::message::UserContent;

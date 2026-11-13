@@ -59,9 +59,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
     let config = test_config(&tmp);
     let storage = StorageService::new(&config);
     let resource_manager = std::sync::Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
-            80.0, 80.0, 90.0, 90.0,
-        ),
+        frona::tool::sandbox::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
     let state = AppState::new(
@@ -1061,9 +1059,7 @@ async fn test_app_state_no_spawning() -> (AppState, tempfile::TempDir) {
     config.server.max_concurrent_tasks = 0;
     let storage = StorageService::new(&config);
     let resource_manager = std::sync::Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
-            80.0, 80.0, 90.0, 90.0,
-        ),
+        frona::tool::sandbox::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
     );
     let metrics_handle = frona::core::metrics::setup_metrics_recorder();
     let state = AppState::new(

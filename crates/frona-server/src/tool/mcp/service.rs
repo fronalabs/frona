@@ -77,15 +77,17 @@ impl PackageInstaller for SandboxedPackageInstaller {
             .map_err(|e| AppError::Tool(format!("cloning log fd: {e}")))?;
 
         let args_refs: Vec<&str> = warmup_args.iter().map(|s| s.as_str()).collect();
-        let child = sandbox.spawn(
-            warmup_cmd,
-            &args_refs,
-            Some(&server.workspace_dir),
-            Vec::new(),
-            None,
-            std::process::Stdio::from(log_file),
-            std::process::Stdio::from(log_file_clone),
-        )?;
+        let child = sandbox
+            .spawn(
+                warmup_cmd,
+                &args_refs,
+                Some(&server.workspace_dir),
+                Vec::new(),
+                None,
+                std::process::Stdio::from(log_file),
+                std::process::Stdio::from(log_file_clone),
+            )
+            .await?;
 
         let status = child
             .wait_with_output()

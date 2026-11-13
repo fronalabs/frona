@@ -1,6 +1,4 @@
-use frona::tool::sandbox::SandboxFactory;
-use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
-use std::sync::Arc;
+use frona_sandbox::SandboxFactory;
 
 fn python3_available() -> bool {
     std::process::Command::new("python3")
@@ -11,10 +9,7 @@ fn python3_available() -> bool {
 }
 
 fn test_manager() -> SandboxFactory {
-    SandboxFactory::new(
-        false,
-        Arc::new(SystemResourceManager::new(60.0, 60.0, 60.0, 60.0)),
-    )
+    SandboxFactory::new(false)
 }
 
 fn test_workspace(id: &str) -> std::path::PathBuf {

@@ -34,9 +34,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
     };
     let storage = StorageService::new(&config);
     let resource_manager = std::sync::Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
-            80.0, 80.0, 90.0, 90.0,
-        ),
+        frona::tool::sandbox::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
     );
     let metrics = setup_metrics_recorder();
     let state = AppState::new(
@@ -128,9 +126,7 @@ async fn twilio_callback_valid_token_returns_xml() {
 
     let storage = StorageService::new(&config);
     let resource_manager = std::sync::Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
-            80.0, 80.0, 90.0, 90.0,
-        ),
+        frona::tool::sandbox::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
     );
     let metrics = setup_metrics_recorder();
     let state = AppState::new(

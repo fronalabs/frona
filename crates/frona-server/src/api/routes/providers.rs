@@ -348,7 +348,7 @@ mod tests {
             crate::storage::StorageService::new(&config),
             crate::core::metrics::setup_metrics_recorder(),
             Arc::new(
-                crate::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
+                crate::tool::sandbox::resource_monitor::SystemResourceManager::new(
                     80.0, 80.0, 90.0, 90.0,
                 ),
             ),

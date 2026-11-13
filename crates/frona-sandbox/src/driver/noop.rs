@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use crate::core::error::AppError;
+use crate::Error;
 
 use super::{SandboxConfig, SandboxDriver};
 
@@ -16,7 +16,7 @@ impl SandboxDriver for NoopDriver {
         program: &str,
         args: &[&str],
         config: &SandboxConfig,
-    ) -> Result<Command, AppError> {
+    ) -> Result<Command, Error> {
         let mut cmd = Command::new(program);
         cmd.args(args);
         cmd.current_dir(&config.workspace_dir);

@@ -3598,6 +3598,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "frona-sandbox"
+version = "0.1.0"
+dependencies = [
+ "landlock",
+ "libc",
+ "moka",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "frona-server"
 version = "2026.11.0"
 dependencies = [
@@ -3638,6 +3653,7 @@ dependencies = [
  "frona-harness",
  "frona-model-catalog",
  "frona-pkm",
+ "frona-sandbox",
  "frona-text",
  "futures",
  "globset",
@@ -3655,7 +3671,6 @@ dependencies = [
  "jsonschema",
  "jsonwebtoken 11.1.0",
  "keepass",
- "landlock",
  "libc",
  "markdown",
  "metrics",

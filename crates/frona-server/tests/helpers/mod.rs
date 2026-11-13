@@ -1025,9 +1025,7 @@ async fn build_test_chat_service(message_id: Option<&str>) -> frona::chat::servi
 
     let storage = frona::storage::StorageService::new(&config);
     let resource_manager = std::sync::Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
-            80.0, 80.0, 90.0, 90.0,
-        ),
+        frona::tool::sandbox::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
     );
     let user_service = frona::auth::UserService::new(SurrealRepo::new(db.clone()), &config.cache);
     let agent_service = frona::agent::service::AgentService::new(
@@ -1138,9 +1136,7 @@ pub async fn test_harness(
     init_metrics();
     let metrics_handle = metrics::setup_metrics_recorder();
     let resource_manager = Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
-            80.0, 80.0, 90.0, 90.0,
-        ),
+        frona::tool::sandbox::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
     );
     let storage = frona::storage::StorageService::new(config);
     let mut state = AppState::new(

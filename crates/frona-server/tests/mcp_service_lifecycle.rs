@@ -142,14 +142,16 @@ async fn build_test_harness(
     );
     vault.sync_config_connections().await.unwrap();
 
-    let factory = Arc::new(frona::tool::sandbox::SandboxFactory::new(
-        true, // sandbox_disabled: real process tests exercise the unsandboxed driver
-        Arc::new(
-            frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
-                80.0, 80.0, 90.0, 90.0,
+    let factory = Arc::new(
+        frona::tool::sandbox::SandboxFactory::new(true).with_resource_monitor(
+            // sandbox_disabled: real process tests exercise the unsandboxed driver
+            Arc::new(
+                frona::tool::sandbox::resource_monitor::SystemResourceManager::new(
+                    80.0, 80.0, 90.0, 90.0,
+                ),
             ),
         ),
-    ));
+    );
     let policy_schema = frona::policy::schema::build_schema();
     let policy_repo: Arc<dyn frona::policy::repository::PolicyRepository> = Arc::new(
         SurrealRepo::<frona::policy::models::Policy>::new(db.clone()),
@@ -195,6 +197,11 @@ async fn build_test_harness(
     );
     let sandbox_manager = Arc::new(frona::tool::sandbox::SandboxManager::new(
         factory,
+        Arc::new(
+            frona::tool::sandbox::resource_monitor::SystemResourceManager::new(
+                80.0, 80.0, 90.0, 90.0,
+            ),
+        ),
         policy_service.clone(),
         skill_service,
         storage.clone(),

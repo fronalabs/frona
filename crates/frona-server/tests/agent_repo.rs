@@ -8,7 +8,7 @@ use frona::db::init as db;
 use frona::db::repo::agents::SurrealAgentRepo;
 use frona::db::repo::generic::SurrealRepo;
 use frona::policy::service::PolicyService;
-use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
+use frona::tool::sandbox::resource_monitor::SystemResourceManager;
 use std::sync::Arc;
 use surrealdb::Surreal;
 use surrealdb::engine::local::{Db, Mem};

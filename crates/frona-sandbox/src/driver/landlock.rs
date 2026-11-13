@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use crate::core::error::AppError;
+use crate::Error;
 
 use super::{SandboxConfig, SandboxDriver};
 
@@ -16,7 +16,7 @@ impl SandboxDriver for LandlockDriver {
         program: &str,
         args: &[&str],
         config: &SandboxConfig,
-    ) -> Result<Command, AppError> {
+    ) -> Result<Command, Error> {
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::process::CommandExt;
@@ -55,7 +55,7 @@ impl SandboxDriver for LandlockDriver {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = (program, args, config);
-            Err(AppError::Tool(
+            Err(Error::Tool(
                 "Landlock sandbox is only available on Linux".to_string(),
             ))
         }

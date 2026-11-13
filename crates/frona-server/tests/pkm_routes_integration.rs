@@ -45,9 +45,7 @@ async fn test_state(backend: MemoryBackend) -> (AppState, tempfile::TempDir) {
     config.memory.backend = Some(backend);
     let storage = StorageService::new(&config);
     let resource_manager = Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
-            80.0, 80.0, 90.0, 90.0,
-        ),
+        frona::tool::sandbox::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
     );
     let metrics = frona::core::metrics::setup_metrics_recorder();
     let state = AppState::new(

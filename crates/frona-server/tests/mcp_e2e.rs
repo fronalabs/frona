@@ -15,7 +15,7 @@ use std::sync::Arc;
 use frona::core::repository::Repository;
 use frona::tool::mcp::McpManager;
 use frona::tool::mcp::models::{McpPackage, McpRuntime, McpServer, McpServerStatus};
-use frona::tool::sandbox::driver::resource_monitor::SystemResourceManager;
+use frona::tool::sandbox::resource_monitor::SystemResourceManager;
 use frona::tool::sandbox::{SandboxFactory, SandboxManager};
 
 fn fake_server_binary() -> String {
@@ -62,10 +62,10 @@ fn make_server(id: &str, binary: &str, workspace: &str) -> McpServer {
 }
 
 async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
-    let factory = Arc::new(SandboxFactory::new(
-        true,
-        Arc::new(SystemResourceManager::new(80.0, 80.0, 90.0, 90.0)),
-    ));
+    let factory = Arc::new(
+        SandboxFactory::new(true)
+            .with_resource_monitor(Arc::new(SystemResourceManager::new(80.0, 80.0, 90.0, 90.0))),
+    );
     let db = surrealdb::Surreal::new::<surrealdb::engine::local::Mem>(())
         .await
         .unwrap();
@@ -160,6 +160,11 @@ async fn test_manager(tmp: &std::path::Path) -> Arc<McpManager> {
     );
     let sandbox_manager = Arc::new(SandboxManager::new(
         factory,
+        Arc::new(
+            frona::tool::sandbox::resource_monitor::SystemResourceManager::new(
+                80.0, 80.0, 90.0, 90.0,
+            ),
+        ),
         policy_service,
         skill_service,
         storage.clone(),

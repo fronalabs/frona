@@ -39,7 +39,7 @@ use crate::storage::StorageService;
 use crate::tool::browser::session::BrowserSessionManager;
 use crate::tool::cli::{CliToolConfig, load_cli_tool_configs};
 use crate::tool::manager::ToolManager;
-use crate::tool::sandbox::driver::resource_monitor::SystemResourceManager;
+use crate::tool::sandbox::resource_monitor::SystemResourceManager;
 use crate::tool::sandbox::{SandboxFactory, SandboxManager};
 use crate::tool::voice::{VoiceProvider, create_voice_provider};
 use crate::tool::web_search::{SearchProvider, create_search_provider};
@@ -266,7 +266,8 @@ impl AppState {
             std::fs::canonicalize(&shared_config_dir).unwrap_or_else(|_| shared_config_dir.clone());
 
         let sandbox_factory = Arc::new(
-            SandboxFactory::new(config.sandbox.disabled, resource_manager.clone())
+            SandboxFactory::new(config.sandbox.disabled)
+                .with_resource_monitor(resource_manager.clone())
                 .with_default_timeout(config.sandbox.default_limits.timeout_secs)
                 .with_shared_read_paths(vec![shared_config_abs.to_string_lossy().into_owned()]),
         );
@@ -493,6 +494,7 @@ impl AppState {
 
         let sandbox_manager = Arc::new(SandboxManager::new(
             sandbox_factory.clone(),
+            resource_manager.clone(),
             policy_service.clone(),
             skill_service.clone(),
             storage.clone(),

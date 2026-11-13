@@ -215,9 +215,7 @@ async fn reset_rebuilds_only_the_authenticated_users_memory_on_a_later_sweep() {
     config.storage.ontology_dir = format!("{base}/ontology");
     let storage = StorageService::new(&config);
     let resource_manager = Arc::new(
-        frona::tool::sandbox::driver::resource_monitor::SystemResourceManager::new(
-            80.0, 80.0, 90.0, 90.0,
-        ),
+        frona::tool::sandbox::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
     );
     let mut state = AppState::new(
         db.clone(),

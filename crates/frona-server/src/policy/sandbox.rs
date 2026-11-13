@@ -190,6 +190,17 @@ pub fn evaluate_sandbox_policy(policy_set: &PolicySet, principal: Entity) -> San
 
         let partial = authorizer.is_authorized_partial(&request, policy_set, &base_entities);
 
+        // A satisfied forbid with the resource still unknown denies every
+        // destination. Do not turn any matching permits (or residual exceptions)
+        // into network grants: Cedar forbids take precedence over all permits.
+        if *kind == RuleKind::Connect
+            && partial
+                .definitely_satisfied()
+                .any(|policy| policy.effect() == cedar_policy::Effect::Forbid)
+        {
+            continue;
+        }
+
         for residual in partial.nontrivial_residuals() {
             let effect = match residual.effect() {
                 cedar_policy::Effect::Permit => RuleEffect::Allow,
@@ -1060,6 +1071,38 @@ mod tests {
             &tool_strings,
         );
         evaluate_sandbox_policy(&ps, principal)
+    }
+
+    #[test]
+    fn test_unconditional_connect_forbid_overrides_default_network() {
+        let managed = make_default_network_policy();
+        let policies = r#"
+            forbid(principal == Policy::Agent::"test-user/developer",
+                   action == Policy::Action::"connect", resource);
+        "#;
+        let blocked = eval_with_managed(policies, "developer", &[], std::slice::from_ref(&managed));
+        assert!(
+            !blocked.network_access,
+            "unconditional forbid must disable outbound connections: {blocked:?}"
+        );
+        assert!(blocked.network_destinations.is_empty());
+        assert!(eval_with_managed(policies, "other-agent", &[], &[managed]).network_access);
+    }
+
+    #[test]
+    fn test_unconditional_connect_forbid_overrides_specific_permits_and_exceptions() {
+        let p = eval(
+            r#"
+            permit(principal, action == Policy::Action::"connect", resource == Policy::NetworkDestination::"example.com");
+            forbid(principal, action == Policy::Action::"connect", resource)
+                unless { resource == Policy::NetworkDestination::"example.com" };
+            forbid(principal, action == Policy::Action::"connect", resource);
+            "#,
+            "developer",
+            &[],
+        );
+        assert!(!p.network_access);
+        assert!(p.network_destinations.is_empty());
     }
 
     #[test]

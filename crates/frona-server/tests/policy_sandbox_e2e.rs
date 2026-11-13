@@ -196,6 +196,49 @@ async fn e2e_managed_default_network_grants_access() {
 }
 
 #[tokio::test]
+async fn e2e_reconciled_connect_forbid_overrides_cached_default_network() {
+    let (_db, service) = setup().await;
+    service.register_managed_policy(
+        cedar_policy::Policy::parse(
+            Some(cedar_policy::PolicyId::new("default-network-access")),
+            r#"permit(principal, action == Policy::Action::"connect", resource);"#,
+        )
+        .unwrap(),
+    );
+    for name in ["developer", "receptionist", "researcher", "system"] {
+        let handle = frona::core::Handle::try_new(name).unwrap();
+        assert!(
+            service
+                .evaluate_sandbox_policy(agent_ref(&handle), false)
+                .await
+                .unwrap()
+                .network_access
+        );
+        service
+            .reconcile_sandbox_policy(
+                "user-1",
+                frona::policy::reconcile::EntityRef::agent(user1_handle(), &handle),
+                &frona::policy::sandbox::SandboxPolicy::default(),
+            )
+            .await
+            .unwrap();
+        let policy = service
+            .evaluate_sandbox_policy(agent_ref(&handle), false)
+            .await
+            .unwrap();
+        assert!(!policy.network_access, "{name}: {policy:?}");
+        assert!(policy.network_destinations.is_empty());
+    }
+    assert!(
+        service
+            .evaluate_sandbox_policy(agent_ref(&frona::handle!("other-agent")), false)
+            .await
+            .unwrap()
+            .network_access
+    );
+}
+
+#[tokio::test]
 async fn e2e_agent_specific_policy_does_not_affect_other_agents() {
     let (_db, service) = setup().await;
     service

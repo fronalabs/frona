@@ -57,6 +57,12 @@ list means unrestricted network access, not deny-all. Enforce application policy
 before constructing the sandbox; this crate does not interpret Cedar policies or
 reject every backend capability mismatch.
 
+Additional read/write paths, exact read-file grants (including hook grants), and
+denied paths resolve relative to the host process's current directory, not the
+sandbox workspace or command working directory. Before execution they are
+canonicalized, preserving missing path tails, just like the application-side
+checks. Use absolute paths to make the intended base explicit.
+
 `is_readable` and `is_writable` perform application-side path checks using
 canonicalization, including unresolved path tails. They are not atomic file-open
 operations, cannot prevent symlink races, and can be stricter than a backend

@@ -196,6 +196,20 @@ impl Sandbox {
                 .iter()
                 .map(|path| path.to_string_lossy().into_owned()),
         );
+        // Drivers require absolute filesystem rules. Match allows() by resolving
+        // against the host cwd, including symlinks and not-yet-created tails.
+        // Do this after the hook so per-execution file grants follow the same rule.
+        for path in config
+            .additional_read_paths
+            .iter_mut()
+            .chain(config.additional_read_files.iter_mut())
+            .chain(config.additional_write_paths.iter_mut())
+            .chain(config.denied_paths.iter_mut())
+        {
+            *path = canonicalize_with_unresolved_tail(Path::new(path))
+                .to_string_lossy()
+                .into_owned();
+        }
         Ok(lease)
     }
 
@@ -780,6 +794,144 @@ mod tests {
             read_write_devices: Vec::new(),
         });
         sandbox
+    }
+
+    #[cfg(target_os = "linux")]
+    struct CheckFilesystemRules;
+
+    #[cfg(target_os = "linux")]
+    impl driver::SandboxDriver for CheckFilesystemRules {
+        fn driver_id(&self) -> &'static str {
+            "check-syd-rules"
+        }
+
+        fn sandboxed_command(
+            &self,
+            program: &str,
+            args: &[&str],
+            config: &SandboxConfig,
+        ) -> Result<std::process::Command, Error> {
+            let command = driver::syd::SydDriver::new().sandboxed_command(program, args, config)?;
+            let rules: Vec<_> = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy())
+                .collect();
+            for (prefix, path, suffix) in [
+                ("allow/read+", "random_number.py", "/***"),
+                ("allow/read+", "missing-grants/file", ""),
+                ("allow/read+", "missing-grants/hook-token", ""),
+                ("allow/read+", "missing-grants/output", "/***"),
+                ("allow/write+", "missing-grants/output", "/***"),
+                ("allow/write+", "random_number.py", "/***"),
+                ("mask+", "missing-grants/secret", "/***"),
+            ] {
+                let absolute = canonicalize_with_unresolved_tail(Path::new(path));
+                assert!(absolute.is_absolute());
+                let expected = format!("{prefix}{}{suffix}", absolute.display());
+                assert!(
+                    rules.iter().any(|rule| rule == &expected),
+                    "missing {expected}: {rules:?}"
+                );
+                assert!(
+                    !rules
+                        .iter()
+                        .any(|rule| rule == &format!("{prefix}{path}{suffix}"))
+                );
+            }
+            // Exact-file grants must not become directory or sibling grants.
+            assert_eq!(config.additional_read_files.len(), 2);
+            assert_eq!(config.additional_read_paths.len(), 1);
+            driver::noop::NoopDriver.sandboxed_command(program, args, config)
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    struct RelativeFileHook;
+
+    #[cfg(target_os = "linux")]
+    impl ExecutionHook for RelativeFileHook {
+        fn prepare<'a>(&'a self, _: &'a ExecutionContext<'a>) -> HookFuture<'a> {
+            Box::pin(async { Ok(ExecutionLease::new().read_file("missing-grants/hook-token")) })
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn relative_filesystem_rules_are_absolute_for_execute_and_spawn() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut sandbox = SandboxFactory::new(true)
+            .with_shared_read_paths(vec!["random_number.py".into()])
+            .get_sandbox(directory.path().join("workspace"), "test", false, vec![])
+            .without_venv()
+            .without_node()
+            .with_read_files(vec!["missing-grants/file".into()])
+            .with_write_paths(vec![
+                "missing-grants/output".into(),
+                "random_number.py".into(),
+            ])
+            .with_denied_paths(vec!["missing-grants/secret".into()])
+            .with_execution_hook(Arc::new(RelativeFileHook));
+        sandbox.driver = Arc::new(CheckFilesystemRules);
+        let output = sandbox
+            .execute("true", &[], 5, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(output.exit_code, Some(0));
+        let mut child = sandbox
+            .spawn(
+                "true",
+                &[],
+                None,
+                vec![],
+                None,
+                std::process::Stdio::null(),
+                std::process::Stdio::null(),
+            )
+            .await
+            .unwrap();
+        assert!(child.wait().await.unwrap().success());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn execution_rules_resolve_symlinked_parents_with_missing_tails() {
+        let directory = tempfile::tempdir().unwrap();
+        let real = directory.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = directory.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let path = link.join("not-created/file").to_string_lossy().into_owned();
+        let expected = std::fs::canonicalize(&real)
+            .unwrap()
+            .join("not-created/file")
+            .to_string_lossy()
+            .into_owned();
+        let sandbox = SandboxFactory::new(true)
+            .get_sandbox(directory.path().join("workspace"), "test", false, vec![])
+            .without_venv()
+            .without_node()
+            .with_read_paths(vec![path.clone()])
+            .with_read_files(vec![path.clone()])
+            .with_write_paths(vec![path.clone()])
+            .with_denied_paths(vec![path]);
+        let mut config = sandbox.base_config().unwrap();
+        let _lease = sandbox
+            .prepare_execution("true", &[], &mut config)
+            .await
+            .unwrap();
+        assert_eq!(
+            config.additional_read_paths,
+            std::slice::from_ref(&expected)
+        );
+        assert_eq!(
+            config.additional_read_files,
+            std::slice::from_ref(&expected)
+        );
+        assert_eq!(
+            config.additional_write_paths,
+            std::slice::from_ref(&expected)
+        );
+        assert_eq!(config.denied_paths, [expected]);
     }
 
     #[test]

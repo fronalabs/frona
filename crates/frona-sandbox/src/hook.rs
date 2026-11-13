@@ -42,6 +42,7 @@ impl ExecutionLease {
         self.env.push((name.into(), value.into()));
         self
     }
+    /// Grant one file read access. Relative paths resolve against the host cwd.
     pub fn read_file(mut self, path: impl Into<PathBuf>) -> Self {
         self.read_files.push(path.into());
         self

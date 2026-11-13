@@ -401,8 +401,11 @@ impl BroadcastService {
                         dead_indices.push(i);
                     }
                 }
+                // Release the read guard before cleanup or another read. A
+                // queued session registration has writer priority in Tokio's
+                // RwLock; reacquiring a read while holding one would deadlock.
+                drop(registry);
                 if !dead_indices.is_empty() {
-                    drop(registry);
                     let mut registry = sessions.write().await;
                     if let Some(senders) = registry.get_mut(&event.user_id) {
                         for i in dead_indices.into_iter().rev() {
@@ -591,6 +594,46 @@ impl frona_harness::inference::observation::ActivityObserver for BroadcastServic
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn registration_during_dispatch_does_not_stall_live_events() {
+        let service = BroadcastService::new();
+        let (old_tx, mut old_rx) = mpsc::unbounded_channel();
+        service.register_session("user", old_tx).await;
+        let sender = service.create_event_sender("user", "chat", None);
+
+        // Queue dispatch's read, then a reconnect's write, behind this guard.
+        let registry = service.sessions.write().await;
+        sender.send(crate::inference::InferenceEvent {
+            kind: InferenceEventKind::Text("first".into()),
+        });
+        tokio::task::yield_now().await;
+        let (new_tx, mut new_rx) = mpsc::unbounded_channel();
+        let registration = service.register_session("user", new_tx);
+        tokio::pin!(registration);
+        assert!(futures::poll!(&mut registration).is_pending());
+        drop(registry);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            registration.await;
+            let _ = old_rx.recv().await.expect("first live token").unwrap();
+            sender.send(crate::inference::InferenceEvent {
+                kind: InferenceEventKind::Text("second".into()),
+            });
+            let _ = old_rx
+                .recv()
+                .await
+                .expect("existing session keeps streaming")
+                .unwrap();
+            let _ = new_rx
+                .recv()
+                .await
+                .expect("new session receives live events")
+                .unwrap();
+        })
+        .await
+        .expect("session registration must not freeze event delivery");
+    }
 
     #[tokio::test]
     async fn inference_activity_adapter_retains_server_events() {

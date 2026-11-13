@@ -80,7 +80,7 @@ set -euo pipefail
 echo "$*" >> "$RELEASE_TEST_STATE/updates"
 [[ "$1" == update ]]
 if [[ ${CHANGE:-none} == patch ]]; then
-  for name in frona-text frona-harness frona-pkm; do
+  for name in frona-text frona-harness frona-pkm frona-sandbox; do
     if grep -q 'version = "0.1.0"' "crates/$name/Cargo.toml"; then
       cargo set-version -p "$name" 0.1.1
     fi
@@ -102,14 +102,16 @@ fixture() {
   git config user.email 'release-test@example.invalid'
   echo 'application version unchanged' > Cargo.toml
   echo original > Cargo.lock
-  for name in frona-text frona-derive frona-model-catalog frona-harness frona-pkm; do
+  for name in frona-text frona-derive frona-model-catalog frona-harness frona-pkm frona-sandbox; do
     mkdir -p "crates/$name"
     printf 'name = "%s"\nversion = "0.1.0"\n' "$name" > "crates/$name/Cargo.toml"
     if [[ ${1:-published} == published ]]; then echo 0.1.0 > "$RELEASE_TEST_STATE/$name"; fi
   done
-  mkdir -p crates/frona-harness/tests/fixtures/standalone
-  echo fixture > crates/frona-harness/tests/fixtures/standalone/Cargo.toml
-  echo original > crates/frona-harness/tests/fixtures/standalone/Cargo.lock
+  for name in frona-harness frona-sandbox; do
+    mkdir -p "crates/$name/tests/fixtures/standalone"
+    echo fixture > "crates/$name/tests/fixtures/standalone/Cargo.toml"
+    echo original > "crates/$name/tests/fixtures/standalone/Cargo.lock"
+  done
   git add .; git commit -qm initial
   git init -q --bare "$stage/remote.git"
   git remote add origin "$stage/remote.git"
@@ -140,8 +142,8 @@ fixture
 export CHANGE=patch
 run
 [[ $(git rev-list --count "$initial..HEAD") == 1 ]]
-[[ $(git tag | wc -l) == 3 ]]
-[[ $(wc -l < "$RELEASE_TEST_STATE/uploads") == 3 ]]
+[[ $(git tag | wc -l) == 4 ]]
+[[ $(wc -l < "$RELEASE_TEST_STATE/uploads") == 4 ]]
 [[ $(git --git-dir="$stage/remote.git" rev-parse main) == "$(git rev-parse HEAD)" ]]
 [[ ! -d .git/frona-crates-release ]]
 git diff "$initial" HEAD -- Cargo.toml | diff - /dev/null
@@ -151,7 +153,7 @@ fixture
 export CHANGE=patch
 run minor
 grep -Fxq frona-text@0.2.0 "$RELEASE_TEST_STATE/uploads"
-[[ $(git tag | wc -l) == 3 ]]
+[[ $(git tag | wc -l) == 4 ]]
 echo 'ok - explicit bump starts from committed versions, not automatic proposals'
 
 for failure in REGISTRY_ERROR TEST_FAILURE VERIFY_FAILURE; do
@@ -174,9 +176,9 @@ run --dry-run
 unset PUBLISH_FAILURE
 run
 [[ $(git rev-parse HEAD) == "$release_commit" ]]
-[[ $(wc -l < "$RELEASE_TEST_STATE/uploads") == 5 ]]
+[[ $(wc -l < "$RELEASE_TEST_STATE/uploads") == 6 ]]
 [[ $(wc -l < "$RELEASE_TEST_STATE/updates") == 1 ]]
-[[ $(git tag | wc -l) == 5 ]]
+[[ $(git tag | wc -l) == 6 ]]
 echo 'ok - partial publication resumes unchanged plan, skipping uploaded versions'
 
 fixture new
@@ -184,12 +186,12 @@ printf '#!/usr/bin/env bash\nexit 1\n' > "$stage/remote.git/hooks/pre-receive"
 chmod +x "$stage/remote.git/hooks/pre-receive"
 if run; then exit 1; fi
 release_commit=$(git rev-parse HEAD)
-[[ $(wc -l < "$RELEASE_TEST_STATE/uploads") == 5 ]]
+[[ $(wc -l < "$RELEASE_TEST_STATE/uploads") == 6 ]]
 rm "$stage/remote.git/hooks/pre-receive"
 run
 [[ $(git rev-parse HEAD) == "$release_commit" ]]
-[[ $(wc -l < "$RELEASE_TEST_STATE/uploads") == 5 ]]
-[[ $(git --git-dir="$stage/remote.git" tag | wc -l) == 5 ]]
+[[ $(wc -l < "$RELEASE_TEST_STATE/uploads") == 6 ]]
+[[ $(git --git-dir="$stage/remote.git" tag | wc -l) == 6 ]]
 echo 'ok - rejected atomic push retries without uploading or bumping again'
 
 fixture new

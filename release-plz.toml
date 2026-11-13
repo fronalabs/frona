@@ -26,3 +26,7 @@ release = true
 [[package]]
 name = "frona-pkm"
 release = true
+
+[[package]]
+name = "frona-sandbox"
+release = true

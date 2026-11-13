@@ -30,7 +30,7 @@ base=$(git rev-parse HEAD)
 state=$(git rev-parse --path-format=absolute --git-path frona-crates-release)
 exec 9>"${state}.lock"
 flock -n 9 || die 'Another library release is running'
-packages=(frona-text frona-derive frona-model-catalog frona-harness frona-pkm)
+packages=(frona-text frona-derive frona-model-catalog frona-harness frona-pkm frona-sandbox)
 package_json=$(printf '%s\n' "${packages[@]}" | jq -R . | jq -s .)
 temporary=$(mktemp -d)
 staging=
@@ -124,7 +124,7 @@ else
   jq -r '.[] | "  \(.name) \(.version)"' "$temporary/selected.json"
   host=$(rustc -vV | sed -n 's/^host: //p')
   [[ -n "$host" ]] || die 'Cannot determine the Rust host target'
-  for manifest in crates/frona-harness/tests/fixtures/*/Cargo.toml; do
+  for manifest in crates/frona-{harness,sandbox}/tests/fixtures/*/Cargo.toml; do
     cargo metadata --format-version 1 --filter-platform "$host" --manifest-path "$manifest" >/dev/null
   done
   args=()

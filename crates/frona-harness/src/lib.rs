@@ -1,4 +1,18 @@
+// Override README source links for rustdoc. Markdown uses the first reference definition.
+//! [example-basic]: crate::examples#basic
+//! [example-budgets]: crate::examples#budgets
+//! [example-jsonl]: crate::examples#jsonl
+//! [example-manual]: crate::examples#manual
+//! [example-progress]: crate::examples#progress
+//! [example-refinement]: crate::examples#refinement
+//! [example-rig]: crate::examples#rig
+//! [example-tools]: crate::examples#tools
+//! [example-workspace]: crate::examples#workspace
+//!
 #![doc = include_str!("../README.md")]
+
+#[cfg(doc)]
+pub mod examples;
 
 extern crate self as frona_harness;
 

@@ -213,6 +213,18 @@ Python/npm setup is logged rather than always failing execution. Use
 `without_venv()` and `without_node()` when the caller manages its own toolchain.
 The executable being run, and any interpreter it uses, must already be installed.
 
+## Examples
+
+The [standalone][example-standalone] example
+demonstrates command execution, caller environment, and execution hook cleanup.
+From a source checkout:
+
+```nu
+cargo run -p frona-sandbox --example standalone
+```
+
+It requires `sh` and `sleep`. Pass `-- --disabled` to run without isolation.
+
 ## Standalone consumer verification
 
 The isolated fixture resolves only this crate and its consumer dependencies:
@@ -228,3 +240,5 @@ smoke checks without isolation; passing that run proves no backend enforcement.
 The crate also includes platform-specific enforcement tests. Record unavailable
 kernel/executable prerequisites when reporting test results; Linux results do not
 establish macOS coverage.
+
+[example-standalone]: examples/standalone.rs

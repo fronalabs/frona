@@ -1,5 +1,11 @@
+// Override README source links for rustdoc. Markdown uses the first reference definition.
+//! [example-standalone]: crate::examples#standalone
+//!
 #![doc = include_str!("../README.md")]
+
 mod driver;
+#[cfg(doc)]
+pub mod examples;
 mod hook;
 mod process;
 pub use driver::{SandboxConfig, SandboxOutput, verify_sandbox};

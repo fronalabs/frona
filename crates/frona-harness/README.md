@@ -143,8 +143,10 @@ safe to repeat. Checkpoints do not restore budget usage or grant acceptance.
 
 ## Examples
 
-The package includes `basic`, `tools`, `refinement`, `manual`, `budgets`, `workspace`,
-`progress`, `rig`, and `jsonl` examples. From a source checkout:
+The package includes [basic][example-basic], [tools][example-tools], [refinement][example-refinement], [manual][example-manual], [budgets][example-budgets], [workspace][example-workspace],
+[progress][example-progress], [rig][example-rig], and [jsonl][example-jsonl] examples.
+
+From a source checkout:
 
 ```sh
 cargo run -p frona-harness --example tools
@@ -153,8 +155,18 @@ cargo run -p frona-harness --example jsonl --features jsonl
 ```
 
 The scripted examples run without provider credentials; `rig` demonstrates a live
-provider client. See the [API reference](https://docs.rs/frona-harness).
+provider client. See the API reference.
 
 ## License
 
 MIT. See `LICENSE`. This license covers this crate; dependencies have their own licenses.
+
+[example-basic]: examples/basic.rs
+[example-budgets]: examples/budgets.rs
+[example-jsonl]: examples/jsonl.rs
+[example-manual]: examples/manual.rs
+[example-progress]: examples/progress.rs
+[example-refinement]: examples/refinement.rs
+[example-rig]: examples/rig.rs
+[example-tools]: examples/tools.rs
+[example-workspace]: examples/workspace.rs

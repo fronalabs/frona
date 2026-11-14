@@ -1,4 +1,13 @@
+// Override README source links for rustdoc. Markdown uses the first reference definition.
+//! [example-consolidate]: crate::examples#consolidate
+//! [example-ingest]: crate::examples#ingest
+//! [example-page_edit]: crate::examples#page_edit
+//! [example-playbook]: crate::examples#playbook
+//!
 #![doc = include_str!("../README.md")]
+
+#[cfg(doc)]
+pub mod examples;
 
 pub mod evidence;
 pub mod ingest;

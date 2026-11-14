@@ -11,8 +11,8 @@ and supplies the runtime types that generated tools use.
 Annotate an async function with `#[tool]`, describe it with a Rust doc comment,
 and register it with `.tool(function_name)`. Parameters become model arguments;
 a `ToolContext` parameter is supplied by the harness and omitted from the schema.
-The original function remains directly callable. See the
-[harness guide](https://docs.rs/frona-harness) for complete, executable examples.
+The original function remains directly callable. See the `frona-harness` guide
+and its annotated tools example for a complete, executable example.
 
 ## Direct dependency
 
@@ -28,7 +28,7 @@ ORM or channel abstractions for unrelated applications. `ParameterMetadata`
 generates protocol parameter metadata for the corresponding Frona interfaces.
 
 There are no optional Cargo features. See the
-[macro reference](https://docs.rs/frona-derive) for the available attributes.
+macro reference for the available attributes.
 
 ## License
 

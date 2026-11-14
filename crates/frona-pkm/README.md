@@ -80,7 +80,7 @@ knowledge required by their chosen phases.
 
 ## Examples
 
-The package includes `ingest`, `consolidate`, `playbook`, and `page_edit` examples.
+The package includes [ingest][example-ingest], [consolidate][example-consolidate], [playbook][example-playbook], and [page_edit][example-page_edit] examples.
 They use live OpenAI clients and require `OPENAI_API_KEY`. The `consolidate`
 example also needs `PKM_ONTOLOGY_DIR`, pointing to your ontology files. From a source checkout:
 
@@ -88,9 +88,14 @@ example also needs `PKM_ONTOLOGY_DIR`, pointing to your ontology files. From a s
 cargo run -p frona-pkm --example ingest
 ```
 
-See the [API reference](https://docs.rs/frona-pkm) for phase inputs, outputs,
+See the API reference for phase inputs, outputs,
 checkpoint hooks, and candidate retrieval interfaces.
 
 ## License
 
 MIT. See `LICENSE`. Dependencies and externally supplied ontology data have their own licenses.
+
+[example-consolidate]: examples/consolidate.rs
+[example-ingest]: examples/ingest.rs
+[example-page_edit]: examples/page_edit.rs
+[example-playbook]: examples/playbook.rs

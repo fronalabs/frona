@@ -122,7 +122,8 @@ it.each(["paste", "beforeinput"])("replaces a selected directive chip through %s
   }));
   if (source === "paste") paste(transfer({ "text/plain": "replacement" }));
   else beforePaste("replacement");
-  await waitFor(() => expect(runtime.thread.composer.getState().text).toBe("replacement"));
+  // The separator is a text node outside the selected directive chip.
+  await waitFor(() => expect(runtime.thread.composer.getState().text).toBe("replacement "));
   expect(document.querySelector(".aui-directive-chip")).toBeNull();
 });
 

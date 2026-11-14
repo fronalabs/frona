@@ -102,13 +102,12 @@ export function useFronaTriggerAdapter(
   }, [commands, mode]);
 }
 
-/** Trailing space is intentional — becomes the chip's `getTextContent()`,
- *  giving a clean separator when args follow. Server parser tolerates 1+. */
+/** Assistant UI inserts the separator after the chip; serialize only the directive. */
 function makeFormatter(prefix: string): Unstable_DirectiveFormatter {
   return {
     serialize: (item: Unstable_TriggerItem) => {
       const name = (item.metadata?.["name"] as string | undefined) ?? item.id;
-      return `${prefix}${name} `;
+      return `${prefix}${name}`;
     },
     parse: (text: string): readonly Unstable_DirectiveSegment[] => [
       { kind: "text", text },

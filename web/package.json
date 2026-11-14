@@ -44,7 +44,7 @@
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
     "shiki": "^4.6.0",
-    "sigma": "^3.0.3",
+    "sigma": "^4.0.6",
     "sparql-formatter": "^1.0.2",
     "unbash": "^6.0.4",
     "unified": "^11.0.5"

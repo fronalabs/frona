@@ -4,8 +4,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { MultiDirectedGraph } from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import FA2LayoutSupervisor from "graphology-layout-forceatlas2/worker";
-import Sigma from "sigma";
-import { EdgeArrowProgram, EdgeLineProgram, type EdgeProgramType, type NodeLabelDrawingFunction } from "sigma/rendering";
+import Sigma, { DEFAULT_STYLES } from "sigma";
+import { extremityArrow, pathCurved, pathLine, pathLoop } from "sigma/rendering";
+import type { NodeReducer, EdgeReducer } from "sigma/types";
 import { ArrowsPointingOutIcon, HomeIcon, MinusIcon, PlusIcon } from "@heroicons/react/24/outline";
 import { branchColor, canvasResolution, neighborhoodByDepth, seededPosition, selectionCameraTarget, wrapLabel } from "@/lib/memory-graph";
 import type { MemoryGraphNode, MemoryGraphResponse } from "@/lib/memory-types";
@@ -35,22 +36,7 @@ interface EdgeAttributes {
   color: string;
   label: string;
   origin: "asserted" | "inferred" | "memory";
-  type: "arrow" | "line";
 }
-
-const drawWrappedNodeLabel: NodeLabelDrawingFunction<NodeAttributes, EdgeAttributes> = (context, data, settings) => {
-  if (!data.label) return;
-  const lines = wrapLabel(data.label, 3);
-  const lineHeight = settings.labelSize + 2;
-  const firstBaseline = data.y + settings.labelSize / 3 - ((lines.length - 1) * lineHeight) / 2;
-  context.save();
-  context.fillStyle = settings.labelColor.color || "#6b7280";
-  context.font = `${settings.labelWeight} ${settings.labelSize}px ${settings.labelFont}`;
-  lines.forEach((line, index) => {
-    context.fillText(line, data.x + data.size + 3, firstBaseline + index * lineHeight);
-  });
-  context.restore();
-};
 
 const fadedNode = "rgba(128, 137, 148, 0.16)";
 const ambientAssertedEdge = "rgba(105, 116, 128, 0.24)";
@@ -93,6 +79,8 @@ export function MemoryGraphCanvas({
 }: MemoryGraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<Sigma<NodeAttributes, EdgeAttributes> | null>(null);
+  const nodeReducerRef = useRef<NodeReducer<NodeAttributes, EdgeAttributes>>((_key, display) => display);
+  const edgeReducerRef = useRef<EdgeReducer<NodeAttributes, EdgeAttributes>>((_key, display) => display);
   const graphRef = useRef<MultiDirectedGraph<NodeAttributes, EdgeAttributes> | null>(null);
   const onSelectRef = useRef(onSelect);
   const selectedPathRef = useRef(selectedPath);
@@ -125,8 +113,8 @@ export function MemoryGraphCanvas({
 
     const graph = new MultiDirectedGraph<NodeAttributes, EdgeAttributes>();
     const theme = getComputedStyle(document.documentElement);
-    const labelColor = theme.getPropertyValue("--text-secondary").trim() || "#6b7280";
-    const edgeLabelColor = theme.getPropertyValue("--text-tertiary").trim() || "#9ca3af";
+    let labelColor = theme.getPropertyValue("--text-secondary").trim() || "#6b7280";
+    let edgeLabelColor = theme.getPropertyValue("--text-tertiary").trim() || "#9ca3af";
     const cached = loadPositions(data.revision);
     const branches = [...new Set(data.nodes.map((node) => node.colorBranch))].sort();
     const branchIndex = new Map(branches.map((branch, index) => [branch, index]));
@@ -157,45 +145,55 @@ export function MemoryGraphCanvas({
         color: memoryEdge ? "rgba(0, 0, 0, 0)" : edge.origin === "asserted" ? "rgba(105, 116, 128, 0.44)" : "rgba(105, 116, 128, 0.25)",
         label: edge.label,
         origin: edge.origin,
-        type: edge.origin === "asserted" ? "arrow" : "line",
       });
     }
 
     const renderer = new Sigma<NodeAttributes, EdgeAttributes>(graph, containerRef.current, {
-      allowInvalidContainer: true,
-      defaultEdgeType: "arrow",
-      edgeProgramClasses: {
-        arrow: EdgeArrowProgram as unknown as EdgeProgramType<NodeAttributes, EdgeAttributes>,
-        line: EdgeLineProgram as unknown as EdgeProgramType<NodeAttributes, EdgeAttributes>,
+      primitives: {
+        nodes: { label: { font: { size: 14, weight: "500" }, margin: 3 } },
+        edges: { paths: [pathLine(), pathCurved(), pathLoop()], extremities: [extremityArrow()] },
       },
-      labelDensity: 0.18,
-      labelGridCellSize: 110,
-      labelRenderedSizeThreshold: 4,
-      labelColor: { color: labelColor },
-      labelWeight: "500",
-      edgeLabelColor: { color: edgeLabelColor },
-      minEdgeThickness: 0.35,
-      defaultDrawNodeLabel: drawWrappedNodeLabel,
-      defaultDrawNodeHover: drawWrappedNodeLabel,
-      renderEdgeLabels: true,
-      zIndex: true,
+      styles: {
+        nodes: {
+          ...DEFAULT_STYLES.nodes,
+          labelColor: "transparent",
+          labelSize: 14,
+          labelFont: "Arial",
+          backdropVisibility: "hidden",
+        },
+        edges: {
+          ...DEFAULT_STYLES.edges,
+          parallelPath: "curved",
+          head: (attributes) => attributes.origin === "asserted" ? "arrow" : "none",
+        },
+      },
+      settings: {
+        allowInvalidContainer: true,
+        itemSizesReference: "screen",
+        labelDensity: 0.18,
+        labelGridCellSize: 110,
+        labelRenderedSizeThreshold: 4,
+        minEdgeThickness: 0.35,
+        renderEdgeLabels: true,
+      },
+      nodeReducer: (...args) => ({
+        ...nodeReducerRef.current(...args),
+        ...(args[3].isHovered ? { labelVisibility: "visible" as const } : {}),
+      }),
+      edgeReducer: (...args) => ({ ...edgeReducerRef.current(...args), labelColor: edgeLabelColor }),
     });
 
     const themeObserver = new MutationObserver(() => {
       const currentTheme = getComputedStyle(document.documentElement);
-      renderer.setSetting("labelColor", {
-        color: currentTheme.getPropertyValue("--text-secondary").trim() || "#6b7280",
-      });
-      renderer.setSetting("edgeLabelColor", {
-        color: currentTheme.getPropertyValue("--text-tertiary").trim() || "#9ca3af",
-      });
+      labelColor = currentTheme.getPropertyValue("--text-secondary").trim() || "#6b7280";
+      edgeLabelColor = currentTheme.getPropertyValue("--text-tertiary").trim() || "#9ca3af";
       renderer.refresh();
     });
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
     const memoryEdges = data.edges.filter((edge) => edge.origin === "memory");
     const memoryCanvas = renderer.createCanvas("memoryEdges", {
-      beforeLayer: "nodes",
+      beforeLayer: "stage",
       style: { pointerEvents: "none" },
     });
     const memoryContext = memoryCanvas.getContext("2d");
@@ -237,7 +235,39 @@ export function MemoryGraphCanvas({
       memoryContext.globalAlpha = 1;
       memoryContext.setLineDash([]);
     };
+    // Sigma selects visible labels; a canvas overlay preserves our multiline labels.
+    const labelCanvas = renderer.createCanvas("wrappedLabels", {
+      afterLayer: "stage",
+      style: { pointerEvents: "none" },
+    });
+    const labelContext = labelCanvas.getContext("2d");
+    const drawLabels = () => {
+      if (!labelContext) return;
+      const { width, height } = renderer.getDimensions();
+      const ratio = window.devicePixelRatio || 1;
+      const resolution = canvasResolution(width, height, ratio);
+      labelCanvas.style.width = resolution.cssWidth;
+      labelCanvas.style.height = resolution.cssHeight;
+      if (labelCanvas.width !== resolution.pixelWidth || labelCanvas.height !== resolution.pixelHeight) {
+        labelCanvas.width = resolution.pixelWidth;
+        labelCanvas.height = resolution.pixelHeight;
+      }
+      labelContext.setTransform(ratio, 0, 0, ratio, 0, 0);
+      labelContext.clearRect(0, 0, width, height);
+      labelContext.fillStyle = labelColor;
+      labelContext.font = "500 14px Arial";
+      for (const key of renderer.getNodeDisplayedLabels()) {
+        const display = renderer.getNodeDisplayData(key);
+        if (!display?.label || display.visibility === "hidden") continue;
+        const position = renderer.framedGraphToViewport(display);
+        const lines = wrapLabel(display.label, 3);
+        const size = renderer.scaleSize(display.size);
+        const firstBaseline = position.y + 14 / 3 - ((lines.length - 1) * 16) / 2;
+        lines.forEach((line, index) => labelContext.fillText(line, position.x + size + 3, firstBaseline + index * 16));
+      }
+    };
     renderer.on("afterRender", drawMemoryEdges);
+    renderer.on("afterRender", drawLabels);
 
     renderer.on("clickNode", ({ node }) => onSelectRef.current(node));
     renderer.on("enterNode", ({ node, event }) => {
@@ -282,10 +312,13 @@ export function MemoryGraphCanvas({
       if (timer) clearTimeout(timer);
       themeObserver.disconnect();
       renderer.off("afterRender", drawMemoryEdges);
+      renderer.off("afterRender", drawLabels);
       layout?.kill();
       renderer.kill();
       rendererRef.current = null;
       graphRef.current = null;
+      nodeReducerRef.current = (_key, display) => display;
+      edgeReducerRef.current = (_key, display) => display;
     };
   }, [data, nodeByPath]);
 
@@ -294,31 +327,31 @@ export function MemoryGraphCanvas({
     const graph = graphRef.current;
     if (!renderer || !graph) return;
 
-    renderer.setSetting("nodeReducer", (path, attributes) => {
+    nodeReducerRef.current = (path, display, attributes) => {
       const depth = depths.get(path);
       const matchesSearch = !searchMatches || searchMatches.has(path);
-      if (!matchesSearch) return { ...attributes, color: fadedNode, forceLabel: false, zIndex: 0 };
+      if (!matchesSearch) return { ...display, color: fadedNode, labelVisibility: "auto", zIndex: 0 };
       if (depth === 0) {
-        return { ...attributes, size: attributes.size * 3.4, color: "#d982a3", forceLabel: true, zIndex: 4 };
+        return { ...display, size: attributes.size * 3.4, color: "#d982a3", labelVisibility: "visible", zIndex: 4 };
       }
-      if (depth === 1) return { ...attributes, size: attributes.size * 1.22, forceLabel: directlyRelated.has(path), zIndex: 3 };
-      if (depth === 2) return { ...attributes, size: attributes.size, forceLabel: false, zIndex: 2 };
+      if (depth === 1) return { ...display, size: attributes.size * 1.22, labelVisibility: directlyRelated.has(path) ? "visible" : "auto", zIndex: 3 };
+      if (depth === 2) return { ...display, size: attributes.size, labelVisibility: "auto", zIndex: 2 };
       // Selection emphasizes the local neighborhood, but the graph remains a
       // map of every wiki page. Shrinking distant nodes below Sigma's label
       // threshold and making them nearly transparent made them look absent.
-      return { ...attributes, forceLabel: false, zIndex: 0 };
-    });
-    renderer.setSetting("edgeReducer", (edge, attributes) => {
-      if (attributes.origin === "memory") return { ...attributes, hidden: true };
+      return { ...display, labelVisibility: "auto", zIndex: 0 };
+    };
+    edgeReducerRef.current = (edge, display, attributes) => {
+      if (attributes.origin === "memory") return { ...display, visibility: "hidden" };
       const originVisible = attributes.origin === "asserted" ? showAsserted : showInferred;
-      if (!originVisible) return { ...attributes, hidden: true };
+      if (!originVisible) return { ...display, visibility: "hidden" };
       const [source, target] = graph.extremities(edge);
       const sourceDepth = depths.get(source);
       const targetDepth = depths.get(target);
       const touchesSelection = source === selectedPath || target === selectedPath;
       if (touchesSelection) {
         return {
-          ...attributes,
+          ...display,
           color: attributes.origin === "asserted" ? "rgba(80, 101, 113, 0.82)" : "rgba(80, 101, 113, 0.5)",
           label: attributes.label,
           size: attributes.size * 1.3,
@@ -326,15 +359,15 @@ export function MemoryGraphCanvas({
         };
       }
       if (sourceDepth !== undefined && targetDepth !== undefined) {
-        return { ...attributes, color: "rgba(105, 116, 128, 0.28)", label: "", zIndex: 2 };
+        return { ...display, color: "rgba(105, 116, 128, 0.28)", label: "", zIndex: 2 };
       }
       return {
-        ...attributes,
+        ...display,
         color: attributes.origin === "asserted" ? ambientAssertedEdge : ambientInferredEdge,
         label: "",
         zIndex: 0,
       };
-    });
+    };
     renderer.refresh();
 
     if (graph.hasNode(selectedPath)) {
@@ -355,7 +388,7 @@ export function MemoryGraphCanvas({
         );
       }
     }
-  }, [depths, directlyRelated, searchMatches, selectedPath, showAsserted, showInferred]);
+  }, [data, depths, directlyRelated, searchMatches, selectedPath, showAsserted, showInferred]);
 
   const zoom = (factor: number) => {
     const camera = rendererRef.current?.getCamera();
@@ -364,7 +397,7 @@ export function MemoryGraphCanvas({
   };
 
   const reset = () => {
-    void rendererRef.current?.getCamera().animatedReset({ duration: 350 });
+    void rendererRef.current?.getCamera().reset({ duration: 350 });
   };
 
   const goHome = () => {

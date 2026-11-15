@@ -1,6 +1,6 @@
 [package]
 name = "frona-pkm"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 description = "Composable personal knowledge memory phases with caller-owned persistence"
 license = "MIT"
@@ -13,8 +13,8 @@ categories = ["text-processing", "data-structures"]
 [dependencies]
 rig-core.workspace = true
 async-trait = "0.1"
-frona-harness = { path = "../frona-harness", version = "0.1.0" }
-frona-text = { path = "../frona-text", version = "0.1.0", features = ["prompts", "redaction"] }
+frona-harness = { path = "../frona-harness", version = "0.2.0" }
+frona-text = { path = "../frona-text", version = "0.1.1", features = ["prompts", "redaction"] }
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true

@@ -3465,7 +3465,7 @@ dependencies = [
 
 [[package]]
 name = "frona-derive"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "heck 0.5.0",
@@ -3477,7 +3477,7 @@ dependencies = [
 
 [[package]]
 name = "frona-harness"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "approx",
  "async-trait",
@@ -3531,7 +3531,7 @@ dependencies = [
 
 [[package]]
 name = "frona-model-catalog"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arc-swap",
  "chrono",
@@ -3562,7 +3562,7 @@ dependencies = [
 
 [[package]]
 name = "frona-pkm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3737,7 +3737,7 @@ dependencies = [
 
 [[package]]
 name = "frona-text"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ignore",
  "minijinja",

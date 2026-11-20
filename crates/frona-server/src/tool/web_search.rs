@@ -187,6 +187,118 @@ impl SearchProvider for KeenableProvider {
     }
 }
 
+pub const YOUCOM_USER_AGENT: &str = "youdotcom-integration/fronalabs-frona";
+
+/// The most results the key-free You.com endpoint returns per query.
+const YOUCOM_MAX_RESULTS: usize = 50;
+
+/// You.com web search. Without an API key it uses You.com's key-free endpoint
+/// (about 100 searches a day).
+pub struct YouComProvider {
+    client: reqwest::Client,
+    api_key: Option<String>,
+}
+
+impl YouComProvider {
+    pub fn new(client: reqwest::Client, api_key: Option<String>) -> Self {
+        let api_key = api_key.filter(|k| !k.trim().is_empty());
+        Self { client, api_key }
+    }
+
+    fn request(&self, query: &str, max_results: usize) -> reqwest::RequestBuilder {
+        let req = match &self.api_key {
+            Some(key) => self
+                .client
+                .post("https://ydc-index.io/v1/search")
+                .header("X-API-Key", key.trim())
+                .json(&serde_json::json!({
+                    "query": query,
+                    "count": max_results,
+                })),
+            None => self
+                .client
+                .get("https://api.you.com/v1/agents/search")
+                .query(&[
+                    ("query", query),
+                    ("count", &max_results.min(YOUCOM_MAX_RESULTS).to_string()),
+                ]),
+        };
+        req.header("User-Agent", YOUCOM_USER_AGENT)
+    }
+}
+
+#[derive(Deserialize)]
+struct YouComResponse {
+    #[serde(default)]
+    results: YouComResults,
+}
+
+#[derive(Deserialize, Default)]
+struct YouComResults {
+    #[serde(default)]
+    web: Vec<YouComResult>,
+}
+
+#[derive(Deserialize)]
+struct YouComResult {
+    #[serde(default)]
+    title: String,
+    url: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    snippets: Vec<String>,
+}
+
+impl From<YouComResult> for SearchResult {
+    fn from(r: YouComResult) -> Self {
+        let joined = r.snippets.join(" ");
+        let snippet = [Some(joined), r.description]
+            .into_iter()
+            .flatten()
+            .find(|s| !s.trim().is_empty())
+            .unwrap_or_default();
+        SearchResult {
+            title: r.title,
+            url: r.url,
+            snippet,
+        }
+    }
+}
+
+#[async_trait]
+impl SearchProvider for YouComProvider {
+    async fn search(&self, query: &str, max_results: usize) -> Result<Vec<SearchResult>, AppError> {
+        let resp = self
+            .request(query, max_results)
+            .send()
+            .await
+            .map_err(|e| AppError::Tool(format!("You.com request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::Http {
+                status: status.as_u16(),
+                message: text,
+            });
+        }
+
+        let data: YouComResponse = resp
+            .json()
+            .await
+            .map_err(|e| AppError::Tool(format!("You.com parse error: {e}")))?;
+
+        Ok(data
+            .results
+            .web
+            .into_iter()
+            .take(max_results)
+            .map(SearchResult::from)
+            .collect())
+    }
+}
+
 pub struct BraveProvider {
     client: reqwest::Client,
     api_key: String,
@@ -363,8 +475,9 @@ impl WebSearchTool {
                  - TAVILY_API_KEY (for Tavily search)\n\
                  - BRAVE_API_KEY (for Brave search)\n\
                  - KEENABLE_API_KEY (for Keenable search; or set FRONA_SEARCH_PROVIDER=keenable to use it key-free)\n\
+                 - YDC_API_KEY (for You.com search; or set FRONA_SEARCH_PROVIDER=youcom to use it key-free)\n\
                  - FRONA_SEARCH_SEARXNG_BASE_URL (for SearXNG, e.g. http://localhost:3400)\n\
-                 You can also set FRONA_SEARCH_PROVIDER explicitly to: tavily, brave, keenable, or searxng"
+                 You can also set FRONA_SEARCH_PROVIDER explicitly to: tavily, brave, keenable, youcom, or searxng"
                     .into(),
             )
         })?;
@@ -415,6 +528,10 @@ pub fn create_search_provider(
                 let api_key = env::var("KEENABLE_API_KEY").ok();
                 Some(Arc::new(KeenableProvider::new(http, api_key)))
             }
+            "youcom" => {
+                let api_key = env::var("YDC_API_KEY").ok();
+                Some(Arc::new(YouComProvider::new(http, api_key)))
+            }
             "searxng" => {
                 let base_url = settings.searxng_base_url.clone()?;
                 Some(Arc::new(SearxngProvider::new(http, base_url)))
@@ -434,6 +551,9 @@ pub fn create_search_provider(
     }
     if let Ok(api_key) = env::var("KEENABLE_API_KEY") {
         return Some(Arc::new(KeenableProvider::new(http, Some(api_key))));
+    }
+    if let Ok(api_key) = env::var("YDC_API_KEY") {
+        return Some(Arc::new(YouComProvider::new(http, Some(api_key))));
     }
     if let Some(base_url) = settings.searxng_base_url.clone() {
         return Some(Arc::new(SearxngProvider::new(http, base_url)));
@@ -662,6 +782,77 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(SearchResult::from(r).snippet, "D");
+    }
+
+    #[test]
+    fn create_search_provider_youcom_works_without_a_key() {
+        let settings = crate::core::config::SearchConfig {
+            provider: Some("youcom".into()),
+            searxng_base_url: None,
+        };
+        assert!(create_search_provider(crate::build_http_client(), &settings).is_some());
+    }
+
+    #[test]
+    fn youcom_request_uses_keyless_endpoint_without_key() {
+        let provider = YouComProvider::new(reqwest::Client::new(), Some("  ".into()));
+        let req = provider.request("rust lang", 3).build().unwrap();
+        assert_eq!(req.method(), reqwest::Method::GET);
+        assert_eq!(req.url().path(), "/v1/agents/search");
+        assert_eq!(req.url().host_str(), Some("api.you.com"));
+        let pairs: Vec<(String, String)> = req
+            .url()
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        assert!(pairs.contains(&("query".into(), "rust lang".into())));
+        assert!(pairs.contains(&("count".into(), "3".into())));
+        assert!(req.headers().get("X-API-Key").is_none());
+        assert_eq!(req.headers()["User-Agent"], YOUCOM_USER_AGENT);
+    }
+
+    #[test]
+    fn youcom_keyless_count_is_capped_at_fifty() {
+        let provider = YouComProvider::new(reqwest::Client::new(), None);
+        let req = provider.request("rust", 80).build().unwrap();
+        assert!(
+            req.url()
+                .query_pairs()
+                .any(|(k, v)| k == "count" && v == "50")
+        );
+    }
+
+    #[test]
+    fn youcom_request_uses_keyed_endpoint_with_key() {
+        let provider = YouComProvider::new(reqwest::Client::new(), Some("k".into()));
+        let req = provider.request("rust", 3).build().unwrap();
+        assert_eq!(req.method(), reqwest::Method::POST);
+        assert_eq!(req.url().as_str(), "https://ydc-index.io/v1/search");
+        assert_eq!(req.headers()["X-API-Key"], "k");
+        assert_eq!(req.headers()["User-Agent"], YOUCOM_USER_AGENT);
+        let body: Value = serde_json::from_slice(req.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(body, serde_json::json!({ "query": "rust", "count": 3 }));
+    }
+
+    #[test]
+    fn youcom_response_maps_snippets_then_description() {
+        let data: YouComResponse = serde_json::from_value(serde_json::json!({
+            "results": { "web": [
+                { "title": "A", "url": "https://a", "description": "D", "snippets": ["one", "two"] },
+                { "title": "B", "url": "https://b", "description": "D2", "snippets": [] }
+            ] }
+        }))
+        .unwrap();
+        let mapped: Vec<SearchResult> = data
+            .results
+            .web
+            .into_iter()
+            .map(SearchResult::from)
+            .collect();
+        assert_eq!(mapped[0].snippet, "one two");
+        assert_eq!(mapped[1].snippet, "D2");
+        let empty: YouComResponse = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(empty.results.web.is_empty());
     }
 
     #[test]

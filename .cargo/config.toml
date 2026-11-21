@@ -16,6 +16,15 @@ opt-level = 1
 [profile.dev.package.surrealdb-idx]
 opt-level = 1
 
+# Nested execution metadata also exercises the recursive value codec and its
+# record deserializer in 3.3. Both instantiate codec generics; optimizing only
+# surrealdb-expr leaves the catalog's record-read path with large stack frames.
+[profile.dev.package.surrealdb-expr]
+opt-level = 1
+
+[profile.dev.package.surrealdb-catalog]
+opt-level = 1
+
 # Presage requires optimized ML-KEM to avoid stack overflow when decrypting
 # PQXDH prekey messages in development and test builds.
 [profile.dev.package.libcrux-ml-kem]

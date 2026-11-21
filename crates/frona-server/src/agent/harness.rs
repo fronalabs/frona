@@ -165,6 +165,7 @@ impl Harness {
 
     /// Runtime-owned execution including final canonical persistence. The report
     /// remains observable through the supplied controls after this method ends.
+    /// The inner loop is heap-pinned so task callers do not embed its full state.
     #[allow(clippy::too_many_arguments)]
     pub async fn run_turn_with_execution(
         &self,
@@ -181,7 +182,7 @@ impl Harness {
         let _execution = self.execution_registry.start(user_id, execution);
         let report = controls.report();
         report.record_run(async {
-        let outcome = self
+        let outcome = Box::pin(self
             .run_loop_inner(
                 user_id,
                 chat_id,
@@ -191,7 +192,7 @@ impl Harness {
                 tool_filters,
                 command_context_registry,
                 controls.clone(),
-            )
+            ))
             .await;
         let state = crate::inference::controls::outcome(
             outcome.as_ref().map(|outcome| &outcome.inference),
@@ -235,18 +236,17 @@ impl Harness {
         let report = controls.report();
         report
             .record_run(async {
-                let result = self
-                    .run_loop_inner(
-                        user_id,
-                        chat_id,
-                        message_id,
-                        cancel_token,
-                        builder,
-                        tool_filters,
-                        command_context_registry,
-                        controls,
-                    )
-                    .await;
+                let result = Box::pin(self.run_loop_inner(
+                    user_id,
+                    chat_id,
+                    message_id,
+                    cancel_token,
+                    builder,
+                    tool_filters,
+                    command_context_registry,
+                    controls,
+                ))
+                .await;
                 let state = crate::inference::controls::outcome(
                     result.as_ref().map(|outcome| &outcome.inference),
                 );

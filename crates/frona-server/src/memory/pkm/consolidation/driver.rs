@@ -71,12 +71,14 @@ impl Consolidator {
         loop {
             let stage = self.ctx.stage().await;
             let entered = stage.label();
+            // Isolate the large stage future from the driver and sweep callers;
+            // its model observers may run embedded queries on this same stack.
             let outcome: Result<(), AppError> = match stage {
                 ConsolidationStageState::Ingest(_) => Ok(()),
                 ConsolidationStageState::Classify(_)
                 | ConsolidationStageState::Resolve(_)
                 | ConsolidationStageState::Reconcile(_)
-                | ConsolidationStageState::Assemble(_) => match self.execute().await {
+                | ConsolidationStageState::Assemble(_) => match Box::pin(self.execute()).await {
                     Ok((classify, resolve, assemble)) => {
                         self.ctx
                             .absorb(|s| {

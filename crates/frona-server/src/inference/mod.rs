@@ -51,7 +51,9 @@ pub(crate) async fn inference_in_scope(
     request.ctx.event_tx.send(tool_loop::InferenceEvent {
         kind: tool_loop::InferenceEventKind::Start,
     });
-    tool_loop::run_tool_loop_controlled(
+    // Keep the tool loop state out of the enclosing chat/task futures.
+    // Embedded database calls share their thread stack with those callers.
+    Box::pin(tool_loop::run_tool_loop_controlled(
         &request.model_group,
         &request.system_prompt,
         request.history,
@@ -63,7 +65,7 @@ pub(crate) async fn inference_in_scope(
         &request.message_id,
         request.input_token_estimate,
         controls.execution(&request.cancel_token),
-    )
+    ))
     .await
 }
 

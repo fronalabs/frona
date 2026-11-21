@@ -315,14 +315,17 @@ impl Consolidator {
         // Reconcile after one complete Resolve sweep. Each accepted entity refresh runs an
         // incremental fingerprint check, and a resulting merge reopens only its winner;
         // fail-safe promotions remain in `proposals` until the single final commit.
-        reconcile::Reconcile {
-            ctx: self.ctx.clone(),
-            ontology: ontology_manager.clone(),
-            users: self.user_service.clone(),
-            prefixes: self.prefixes.clone(),
-            max_submissions: self.config.pkm_consolidation_max_submissions,
-        }
-        .run(&mut proposals, progress, self, &mut resolve_state, resolve)
+        // Keep per-entity reconciliation state out of the enclosing stage future.
+        Box::pin(
+            reconcile::Reconcile {
+                ctx: self.ctx.clone(),
+                ontology: ontology_manager.clone(),
+                users: self.user_service.clone(),
+                prefixes: self.prefixes.clone(),
+                max_submissions: self.config.pkm_consolidation_max_submissions,
+            }
+            .run(&mut proposals, progress, self, &mut resolve_state, resolve),
+        )
         .await?;
 
         if matches!(

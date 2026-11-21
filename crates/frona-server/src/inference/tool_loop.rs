@@ -182,7 +182,7 @@ pub async fn run_tool_loop(
     let report = controls.report();
     report
         .record_run(async {
-            let result = run_tool_loop_controlled(
+            let result = Box::pin(run_tool_loop_controlled(
                 model_group,
                 system_prompt,
                 chat_history,
@@ -194,7 +194,7 @@ pub async fn run_tool_loop(
                 message_id,
                 input_token_estimate,
                 controls.execution(&cancel_token),
-            )
+            ))
             .await;
             let state = crate::inference::controls::outcome(result.as_ref());
             (result, state)

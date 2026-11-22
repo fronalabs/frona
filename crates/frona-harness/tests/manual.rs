@@ -138,9 +138,10 @@ async fn two_models_keep_history_budget_and_selective_owned_actions() {
     session.execute(actions.next().unwrap()).await.unwrap();
     session
         .reject(actions.next().unwrap(), "unavailable")
+        .await
         .unwrap();
     session.call_model().model(&second).await.unwrap();
-    assert_eq!(session.finish().unwrap(), "final");
+    assert_eq!(session.finish().await.unwrap(), "final");
     assert_eq!(effects.load(Ordering::SeqCst), 1);
     assert_eq!(budget.snapshot().model_attempts, 2);
     assert_eq!(budget.snapshot().tool_calls, 1);
@@ -202,7 +203,7 @@ async fn incompatible_switch_fails_before_admission_and_original_model_still_wor
     let harness = Harness::new(first);
     let mut session = harness.run("input").budget(&budget).manual();
     let action = session.call_model().await.unwrap().actions.pop().unwrap();
-    session.reject(action, "not available").unwrap();
+    session.reject(action, "not available").await.unwrap();
     let original = session.conversation().messages().to_vec();
     for target in [&other, &no_tools] {
         assert!(matches!(
@@ -214,7 +215,7 @@ async fn incompatible_switch_fails_before_admission_and_original_model_still_wor
         assert_eq!(budget.snapshot().model_attempts, 1);
     }
     session.call_model().await.unwrap();
-    assert_eq!(session.finish().unwrap(), "continued");
+    assert_eq!(session.finish().await.unwrap(), "continued");
     assert_eq!(first_requests.lock().unwrap().len(), 2);
     assert!(other_requests.lock().unwrap().is_empty());
     assert!(no_tool_requests.lock().unwrap().is_empty());
@@ -242,10 +243,10 @@ async fn typed_manual_repairs_and_recovers_consumed_handle_after_premature_accep
     let harness = Harness::new(model);
     let mut session = harness.run("input").structured::<Answer>().manual();
     session.call_model().await.unwrap();
-    session.repair_missing_submission().unwrap();
+    session.repair_missing_submission().await.unwrap();
     let bad = session.call_model().await.unwrap().actions.pop().unwrap();
     assert!(matches!(
-        session.submission(&bad).unwrap(),
+        session.submission(&bad).await.unwrap(),
         Submission::Repaired { .. }
     ));
     let mut actions = session
@@ -257,11 +258,11 @@ async fn typed_manual_repairs_and_recovers_consumed_handle_after_premature_accep
         .into_iter();
     let good = actions.next().unwrap();
     let sibling = actions.next().unwrap();
-    let Submission::Ready(value) = session.submission(&good).unwrap() else {
+    let Submission::Ready(value) = session.submission(&good).await.unwrap() else {
         panic!("expected ready")
     };
     assert!(matches!(
-        session.accept(good, value.value.clone()),
+        session.accept(good, value.value.clone()).await,
         Err(ManualError::Submission(_))
     ));
     let recovered = session
@@ -271,10 +272,11 @@ async fn typed_manual_repairs_and_recovers_consumed_handle_after_premature_accep
         .into_iter()
         .find(|handle| session.action(handle).unwrap().kind == ActionKind::Submission)
         .unwrap();
-    session.reject(sibling, "unoffered").unwrap();
+    session.reject(sibling, "unoffered").await.unwrap();
     assert_eq!(
         session
             .accept(recovered, value.value.to_uppercase())
+            .await
             .unwrap(),
         "ORIGINAL"
     );
@@ -324,10 +326,10 @@ async fn reissued_handles_and_wrong_kind_cannot_repeat_or_strand_effects() {
     assert!(session.execute(duplicate).await.is_err());
     assert_eq!(effects.load(Ordering::SeqCst), 1);
     let submit = session.pending_actions().unwrap().actions.pop().unwrap();
-    let Submission::Ready(answer) = session.submission(&submit).unwrap() else {
+    let Submission::Ready(answer) = session.submission(&submit).await.unwrap() else {
         panic!()
     };
-    assert_eq!(session.accept(submit, answer.value).unwrap(), "a");
+    assert_eq!(session.accept(submit, answer.value).await.unwrap(), "a");
 }
 
 #[tokio::test]
@@ -346,7 +348,7 @@ async fn setup_cancellation_and_provider_failures_are_terminal_before_success() 
         Err(ManualError::Model(_))
     ));
     assert_eq!(failed.conversation().status(), ConversationStatus::Stopped);
-    assert!(failed.finish().is_err());
+    assert!(failed.finish().await.is_err());
     let cancellation = CancellationToken::new();
     let mut cancelled = harness
         .run("input")
@@ -380,8 +382,8 @@ async fn independent_runs_and_owned_session_are_spawnable() {
     tokio::spawn(async move {
         first.call_model().await.unwrap();
         second.call_model().await.unwrap();
-        assert_eq!(first.finish().unwrap(), "one");
-        assert_eq!(second.finish().unwrap(), "two");
+        assert_eq!(first.finish().await.unwrap(), "one");
+        assert_eq!(second.finish().await.unwrap(), "two");
         assert_eq!(first.conversation().messages().len(), 2);
         assert_eq!(second.conversation().messages().len(), 2);
     })
@@ -412,7 +414,7 @@ async fn borrowed_model_and_policy_work_without_spawn_or_static_bounds() {
     let harness = Harness::new(model);
     let mut session = harness.run("input").budget(&budget).manual();
     session.call_model().await.unwrap();
-    assert_eq!(session.finish().unwrap(), application);
+    assert_eq!(session.finish().await.unwrap(), application);
     assert_eq!(budget.snapshot().model_attempts, 1);
 }
 
@@ -445,7 +447,7 @@ async fn unsupported_offered_tools_can_be_disabled_without_losing_session() {
         .application_tools(ToolSelection::None)
         .await
         .unwrap();
-    assert_eq!(session.finish().unwrap(), "done");
+    assert_eq!(session.finish().await.unwrap(), "done");
 }
 
 #[tokio::test]
@@ -468,8 +470,9 @@ async fn text_mode_can_explicitly_reject_an_unoffered_submission() {
     assert!(requests.lock().unwrap()[0].tools.is_empty());
     session
         .reject(action, "submission tool was not offered")
+        .await
         .unwrap();
     session.call_model().await.unwrap();
-    assert_eq!(session.finish().unwrap(), "proper answer");
+    assert_eq!(session.finish().await.unwrap(), "proper answer");
     assert_eq!(requests.lock().unwrap()[1].messages.len(), 3);
 }

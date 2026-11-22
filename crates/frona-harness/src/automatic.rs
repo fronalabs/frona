@@ -43,23 +43,25 @@ impl<'a> IntoFuture for Run<'a, Text> {
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
             let mut session = self.manual();
-            drive_text(&mut session)
-                .await
-                .map_err(|reason| session.incomplete(reason, None))
+            match drive_text(&mut session).await {
+                Ok(value) => Ok(value),
+                Err(reason) => Err(session.incomplete(reason, None).await),
+            }
         })
     }
 }
 
-impl<'a, T: DeserializeOwned + JsonSchema + 'a> IntoFuture for Run<'a, Structured<T>> {
+impl<'a, T: DeserializeOwned + JsonSchema + Send + 'a> IntoFuture for Run<'a, Structured<T>> {
     type Output = Result<T, Incomplete>;
     type IntoFuture = Pin<Box<dyn std::future::Future<Output = Self::Output> + Send + 'a>>;
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
             let mut session = self.manual();
-            drive_structured(&mut session)
-                .await
-                .map_err(|reason| session.incomplete(reason, None))
+            match drive_structured(&mut session).await {
+                Ok(value) => Ok(value),
+                Err(reason) => Err(session.incomplete(reason, None).await),
+            }
         })
     }
 }
@@ -68,7 +70,7 @@ async fn drive_text(session: &mut ManualSession<'_, Text>) -> Result<String, Man
     loop {
         let turn = session.next_response().await?;
         if turn.actions.is_empty() {
-            return session.finish();
+            return session.finish().await;
         }
         let mut tools = Vec::new();
         for action in turn.actions {
@@ -77,7 +79,7 @@ async fn drive_text(session: &mut ManualSession<'_, Text>) -> Result<String, Man
                     tools.push(action);
                 }
                 ActionKind::Submission => {
-                    session.reject(action, "Structured submission was not offered. Reply with your final answer as text.")?;
+                    session.reject(action, "Structured submission was not offered. Reply with your final answer as text.").await?;
                 }
             }
         }
@@ -90,7 +92,9 @@ async fn drive_structured<T: DeserializeOwned + JsonSchema>(
 ) -> Result<T, ManualError> {
     let (action, value) = next_submission(session).await?;
     // Direct generation acknowledges schema completion, not domain acceptance.
-    session.complete_submission(action, value, super::SubmissionCompletion::Schema)
+    session
+        .complete_submission(action, value, super::SubmissionCompletion::Schema)
+        .await
 }
 
 /// Shared exploration/repair policy for direct output and application inspection.
@@ -120,15 +124,15 @@ pub(super) async fn next_submission<T: DeserializeOwned + JsonSchema>(
                 .iter()
                 .any(|action| action.kind() == ActionKind::Submission)
             {
-                session.repair_missing_submission()?;
+                session.repair_missing_submission().await?;
             }
             continue;
         }
         let mut selected = None;
         for action in submissions {
             if selected.is_some() {
-                session.reject(action, "An earlier valid submission was selected. This additional submission was not selected.")?;
-            } else if let Submission::Ready(value) = session.submission(&action)? {
+                session.reject(action, "An earlier valid submission was selected. This additional submission was not selected.").await?;
+            } else if let Submission::Ready(value) = session.submission(&action).await? {
                 selected = Some((action, value));
             }
         }

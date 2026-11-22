@@ -75,7 +75,9 @@ impl<'a> Harness<'a> {
                 instructions,
                 submission: None,
                 setup_error: None,
-                tool_hook: None,
+                tool_hooks: Vec::new(),
+                start_hooks: Vec::new(),
+                run_guards: Vec::new(),
                 max_concurrent_tool_calls: self.model.tool_concurrency(),
                 compaction: self.model.compaction_config(),
                 compaction_configured: false,
@@ -126,6 +128,20 @@ pub struct Run<'a, Mode = Text> {
 }
 
 impl<'a, Mode> Run<'a, Mode> {
+    /// Attach the required history writer before execution. The conversation
+    /// owns it; every durable transition awaits the same commit contract.
+    pub fn history_writer(mut self, writer: impl super::HistoryWriter + 'static) -> Self {
+        if self.core.setup_error.is_none() {
+            self.core.setup_error = self
+                .core
+                .conversation
+                .attach_history(Box::new(writer))
+                .err()
+                .map(Into::into);
+        }
+        self
+    }
+
     /// Attach a freshly created file writer. Instructions and mode remain
     /// configurable until execution writes Opened. Errors use the normal outcome.
     #[cfg(feature = "jsonl")]
@@ -232,7 +248,21 @@ impl<'a, Mode> Run<'a, Mode> {
         self.core.cancellation = cancellation;
         self
     }
-    /// Inspect an owned snapshot before each eligible ordinary tool invocation.
+    /// Register a hook for each execution scope. Hooks run in registration order
+    /// when automatic execution is first polled, a manual session is opened, or
+    /// a storage-stopped session starts a fresh scope with `into_memory`.
+    /// Each returned guard is dropped on completion, terminal failure, or drop.
+    pub fn on_start<G: Send + 'a>(
+        mut self,
+        mut hook: impl FnMut(CancellationToken) -> G + Send + 'a,
+    ) -> Self {
+        self.core
+            .start_hooks
+            .push(Box::new(move |token| Box::new(hook(token))));
+        self
+    }
+
+    /// Append a callback that inspects an owned snapshot before each eligible tool invocation.
     /// Editing the snapshot cannot change canonical arguments. The callback may
     /// borrow application references; for mutable captures lending across await,
     /// use `tool_call_hook` with a ToolCallHook implementation.
@@ -245,10 +275,11 @@ impl<'a, Mode> Run<'a, Mode> {
         self.tool_call_hook(CallbackHook(hook))
     }
 
-    /// Install a lending hook implementation. Like `before_tool`, this replaces
-    /// any previously configured hook and is shared by manual execution.
+    /// Append a hook for automatic execution, manual execution, and recovery.
+    /// Decisions run in registration order until a hook rejects, stops, or fails.
+    /// After a durable invocation result, after-hooks run in the same order until one stops.
     pub fn tool_call_hook(mut self, hook: impl ToolCallHook + 'a) -> Self {
-        self.core.tool_hook = Some(Box::new(hook));
+        self.core.tool_hooks.push(Box::new(hook));
         self
     }
     pub fn structured<T: JsonSchema>(mut self) -> Run<'a, Structured<T>> {
@@ -258,7 +289,8 @@ impl<'a, Mode> Run<'a, Mode> {
             mode: PhantomData,
         }
     }
-    pub fn manual(self) -> ManualSession<'a, Mode> {
+    pub fn manual(mut self) -> ManualSession<'a, Mode> {
+        self.core.start_scope();
         ManualSession {
             core: self.core,
             mode: PhantomData,
@@ -381,12 +413,12 @@ impl<'a, Mode> ManualSession<'a, Mode> {
         self.core.cancellation.clone()
     }
 
-    pub(super) fn incomplete<A>(
+    pub(super) async fn incomplete<A>(
         mut self,
         reason: ManualError,
         retained: Option<A>,
     ) -> Incomplete<A> {
-        let reason = self.core.fail(reason);
+        let reason = self.core.fail(reason).await;
         let report = Box::new(self.core.recorder.0.snapshot());
         Incomplete {
             reason,
@@ -400,6 +432,7 @@ impl<'a, Mode> ManualSession<'a, Mode> {
     /// dependencies. The old report remains final; this creates a fresh scope.
     pub fn into_memory(mut self) -> Result<Self, ManualError> {
         self.core.conversation = self.core.conversation.into_memory()?;
+        self.core.close_scope();
         self.core.recorder = RunRecorder::new();
         self.core.progress = ProgressOwner::default();
         self.core.conversation = self
@@ -407,12 +440,13 @@ impl<'a, Mode> ManualSession<'a, Mode> {
             .conversation
             .with_report(self.core.recorder.0.clone())
             .with_progress(self.core.progress.publisher());
+        self.core.start_scope();
         Ok(self)
     }
 
-    pub fn adopt_pending_write(&mut self) -> Result<(), ManualError> {
-        let result = self.core.conversation.adopt_pending_write();
-        self.core.result(result)
+    pub async fn adopt_pending_write(&mut self) -> Result<(), ManualError> {
+        let result = self.core.conversation.adopt_pending_write().await;
+        self.core.result(result).await
     }
 
     pub fn discard_pending_write(&mut self) -> Result<(), ManualError> {
@@ -472,15 +506,18 @@ impl<'a, Mode> ManualSession<'a, Mode> {
         &mut self,
         actions: &[PendingAction],
     ) -> Result<Vec<ActionResolution>, ManualError> {
-        self.core.execute_tools(actions).await
+        // Keep the dispatcher's borrowed tool handles out of the verifier's future
+        // type so callers can spawn a run when their verifier is Send.
+        let batch: futures::future::BoxFuture<'_, _> = Box::pin(self.core.execute_tools(actions));
+        batch.await
     }
 
-    pub fn reject(
+    pub async fn reject(
         &mut self,
         action: PendingAction,
         feedback: impl Into<String>,
     ) -> Result<ActionResolution, ManualError> {
-        self.core.check_active()?;
+        self.core.check_active().await?;
         let feedback = feedback.into();
         if self.core.conversation.action(&action)?.kind == super::ActionKind::Submission {
             // A text-only run can still receive an unoffered submit call. It
@@ -488,39 +525,47 @@ impl<'a, Mode> ManualSession<'a, Mode> {
             let result = self
                 .core
                 .conversation
-                .revise_submission(&action, feedback.clone());
-            self.core.result(result)?;
+                .revise_submission(&action, feedback.clone())
+                .await;
+            self.core.result(result).await?;
             Ok(ActionResolution::Rejected(ToolOutput::text(feedback)))
         } else {
             let result = self
                 .core
                 .conversation
-                .reject_tool(&action, ToolOutput::text(feedback));
-            self.core.result(result)
+                .reject_tool(&action, ToolOutput::text(feedback))
+                .await;
+            self.core.result(result).await
         }
     }
     /// Add caller feedback only when no proposal requires a paired result.
-    pub fn feedback(&mut self, feedback: impl Into<String>) -> Result<(), ManualError> {
-        self.core.check_active()?;
+    pub async fn feedback(&mut self, feedback: impl Into<String>) -> Result<(), ManualError> {
+        self.core.check_active().await?;
         let result = self
             .core
             .conversation
-            .push_user(vec![UserContent::text(feedback)]);
-        self.core.result(result)
+            .push_user(vec![UserContent::text(feedback)])
+            .await;
+        self.core.result(result).await
     }
-    pub fn stop(&mut self, reason: impl Into<String>) -> ManualError {
-        self.core.fail(ExecutionStop::Stopped(reason.into()).into())
+    pub async fn stop(&mut self, reason: impl Into<String>) -> ManualError {
+        self.core
+            .fail(ExecutionStop::Stopped(reason.into()).into())
+            .await
     }
 }
 
 impl<T: DeserializeOwned + JsonSchema> ManualSession<'_, Structured<T>> {
     /// Decoding may pair repair feedback; Ready still requires explicit resolve.
-    pub fn submission(&mut self, action: &PendingAction) -> Result<Submission<T>, ManualError> {
-        self.core.check_active()?;
-        match self.core.conversation.submission(action) {
-            Err(error @ SubmissionError::Schema(_)) => Err(self.core.fail(error.into())),
+    pub async fn submission(
+        &mut self,
+        action: &PendingAction,
+    ) -> Result<Submission<T>, ManualError> {
+        self.core.check_active().await?;
+        match self.core.conversation.submission(action).await {
+            Err(error @ SubmissionError::Schema(_)) => Err(self.core.fail(error.into()).await),
             result => {
-                let submission = self.core.result(result)?;
+                let submission = self.core.result(result).await?;
                 self.refinement_progress(match &submission {
                     Submission::Ready(_) => RefinementStage::Ready,
                     Submission::Repaired { .. } => RefinementStage::Repaired,
@@ -529,51 +574,61 @@ impl<T: DeserializeOwned + JsonSchema> ManualSession<'_, Structured<T>> {
             }
         }
     }
-    pub fn revise(
+    pub async fn revise(
         &mut self,
         action: PendingAction,
         feedback: impl Into<String>,
     ) -> Result<(), ManualError> {
-        self.core.check_active()?;
-        let result = self.core.conversation.revise_submission(&action, feedback);
-        self.core.result(result)?;
+        self.core.check_active().await?;
+        let result = self
+            .core
+            .conversation
+            .revise_submission(&action, feedback)
+            .await;
+        self.core.result(result).await?;
         self.refinement_progress(RefinementStage::Revised);
         Ok(())
     }
-    pub fn accept<A>(&mut self, action: PendingAction, accepted: A) -> Result<A, ManualError> {
+    pub async fn accept<A>(
+        &mut self,
+        action: PendingAction,
+        accepted: A,
+    ) -> Result<A, ManualError> {
         self.complete_submission(action, accepted, super::SubmissionCompletion::Application)
+            .await
     }
 
-    pub(super) fn complete_submission<A>(
+    pub(super) async fn complete_submission<A>(
         &mut self,
         action: PendingAction,
         accepted: A,
         kind: super::SubmissionCompletion,
     ) -> Result<A, ManualError> {
-        self.core.check_active()?;
+        self.core.check_active().await?;
         let result = self
             .core
             .conversation
-            .accept_submission_with_kind(&action, accepted, kind);
-        let accepted = self.core.result(result)?;
-        self.core.check_completion()?;
+            .accept_submission_with_kind(&action, accepted, kind)
+            .await;
+        let accepted = self.core.result(result).await?;
+        self.core.check_completion().await?;
         self.core.recorder.0.finish(RunOutcome::Completed);
         self.refinement_progress(RefinementStage::Accepted);
-        self.core.progress.close();
+        self.core.close_scope();
         Ok(accepted)
     }
-    pub fn repair_missing_submission(&mut self) -> Result<(), ManualError> {
-        self.core.check_active()?;
-        let result = self.core.conversation.repair_missing_submission();
-        self.core.result(result)?;
+    pub async fn repair_missing_submission(&mut self) -> Result<(), ManualError> {
+        self.core.check_active().await?;
+        let result = self.core.conversation.repair_missing_submission().await;
+        self.core.result(result).await?;
         self.refinement_progress(RefinementStage::MissingSubmission);
         Ok(())
     }
 }
 
 impl ManualSession<'_, Text> {
-    pub fn finish(&mut self) -> Result<String, ManualError> {
-        self.core.check_active()?;
+    pub async fn finish(&mut self) -> Result<String, ManualError> {
+        self.core.check_active().await?;
         self.core.conversation.require_ready()?;
         let text = self
             .core
@@ -585,11 +640,12 @@ impl ManualSession<'_, Text> {
             .conversation
             .finish_with_kind(super::HistoryCompletion::Text {
                 response: self.core.conversation.responses().len() - 1,
-            });
-        self.core.result(result)?;
-        self.core.check_completion()?;
+            })
+            .await;
+        self.core.result(result).await?;
+        self.core.check_completion().await?;
         self.core.recorder.0.finish(RunOutcome::Completed);
-        self.core.progress.close();
+        self.core.close_scope();
         Ok(text)
     }
 }
@@ -621,7 +677,11 @@ impl<'s> IntoFuture for ModelCall<'s, '_> {
     }
 }
 
+type StartHook<'a> = Box<dyn FnMut(CancellationToken) -> Box<dyn Send + 'a> + Send + 'a>;
+
 pub(super) struct SessionCore<'a> {
+    start_hooks: Vec<StartHook<'a>>,
+    run_guards: Vec<Box<dyn Send + 'a>>,
     model: Model<'a>,
     conversation: Conversation,
     recorder: RunRecorder,
@@ -632,7 +692,7 @@ pub(super) struct SessionCore<'a> {
     instructions: String,
     submission: Option<ToolDefinition>,
     setup_error: Option<ManualError>,
-    tool_hook: Option<Box<dyn ToolCallHook + 'a>>,
+    tool_hooks: Vec<Box<dyn ToolCallHook + 'a>>,
     max_concurrent_tool_calls: NonZeroUsize,
     compaction: super::CompactionConfig,
     compaction_configured: bool,
@@ -644,25 +704,53 @@ pub(super) struct SessionCore<'a> {
     resume_response: bool,
 }
 
+fn hook_refs<'a>(hooks: &'a mut [Box<dyn ToolCallHook + '_>]) -> Vec<&'a mut dyn ToolCallHook> {
+    hooks
+        .iter_mut()
+        .map(|hook| &mut **hook as &mut dyn ToolCallHook)
+        .collect()
+}
+
 impl SessionCore<'_> {
-    fn result<T, E: Into<ManualError>>(&mut self, result: Result<T, E>) -> Result<T, ManualError> {
-        result.map_err(|error| {
-            let error = error.into();
-            if matches!(error, ManualError::Stop(ExecutionStop::Storage(_))) {
-                self.fail(error)
-            } else {
-                error
-            }
-        })
+    fn start_scope(&mut self) {
+        self.run_guards.extend(
+            self.start_hooks
+                .iter_mut()
+                .map(|hook| hook(self.cancellation.clone())),
+        );
     }
 
-    fn fail(&mut self, error: ManualError) -> ManualError {
+    fn close_scope(&mut self) {
+        self.progress.close();
+        self.run_guards.clear();
+    }
+
+    async fn result<T, E: Into<ManualError>>(
+        &mut self,
+        result: Result<T, E>,
+    ) -> Result<T, ManualError> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                let error = error.into();
+                Err(
+                    if matches!(error, ManualError::Stop(ExecutionStop::Storage(_))) {
+                        self.fail(error).await
+                    } else {
+                        error
+                    },
+                )
+            }
+        }
+    }
+
+    async fn fail(&mut self, error: ManualError) -> ManualError {
         if self.resume_pending {
             // Preparation may still own a read-only JSONL source. Do not invent
             // an acknowledged in-memory Stopped record for that source.
             self.conversation.mark_stopped();
             self.recorder.incomplete(&error);
-            self.progress.close();
+            self.close_scope();
             return error;
         }
         self.conversation
@@ -670,6 +758,7 @@ impl SessionCore<'_> {
         let error = match self
             .conversation
             .stop_with_reason(super::report::failure_kind(&error), error.to_string())
+            .await
         {
             Err(ConversationError::Storage(failure)) => {
                 ManualError::Stop(ExecutionStop::Storage(Box::new((*failure).clone())))
@@ -678,23 +767,25 @@ impl SessionCore<'_> {
         };
         self.conversation.mark_stopped();
         self.recorder.incomplete(&error);
-        self.progress.close();
+        self.close_scope();
         error
     }
 
-    fn check_completion(&mut self) -> Result<(), ManualError> {
-        // A synchronous writer can observe/cause cancellation while committing.
+    async fn check_completion(&mut self) -> Result<(), ManualError> {
+        // A writer can observe/cause cancellation while committing.
         // Keep the completed durable evidence, but never return live success
         // after cancellation. Failed writes have already returned as storage stops.
         if self.cancellation.is_cancelled() {
-            return Err(self.fail(
-                ExecutionStop::Cancelled("execution cancelled during completion".into()).into(),
-            ));
+            return Err(self
+                .fail(
+                    ExecutionStop::Cancelled("execution cancelled during completion".into()).into(),
+                )
+                .await);
         }
         Ok(())
     }
 
-    fn check_active(&mut self) -> Result<(), ManualError> {
+    async fn check_active(&mut self) -> Result<(), ManualError> {
         if self.resume_pending {
             return Err(ResumeError::PreparationRequired.into());
         }
@@ -704,16 +795,18 @@ impl SessionCore<'_> {
             return Err(ExecutionStop::Storage(Box::new(failure.clone())).into());
         }
         if let Some(error) = self.setup_error.take() {
-            return Err(self.fail(error));
+            return Err(self.fail(error).await);
         }
         if self.cancellation.is_cancelled() {
-            return Err(self.fail(ExecutionStop::Cancelled("execution cancelled".into()).into()));
+            return Err(self
+                .fail(ExecutionStop::Cancelled("execution cancelled".into()).into())
+                .await);
         }
         if self.conversation.status() != super::ConversationStatus::Active {
             return Err(ConversationError::Terminal.into());
         }
-        let result = self.conversation.ensure_history();
-        self.result(result)
+        let result = self.conversation.ensure_history().await;
+        self.result(result).await
     }
 
     fn model_request(&self, selection: ToolSelection) -> ModelRequest {
@@ -739,21 +832,25 @@ impl SessionCore<'_> {
         model: &Model<'_>,
         selection: ToolSelection,
     ) -> Result<ResponseActions, ManualError> {
-        self.check_active()?;
+        self.check_active().await?;
         self.conversation.require_ready()?;
         if let Some(limit) = &self.submission_attempts
             && limit.remaining == 0
         {
-            return Err(self.fail(ManualError::SubmissionAttemptsExhausted {
-                maximum: limit.maximum,
-            }));
+            return Err(self
+                .fail(ManualError::SubmissionAttemptsExhausted {
+                    maximum: limit.maximum,
+                })
+                .await);
         }
         if let Some(limit) = &self.model_responses
             && limit.remaining == 0
         {
-            return Err(self.fail(ManualError::ModelResponsesExhausted {
-                maximum: limit.maximum,
-            }));
+            return Err(self
+                .fail(ManualError::ModelResponsesExhausted {
+                    maximum: limit.maximum,
+                })
+                .await);
         }
         let positions = self.conversation.model_view()?.original_positions();
         self.check_compatibility(model, &positions)?;
@@ -790,16 +887,17 @@ impl SessionCore<'_> {
                     Ok(stop) => stop.into(),
                     Err(error) => ModelError::Provider(error).into(),
                 };
-                return Err(self.fail(error));
+                return Err(self.fail(error).await);
             }
             Err(error) => {
-                return Err(self.fail(error.into()));
+                return Err(self.fail(error.into()).await);
             }
         };
-        let result =
-            self.conversation
-                .record_response_from(output.output, tools, Some(output.origin));
-        let actions = self.result(result)?;
+        let result = self
+            .conversation
+            .record_response_from(output.output, tools, Some(output.origin))
+            .await;
+        let actions = self.result(result).await?;
         if let Some(limit) = &mut self.model_responses {
             limit.remaining = limit.remaining.saturating_sub(1);
         }
@@ -909,50 +1007,46 @@ impl SessionCore<'_> {
         &mut self,
         actions: &[PendingAction],
     ) -> Result<Vec<ActionResolution>, ManualError> {
-        self.check_active()?;
+        self.check_active().await?;
         let execution = ExecutionControl::new(&*self.budget)
             .with_cancellation(&self.cancellation)
             .with_report(&self.recorder.0);
         match self
             .conversation
-            .execute_tools_with_hook(
+            .execute_tools_with_hooks(
                 actions,
                 &mut self.tools,
                 execution,
                 self.max_concurrent_tool_calls,
-                self.tool_hook
-                    .as_mut()
-                    .map(|hook| &mut **hook as &mut dyn ToolCallHook),
+                &mut hook_refs(&mut self.tool_hooks),
             )
             .await
         {
-            Err(ToolDispatchError::Stop(stop)) => Err(self.fail(stop.into())),
-            Err(error @ ToolDispatchError::ToolHook(_)) => Err(self.fail(error.into())),
-            result => self.result(result),
+            Err(ToolDispatchError::Stop(stop)) => Err(self.fail(stop.into()).await),
+            Err(error @ ToolDispatchError::ToolHook(_)) => Err(self.fail(error.into()).await),
+            result => self.result(result).await,
         }
     }
 
     async fn execute(&mut self, action: PendingAction) -> Result<ActionResolution, ManualError> {
-        self.check_active()?;
+        self.check_active().await?;
         // Admission belongs to dispatch, after asynchronous policy has finished.
         let execution = ExecutionControl::new(&*self.budget)
             .with_cancellation(&self.cancellation)
             .with_report(&self.recorder.0);
         match self
             .conversation
-            .execute_tool_with_hook(
+            .execute_tool_with_hooks(
                 &action,
                 &mut self.tools,
                 execution,
-                self.tool_hook
-                    .as_mut()
-                    .map(|hook| &mut **hook as &mut dyn ToolCallHook),
+                &mut hook_refs(&mut self.tool_hooks),
             )
             .await
         {
-            Err(ToolDispatchError::Stop(stop)) => Err(self.fail(stop.into())),
-            Err(error @ ToolDispatchError::ToolHook(_)) => Err(self.fail(error.into())),
-            result => self.result(result),
+            Err(ToolDispatchError::Stop(stop)) => Err(self.fail(stop.into()).await),
+            Err(error @ ToolDispatchError::ToolHook(_)) => Err(self.fail(error.into()).await),
+            result => self.result(result).await,
         }
     }
 

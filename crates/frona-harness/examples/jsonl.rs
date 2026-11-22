@@ -36,10 +36,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(unfinished) => unfinished,
     };
     let mut conversation = *unfinished.conversation;
-    conversation.save_checkpoint("title-review", 1, &state)?;
+    conversation
+        .save_checkpoint("title-review", 1, &state)
+        .await?;
     drop(conversation); // Release this writer before loading again.
 
-    let loaded = Jsonl::open(&path)?; // Pure load: no tools, models, inspector, or writes.
+    let loaded = Jsonl::open(&path).await?; // Pure load: no tools, models, inspector, or writes.
     let mut restored: ReviewState = loaded
         .load_checkpoint("title-review", 1)?
         .ok_or("missing application checkpoint")?

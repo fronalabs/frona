@@ -6,7 +6,6 @@ mod checkpoint;
 pub use checkpoint::{CheckpointLoadError, CheckpointRef, LoadedCheckpoint};
 
 use super::history::History;
-#[cfg(test)]
 use super::history::HistoryWriter;
 use super::{
     EffectState, HistoryCompletion, HistoryEvent, HistoryFailure, HistoryMode, HistoryRecord,
@@ -163,6 +162,8 @@ pub enum ConversationStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConversationError {
+    #[error("attach history before execution, without another writer or loaded storage")]
+    HistoryAlreadyAttached,
     #[error("loaded storage must be prepared by explicit resume before mutation")]
     StorageNotReady,
     #[error("invalid selected model view: {0}")]
@@ -332,14 +333,14 @@ impl Conversation {
         self.compacted.as_ref()
     }
 
-    pub(super) fn commit_compaction(
+    pub(super) async fn commit_compaction(
         &mut self,
         view: super::CompactedView,
         summarizer: String,
         output: ModelOutput,
     ) -> Result<(), ConversationError> {
         self.require_ready()?;
-        self.ensure_history()?;
+        self.ensure_history().await?;
         self.commit(
             HistoryEvent::Compacted {
                 view: view.clone(),
@@ -347,7 +348,8 @@ impl Conversation {
                 output,
             },
             EffectState::Returned,
-        )?;
+        )
+        .await?;
         self.compacted = Some(view);
         Ok(())
     }
@@ -423,9 +425,18 @@ impl Conversation {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn attach_history(&mut self, writer: Box<dyn HistoryWriter>) {
+    /// Attach one owned writer before the first transition. Loaded histories
+    /// require their explicit recovery path rather than a replacement writer.
+    pub fn attach_history(
+        &mut self,
+        writer: Box<dyn HistoryWriter>,
+    ) -> Result<(), ConversationError> {
+        self.require_storage_ready()?;
+        if !self.history.can_attach_new() {
+            return Err(ConversationError::HistoryAlreadyAttached);
+        }
         self.history.attach(writer);
+        Ok(())
     }
 
     pub(super) fn configure_history(
@@ -441,7 +452,8 @@ impl Conversation {
         }
     }
 
-    pub(super) fn ensure_history(&mut self) -> Result<(), ConversationError> {
+    /// Commit the opening record before an externally driven model effect.
+    pub async fn ensure_history(&mut self) -> Result<(), ConversationError> {
         if let Some(failure) = self.history.failure() {
             return Err(failure.clone().into());
         }
@@ -461,20 +473,30 @@ impl Conversation {
                     mode: self.mode.clone(),
                 },
                 EffectState::Prevented,
-            )?;
+            )
+            .await?;
         }
         Ok(())
     }
 
-    fn commit(
+    async fn commit(
         &mut self,
         event: HistoryEvent,
         effect: EffectState,
     ) -> Result<(), ConversationError> {
-        if let Err(failure) = self.history.commit(self.id, event, effect) {
+        // Dropping this future must leave the live conversation stopped as
+        // well as retaining the history's uncertain-write evidence. A terminal
+        // conversation remains terminal if its later checkpoint is interrupted.
+        let previous = self.status;
+        if previous != ConversationStatus::Finished {
+            self.status = ConversationStatus::Stopped;
+        }
+        if let Err(failure) = self.history.commit(self.id, event, effect).await {
+            self.status = previous;
             self.mark_stopped();
             return Err(failure.into());
         }
+        self.status = previous;
         Ok(())
     }
 
@@ -503,7 +525,7 @@ impl Conversation {
 
     /// Adopt a known response/result/feedback after explicit memory detachment.
     /// Completion candidates are never adopted: validate and complete anew.
-    pub fn adopt_pending_write(&mut self) -> Result<(), ConversationError> {
+    pub async fn adopt_pending_write(&mut self) -> Result<(), ConversationError> {
         if self.history.failure().is_some() || self.status != ConversationStatus::Active {
             return Err(ConversationError::Terminal);
         }
@@ -535,7 +557,8 @@ impl Conversation {
                         mode,
                     },
                     EffectState::NoEffect,
-                )?;
+                )
+                .await?;
             }
             HistoryEvent::Response {
                 origin,
@@ -543,9 +566,10 @@ impl Conversation {
                 offered_tools,
                 ..
             } => {
-                self.record_response_from(output, offered_tools, origin)?;
+                self.record_response_from(output, offered_tools, origin)
+                    .await?;
             }
-            HistoryEvent::User { content, .. } => self.push_user(content)?,
+            HistoryEvent::User { content, .. } => self.push_user(content).await?,
             HistoryEvent::ActionResolved { action, resolution } => {
                 self.resolve(
                     &PendingAction {
@@ -554,7 +578,8 @@ impl Conversation {
                         slot: action.action,
                     },
                     resolution,
-                )?;
+                )
+                .await?;
             }
             _ => unreachable!("non-adoptable events checked above"),
         }
@@ -588,7 +613,7 @@ impl Conversation {
         Ok(())
     }
 
-    pub(super) fn stop_with_reason(
+    pub(super) async fn stop_with_reason(
         &mut self,
         category: super::FailureKind,
         message: String,
@@ -605,7 +630,7 @@ impl Conversation {
             self.history.records().last().map(|r| &r.event),
             Some(HistoryEvent::Stopped { .. })
         ) {
-            self.ensure_history()?;
+            self.ensure_history().await?;
             let effect = if self.responses.last().is_some_and(|response| {
                 response
                     .actions
@@ -616,7 +641,8 @@ impl Conversation {
             } else {
                 EffectState::NoEffect
             };
-            self.commit(HistoryEvent::Stopped { category, message }, effect)?;
+            self.commit(HistoryEvent::Stopped { category, message }, effect)
+                .await?;
         }
         self.mark_stopped();
         Ok(())
@@ -660,7 +686,8 @@ impl Conversation {
         }
     }
 
-    pub(super) fn action_position(
+    /// Stable position of a validated action, independent of provider call IDs.
+    pub fn action_position(
         &self,
         handle: &PendingAction,
     ) -> Result<ActionPosition, ConversationError> {
@@ -735,7 +762,7 @@ impl Conversation {
     }
 
     /// Add caller input or conversational feedback, without inventing call IDs.
-    pub fn push_user(&mut self, content: Vec<UserContent>) -> Result<(), ConversationError> {
+    pub async fn push_user(&mut self, content: Vec<UserContent>) -> Result<(), ConversationError> {
         self.require_ready()?;
         if content
             .iter()
@@ -743,14 +770,15 @@ impl Conversation {
         {
             return Err(ConversationError::UnpairedToolResult);
         }
-        self.ensure_history()?;
+        self.ensure_history().await?;
         self.commit(
             HistoryEvent::User {
                 message: self.messages.len(),
                 content: content.clone(),
             },
             EffectState::NoEffect,
-        )?;
+        )
+        .await?;
         if let Some(report) = &self.report {
             report.message(self.id, self.messages.len(), None);
         }
@@ -761,22 +789,22 @@ impl Conversation {
     /// Record all provider content before exposing proposals. Native structured
     /// output without a ToolCall remains in the raw record; no call is invented.
     /// Duplicate provider IDs remain distinct slots without rewriting the IDs.
-    pub fn record_response(
+    pub async fn record_response(
         &mut self,
         output: ModelOutput,
         offered_tools: Vec<ToolDefinition>,
     ) -> Result<ResponseActions, ConversationError> {
-        self.record_response_from(output, offered_tools, None)
+        self.record_response_from(output, offered_tools, None).await
     }
 
-    pub(super) fn record_response_from(
+    pub(super) async fn record_response_from(
         &mut self,
         output: ModelOutput,
         offered_tools: Vec<ToolDefinition>,
         origin: Option<String>,
     ) -> Result<ResponseActions, ConversationError> {
         self.require_ready()?;
-        self.ensure_history()?;
+        self.ensure_history().await?;
         self.commit(
             HistoryEvent::Response {
                 response: self.responses.len(),
@@ -786,7 +814,8 @@ impl Conversation {
                 output: output.clone(),
             },
             EffectState::Returned,
-        )?;
+        )
+        .await?;
         let response_index = self.responses.len();
         let actions: Vec<_> = output
             .content
@@ -883,24 +912,25 @@ impl Conversation {
 
     /// Reserve a proposal before an external effect. A second start is rejected.
     /// This state transition itself performs no effect or budget admission.
-    pub fn start(&mut self, handle: &PendingAction) -> Result<(), ConversationError> {
-        self.start_invocation(handle, false)
+    pub async fn start(&mut self, handle: &PendingAction) -> Result<(), ConversationError> {
+        self.start_invocation(handle, false).await
     }
 
-    pub(super) fn start_invocation(
+    pub(super) async fn start_invocation(
         &mut self,
         handle: &PendingAction,
         recovery: bool,
     ) -> Result<(), ConversationError> {
         let ordinal = self.next_invocation(handle, recovery)?;
-        self.ensure_history()?;
+        self.ensure_history().await?;
         self.commit(
             HistoryEvent::ToolStarted {
                 action: self.action_position(handle)?,
                 ordinal,
             },
             EffectState::Prevented,
-        )?;
+        )
+        .await?;
         self.responses[handle.response].actions[handle.slot].status = ActionStatus::Started;
         self.responses[handle.response].actions[handle.slot].invocation_ordinal = ordinal;
         if let Some(report) = &self.report {
@@ -958,7 +988,7 @@ impl Conversation {
     /// is appended once, in proposal order, after the entire batch is resolved.
     /// A proposed action can be resolved without `start` for rejection/repair or
     /// caller-supplied results. Drivers own invocation and acceptance policy.
-    pub fn resolve(
+    pub async fn resolve(
         &mut self,
         handle: &PendingAction,
         resolution: ActionResolution,
@@ -968,7 +998,7 @@ impl Conversation {
         {
             return Err(ConversationError::AlreadyStarted);
         }
-        self.ensure_history()?;
+        self.ensure_history().await?;
         let effect = if self.validate(handle)?.status == ActionStatus::Started {
             EffectState::Returned
         } else {
@@ -980,7 +1010,8 @@ impl Conversation {
                 resolution: resolution.clone(),
             },
             effect,
-        )?;
+        )
+        .await?;
         self.apply_resolution(handle, resolution);
         Ok(())
     }
@@ -1029,12 +1060,12 @@ impl Conversation {
         self.emit_action(handle);
     }
 
-    pub(super) fn complete_submission(
+    pub(super) async fn complete_submission(
         &mut self,
         handle: &PendingAction,
         kind: SubmissionCompletion,
     ) -> Result<(), ConversationError> {
-        self.ensure_history()?;
+        self.ensure_history().await?;
         let acknowledgement = ToolOutput::text("Submission accepted.");
         self.commit(
             HistoryEvent::SubmissionCompleted {
@@ -1043,7 +1074,8 @@ impl Conversation {
                 kind,
             },
             EffectState::NoEffect,
-        )?;
+        )
+        .await?;
         self.apply_resolution(handle, ActionResolution::Result(acknowledgement));
         self.status = ConversationStatus::Finished;
         Ok(())
@@ -1086,27 +1118,29 @@ impl Conversation {
 
     /// End a protocol-complete exchange. This is not inspector acceptance and
     /// does not create an accepted refinement value.
-    pub fn finish(&mut self) -> Result<(), ConversationError> {
-        self.finish_with_kind(HistoryCompletion::Protocol)
+    pub async fn finish(&mut self) -> Result<(), ConversationError> {
+        self.finish_with_kind(HistoryCompletion::Protocol).await
     }
 
-    pub(super) fn finish_with_kind(
+    pub(super) async fn finish_with_kind(
         &mut self,
         kind: HistoryCompletion,
     ) -> Result<(), ConversationError> {
         self.require_ready()?;
-        self.ensure_history()?;
-        self.commit(HistoryEvent::Finished { kind }, EffectState::NoEffect)?;
+        self.ensure_history().await?;
+        self.commit(HistoryEvent::Finished { kind }, EffectState::NoEffect)
+            .await?;
         self.status = ConversationStatus::Finished;
         Ok(())
     }
 
     /// End unfinished work while retaining unresolved proposals and raw history.
-    pub fn stop(&mut self) -> Result<(), ConversationError> {
+    pub async fn stop(&mut self) -> Result<(), ConversationError> {
         self.stop_with_reason(
             super::FailureKind::ApplicationStop,
             "conversation stopped".into(),
         )
+        .await
     }
 
     pub(super) fn mark_stopped(&mut self) {

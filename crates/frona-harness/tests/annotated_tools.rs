@@ -46,7 +46,7 @@ async fn stop(execution: &ToolContext<'_>, reason: String) -> Result<(), ToolErr
     Err(ExecutionStop::Stopped(reason).into())
 }
 
-fn record(
+async fn record(
     conversation: &mut Conversation,
     registry: &ToolRegistry<'_>,
     name: &str,
@@ -63,6 +63,7 @@ fn record(
             ),
             registry.definitions().cloned().collect(),
         )
+        .await
         .unwrap()
         .actions
         .remove(0)
@@ -80,7 +81,7 @@ async fn function_items_keep_normal_calls_and_named_object_schemas() {
     assert!(definition.parameters["properties"].get("left").is_some());
     assert!(definition.parameters["properties"].get("right").is_some());
     let mut c = Conversation::new("add");
-    let a = record(&mut c, &tools, "add", json!({"left":3,"right":4}));
+    let a = record(&mut c, &tools, "add", json!({"left":3,"right":4})).await;
     let b = DefaultBudget::default();
     let ActionResolution::Result(output) = c
         .execute_tool(&a, &mut tools, ExecutionControl::new(&b))
@@ -109,7 +110,7 @@ async fn injected_context_is_excluded_and_is_the_actual_dispatch_context() {
         ["prefix"]
     );
     let mut c = Conversation::new("identify");
-    let a = record(&mut c, &tools, "identify", json!({"prefix":"hello"}));
+    let a = record(&mut c, &tools, "identify", json!({"prefix":"hello"})).await;
     let b = DefaultBudget::default();
     let ActionResolution::Result(output) = c
         .execute_tool(&a, &mut tools, ExecutionControl::new(&b))
@@ -129,7 +130,7 @@ async fn registration_validation_and_refused_admission_do_not_invoke_functions()
     assert!(tools.register(count).is_err());
     assert_eq!(CALLS.load(Ordering::SeqCst), 0);
     let mut c = Conversation::new("count");
-    let a = record(&mut c, &tools, "counter", json!({}));
+    let a = record(&mut c, &tools, "counter", json!({})).await;
     let b = DefaultBudget::new(BudgetLimits {
         tool_calls: Some(0),
         ..Default::default()
@@ -141,7 +142,7 @@ async fn registration_validation_and_refused_admission_do_not_invoke_functions()
     ));
     assert_eq!(CALLS.load(Ordering::SeqCst), 0);
     let mut c = Conversation::new("invalid");
-    let a = record(&mut c, &tools, "counter", json!("not an object"));
+    let a = record(&mut c, &tools, "counter", json!("not an object")).await;
     assert!(matches!(
         c.execute_tool(
             &a,
@@ -160,7 +161,7 @@ async fn borrowed_context_and_typed_stops_preserve_shared_execution_semantics() 
     let mut tools = ToolRegistry::default();
     tools.register(stop).unwrap();
     let mut c = Conversation::new("stop");
-    let a = record(&mut c, &tools, "stop", json!({"reason":"done"}));
+    let a = record(&mut c, &tools, "stop", json!({"reason":"done"})).await;
     assert!(
         matches!(c.execute_tool(&a,&mut tools,ExecutionControl::new(&DefaultBudget::default())).await,Err(ToolDispatchError::Stop(ExecutionStop::Stopped(reason))) if reason=="done")
     );
@@ -178,7 +179,7 @@ async fn registration_calls_the_supplied_function_value_instead_of_a_static_orig
     tools.register(actual).unwrap();
     assert_eq!(invocations.load(Ordering::SeqCst), 0);
     let mut c = Conversation::new("wrapper");
-    let a = record(&mut c, &tools, "add", json!({"left":1,"right":2}));
+    let a = record(&mut c, &tools, "add", json!({"left":1,"right":2})).await;
     let ActionResolution::Result(output) = c
         .execute_tool(
             &a,
@@ -211,7 +212,7 @@ async fn annotated_nested_calls_share_budget_and_cancellation_is_checked_before_
     let mut tools = ToolRegistry::default();
     tools.register(nested).unwrap();
     let mut c = Conversation::new("nested");
-    let a = record(&mut c, &tools, "nested", json!({"question":"q"}));
+    let a = record(&mut c, &tools, "nested", json!({"question":"q"})).await;
     let b = DefaultBudget::new(BudgetLimits {
         model_attempts: Some(0),
         ..Default::default()
@@ -227,7 +228,7 @@ async fn annotated_nested_calls_share_budget_and_cancellation_is_checked_before_
     token.cancel();
     let b = DefaultBudget::default();
     let mut c = Conversation::new("cancel");
-    let a = record(&mut c, &tools, "nested", json!({"question":"q"}));
+    let a = record(&mut c, &tools, "nested", json!({"question":"q"})).await;
     assert!(matches!(
         c.execute_tool(
             &a,
@@ -289,7 +290,8 @@ async fn registration_errors_and_application_error_types_keep_existing_meanings(
         &tools,
         "unavailable",
         json!({"path":"record"}),
-    );
+    )
+    .await;
     assert!(matches!(
         conversation
             .execute_tool(
@@ -346,7 +348,8 @@ async fn generated_items_preserve_caller_names_and_function_attribute_targets() 
         &tools,
         "echo",
         json!({"value":"dispatched"}),
-    );
+    )
+    .await;
     let ActionResolution::Result(output) = conversation
         .execute_tool(
             &action,

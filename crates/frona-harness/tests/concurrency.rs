@@ -90,7 +90,7 @@ fn setup(names: &[&str], fail: Option<usize>) -> (ToolRegistry<'static>, Probe) 
     )
 }
 
-fn record(
+async fn record(
     conversation: &mut Conversation,
     names: &[&str],
     tools: &ToolRegistry<'_>,
@@ -112,6 +112,7 @@ fn record(
             ),
             tools.definitions().cloned().collect(),
         )
+        .await
         .unwrap()
         .actions
 }
@@ -121,7 +122,7 @@ async fn bounded_dispatch_refills_slots_and_preserves_proposal_order() {
     let names = ["a", "a", "b", "c"];
     let (mut tools, mut probe) = setup(&names, None);
     let mut conversation = Conversation::default();
-    let actions = record(&mut conversation, &names, &tools);
+    let actions = record(&mut conversation, &names, &tools).await;
     let budget = DefaultBudget::default();
     let (results, ()) = tokio::time::timeout(Duration::from_secs(5), async {
         tokio::join!(
@@ -172,7 +173,7 @@ async fn one_is_sequential_and_ordinary_failures_do_not_stop_the_batch() {
     let names = ["a", "b", "c"];
     let (mut tools, mut probe) = setup(&names, Some(1));
     let mut conversation = Conversation::default();
-    let actions = record(&mut conversation, &names, &tools);
+    let actions = record(&mut conversation, &names, &tools).await;
     let budget = DefaultBudget::default();
     let (results, ()) = tokio::time::timeout(Duration::from_secs(5), async {
         tokio::join!(
@@ -203,7 +204,7 @@ async fn cancellation_abandons_active_calls_without_starting_queued_calls() {
     let names = ["a", "b", "c"];
     let (mut tools, mut probe) = setup(&names, None);
     let mut conversation = Conversation::default();
-    let actions = record(&mut conversation, &names, &tools);
+    let actions = record(&mut conversation, &names, &tools).await;
     let budget = DefaultBudget::default();
     let cancellation = CancellationToken::new();
     let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
@@ -250,7 +251,7 @@ async fn budget_refusal_drains_admitted_calls_and_leaves_remaining_proposals() {
     let names = ["a", "b", "c", "d"];
     let (mut tools, mut probe) = setup(&names, None);
     let mut conversation = Conversation::default();
-    let actions = record(&mut conversation, &names, &tools);
+    let actions = record(&mut conversation, &names, &tools).await;
     let budget = DefaultBudget::new(BudgetLimits {
         tool_calls: Some(2),
         ..BudgetLimits::default()
@@ -333,7 +334,7 @@ async fn refusal_does_not_admit_later_calls_even_if_their_budget_would_allow_the
     let names = ["a", "b", "c"];
     let (mut tools, mut probe) = setup(&names, None);
     let mut conversation = Conversation::default();
-    let actions = record(&mut conversation, &names, &tools);
+    let actions = record(&mut conversation, &names, &tools).await;
     let budget = RefuseB(DefaultBudget::default());
     let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
         tokio::join!(

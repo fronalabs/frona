@@ -33,7 +33,7 @@ fn registry(calls: Arc<AtomicUsize>) -> ToolRegistry<'static> {
     tools.register(counting("work", calls)).unwrap();
     tools
 }
-fn record(
+async fn record(
     conversation: &mut Conversation,
     names: &[&str],
     tools: &ToolRegistry<'_>,
@@ -63,17 +63,19 @@ fn record(
             ),
             definitions,
         )
+        .await
         .unwrap()
         .actions
 }
-fn interrupted(tools: &ToolRegistry<'_>) -> Conversation {
+async fn interrupted(tools: &ToolRegistry<'_>) -> Conversation {
     let mut conversation = Conversation::new("input");
-    let actions = record(&mut conversation, &["work"], tools);
-    conversation.start(&actions[0]).unwrap();
+    let actions = record(&mut conversation, &["work"], tools).await;
+    conversation.start(&actions[0]).await.unwrap();
     conversation
 }
-fn replay(conversation: &Conversation) -> Conversation {
+async fn replay(conversation: &Conversation) -> Conversation {
     decode_jsonl(&encode_jsonl(conversation.history()).unwrap())
+        .await
         .unwrap()
         .replay
         .conversation
@@ -98,7 +100,8 @@ async fn recovery_retries_only_started_calls_and_returns_unstarted_and_submissio
         &mut original,
         &["work", "work", "work", "work", "submit"],
         &tools,
-    );
+    )
+    .await;
     original
         .execute_tool(
             &handles[0],
@@ -109,14 +112,15 @@ async fn recovery_retries_only_started_calls_and_returns_unstarted_and_submissio
         .unwrap();
     original
         .reject_tool(&handles[1], ToolOutput::text("denied"))
+        .await
         .unwrap();
-    original.start(&handles[2]).unwrap();
+    original.start(&handles[2]).await.unwrap();
     assert!(matches!(
-        original.submission::<String>(&handles[4]).unwrap(),
+        original.submission::<String>(&handles[4]).await.unwrap(),
         Submission::Ready(_)
     ));
-    original.stop().unwrap();
-    let mut restored = replay(&original);
+    original.stop().await.unwrap();
+    let mut restored = replay(&original).await;
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     let budget = DefaultBudget::default();
     let pending = restored
@@ -142,19 +146,22 @@ async fn recovery_retries_only_started_calls_and_returns_unstarted_and_submissio
     assert!(!restored.action(&submission).unwrap().submission_validated);
     restored
         .reject_tool(&unstarted, ToolOutput::text("caller choice"))
+        .await
         .unwrap();
     assert!(
         restored
             .accept_submission(&submission, "not validated")
+            .await
             .is_err()
     );
     assert!(matches!(
-        restored.submission::<String>(&submission).unwrap(),
+        restored.submission::<String>(&submission).await.unwrap(),
         Submission::Ready(_)
     ));
     assert_eq!(
         restored
             .accept_submission(&submission, "explicit acceptance")
+            .await
             .unwrap(),
         "explicit acceptance"
     );
@@ -192,7 +199,7 @@ async fn effect_without_result_can_repeat_but_saved_ordinary_failure_never_repea
         )
         .unwrap();
     let mut original = Conversation::new("input");
-    let handles = record(&mut original, &["work"], &tools);
+    let handles = record(&mut original, &["work"], &tools).await;
     assert!(matches!(
         original
             .execute_tool(
@@ -203,7 +210,7 @@ async fn effect_without_result_can_repeat_but_saved_ordinary_failure_never_repea
             .await,
         Err(ToolDispatchError::Stop(ExecutionStop::Stopped(_)))
     ));
-    let mut restored = replay(&original);
+    let mut restored = replay(&original).await;
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         restored.responses()[0].actions()[0].status(),
@@ -222,7 +229,7 @@ async fn effect_without_result_can_repeat_but_saved_ordinary_failure_never_repea
         restored.responses()[0].actions()[0].resolution(),
         Some(ActionResolution::Failed(_))
     ));
-    let mut reopened = replay(&restored);
+    let mut reopened = replay(&restored).await;
     reopened
         .recover_tools(&mut tools, ExecutionControl::new(&DefaultBudget::default()))
         .await
@@ -234,7 +241,7 @@ async fn effect_without_result_can_repeat_but_saved_ordinary_failure_never_repea
 async fn fresh_budget_refusal_preserves_interrupted_state_and_later_recovery_can_retry() {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut tools = registry(calls.clone());
-    let mut conversation = interrupted(&tools);
+    let mut conversation = interrupted(&tools).await;
     let exhausted = DefaultBudget::new(BudgetLimits {
         tool_calls: Some(0),
         ..Default::default()
@@ -281,7 +288,7 @@ async fn restored_hook_refusal_failure_and_cancellation_never_resolve_prior_effe
     for case in 0..6 {
         let calls = Arc::new(AtomicUsize::new(0));
         let mut tools = registry(calls.clone());
-        let mut conversation = interrupted(&tools);
+        let mut conversation = interrupted(&tools).await;
         let budget = DefaultBudget::default();
         let cancellation = CancellationToken::new();
         let mut policy = Policy {
@@ -353,9 +360,9 @@ async fn all_interrupted_dependencies_are_checked_before_any_retry() {
         .register(counting("missing", calls.clone()))
         .unwrap();
     let mut conversation = Conversation::new("input");
-    let handles = record(&mut conversation, &["work", "missing"], &original_tools);
+    let handles = record(&mut conversation, &["work", "missing"], &original_tools).await;
     for action in &handles {
-        conversation.start(action).unwrap();
+        conversation.start(action).await.unwrap();
     }
     let mut restored_tools = registry(calls.clone());
     assert!(
@@ -427,7 +434,7 @@ async fn nested_model_refusal_stays_typed_and_does_not_become_tool_feedback() {
             .unwrap(),
         )
         .unwrap();
-    let mut conversation = interrupted(&tools);
+    let mut conversation = interrupted(&tools).await;
     let budget = DefaultBudget::new(BudgetLimits {
         model_attempts: Some(0),
         ..Default::default()
@@ -512,10 +519,10 @@ async fn jsonl_open_never_retries_and_writable_recovery_records_the_next_ordinal
     original
         .attach_jsonl(Jsonl::create(&path).unwrap())
         .unwrap();
-    let actions = record(&mut original, &["work"], &tools);
-    original.start(&actions[0]).unwrap();
+    let actions = record(&mut original, &["work"], &tools).await;
+    original.start(&actions[0]).await.unwrap();
     drop(original);
-    let loaded = Jsonl::open(&path).unwrap();
+    let loaded = Jsonl::open(&path).await.unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     let mut writable = loaded.into_writable().unwrap();
     tokio::spawn(async move {
@@ -526,7 +533,7 @@ async fn jsonl_open_never_retries_and_writable_recovery_records_the_next_ordinal
     })
     .await
     .unwrap();
-    let loaded = Jsonl::open(&path).unwrap();
+    let loaded = Jsonl::open(&path).await.unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(starts(loaded.conversation()), vec![1, 2]);
     assert_eq!(loaded.conversation().pending_count(), 0);

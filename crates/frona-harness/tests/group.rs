@@ -151,7 +151,7 @@ async fn prepared_group_preserves_retries_settings_source_and_optional_observati
     // Unary native replies do not invent a first-token timing.
     assert_eq!(response.output().ttft_ms, None);
     assert!(matches!(response.output().usage, UsageReport::Reported(_)));
-    assert_eq!(session.finish().unwrap(), "done");
+    assert_eq!(session.finish().await.unwrap(), "done");
     let report = report.snapshot();
     assert_eq!(report.requests.len(), 1);
     assert_eq!(report.attempts.len(), 3);
@@ -177,7 +177,7 @@ async fn fallback_cannot_receive_primary_native_history_after_primary_fails() {
     let harness = Harness::new(Model::from_group(group));
     let mut session = harness.run("work").manual();
     let action = session.call_model().await.unwrap().actions.pop().unwrap();
-    session.reject(action, "read result").unwrap();
+    session.reject(action, "read result").await.unwrap();
     assert!(matches!(
         session.call_model().await,
         Err(ManualError::Stop(ExecutionStop::Stopped(_)))
@@ -194,7 +194,7 @@ async fn fallback_native_origin_is_retained_and_cannot_be_replayed_as_primary() 
         session.conversation().responses()[0].origin(),
         Some("fixture/backup")
     );
-    session.reject(action, "result").unwrap();
+    session.reject(action, "result").await.unwrap();
     assert!(matches!(
         session.call_model().await,
         Err(ManualError::Incompatible { .. })
@@ -226,7 +226,7 @@ async fn shared_attempt_limit_prevents_fallback_without_readmitting_a_request() 
 #[tokio::test]
 async fn group_compaction_uses_prepared_window_and_keeps_summary_fallback_provenance() {
     use frona_harness::HistoryEvent;
-    let history = compaction_history();
+    let history = compaction_history().await;
     let (mut group, calls) = group(vec![
         failed(),
         output(vec![AssistantContent::text("Earlier facts summarized.")]),
@@ -262,7 +262,7 @@ async fn group_compaction_uses_prepared_window_and_keeps_summary_fallback_proven
     assert_eq!(compacted.0, "fixture/backup");
     assert_eq!(compacted.1.metadata["raw"], "preserved");
     assert_eq!(compacted.1.ttft_ms, None);
-    assert_eq!(session.finish().unwrap(), "done");
+    assert_eq!(session.finish().await.unwrap(), "done");
     assert_eq!(report.snapshot().requests.len(), 2);
     assert_eq!(report.snapshot().attempts.len(), 3);
     assert_eq!(observer.0.lock().unwrap().len(), 2);
@@ -293,7 +293,7 @@ async fn group_planning_reserves_the_largest_candidate_output_before_any_call() 
     assert!(calls.lock().unwrap().is_empty());
 }
 
-fn compaction_history() -> frona_harness::Conversation {
+async fn compaction_history() -> frona_harness::Conversation {
     use frona_harness::{Conversation, ModelOutput};
     use rig_core::completion::message::UserContent;
     let mut history = Conversation::new("earlier facts ".repeat(110));
@@ -305,9 +305,11 @@ fn compaction_history() -> frona_harness::Conversation {
             ),
             vec![],
         )
+        .await
         .unwrap();
     history
         .push_user(vec![UserContent::text("Continue with the next task")])
+        .await
         .unwrap();
     history
 }
@@ -329,7 +331,7 @@ async fn smaller_manual_group_uses_its_window_for_summary_and_shared_admission()
             ..Default::default()
         });
         let mut session = harness
-            .resume(compaction_history())
+            .resume(compaction_history().await)
             .budget(&budget)
             .manual();
         let report = session.report();
@@ -343,7 +345,7 @@ async fn smaller_manual_group_uses_its_window_for_summary_and_shared_admission()
             ));
         } else {
             result.unwrap();
-            assert_eq!(session.finish().unwrap(), "done");
+            assert_eq!(session.finish().await.unwrap(), "done");
         }
         assert!(initial_calls.lock().unwrap().is_empty());
         assert_eq!(selected_calls.lock().unwrap().len(), limit as usize);
@@ -383,7 +385,7 @@ async fn larger_manual_group_uses_its_window_but_preserves_explicit_compaction_p
             assert!(selected_calls.lock().unwrap().is_empty());
         } else {
             result.unwrap();
-            assert_eq!(session.finish().unwrap(), "done");
+            assert_eq!(session.finish().await.unwrap(), "done");
             assert_eq!(selected_calls.lock().unwrap()[0].1, Some(1000));
         }
         assert!(initial_calls.lock().unwrap().is_empty());
@@ -399,7 +401,7 @@ async fn disabling_compaction_keeps_default_window_dynamic_and_prevents_summary_
     let selected = Model::from_group(selected);
     let harness = Harness::new(Model::from_group(initial));
     let mut session = harness
-        .resume(compaction_history())
+        .resume(compaction_history().await)
         .disable_compaction()
         .manual();
     session.recover().await.unwrap();
@@ -472,6 +474,7 @@ async fn structured_compaction_history() -> frona_harness::Conversation {
         .push_user(vec![rig_core::completion::message::UserContent::text(
             "Continue with the next task",
         )])
+        .await
         .unwrap();
     history
 }
@@ -510,13 +513,17 @@ async fn model_response_limit_excludes_compaction_and_provider_retries() {
     ]);
     prepared.context_window = 1400;
     let harness = Harness::new(Model::from_group(prepared));
-    let zero = harness.resume(compaction_history()).model_responses(0);
+    let zero = harness
+        .resume(compaction_history().await)
+        .model_responses(0);
     assert!(matches!(
         zero.await.unwrap_err().reason,
         ManualError::ModelResponsesExhausted { maximum: 0 }
     ));
     assert!(calls.lock().unwrap().is_empty());
-    let run = harness.resume(compaction_history()).model_responses(1);
+    let run = harness
+        .resume(compaction_history().await)
+        .model_responses(1);
     let report = run.report();
     assert_eq!(run.await.unwrap(), "done");
     assert_eq!(report.snapshot().requests.len(), 2);
@@ -537,7 +544,7 @@ async fn incomplete_main_usage_is_observed_once_before_successful_fallback() {
     let report = session.report();
     session.call_model().await.unwrap();
     assert_eq!(session.conversation().responses().len(), 1);
-    assert_eq!(session.finish().unwrap(), "complete");
+    assert_eq!(session.finish().await.unwrap(), "complete");
     assert_eq!(calls.lock().unwrap().len(), 2);
     assert_eq!(
         *observer.0.lock().unwrap(),

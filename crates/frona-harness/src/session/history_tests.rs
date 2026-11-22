@@ -32,8 +32,9 @@ struct FaultStore {
     persist_failed: bool,
     cancel: Option<CancellationToken>,
 }
+#[async_trait::async_trait]
 impl HistoryWriter for FaultStore {
-    fn commit(&mut self, record: &HistoryRecord) -> Result<(), HistoryWriteError> {
+    async fn commit(&mut self, record: &HistoryRecord) -> Result<(), HistoryWriteError> {
         if record.event.operation() == self.fail {
             if self.persist_failed {
                 self.records.lock().unwrap().push(record.clone());
@@ -55,12 +56,15 @@ fn fault<Mode>(
     fail: HistoryOperation,
 ) -> (Run<'static, Mode>, Arc<Mutex<Vec<HistoryRecord>>>) {
     let records = Arc::new(Mutex::new(Vec::new()));
-    run.core.conversation.attach_history(Box::new(FaultStore {
-        records: records.clone(),
-        fail,
-        persist_failed: true,
-        cancel: None,
-    }));
+    run.core
+        .conversation
+        .attach_history(Box::new(FaultStore {
+            records: records.clone(),
+            fail,
+            persist_failed: true,
+            cancel: None,
+        }))
+        .unwrap();
     (run, records)
 }
 struct Fake {
@@ -252,7 +256,7 @@ async fn automatic_and_manual_have_identical_commits_and_failure_ordering() {
                 EffectState::Returned,
             );
             let mut memory = incomplete.conversation.into_memory().unwrap();
-            memory.adopt_pending_write().unwrap();
+            memory.adopt_pending_write().await.unwrap();
             assert_eq!(memory.pending_count(), 0);
             assert_eq!(memory.detached_failures().len(), 1);
             assert!(matches!(
@@ -326,23 +330,24 @@ async fn completion_failure_never_accepts_or_reconstructs_application_value() {
     ));
     let mut memory = incomplete.conversation.into_memory().unwrap();
     assert_eq!(
-        memory.adopt_pending_write().unwrap_err(),
+        memory.adopt_pending_write().await.unwrap_err(),
         ConversationError::CannotAdoptWrite
     );
     assert!(memory.pending_write().is_some());
     memory.discard_pending_write().unwrap();
     let action = memory.pending_actions().unwrap().actions.remove(0);
     assert!(
-        memory.accept_submission(&action, "bad").is_err(),
+        memory.accept_submission(&action, "bad").await.is_err(),
         "validation is not restored"
     );
     assert!(matches!(
-        memory.submission::<Answer>(&action).unwrap(),
+        memory.submission::<Answer>(&action).await.unwrap(),
         Submission::Ready(_)
     ));
     assert_eq!(
         memory
             .accept_submission(&action, "fresh explicit choice")
+            .await
             .unwrap(),
         "fresh explicit choice"
     );
@@ -385,26 +390,41 @@ async fn manual_detach_keeps_borrowed_tool_and_budget_but_separates_reports() {
         .unwrap(),
     );
     let saved = Arc::new(Mutex::new(Vec::new()));
-    run.core.conversation.attach_history(Box::new(FaultStore {
-        records: saved.clone(),
-        fail: HistoryOperation::ActionResolution,
-        persist_failed: false,
-        cancel: None,
-    }));
-    let mut session = run.manual();
+    run.core
+        .conversation
+        .attach_history(Box::new(FaultStore {
+            records: saved.clone(),
+            fail: HistoryOperation::ActionResolution,
+            persist_failed: false,
+            cancel: None,
+        }))
+        .unwrap();
+    let (opened, mut scopes) = tokio::sync::mpsc::unbounded_channel();
+    let mut session = run
+        .on_start(move |_| {
+            let released = CancellationToken::new();
+            opened.send(released.clone()).unwrap();
+            released.drop_guard()
+        })
+        .manual();
+    let original = scopes.try_recv().unwrap();
     let action = session.call_model().await.unwrap().actions.remove(0);
     storage(&session.execute(action).await.unwrap_err());
+    assert!(original.is_cancelled());
     let old = session.report();
     let old_snapshot = old.snapshot();
     let writes_before = saved.lock().unwrap().len();
     let mut memory = session.into_memory().unwrap();
+    let recovered = scopes.try_recv().unwrap();
+    assert!(!recovered.is_cancelled());
     assert!(
         memory.call_model().await.is_err(),
         "must choose pending candidate first"
     );
-    memory.adopt_pending_write().unwrap();
+    memory.adopt_pending_write().await.unwrap();
     memory.call_model().await.unwrap();
-    assert_eq!(memory.finish().unwrap(), "done");
+    assert_eq!(memory.finish().await.unwrap(), "done");
+    assert!(recovered.is_cancelled());
     assert_eq!(effects.load(Ordering::SeqCst), 1);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(saved.lock().unwrap().len(), writes_before);
@@ -425,7 +445,7 @@ async fn manual_detach_keeps_borrowed_tool_and_budget_but_separates_reports() {
 
 #[tokio::test]
 async fn rejection_user_repair_and_finish_failures_are_storage_stops() {
-    // Every synchronous public path must normalize storage failures too.
+    // Every manual transition path must normalize storage failures too.
     let (m, _) = model(vec![call("unknown", json!({}))]);
     let (run, _) = fault(
         Harness::new(m).run("input"),
@@ -433,11 +453,11 @@ async fn rejection_user_repair_and_finish_failures_are_storage_stops() {
     );
     let mut session = run.manual();
     let action = session.call_model().await.unwrap().actions.remove(0);
-    storage(&session.reject(action, "no").unwrap_err());
+    storage(&session.reject(action, "no").await.unwrap_err());
     let (m, _) = model(vec![]);
     let (run, _) = fault(Harness::new(m).run("input"), HistoryOperation::User);
     let mut session = run.manual();
-    storage(&session.feedback("new feedback").unwrap_err());
+    storage(&session.feedback("new feedback").await.unwrap_err());
     let (m, _) = model(vec![text("not a submission")]);
     let (run, _) = fault(
         Harness::new(m).run("input").structured::<Answer>(),
@@ -457,13 +477,13 @@ async fn rejection_user_repair_and_finish_failures_are_storage_stops() {
     let (m, _) = model(vec![]);
     let (run, _) = fault(Harness::new(m).run("input"), HistoryOperation::Stop);
     let mut session = run.manual();
-    storage(&session.stop("application stop"));
+    storage(&session.stop("application stop").await);
 }
 
-#[test]
-fn low_level_history_never_invents_initial_messages_or_tool_starts_for_submit() {
+#[tokio::test]
+async fn low_level_history_never_invents_initial_messages_or_tool_starts_for_submit() {
     let mut empty = Conversation::default();
-    empty.record_response(text("one"), vec![]).unwrap();
+    empty.record_response(text("one"), vec![]).await.unwrap();
     assert!(matches!(
         &empty.history()[0].event,
         HistoryEvent::Opened { initial: None, .. }
@@ -479,6 +499,7 @@ fn low_level_history_never_invents_initial_messages_or_tool_starts_for_submit() 
     let mut conversation = Conversation::new("");
     let action = conversation
         .record_response(call("submit", json!({"value":"x"})), vec![])
+        .await
         .unwrap()
         .actions
         .remove(0);
@@ -491,7 +512,7 @@ fn low_level_history_never_invents_initial_messages_or_tool_starts_for_submit() 
     ));
     let count = conversation.history().len();
     assert_eq!(
-        conversation.start(&action).unwrap_err(),
+        conversation.start(&action).await.unwrap_err(),
         ConversationError::SubmissionStart
     );
     assert_eq!(conversation.history().len(), count);
@@ -518,7 +539,7 @@ async fn prevented_start_can_be_explicitly_discarded_then_invoked_in_memory() {
     let action = session.call_model().await.unwrap().actions.remove(0);
     storage(&session.execute(action).await.unwrap_err());
     let mut memory = session.into_memory().unwrap();
-    assert!(memory.adopt_pending_write().is_err());
+    assert!(memory.adopt_pending_write().await.is_err());
     memory.discard_pending_write().unwrap();
     let action = memory.pending_actions().unwrap().actions.remove(0);
     memory.execute(action).await.unwrap();
@@ -534,8 +555,9 @@ async fn prevented_start_can_be_explicitly_discarded_then_invoked_in_memory() {
 
 #[derive(Debug)]
 struct CancelStart(CancellationToken);
+#[async_trait::async_trait]
 impl HistoryWriter for CancelStart {
-    fn commit(&mut self, record: &HistoryRecord) -> Result<(), HistoryWriteError> {
+    async fn commit(&mut self, record: &HistoryRecord) -> Result<(), HistoryWriteError> {
         if matches!(record.event, HistoryEvent::ToolStarted { .. }) {
             self.0.cancel();
         }
@@ -560,7 +582,8 @@ async fn cancellation_after_start_commit_prevents_dispatch_but_keeps_interrupted
         );
     run.core
         .conversation
-        .attach_history(Box::new(CancelStart(token)));
+        .attach_history(Box::new(CancelStart(token)))
+        .unwrap();
     let mut session = run.manual();
     let action = session.call_model().await.unwrap().actions.remove(0);
     assert!(matches!(
@@ -581,8 +604,9 @@ async fn cancellation_after_start_commit_prevents_dispatch_but_keeps_interrupted
 
 #[derive(Debug)]
 struct CannotSerialize;
+#[async_trait::async_trait]
 impl HistoryWriter for CannotSerialize {
-    fn commit(&mut self, _: &HistoryRecord) -> Result<(), HistoryWriteError> {
+    async fn commit(&mut self, _: &HistoryRecord) -> Result<(), HistoryWriteError> {
         Err(HistoryWriteError {
             phase: HistoryWritePhase::Serialize,
             cause: "cannot encode".into(),
@@ -598,7 +622,8 @@ async fn serialization_failure_is_known_unwritten_and_open_can_be_adopted_explic
         .instructions("saved instructions");
     run.core
         .conversation
-        .attach_history(Box::new(CannotSerialize));
+        .attach_history(Box::new(CannotSerialize))
+        .unwrap();
     let mut session = run.manual();
     storage(&session.call_model().await.unwrap_err());
     assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -611,9 +636,9 @@ async fn serialization_failure_is_known_unwritten_and_open_can_be_adopted_explic
         PersistenceOutcome::NotWritten
     );
     let mut memory = session.into_memory().unwrap();
-    memory.adopt_pending_write().unwrap();
+    memory.adopt_pending_write().await.unwrap();
     memory.call_model().await.unwrap();
-    assert_eq!(memory.finish().unwrap(), "done");
+    assert_eq!(memory.finish().await.unwrap(), "done");
     assert!(
         matches!(&memory.conversation().history()[0].event, HistoryEvent::Opened { instructions, .. } if instructions == "saved instructions")
     );
@@ -632,8 +657,8 @@ async fn complete_response_candidate_can_be_adopted_without_another_model_call()
             ConversationError::CannotDiscardWrite
         ))
     ));
-    memory.adopt_pending_write().unwrap();
-    assert_eq!(memory.finish().unwrap(), "known response");
+    memory.adopt_pending_write().await.unwrap();
+    assert_eq!(memory.finish().await.unwrap(), "known response");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         memory.conversation().responses()[0].origin(),
@@ -656,12 +681,15 @@ async fn failed_start_remains_storage_reason_even_if_writer_also_cancels() {
             })
             .unwrap(),
         );
-    run.core.conversation.attach_history(Box::new(FaultStore {
-        records: Arc::default(),
-        fail: HistoryOperation::ToolStart,
-        persist_failed: true,
-        cancel: Some(token),
-    }));
+    run.core
+        .conversation
+        .attach_history(Box::new(FaultStore {
+            records: Arc::default(),
+            fail: HistoryOperation::ToolStart,
+            persist_failed: true,
+            cancel: Some(token),
+        }))
+        .unwrap();
     let mut session = run.manual();
     let action = session.call_model().await.unwrap().actions.remove(0);
     storage(&session.execute(action).await.unwrap_err());
@@ -672,17 +700,19 @@ async fn failed_start_remains_storage_reason_even_if_writer_also_cancels() {
     );
 }
 
-#[test]
-fn low_level_explicit_stop_reports_failed_required_write() {
+#[tokio::test]
+async fn low_level_explicit_stop_reports_failed_required_write() {
     let mut conversation = Conversation::new("input");
-    conversation.attach_history(Box::new(FaultStore {
-        records: Arc::default(),
-        fail: HistoryOperation::Stop,
-        persist_failed: false,
-        cancel: None,
-    }));
+    conversation
+        .attach_history(Box::new(FaultStore {
+            records: Arc::default(),
+            fail: HistoryOperation::Stop,
+            persist_failed: false,
+            cancel: None,
+        }))
+        .unwrap();
     assert!(matches!(
-        conversation.stop(),
+        conversation.stop().await,
         Err(ConversationError::Storage(_))
     ));
     failed(&conversation, HistoryOperation::Stop, EffectState::NoEffect);
@@ -697,7 +727,7 @@ async fn immediate_stop_persists_instructions_and_structured_mode_without_calls(
         .structured::<Answer>()
         .manual();
     assert!(matches!(
-        session.stop("stop before dispatch"),
+        session.stop("stop before dispatch").await,
         ManualError::Stop(ExecutionStop::Stopped(_))
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -726,8 +756,9 @@ struct CancelCompletion {
     operation: HistoryOperation,
     cancellation: CancellationToken,
 }
+#[async_trait::async_trait]
 impl HistoryWriter for CancelCompletion {
-    fn commit(&mut self, record: &HistoryRecord) -> Result<(), HistoryWriteError> {
+    async fn commit(&mut self, record: &HistoryRecord) -> Result<(), HistoryWriteError> {
         if record.event.operation() == self.operation {
             self.cancellation.cancel();
         }
@@ -745,7 +776,8 @@ fn cancel_on_completion<Mode>(
         .attach_history(Box::new(CancelCompletion {
             operation,
             cancellation,
-        }));
+        }))
+        .unwrap();
     run
 }
 fn cancelled_after_durable_completion<A>(incomplete: &Incomplete<A>, report: &ReportHandle) {
@@ -851,12 +883,15 @@ async fn failed_completion_write_takes_precedence_over_simultaneous_cancellation
         .run("input")
         .structured::<Answer>()
         .cancellation(token.clone());
-    run.core.conversation.attach_history(Box::new(FaultStore {
-        records: Arc::default(),
-        fail: HistoryOperation::SubmissionCompletion,
-        persist_failed: true,
-        cancel: Some(token),
-    }));
+    run.core
+        .conversation
+        .attach_history(Box::new(FaultStore {
+            records: Arc::default(),
+            fail: HistoryOperation::SubmissionCompletion,
+            persist_failed: true,
+            cancel: Some(token),
+        }))
+        .unwrap();
     let incomplete = run.await.unwrap_err();
     storage(&incomplete.reason);
     failed(
@@ -894,7 +929,7 @@ async fn resumed_tool_result_failure_retains_known_effect_in_normal_incomplete()
     let mut session = run.manual();
     let action = session.call_model().await.unwrap().actions.pop().unwrap();
     let mut conversation = session.into_conversation();
-    conversation.start(&action).unwrap();
+    conversation.start(&action).await.unwrap();
     let incomplete = harness
         .resume(conversation)
         .tool(make_tool())
@@ -909,7 +944,7 @@ async fn resumed_tool_result_failure_retains_known_effect_in_normal_incomplete()
     assert_eq!(effects.load(Ordering::SeqCst), 1);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     let mut memory = incomplete.conversation.into_memory().unwrap();
-    memory.adopt_pending_write().unwrap();
+    memory.adopt_pending_write().await.unwrap();
     assert_eq!(memory.pending_count(), 0);
 }
 

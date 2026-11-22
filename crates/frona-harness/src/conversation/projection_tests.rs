@@ -34,12 +34,15 @@ async fn projected_input_preserves_compacted_positions_and_never_delivers_summar
     let mut conversation = Conversation::from_execution(execution);
     conversation
         .push_user(vec![UserContent::text("old input ".repeat(100))])
+        .await
         .unwrap();
     conversation
         .record_response(output(&"old answer ".repeat(100)), vec![])
+        .await
         .unwrap();
     conversation
         .push_user(vec![UserContent::text("current input")])
+        .await
         .unwrap();
     let compacted = conversation
         .model_view()
@@ -58,6 +61,7 @@ async fn projected_input_preserves_compacted_positions_and_never_delivers_summar
         .unwrap();
     conversation
         .commit_compaction(compacted, "summary model".into(), output("summary"))
+        .await
         .unwrap();
     let model = Model::from_adapter("fake", "projection", Answer).unwrap();
     let literal = conversation.request_messages().unwrap();
@@ -111,14 +115,15 @@ async fn projected_input_preserves_compacted_positions_and_never_delivers_summar
     assert_eq!(conversation.messages().len(), 3);
 }
 
-#[test]
-fn projected_input_rejects_foreign_scope_prefix_and_roles_and_pending_proposals() {
+#[tokio::test]
+async fn projected_input_rejects_foreign_scope_prefix_and_roles_and_pending_proposals() {
     let budget = DefaultBudget::default();
     let report = ReportHandle::default();
     let execution = ExecutionControl::new(&budget).with_report(&report);
     let mut conversation = Conversation::from_execution(execution);
     conversation
         .push_user(vec![UserContent::text("input")])
+        .await
         .unwrap();
     assert!(
         conversation
@@ -150,6 +155,7 @@ fn projected_input_rejects_foreign_scope_prefix_and_roles_and_pending_proposals(
             ),
             vec![],
         )
+        .await
         .unwrap();
     assert!(matches!(
         conversation.projected_input(conversation.messages()),

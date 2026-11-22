@@ -69,11 +69,19 @@ fn test_config(tmp: &tempfile::TempDir) -> Config {
 }
 
 async fn build_state() -> (AppState, tempfile::TempDir) {
+    build_state_with_provider(Arc::new(MockModelProvider::new(vec![])), false).await
+}
+
+async fn build_state_with_provider(
+    provider: Arc<MockModelProvider>,
+    disable_sandbox: bool,
+) -> (AppState, tempfile::TempDir) {
     let db: Surreal<Db> = Surreal::new::<Mem>(()).await.unwrap();
     db_init::setup_schema(&db).await.unwrap();
 
     let tmp = tempfile::tempdir().unwrap();
-    let config = test_config(&tmp);
+    let mut config = test_config(&tmp);
+    config.sandbox.disabled = disable_sandbox;
     let storage = StorageService::new(&config);
     let resource_manager = Arc::new(
         frona::tool::sandbox::resource_monitor::SystemResourceManager::new(80.0, 80.0, 90.0, 90.0),
@@ -101,8 +109,7 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
     // model-group resolution succeeds. We don't run inference here - the tests
     // just inspect the tool registry the session builds - but `session.build`
     // resolves the agent's `model_group` against this registry.
-    let provider: Arc<dyn frona_harness::inference::provider::ModelProvider> =
-        Arc::new(MockModelProvider::new(vec![]));
+    let provider: Arc<dyn frona_harness::inference::provider::ModelProvider> = provider;
     let mut providers = HashMap::new();
     providers.insert("mock".to_string(), provider);
     let mut groups = HashMap::new();
@@ -491,6 +498,7 @@ async fn portable_send_message_resolver_uses_shared_model_budget_before_sending(
             ),
             tools.definitions().cloned().collect(),
         )
+        .await
         .unwrap();
     let budget = DefaultBudget::new(BudgetLimits {
         model_attempts: Some(0),
@@ -515,6 +523,208 @@ async fn portable_send_message_resolver_uses_shared_model_budget_before_sending(
         state
             .chat_service
             .list_messages("user-1", &chat.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+async fn create_test_chat(state: &AppState) -> String {
+    state
+        .chat_service
+        .create_chat(
+            "user-1",
+            CreateChatRequest {
+                agent_id: "agent-1".into(),
+                space_id: None,
+                task_id: None,
+                title: Some("Isolated run".into()),
+                metadata: None,
+            },
+        )
+        .await
+        .unwrap()
+        .id
+}
+
+async fn ordinary_run(
+    state: &AppState,
+    chat_id: &str,
+    message_id: &str,
+) -> Result<frona::inference::tool_loop::ToolLoopOutcome, frona::core::error::AppError> {
+    let session = build_session_for_chat(state, chat_id).await;
+    frona::inference::tool_loop::run_tool_loop(
+        &session.model_group,
+        &session.system_prompt,
+        session.rig_history,
+        &session.tool_registry,
+        session.tool_ctx.event_tx.clone(),
+        session.cancel_token,
+        &session.tool_ctx,
+        &state.usage_service,
+        &state.chat_service,
+        message_id,
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn ordinary_chat_history_writer_preserves_hitl_answer_across_resume() {
+    use frona::chat::message::models::MessageStatus;
+    use frona::inference::{
+        hitl::HitlResponse,
+        tool_call::ToolStatus,
+        tool_loop::{PauseReason, ToolLoopOutcome},
+    };
+    let provider = Arc::new(MockModelProvider::new(vec![
+        helpers::MockResponse::ToolCalls(vec![(
+            "question-call".into(),
+            "ask_user_question".into(),
+            serde_json::json!({"question":"Region?","options":["eu","us"]}),
+        )]),
+        helpers::MockResponse::Text("Using eu".into()),
+    ]));
+    let (state, _tmp) = build_state_with_provider(provider.clone(), false).await;
+    seed_user_and_agent(&state).await;
+    let chat = create_test_chat(&state).await;
+    state
+        .chat_service
+        .save_system_message("user-1", None, &chat, "Choose a region".into())
+        .await
+        .unwrap();
+    let message = state
+        .chat_service
+        .create_executing_agent_message(&chat, "agent-1")
+        .await
+        .unwrap();
+    let outcome = ordinary_run(&state, &chat, &message.id).await.unwrap();
+    let ToolLoopOutcome::ExternalToolPending { tool_calls, .. } = outcome else {
+        panic!("expected pending question")
+    };
+    assert_eq!(tool_calls.len(), 1);
+    let id = tool_calls[0].id.clone();
+    assert_eq!(
+        tool_calls[0].hitl.as_ref().unwrap().status,
+        ToolStatus::Pending
+    );
+    let before = state
+        .chat_service
+        .get_message("user-1", &message.id)
+        .await
+        .unwrap();
+    assert_eq!(before.provider_turns.len(), 1);
+    assert!(
+        serde_json::to_string(&before.provider_turns)
+            .unwrap()
+            .contains("Region?")
+    );
+    state
+        .chat_service
+        .pause_agent_message(before, PauseReason::Hitl, tool_calls)
+        .await
+        .unwrap();
+    state
+        .harness
+        .resolve_and_resume(&id, HitlResponse::Choice("eu".into()))
+        .await
+        .unwrap();
+    let answered = state
+        .chat_service
+        .get_tool_call(&id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(answered.hitl.as_ref().unwrap().status, ToolStatus::Resolved);
+    assert!(answered.result.contains("eu"));
+    assert_eq!(
+        state
+            .chat_service
+            .get_message("user-1", &message.id)
+            .await
+            .unwrap()
+            .status,
+        Some(MessageStatus::Executing)
+    );
+    let outcome = ordinary_run(&state, &chat, &message.id).await.unwrap();
+    let ToolLoopOutcome::Completed { text, .. } = outcome else {
+        panic!("expected completed resume")
+    };
+    assert_eq!(text, "Using eu");
+    assert!(format!("{:?}", provider.last_history()).contains("eu"));
+    assert_eq!(
+        state
+            .chat_service
+            .get_tool_calls_by_message(&message.id)
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "resume must not re-execute the question"
+    );
+    // Finalize a snapshot captured before inference, as the ordinary harness does.
+    let mut stale = state
+        .chat_service
+        .get_message("user-1", &message.id)
+        .await
+        .unwrap();
+    stale.provider_turns.clear();
+    stale.content = text;
+    let public = state
+        .chat_service
+        .complete_agent_message(stale)
+        .await
+        .unwrap();
+    assert!(!public.metadata.contains_key("harness_history"));
+    let saved = state
+        .chat_service
+        .get_message("user-1", &message.id)
+        .await
+        .unwrap();
+    assert_eq!(saved.provider_turns.len(), 2);
+    assert!(!saved.metadata.contains_key("harness_history"));
+}
+
+#[tokio::test]
+async fn ordinary_chat_provider_turn_write_failure_prevents_tool_dispatch() {
+    let provider = Arc::new(MockModelProvider::new(vec![
+        helpers::MockResponse::ToolCalls(vec![(
+            "question".into(),
+            "ask_user_question".into(),
+            serde_json::json!({"question":"Region?", "options":["eu","us"]}),
+        )]),
+    ]));
+    let (state, _tmp) = build_state_with_provider(provider.clone(), false).await;
+    seed_user_and_agent(&state).await;
+    let chat = create_test_chat(&state).await;
+    let message = state
+        .chat_service
+        .create_executing_agent_message(&chat, "agent-1")
+        .await
+        .unwrap();
+    // Build first: preparation is independently persisted by the existing chat loader.
+    let session = build_session_for_chat(&state, &chat).await;
+    state.db.query("DEFINE EVENT refuse_history ON TABLE message WHEN $event = 'UPDATE' AND $after.provider_turns != $before.provider_turns THEN { THROW 'history unavailable'; };").await.unwrap().check().unwrap();
+    let result = frona::inference::tool_loop::run_tool_loop(
+        &session.model_group,
+        &session.system_prompt,
+        session.rig_history,
+        &session.tool_registry,
+        session.tool_ctx.event_tx.clone(),
+        session.cancel_token,
+        &session.tool_ctx,
+        &state.usage_service,
+        &state.chat_service,
+        &message.id,
+        None,
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(provider.histories().len(), 1);
+    assert!(
+        state
+            .chat_service
+            .get_tool_calls_by_message(&message.id)
             .await
             .unwrap()
             .is_empty()

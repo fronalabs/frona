@@ -1,5 +1,6 @@
-//! Reliable, synchronous transition commits. Encoding and file I/O are backend
-//! concerns. A commit never outlives its caller or acknowledges queued work.
+//! Reliable, awaited transition commits. Encoding and file I/O are backend
+//! concerns. Completion acknowledges durable work; interrupted writes remain
+//! uncertain and require explicit reconciliation.
 
 use std::sync::Arc;
 
@@ -165,17 +166,18 @@ pub struct HistoryFailure {
 }
 
 #[derive(Debug)]
-pub(crate) struct HistoryWriteError {
+pub struct HistoryWriteError {
     pub phase: HistoryWritePhase,
     pub cause: String,
 }
 
-/// Required writes are synchronous and complete before dependent state/effects.
-/// Future file backends must include append/flush/sync here; this is deliberately
-/// not a nonblocking-I/O promise. Keeping the boundary internal avoids a storage
-/// plugin API before the concrete file and persistent-runtime adapters exist.
-pub(crate) trait HistoryWriter: Send + Sync + std::fmt::Debug {
-    fn commit(&mut self, record: &HistoryRecord) -> Result<(), HistoryWriteError>;
+/// Required durable writes complete before dependent state changes or effects.
+/// An error or dropped commit may leave an uncertain write; callers must
+/// reconcile the stable `(conversation, seq)` identity before resuming.
+/// Implementations must not acknowledge queued background work as committed.
+#[async_trait::async_trait]
+pub trait HistoryWriter: Send + Sync + std::fmt::Debug {
+    async fn commit(&mut self, record: &HistoryRecord) -> Result<(), HistoryWriteError>;
 }
 
 #[derive(Debug, Default)]
@@ -213,13 +215,11 @@ impl History {
         &self.detached_failures
     }
 
-    #[cfg(any(test, feature = "jsonl"))]
     pub(crate) fn attach(&mut self, writer: Box<dyn HistoryWriter>) {
         assert!(self.can_attach_new(), "attach history before execution");
         self.writer = Some(writer);
     }
 
-    #[cfg(any(test, feature = "jsonl"))]
     pub(crate) fn can_attach_new(&self) -> bool {
         self.memory.records.is_empty()
             && self.writer.is_none()
@@ -234,7 +234,7 @@ impl History {
         self.writer = Some(writer);
     }
 
-    pub fn commit(
+    pub async fn commit(
         &mut self,
         conversation: Uuid,
         event: HistoryEvent,
@@ -249,10 +249,30 @@ impl History {
             seq: self.memory.records.len() as u64,
             event,
         };
-        if let Some(writer) = &mut self.writer
-            && let Err(error) = writer.commit(&record)
-        {
-            return Err(self.fail(record.event.operation(), effect, error, Some(record)));
+        if self.writer.is_some() {
+            // Install uncertain-write evidence before yielding. If the caller
+            // drops this future, no later transition can silently proceed.
+            self.candidate = Some(record.clone());
+            self.failure = Some(Arc::new(HistoryFailure {
+                acknowledged_seq: self.memory.records.last().map(|r| r.seq),
+                attempted_seq: record.seq,
+                operation: record.event.operation(),
+                phase: HistoryWritePhase::Append,
+                persistence: PersistenceOutcome::Unknown,
+                effect,
+                cause: "history commit interrupted before acknowledgement".into(),
+            }));
+            let result = self
+                .writer
+                .as_mut()
+                .expect("checked writer")
+                .commit(&record)
+                .await;
+            if let Err(error) = result {
+                return Err(self.fail(record.event.operation(), effect, error, Some(record)));
+            }
+            self.failure = None;
+            self.candidate = None;
         }
         self.memory.records.push(record);
         Ok(())

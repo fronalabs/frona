@@ -141,13 +141,16 @@ async fn automatic_hook_matches_manual_execute_and_reject_with_one_paired_result
         .manual();
     for action in session.call_model().await.unwrap().actions {
         if session.action(&action).unwrap().call.function.name == "deny" {
-            session.reject(action, "not for this operation").unwrap();
+            session
+                .reject(action, "not for this operation")
+                .await
+                .unwrap();
         } else {
             session.execute(action).await.unwrap();
         }
     }
     session.call_model().await.unwrap();
-    assert_eq!(session.finish().unwrap(), "done");
+    assert_eq!(session.finish().await.unwrap(), "done");
     assert_eq!(histories(&automatic_requests), histories(&manual_requests));
     assert_eq!(automatic_effects.load(Ordering::SeqCst), 1);
     assert_eq!(manual_effects.load(Ordering::SeqCst), 1);
@@ -178,6 +181,7 @@ async fn manual_execute_honors_hook_but_explicit_reject_and_invalid_actions_do_n
     assert!(session.execute(repeated).await.is_err());
     session
         .reject(actions.remove(0), "caller rejected")
+        .await
         .unwrap();
     assert_eq!(effects.load(Ordering::SeqCst), 1);
     assert_eq!(hooks.load(Ordering::SeqCst), 1);
@@ -488,4 +492,61 @@ async fn lending_non_sync_hook_and_owned_spawned_callback_are_supported() {
             .unwrap(),
         "done"
     );
+}
+
+#[tokio::test]
+async fn hooks_run_in_registration_order_and_rejection_skips_the_remaining_hooks() {
+    struct RecordingHook<'a> {
+        name: &'static str,
+        calls: &'a Mutex<Vec<(&'static str, &'static str)>>,
+    }
+
+    #[async_trait]
+    impl ToolCallHook for RecordingHook<'_> {
+        async fn decide(&mut self, _: &ToolCall) -> Result<ToolDecision, ToolFailure> {
+            self.calls.lock().unwrap().push((self.name, "before"));
+            Ok(ToolDecision::Execute)
+        }
+
+        async fn after(&mut self, _: &ToolCall, _: &ActionResolution) -> Result<(), ExecutionStop> {
+            self.calls.lock().unwrap().push((self.name, "after"));
+            Ok(())
+        }
+    }
+
+    for reject in [false, true] {
+        let (model, _) = scripted_model(vec![output(vec![call("a", "known", json!({}))]), text()]);
+        let calls = Mutex::new(Vec::new());
+        let effects = Arc::new(AtomicUsize::new(0));
+        Harness::new(model)
+            .run("input")
+            .tool(effect_tool("known", effects.clone()))
+            .tool_call_hook(RecordingHook {
+                name: "first",
+                calls: &calls,
+            })
+            .before_tool(|_| {
+                calls.lock().unwrap().push(("callback", "before"));
+                async {
+                    Ok::<_, ()>(if reject {
+                        ToolDecision::Reject("denied".into())
+                    } else {
+                        ToolDecision::Execute
+                    })
+                }
+            })
+            .tool_call_hook(RecordingHook {
+                name: "last",
+                calls: &calls,
+            })
+            .await
+            .unwrap();
+
+        let mut expected = vec![("first", "before"), ("callback", "before")];
+        if !reject {
+            expected.extend([("last", "before"), ("first", "after"), ("last", "after")]);
+        }
+        assert_eq!(calls.into_inner().unwrap(), expected);
+        assert_eq!(effects.load(Ordering::SeqCst), usize::from(!reject));
+    }
 }

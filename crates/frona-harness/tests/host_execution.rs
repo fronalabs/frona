@@ -108,14 +108,15 @@ async fn host_completion_rejects_unresolved_or_stopped_actions_but_allows_termin
         let mut conversation = Conversation::from_execution(execution);
         let action = conversation
             .record_response(proposal(), vec![])
+            .await
             .unwrap()
             .actions
             .remove(0);
         match mode {
             "unresolved" => {}
             "stopped" => {
-                conversation.start(&action).unwrap();
-                conversation.stop().unwrap();
+                conversation.start(&action).await.unwrap();
+                conversation.stop().await.unwrap();
             }
             _ => {
                 let feedback = ToolOutput::text("feedback");
@@ -124,8 +125,8 @@ async fn host_completion_rejects_unresolved_or_stopped_actions_but_allows_termin
                     "failed" => ActionResolution::Failed(feedback),
                     _ => ActionResolution::Rejected(feedback),
                 };
-                conversation.resolve(&action, resolution).unwrap();
-                conversation.finish().unwrap();
+                conversation.resolve(&action, resolution).await.unwrap();
+                conversation.finish().await.unwrap();
             }
         }
         report
@@ -169,6 +170,7 @@ async fn host_completion_rejects_an_abandoned_tool_invocation() {
         .unwrap();
     let action = conversation
         .record_response(proposal(), tools.definitions().cloned().collect())
+        .await
         .unwrap()
         .actions
         .remove(0);

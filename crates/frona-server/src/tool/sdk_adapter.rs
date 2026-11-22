@@ -11,6 +11,13 @@ use serde_json::Value;
 use crate::{core::error::AppError, inference::request::InferenceContext};
 
 use super::{AgentTool, ToolOutput};
+use crate::{
+    inference::{
+        hitl::Hitl,
+        tool_call::{TaskEvent, ToolStatus},
+    },
+    storage::Attachment,
+};
 
 /// Bind one advertised runtime tool function and its real context. Output
 /// mapping is deliberately explicit: HITL/task/attachment/system-prompt effects
@@ -175,4 +182,60 @@ mod tests {
             ToolError::Stop(ExecutionStop::Cancelled(reason)) if reason == "nested cancellation")
         );
     }
+}
+
+/// Host effects travel with the SDK result and are committed by HistoryWriter,
+/// including attachments and external waits. They never change model content.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ToolEffects {
+    pub text: String,
+    pub success: bool,
+    pub duration_ms: u64,
+    pub attachments: Vec<Attachment>,
+    pub hitl: Option<Hitl>,
+    pub task_event: Option<TaskEvent>,
+    pub system_prompt: Option<String>,
+    pub pending_external: bool,
+}
+impl ToolEffects {
+    pub fn from_output(output: &ToolOutput, duration_ms: u64) -> Self {
+        Self {
+            text: output.text_content().into(),
+            success: output.is_success(),
+            duration_ms,
+            attachments: output.attachments().to_vec(),
+            hitl: output.hitl().cloned(),
+            task_event: output.task_event().cloned(),
+            system_prompt: output.system_prompt().map(str::to_owned),
+            pending_external: output.is_pending_external(),
+        }
+    }
+    pub fn pending(&self) -> bool {
+        self.pending_external
+            || self
+                .hitl
+                .as_ref()
+                .is_some_and(|h| h.status == ToolStatus::Pending)
+    }
+    pub fn read(output: &frona_harness::ToolOutput) -> Result<Option<Self>, AppError> {
+        output
+            .metadata
+            .get("frona_effects")
+            .map(|v| {
+                serde_json::from_value(v.clone()).map_err(|e| AppError::Internal(e.to_string()))
+            })
+            .transpose()
+    }
+}
+
+pub(crate) fn project_arguments(name: &str, mut arguments: Value) -> (Value, Option<String>) {
+    // A submission is application data; every property belongs to its schema.
+    if name == frona_harness::inference::provider::SUBMIT_TOOL_NAME {
+        return (arguments, None);
+    }
+    let description = arguments
+        .as_object_mut()
+        .and_then(|o| o.remove("description"))
+        .and_then(|v| v.as_str().map(str::to_owned));
+    (arguments, description)
 }

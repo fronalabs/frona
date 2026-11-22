@@ -264,7 +264,7 @@ async fn manual_terminal_and_dropped_run_close_even_with_report_and_conversation
     let report = session.report();
     let mut receiver = session.subscribe();
     session.call_model().await.unwrap();
-    assert_eq!(session.finish().unwrap(), "done");
+    assert_eq!(session.finish().await.unwrap(), "done");
     assert_eq!(receiver.recv().await, None);
     assert_eq!(session.subscribe().recv().await, None);
     assert_eq!(session.conversation().responses().len(), 1);

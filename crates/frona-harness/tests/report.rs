@@ -200,7 +200,10 @@ async fn partial_batch_has_action_evidence_before_replay_message_and_nested_call
     let report = run.report();
     let mut manual = run.manual();
     let mut actions = manual.call_model().await.unwrap().actions.into_iter();
-    manual.reject(actions.next().unwrap(), "rejected").unwrap();
+    manual
+        .reject(actions.next().unwrap(), "rejected")
+        .await
+        .unwrap();
     let partial = report.snapshot();
     assert_eq!(partial.feedback[0].message, None);
     assert_eq!(partial.feedback[0].action.unwrap().action, 0);
@@ -223,7 +226,7 @@ async fn partial_batch_has_action_evidence_before_replay_message_and_nested_call
             .all(|feedback| feedback.message == Some(2) && feedback.issued_in.is_empty())
     );
     manual.call_model().await.unwrap();
-    assert_eq!(manual.finish().unwrap(), "done");
+    assert_eq!(manual.finish().await.unwrap(), "done");
     let final_report = report.snapshot();
     assert!(
         final_report

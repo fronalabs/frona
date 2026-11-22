@@ -1,4 +1,4 @@
-//! Optional application decisions before ordinary tool dispatch.
+//! Optional application decisions around ordinary tool dispatch.
 
 use std::future::Future;
 
@@ -20,6 +20,17 @@ pub enum ToolDecision {
 #[async_trait]
 pub trait ToolCallHook: Send {
     async fn decide(&mut self, call: &ToolCall) -> Result<ToolDecision, ToolFailure>;
+
+    /// Observe a durably resolved invocation before the caller can continue.
+    /// A typed stop preserves its recorded result. Required write failures never
+    /// invoke this hook; retries of interrupted tools use the same contract.
+    async fn after(
+        &mut self,
+        _call: &ToolCall,
+        _resolution: &crate::ActionResolution,
+    ) -> Result<(), crate::ExecutionStop> {
+        Ok(())
+    }
 }
 
 pub(crate) struct CallbackHook<F>(pub F);

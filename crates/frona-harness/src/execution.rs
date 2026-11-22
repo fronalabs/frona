@@ -96,6 +96,11 @@ impl<'a> ExecutionControl<'a> {
         self
     }
 
+    /// Stable history position for this invocation, independent of provider IDs.
+    pub fn action_position(&self) -> Option<ActionPosition> {
+        self.action
+    }
+
     pub(super) fn with_action(mut self, action: ActionPosition) -> Self {
         self.action = Some(action);
         self

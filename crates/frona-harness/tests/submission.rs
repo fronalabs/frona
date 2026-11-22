@@ -23,7 +23,7 @@ fn call(id: &str, name: &str, arguments: Value) -> AssistantContent {
         ToolFunction::new(name.try_into().unwrap(), arguments),
     ))
 }
-fn record(
+async fn record(
     conversation: &mut Conversation,
     content: Vec<AssistantContent>,
 ) -> Vec<frona_harness::PendingAction> {
@@ -32,6 +32,7 @@ fn record(
             ModelOutput::new(content, UsageReport::Unavailable),
             vec![submission_tool::<Answer>()],
         )
+        .await
         .unwrap()
         .actions
 }
@@ -60,8 +61,8 @@ fn results(conversation: &Conversation) -> Vec<(String, String)> {
         .collect()
 }
 
-#[test]
-fn malformed_submission_repairs_its_call_and_waits_for_mixed_siblings() {
+#[tokio::test]
+async fn malformed_submission_repairs_its_call_and_waits_for_mixed_siblings() {
     let mut conversation = Conversation::new("classify");
     let actions = record(
         &mut conversation,
@@ -70,8 +71,12 @@ fn malformed_submission_repairs_its_call_and_waits_for_mixed_siblings() {
             call("bad", "submit", json!({"relations":[]})),
             call("other", "submit", json!([1, 2])),
         ],
-    );
-    let Submission::Repaired { feedback } = conversation.submission::<Answer>(&actions[1]).unwrap()
+    )
+    .await;
+    let Submission::Repaired { feedback } = conversation
+        .submission::<Answer>(&actions[1])
+        .await
+        .unwrap()
     else {
         panic!("expected repair")
     };
@@ -80,7 +85,10 @@ fn malformed_submission_repairs_its_call_and_waits_for_mixed_siblings() {
     assert!(results(&conversation).is_empty());
     assert_eq!(conversation.pending_count(), 2);
     assert!(matches!(
-        conversation.submission::<Answer>(&actions[2]).unwrap(),
+        conversation
+            .submission::<Answer>(&actions[2])
+            .await
+            .unwrap(),
         Submission::Repaired { .. }
     ));
     assert!(conversation.request_messages().is_err());
@@ -89,6 +97,7 @@ fn malformed_submission_repairs_its_call_and_waits_for_mixed_siblings() {
             &actions[0],
             ActionResolution::Result(ToolOutput::text("found")),
         )
+        .await
         .unwrap();
     assert_eq!(
         results(&conversation)
@@ -108,15 +117,18 @@ fn malformed_submission_repairs_its_call_and_waits_for_mixed_siblings() {
     );
 }
 
-#[test]
-fn existing_wrapper_and_json_collection_repairs_preserve_original_arguments() {
+#[tokio::test]
+async fn existing_wrapper_and_json_collection_repairs_preserve_original_arguments() {
     for args in [
         json!({"arbitrary":{"classes":["Person"]}}),
         json!({"classes":"[\"Person\"]"}),
     ] {
         let mut conversation = Conversation::new("classify");
-        let actions = record(&mut conversation, vec![call("s", "submit", args.clone())]);
-        let Submission::Ready(value) = conversation.submission::<Answer>(&actions[0]).unwrap()
+        let actions = record(&mut conversation, vec![call("s", "submit", args.clone())]).await;
+        let Submission::Ready(value) = conversation
+            .submission::<Answer>(&actions[0])
+            .await
+            .unwrap()
         else {
             panic!("repair should decode")
         };
@@ -137,8 +149,8 @@ fn existing_wrapper_and_json_collection_repairs_preserve_original_arguments() {
     }
 }
 
-#[test]
-fn serde_success_does_not_bypass_schema_constraints() {
+#[tokio::test]
+async fn serde_success_does_not_bypass_schema_constraints() {
     #[derive(Debug, Deserialize, JsonSchema)]
     struct Score {
         #[schemars(range(min = 1, max = 5))]
@@ -154,9 +166,10 @@ fn serde_success_does_not_bypass_schema_constraints() {
     let actions = record(
         &mut conversation,
         vec![call("bad", "submit", json!({"value":9}))],
-    );
+    )
+    .await;
     assert!(matches!(
-        conversation.submission::<Score>(&actions[0]).unwrap(),
+        conversation.submission::<Score>(&actions[0]).await.unwrap(),
         Submission::Repaired { .. }
     ));
     assert_eq!(
@@ -165,15 +178,15 @@ fn serde_success_does_not_bypass_schema_constraints() {
     );
     assert_eq!(results(&conversation)[0].0, "bad");
     assert!(matches!(
-        conversation.accept_submission(&actions[0], 9),
+        conversation.accept_submission(&actions[0], 9).await,
         Err(SubmissionError::Conversation(
             ConversationError::AlreadyResolved
         ))
     ));
 }
 
-#[test]
-fn acceptance_requires_exact_validated_action_and_all_siblings_resolved() {
+#[tokio::test]
+async fn acceptance_requires_exact_validated_action_and_all_siblings_resolved() {
     let mut conversation = Conversation::new("classify");
     let original = json!({"classes":["Person"]});
     let actions = record(
@@ -183,20 +196,29 @@ fn acceptance_requires_exact_validated_action_and_all_siblings_resolved() {
             call("second", "submit", json!({"classes":["Place"]})),
             call("lookup", "lookup", json!({})),
         ],
-    );
+    )
+    .await;
     assert!(matches!(
-        conversation.accept_submission(&actions[0], "normalized"),
+        conversation
+            .accept_submission(&actions[0], "normalized")
+            .await,
         Err(SubmissionError::NotValidated)
     ));
-    let Submission::Ready(value) = conversation.submission::<Answer>(&actions[0]).unwrap() else {
+    let Submission::Ready(value) = conversation
+        .submission::<Answer>(&actions[0])
+        .await
+        .unwrap()
+    else {
         panic!()
     };
     assert!(matches!(
-        conversation.accept_submission(&actions[1], "wrong"),
+        conversation.accept_submission(&actions[1], "wrong").await,
         Err(SubmissionError::NotValidated)
     ));
     assert!(matches!(
-        conversation.accept_submission(&actions[0], "normalized"),
+        conversation
+            .accept_submission(&actions[0], "normalized")
+            .await,
         Err(SubmissionError::Conversation(
             ConversationError::PendingActions(2)
         ))
@@ -204,15 +226,18 @@ fn acceptance_requires_exact_validated_action_and_all_siblings_resolved() {
     assert_eq!(conversation.pending_count(), 3);
     conversation
         .revise_submission(&actions[1], "Use the first candidate")
+        .await
         .unwrap();
     conversation
         .resolve(
             &actions[2],
             ActionResolution::Rejected(ToolOutput::text("not needed")),
         )
+        .await
         .unwrap();
     let accepted: usize = conversation
         .accept_submission(&actions[0], value.classes.len())
+        .await
         .unwrap();
     assert_eq!(accepted, 1);
     assert_eq!(conversation.status(), ConversationStatus::Finished);
@@ -231,28 +256,33 @@ fn acceptance_requires_exact_validated_action_and_all_siblings_resolved() {
         ["first", "second", "lookup"]
     );
     assert!(matches!(
-        conversation.revise_submission(&actions[0], "late"),
+        conversation.revise_submission(&actions[0], "late").await,
         Err(SubmissionError::Conversation(ConversationError::Terminal))
     ));
 }
 
-#[test]
-fn revision_allows_another_request_but_old_or_foreign_handles_cannot_accept() {
+#[tokio::test]
+async fn revision_allows_another_request_but_old_or_foreign_handles_cannot_accept() {
     let mut conversation = Conversation::new("classify");
     let actions = record(
         &mut conversation,
         vec![call("one", "submit", json!({"classes":[]}))],
-    );
+    )
+    .await;
     assert!(matches!(
-        conversation.submission::<Answer>(&actions[0]).unwrap(),
+        conversation
+            .submission::<Answer>(&actions[0])
+            .await
+            .unwrap(),
         Submission::Ready(_)
     ));
     conversation
         .revise_submission(&actions[0], "include more evidence")
+        .await
         .unwrap();
     assert!(results(&conversation)[0].1.contains("more evidence"));
     assert!(matches!(
-        conversation.revise_submission(&actions[0], "again"),
+        conversation.revise_submission(&actions[0], "again").await,
         Err(SubmissionError::Conversation(
             ConversationError::AlreadyResolved
         ))
@@ -260,54 +290,56 @@ fn revision_allows_another_request_but_old_or_foreign_handles_cannot_accept() {
     let next = record(
         &mut conversation,
         vec![call("two", "submit", json!({"classes":[]}))],
-    );
+    )
+    .await;
     assert!(matches!(
-        conversation.accept_submission(&actions[0], ()),
+        conversation.accept_submission(&actions[0], ()).await,
         Err(SubmissionError::Conversation(
             ConversationError::StaleAction
         ))
     ));
     let mut other = Conversation::new("other");
     assert!(matches!(
-        other.submission::<Answer>(&next[0]),
+        other.submission::<Answer>(&next[0]).await,
         Err(SubmissionError::Conversation(
             ConversationError::ForeignAction
         ))
     ));
-    conversation.stop().unwrap();
+    conversation.stop().await.unwrap();
     assert!(matches!(
-        conversation.submission::<Answer>(&next[0]),
+        conversation.submission::<Answer>(&next[0]).await,
         Err(SubmissionError::Conversation(ConversationError::Terminal))
     ));
 }
 
-#[test]
-fn missing_submission_is_conversational_feedback_without_invented_ids() {
+#[tokio::test]
+async fn missing_submission_is_conversational_feedback_without_invented_ids() {
     let mut conversation = Conversation::new("classify");
     assert!(matches!(
-        conversation.repair_missing_submission(),
+        conversation.repair_missing_submission().await,
         Err(SubmissionError::NoResponse)
     ));
     record(
         &mut conversation,
         vec![AssistantContent::text("I think it is a person")],
-    );
-    conversation.repair_missing_submission().unwrap();
+    )
+    .await;
+    conversation.repair_missing_submission().await.unwrap();
     assert!(results(&conversation).is_empty());
     assert_eq!(conversation.responses()[0].actions().len(), 0);
     let Message::User { content } = conversation.messages().last().unwrap() else {
         panic!()
     };
     assert!(matches!(&content[0], UserContent::Text(text) if text.text.contains("submit")));
-    let actions = record(&mut conversation, vec![call("lookup", "lookup", json!({}))]);
+    let actions = record(&mut conversation, vec![call("lookup", "lookup", json!({}))]).await;
     assert!(matches!(
-        conversation.repair_missing_submission(),
+        conversation.repair_missing_submission().await,
         Err(SubmissionError::Conversation(
             ConversationError::PendingActions(1)
         ))
     ));
     assert!(matches!(
-        conversation.revise_submission(&actions[0], "wrong"),
+        conversation.revise_submission(&actions[0], "wrong").await,
         Err(SubmissionError::NotSubmission)
     ));
     conversation
@@ -315,23 +347,26 @@ fn missing_submission_is_conversational_feedback_without_invented_ids() {
             &actions[0],
             ActionResolution::Result(ToolOutput::text("found")),
         )
+        .await
         .unwrap();
-    conversation.repair_missing_submission().unwrap();
+    conversation.repair_missing_submission().await.unwrap();
     let actions = record(
         &mut conversation,
         vec![call("s", "submit", json!({"classes":[]}))],
-    );
+    )
+    .await;
     conversation
         .revise_submission(&actions[0], "revise")
+        .await
         .unwrap();
     assert!(matches!(
-        conversation.repair_missing_submission(),
+        conversation.repair_missing_submission().await,
         Err(SubmissionError::SubmissionPresent)
     ));
 }
 
-#[test]
-fn invalid_schema_is_an_operational_error_without_repair_or_resolution() {
+#[tokio::test]
+async fn invalid_schema_is_an_operational_error_without_repair_or_resolution() {
     #[derive(Debug, Deserialize)]
     struct InvalidSchema;
     impl JsonSchema for InvalidSchema {
@@ -343,9 +378,9 @@ fn invalid_schema_is_an_operational_error_without_repair_or_resolution() {
         }
     }
     let mut conversation = Conversation::new("classify");
-    let actions = record(&mut conversation, vec![call("s", "submit", json!({}))]);
+    let actions = record(&mut conversation, vec![call("s", "submit", json!({}))]).await;
     assert!(matches!(
-        conversation.submission::<InvalidSchema>(&actions[0]),
+        conversation.submission::<InvalidSchema>(&actions[0]).await,
         Err(SubmissionError::Schema(_))
     ));
     assert_eq!(conversation.pending_count(), 1);
@@ -358,8 +393,8 @@ fn invalid_schema_is_an_operational_error_without_repair_or_resolution() {
     assert!(results(&conversation).is_empty());
 }
 
-#[test]
-fn truncated_arguments_cannot_be_accepted_from_rigs_partial_object() {
+#[tokio::test]
+async fn truncated_arguments_cannot_be_accepted_from_rigs_partial_object() {
     let raw = r#"{"classes":["Person"],"unfinished":"#;
     let function = ToolFunction::parse("submit".try_into().unwrap(), raw);
     assert_eq!(function.arguments["classes"], json!(["Person"]));
@@ -370,9 +405,13 @@ fn truncated_arguments_cannot_be_accepted_from_rigs_partial_object() {
         vec![AssistantContent::ToolCall(ToolCall::from_wire(
             "partial", function,
         ))],
-    );
+    )
+    .await;
     assert!(matches!(
-        conversation.submission::<Answer>(&actions[0]).unwrap(),
+        conversation
+            .submission::<Answer>(&actions[0])
+            .await
+            .unwrap(),
         Submission::Repaired { .. }
     ));
     assert_eq!(

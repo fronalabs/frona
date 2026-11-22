@@ -132,9 +132,12 @@ async fn saved_refinement_restores_borrowed_inspector_without_accepting_retained
         ConversationStatus::Stopped
     );
     let mut conversation = *incomplete.conversation;
-    conversation.save_checkpoint("app", 1, &state).unwrap();
+    conversation
+        .save_checkpoint("app", 1, &state)
+        .await
+        .unwrap();
     drop(conversation);
-    let loaded = Jsonl::open(&path).unwrap();
+    let loaded = Jsonl::open(&path).await.unwrap();
     let mut restored: AppState = loaded.load_checkpoint("app", 1).unwrap().unwrap().payload;
     assert_eq!(restored.inspections, 1);
     let accepted = harness
@@ -155,7 +158,7 @@ async fn saved_refinement_restores_borrowed_inspector_without_accepting_retained
         1,
         "pending submit inspected before another model"
     );
-    let saved = Jsonl::open(&path).unwrap();
+    let saved = Jsonl::open(&path).await.unwrap();
     assert_eq!(saved.conversation().status(), ConversationStatus::Finished);
     assert!(saved.checkpoint_stale());
     assert!(matches!(
@@ -185,13 +188,14 @@ async fn manual_resume_rejects_unstarted_tool_and_accepts_submission_without_mod
         .tool(work(effects.clone()))
         .manual();
     original.call_model().await.unwrap();
-    original.stop("pause");
+    original.stop("pause").await;
     original
         .save_checkpoint("app", 1, &json!({"paused":true}))
+        .await
         .unwrap();
     drop(original);
     let before = std::fs::read(&path).unwrap();
-    let loaded = Jsonl::open(&path).unwrap();
+    let loaded = Jsonl::open(&path).await.unwrap();
     let mut resumed = harness
         .resume(loaded)
         .structured::<Answer>()
@@ -211,23 +215,28 @@ async fn manual_resume_rejects_unstarted_tool_and_accepts_submission_without_mod
     let mut pending = resumed.recover().await.unwrap().actions.into_iter();
     resumed
         .reject(pending.next().unwrap(), "caller rejects")
+        .await
         .unwrap();
     let action = pending.next().unwrap();
     assert!(matches!(
-        resumed.submission(&action),
+        resumed.submission(&action).await,
         Ok(Submission::Ready(Answer { value: 9 }))
     ));
     assert_eq!(
-        resumed.accept(action, "application accepted").unwrap(),
+        resumed
+            .accept(action, "application accepted")
+            .await
+            .unwrap(),
         "application accepted"
     );
     resumed
         .save_checkpoint("app", 1, &json!({"complete":true}))
+        .await
         .unwrap();
     assert_eq!(effects.load(Ordering::SeqCst), 0);
     assert_eq!(requests.lock().unwrap().len(), 1);
     assert_eq!(
-        Jsonl::open(&path).unwrap().conversation().status(),
+        Jsonl::open(&path).await.unwrap().conversation().status(),
         ConversationStatus::Finished
     );
 }
@@ -246,11 +255,11 @@ async fn automatic_resume_recovers_interrupted_tool_and_is_owned_send() {
         .manual();
     let action = session.call_model().await.unwrap().actions.pop().unwrap();
     let mut conversation = session.into_conversation();
-    conversation.start(&action).unwrap();
+    conversation.start(&action).await.unwrap();
     drop(conversation);
     let budget = Arc::new(DefaultBudget::default());
     let run = harness
-        .resume(Jsonl::open(&path).unwrap())
+        .resume(Jsonl::open(&path).await.unwrap())
         .tool(work(effects.clone()))
         .budget(budget.clone());
     let report = run.report();
@@ -272,7 +281,7 @@ async fn automatic_resume_recovers_interrupted_tool_and_is_owned_send() {
         1,
         "no historical requests fabricated"
     );
-    let saved = Jsonl::open(&path).unwrap();
+    let saved = Jsonl::open(&path).await.unwrap();
     assert_eq!(
         saved.conversation().responses()[0].actions()[0].invocation_ordinal(),
         2
@@ -287,7 +296,7 @@ async fn saved_final_text_is_used_once_but_later_feedback_requires_a_new_respons
         let mut session = harness.run("input").manual();
         session.call_model().await.unwrap();
         if feedback {
-            session.feedback("revise").unwrap();
+            session.feedback("revise").await.unwrap();
         }
         let conversation = session.into_conversation();
         let answer = harness.resume(conversation).await.unwrap();
@@ -315,13 +324,13 @@ async fn resolved_submission_in_a_mixed_batch_does_not_trigger_missing_submissio
             .manual();
         let mut actions = session.call_model().await.unwrap().actions.into_iter();
         assert!(matches!(
-            session.submission(&actions.next().unwrap()).unwrap(),
+            session.submission(&actions.next().unwrap()).await.unwrap(),
             Submission::Repaired { .. }
         ));
         let action = actions.next().unwrap();
         let mut conversation = session.into_conversation();
         if started {
-            conversation.start(&action).unwrap();
+            conversation.start(&action).await.unwrap();
         }
         let answer = harness
             .resume(conversation)
@@ -357,16 +366,16 @@ async fn resumed_tool_only_batches_receive_missing_submission_feedback_exactly_o
         let action = session.call_model().await.unwrap().actions.pop().unwrap();
         if boundary == "started" {
             let mut conversation = session.into_conversation();
-            conversation.start(&action).unwrap();
+            conversation.start(&action).await.unwrap();
         } else {
             session.execute(action).await.unwrap();
             if boundary == "repaired" {
-                session.repair_missing_submission().unwrap();
+                session.repair_missing_submission().await.unwrap();
             }
             drop(session);
         }
         let answer = harness
-            .resume(Jsonl::open(&path).unwrap())
+            .resume(Jsonl::open(&path).await.unwrap())
             .structured::<Answer>()
             .tool(work(effects.clone()))
             .await
@@ -390,7 +399,7 @@ async fn resumed_tool_only_batches_receive_missing_submission_feedback_exactly_o
         assert!(
             matches!(&content[0], UserContent::Text(text) if text.text.contains("without a recorded submission"))
         );
-        let loaded = Jsonl::open(&path).unwrap();
+        let loaded = Jsonl::open(&path).await.unwrap();
         assert_eq!(
             loaded.conversation().responses()[0].actions()[0].invocation_ordinal(),
             if boundary == "started" { 2 } else { 1 }
@@ -406,7 +415,7 @@ async fn saved_missing_submission_prose_is_repaired_only_when_not_already_handle
         let mut session = harness.run("input").structured::<Answer>().manual();
         session.call_model().await.unwrap();
         if repaired {
-            session.repair_missing_submission().unwrap();
+            session.repair_missing_submission().await.unwrap();
         }
         assert_eq!(
             harness
@@ -442,7 +451,7 @@ async fn schema_preflight_preserves_deferred_file_and_can_be_reconfigured() {
         .write_all(b"tail")
         .unwrap();
     let before = std::fs::read(&path).unwrap();
-    let loaded = Jsonl::open(&path).unwrap();
+    let loaded = Jsonl::open(&path).await.unwrap();
     let records = encode_jsonl(loaded.conversation().history()).unwrap();
     let incomplete = harness.resume(loaded).await.unwrap_err();
     assert!(matches!(
@@ -457,7 +466,7 @@ async fn schema_preflight_preserves_deferred_file_and_can_be_reconfigured() {
     );
     let mut conversation = *incomplete.conversation;
     assert!(matches!(
-        conversation.push_user(vec![UserContent::text("bad")]),
+        conversation.push_user(vec![UserContent::text("bad")]).await,
         Err(ConversationError::StorageNotReady) | Err(ConversationError::Terminal)
     ));
     assert_eq!(
@@ -470,7 +479,13 @@ async fn schema_preflight_preserves_deferred_file_and_can_be_reconfigured() {
         3
     );
     assert_eq!(requests.lock().unwrap().len(), 1);
-    assert!(Jsonl::open(&path).unwrap().incomplete_tail().is_none());
+    assert!(
+        Jsonl::open(&path)
+            .await
+            .unwrap()
+            .incomplete_tail()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -486,7 +501,7 @@ async fn changed_file_returns_storage_incomplete_and_never_silently_uses_memory(
         .manual();
     session.call_model().await.unwrap();
     drop(session);
-    let loaded = Jsonl::open(&path).unwrap();
+    let loaded = Jsonl::open(&path).await.unwrap();
     let records = encode_jsonl(loaded.conversation().history()).unwrap();
     std::fs::OpenOptions::new()
         .append(true)
@@ -541,7 +556,7 @@ async fn completed_marker_never_runs_inspector_or_prepares_file() {
     let before = std::fs::read(&path).unwrap();
     let mut inspections = 0;
     let incomplete = harness
-        .resume(Jsonl::open(&path).unwrap())
+        .resume(Jsonl::open(&path).await.unwrap())
         .structured::<Answer>()
         .inspect(async |_: Answer| {
             inspections += 1;
@@ -570,7 +585,7 @@ async fn recovery_budget_refusal_returns_the_normal_incomplete_shape() {
     let mut session = harness.run("input").tool(work(effects.clone())).manual();
     let action = session.call_model().await.unwrap().actions.pop().unwrap();
     let mut conversation = session.into_conversation();
-    conversation.start(&action).unwrap();
+    conversation.start(&action).await.unwrap();
     let budget = DefaultBudget::new(BudgetLimits {
         tool_calls: Some(0),
         ..Default::default()
@@ -608,7 +623,7 @@ async fn incompatible_model_is_rejected_before_file_repair_or_interrupted_tool_e
         .manual();
     let action = session.call_model().await.unwrap().actions.pop().unwrap();
     let mut conversation = session.into_conversation();
-    conversation.start(&action).unwrap();
+    conversation.start(&action).await.unwrap();
     drop(conversation);
     std::fs::OpenOptions::new()
         .append(true)
@@ -619,7 +634,7 @@ async fn incompatible_model_is_rejected_before_file_repair_or_interrupted_tool_e
     let before = std::fs::read(&path).unwrap();
     let (other, requests) = named_model("other", vec![]);
     let incomplete = Harness::new(other)
-        .resume(Jsonl::open(&path).unwrap())
+        .resume(Jsonl::open(&path).await.unwrap())
         .tool(work(effects.clone()))
         .await
         .unwrap_err();
@@ -639,9 +654,11 @@ async fn compacted_view_and_checkpoint_survive_resume_without_resummarization() 
     let mut original = Conversation::new("old input ".repeat(100));
     original
         .record_response(text(&"old answer ".repeat(100)), vec![])
+        .await
         .unwrap();
     original
         .push_user(vec![UserContent::text("active")])
+        .await
         .unwrap();
     let view = original
         .model_view()
@@ -670,13 +687,14 @@ async fn compacted_view_and_checkpoint_survive_resume_without_resummarization() 
             output: text("saved facts"),
         },
     });
-    let mut conversation = replay_history(&records).unwrap().conversation;
+    let mut conversation = replay_history(&records).await.unwrap().conversation;
     conversation
         .save_checkpoint("app", 1, &json!({"state":"restored"}))
+        .await
         .unwrap();
     let expected = conversation.request_messages().unwrap();
     std::fs::write(&path, encode_jsonl(conversation.history()).unwrap()).unwrap();
-    let loaded = Jsonl::open(&path).unwrap();
+    let loaded = Jsonl::open(&path).await.unwrap();
     assert_eq!(
         loaded
             .load_checkpoint::<Value>("app", 1)
@@ -692,7 +710,7 @@ async fn compacted_view_and_checkpoint_survive_resume_without_resummarization() 
     assert_eq!(requests.lock().unwrap().len(), 1);
     assert_eq!(requests.lock().unwrap()[0].messages, expected);
     assert_eq!(report.snapshot().requests.len(), 1);
-    let loaded = Jsonl::open(&path).unwrap();
+    let loaded = Jsonl::open(&path).await.unwrap();
     assert_eq!(loaded.conversation().compacted_view(), Some(&view));
     assert_eq!(
         &loaded.conversation().messages()[..original.messages().len()],

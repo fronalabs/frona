@@ -1758,8 +1758,7 @@ async fn insert_tool_call(
     turn_text: Option<&str>,
 ) -> frona::inference::tool_call::ToolCall {
     let id = frona::core::repository::new_id();
-    state
-        .chat_service
+    crate::helpers::history::fixtures(&state.db)
         .begin_tool_call(
             &id,
             chat_id,
@@ -2146,9 +2145,7 @@ async fn channel_hitl_pause_renders_pending_hitls() {
         response: None,
         delivery: None,
     };
-    setup
-        .state
-        .chat_service
+    crate::helpers::history::fixtures(&setup.state.db)
         .set_hitl(&tc.id, hitl)
         .await
         .unwrap();

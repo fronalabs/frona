@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Default memory transitions need no history/checkpoint configuration.
     let mut memory = harness.run("history without storage setup").manual();
     memory.call_model().await?;
-    assert_eq!(memory.finish()?, "application response");
+    assert_eq!(memory.finish().await?, "application response");
     assert!(matches!(
         memory.conversation().history().last().map(|r| &r.event),
         Some(frona_harness::HistoryEvent::Finished { .. })
@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Pure JSONL reconstruction works in this separate application with no
     // SurrealDB feature, credentials, storage backend, or runtime restoration.
     let encoded = frona_harness::encode_jsonl(memory.conversation().history())?;
-    let replayed = frona_harness::decode_jsonl(&encoded)?;
+    let replayed = frona_harness::decode_jsonl(&encoded).await?;
     assert_eq!(
         replayed.replay.conversation.messages(),
         memory.conversation().messages()
@@ -145,7 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!invoked);
     let mut session = harness.run("manual standalone call").manual();
     assert!(session.call_model().await?.actions.is_empty());
-    assert_eq!(session.finish()?, application_state);
+    assert_eq!(session.finish().await?, application_state);
 
     // An actual standalone run discovers and reads files with only an explicit root.
     let workspace = tempfile::tempdir()?;
@@ -206,12 +206,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 UsageReport::Unavailable,
             ),
             tools.definitions().cloned().collect(),
-        )?
+        )
+        .await?
         .actions
         .remove(0);
-    interrupted.start(&action)?;
+    interrupted.start(&action).await?;
     let bytes = frona_harness::encode_jsonl(interrupted.history())?;
-    let mut restored = frona_harness::decode_jsonl(&bytes)?.replay.conversation;
+    let mut restored = frona_harness::decode_jsonl(&bytes)
+        .await?
+        .replay
+        .conversation;
     let budget = frona_harness::DefaultBudget::default();
     assert!(
         restored
@@ -234,9 +238,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .structured::<Arguments>()
             .manual();
         saved_run.call_model().await?;
-        saved_run.save_checkpoint("consumer", 1, &"application state")?;
+        saved_run
+            .save_checkpoint("consumer", 1, &"application state")
+            .await?;
         drop(saved_run);
-        let loaded_run = Jsonl::open(&resumed_path)?;
+        let loaded_run = Jsonl::open(&resumed_path).await?;
         assert_eq!(
             loaded_run
                 .load_checkpoint::<String>("consumer", 1)?
@@ -250,10 +256,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let path = dir.path().join("history.jsonl");
         let mut conversation = Conversation::new("save this");
         conversation.attach_jsonl(Jsonl::create(&path)?)?;
-        conversation.push_user(vec![UserContent::text("explicit feedback")])?;
-        let saved = conversation.save_checkpoint("consumer-loop", 1, &vec!["candidate"])?;
+        conversation
+            .push_user(vec![UserContent::text("explicit feedback")])
+            .await?;
+        let saved = conversation
+            .save_checkpoint("consumer-loop", 1, &vec!["candidate"])
+            .await?;
         drop(conversation);
-        let loaded = Jsonl::open(&path)?;
+        let loaded = Jsonl::open(&path).await?;
         assert_eq!(loaded.conversation().messages().len(), 2);
         let checkpoint = loaded
             .load_checkpoint::<Vec<String>>("consumer-loop", 1)?
@@ -261,18 +271,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(checkpoint.seq, saved);
         assert_eq!(checkpoint.payload, ["candidate"]);
         let mut writable = loaded.into_writable()?;
-        writable.finish()?;
+        writable.finish().await?;
         assert!(matches!(
             writable.load_checkpoint::<Vec<String>>("consumer-loop", 1),
             Err(frona_harness::CheckpointLoadError::Stale { .. })
         ));
-        writable.save_checkpoint(
-            "consumer-loop",
-            1,
-            &vec!["application state after completion"],
-        )?;
+        writable
+            .save_checkpoint(
+                "consumer-loop",
+                1,
+                &vec!["application state after completion"],
+            )
+            .await?;
         drop(writable);
-        let completed = Jsonl::open(&path)?;
+        let completed = Jsonl::open(&path).await?;
         assert_eq!(completed.conversation().history().len(), 5);
         assert_eq!(
             completed

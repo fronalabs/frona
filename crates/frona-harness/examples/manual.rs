@@ -35,12 +35,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if proposal.call.function.arguments["key"] == "public" {
             session.execute(action).await?;
         } else {
-            session.reject(action, "That record is outside this operation's scope")?;
+            session
+                .reject(action, "That record is outside this operation's scope")
+                .await?;
         }
     }
     // Overrides apply to this call only; raw native history may restrict model switching.
     session.call_model().model(&second).await?;
-    let answer = session.finish()?;
+    let answer = session.finish().await?;
     println!("{answer}");
     drop(session); // Releases the tool's borrow before reading application state.
     assert_eq!(looked_up, ["public"]);

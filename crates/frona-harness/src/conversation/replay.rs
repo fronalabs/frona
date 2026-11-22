@@ -21,7 +21,9 @@ pub struct HistoryReplay {
 /// Deterministically reconstruct a complete typed prefix. Stopped diagnostics can
 /// be followed by explicit transitions; finished histories allow checkpoints only.
 /// Pending submissions always require fresh typed validation before live acceptance.
-pub fn replay_history(records: &[HistoryRecord]) -> Result<HistoryReplay, HistoryDecodeError> {
+pub async fn replay_history(
+    records: &[HistoryRecord],
+) -> Result<HistoryReplay, HistoryDecodeError> {
     let state_error = |seq, message: String| {
         HistoryDecodeError::new(HistoryDecodeErrorKind::InvalidState, seq, message)
     };
@@ -95,7 +97,7 @@ pub fn replay_history(records: &[HistoryRecord]) -> Result<HistoryReplay, Histor
         }
         // Stopped is a diagnostic boundary, not acceptance or permanent sealing.
         conversation.status = ConversationStatus::Active;
-        let applied = apply(&mut conversation, &record.event);
+        let applied = apply(&mut conversation, &record.event).await;
         applied.map_err(|e| state_error(seq, e))?;
     }
     // Keep exact source evidence, including completion kind, raw outputs, and
@@ -111,7 +113,7 @@ pub fn replay_history(records: &[HistoryRecord]) -> Result<HistoryReplay, Histor
     })
 }
 
-fn apply(conversation: &mut Conversation, event: &HistoryEvent) -> Result<(), String> {
+async fn apply(conversation: &mut Conversation, event: &HistoryEvent) -> Result<(), String> {
     let protocol = |e: ConversationError| e.to_string();
     let handle = |position: &ActionPosition| PendingAction {
         conversation: position.conversation,
@@ -124,7 +126,10 @@ fn apply(conversation: &mut Conversation, event: &HistoryEvent) -> Result<(), St
             if *message != conversation.messages.len() {
                 return Err("invalid user position".into());
             }
-            conversation.push_user(content.clone()).map_err(protocol)?;
+            conversation
+                .push_user(content.clone())
+                .await
+                .map_err(protocol)?;
         }
         HistoryEvent::Response {
             response,
@@ -139,6 +144,7 @@ fn apply(conversation: &mut Conversation, event: &HistoryEvent) -> Result<(), St
             }
             conversation
                 .record_response_from(output.clone(), offered_tools.clone(), origin.clone())
+                .await
                 .map_err(protocol)?;
         }
         HistoryEvent::ToolStarted { action, ordinal } => {
@@ -156,6 +162,7 @@ fn apply(conversation: &mut Conversation, event: &HistoryEvent) -> Result<(), St
         HistoryEvent::ActionResolved { action, resolution } => {
             conversation
                 .resolve(&handle(action), resolution.clone())
+                .await
                 .map_err(protocol)?;
         }
         HistoryEvent::SubmissionCompleted {
@@ -200,7 +207,10 @@ fn apply(conversation: &mut Conversation, event: &HistoryEvent) -> Result<(), St
                     "text completion requires the latest tool-free nonempty text response".into(),
                 );
             }
-            conversation.finish_with_kind(*kind).map_err(protocol)?;
+            conversation
+                .finish_with_kind(*kind)
+                .await
+                .map_err(protocol)?;
         }
         HistoryEvent::Stopped { .. } => conversation.mark_stopped(),
         HistoryEvent::Checkpoint { .. } => unreachable!("handled before terminal check"),

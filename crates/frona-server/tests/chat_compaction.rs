@@ -1394,7 +1394,9 @@ async fn harness_validates_contact_context_after_channel_prompt_is_appended() {
     for oversized_prompt in [false, true] {
         let app = App::new().await;
         let request = row("active", 1, MessageRole::Contact, "exact contact request");
-        let placeholder = row("placeholder", 2, MessageRole::Agent, "");
+        let mut placeholder = row("placeholder", 2, MessageRole::Agent, "");
+        placeholder.agent_id = Some(app.chat.agent_id.clone());
+        placeholder.status = Some(MessageStatus::Executing);
         for msg in [&request, &placeholder] {
             app.messages().create(msg).await.unwrap();
         }
@@ -1430,7 +1432,7 @@ async fn harness_validates_contact_context_after_channel_prompt_is_appended() {
             );
             assert_eq!(app.inference_calls(), 0);
         } else {
-            assert!(result.is_ok());
+            assert!(result.is_ok(), "{:?}", result.err());
             assert_eq!(app.inference_calls(), 1);
             assert!(app.model.last_history().iter().any(|m| matches!(m, RigMessage::User { content } if content.iter().any(|c| matches!(c, UserContent::Text(t) if t.text == request.content)))));
         }
@@ -2005,6 +2007,9 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
             assert_eq!(reload.rig_history, session.rig_history);
             // A later compaction carries the persisted summary verbatim as the
             // beginning of the actual cached prefix, and still excludes new intent.
+            let mut later_placeholder = row("later-placeholder", 16, MessageRole::Agent, "");
+            later_placeholder.agent_id = Some(app.chat.agent_id.clone());
+            later_placeholder.status = Some(MessageStatus::Executing);
             for message in [
                 row(
                     "later-answer",
@@ -2013,7 +2018,7 @@ async fn compaction_reuses_conversation_model_and_ignores_legacy_groups() {
                     &"later answer ".repeat(2600),
                 ),
                 row("later-request", 15, MessageRole::User, "LATEST NEW INTENT"),
-                row("later-placeholder", 16, MessageRole::Agent, ""),
+                later_placeholder,
             ] {
                 app.messages().create(&message).await.unwrap();
             }

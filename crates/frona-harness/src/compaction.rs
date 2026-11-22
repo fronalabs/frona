@@ -490,8 +490,8 @@ mod tests {
         message::{ToolCall, ToolFunction},
     };
 
-    #[test]
-    fn restored_descriptors_cannot_omit_overlap_reorder_or_split_original_groups() {
+    #[tokio::test]
+    async fn restored_descriptors_cannot_omit_overlap_reorder_or_split_original_groups() {
         let mut conversation = Conversation::new("active instruction");
         let actions = conversation
             .record_response(
@@ -504,12 +504,14 @@ mod tests {
                 ),
                 vec![],
             )
+            .await
             .unwrap();
         conversation
             .resolve(
                 &actions.actions[0],
                 ActionResolution::Result(ToolOutput::text("result")),
             )
+            .await
             .unwrap();
         conversation
             .record_response(
@@ -519,6 +521,7 @@ mod tests {
                 ),
                 vec![],
             )
+            .await
             .unwrap();
         let originals = conversation.messages();
         let descriptor = |covered: Vec<usize>, retained: Vec<usize>| CompactedView {

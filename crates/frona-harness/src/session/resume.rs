@@ -20,10 +20,10 @@ impl<Mode> ManualSession<'_, Mode> {
     pub async fn recover(&mut self) -> Result<ResponseActions, ManualError> {
         if self.core.resume_pending {
             if let Err(error) = self.core.prepare_resume().await {
-                return Err(self.core.fail(error));
+                return Err(self.core.fail(error).await);
             }
         } else {
-            self.core.check_active()?;
+            self.core.check_active().await?;
         }
         self.pending_actions()
     }
@@ -36,7 +36,7 @@ impl<Mode> ManualSession<'_, Mode> {
 
     /// Save application progress even at an incomplete or completed boundary.
     /// Resumed sessions must prepare first; loading a checkpoint needs no recovery.
-    pub fn save_checkpoint<T: serde::Serialize + ?Sized>(
+    pub async fn save_checkpoint<T: serde::Serialize + ?Sized>(
         &mut self,
         schema: impl Into<String>,
         version: u64,
@@ -46,7 +46,7 @@ impl<Mode> ManualSession<'_, Mode> {
             return Err(ResumeError::PreparationRequired.into());
         }
         if let Some(error) = self.core.setup_error.take() {
-            return Err(self.core.fail(error));
+            return Err(self.core.fail(error).await);
         }
         self.core
             .conversation
@@ -54,8 +54,9 @@ impl<Mode> ManualSession<'_, Mode> {
         let result = self
             .core
             .conversation
-            .save_checkpoint(schema, version, payload);
-        self.core.result(result)
+            .save_checkpoint(schema, version, payload)
+            .await;
+        self.core.result(result).await
     }
 
     pub fn load_checkpoint<T: DeserializeOwned>(
@@ -133,18 +134,14 @@ impl SessionCore<'_> {
         let execution = ExecutionControl::new(&*self.budget)
             .with_cancellation(&self.cancellation)
             .with_report(&self.recorder.0);
-        let result = match &mut self.tool_hook {
-            Some(hook) => {
-                self.conversation
-                    .recover_tools_with_hook(&mut self.tools, execution, &mut **hook)
-                    .await
-            }
-            None => {
-                self.conversation
-                    .recover_tools(&mut self.tools, execution)
-                    .await
-            }
-        };
+        let result = self
+            .conversation
+            .recover_tools_with_hooks(
+                &mut self.tools,
+                execution,
+                &mut hook_refs(&mut self.tool_hooks),
+            )
+            .await;
         match result {
             Ok(_) => {}
             Err(ToolDispatchError::Stop(stop)) => return Err(stop.into()),

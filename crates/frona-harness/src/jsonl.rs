@@ -1,4 +1,5 @@
-//! Synchronous, explicitly coordinated JSONL storage. No execution happens on open.
+//! Explicitly coordinated JSONL storage. Replay is asynchronous; transition
+//! commits await blocking-pool file writes. No execution happens on open.
 use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Write},
@@ -68,7 +69,7 @@ impl Jsonl {
     /// Durably create a new file, refusing to overwrite any existing path.
     /// The empty file is not replayable until its attached conversation commits
     /// `Opened`. This lets run configuration be supplied before the first write.
-    /// All operations here and subsequent required writes are synchronous.
+    /// Setup is synchronous; subsequent required writes are awaited.
     /// A creation/synchronization failure may leave an empty file; no rollback
     /// or overwrite is attempted. Directory durability is implemented on Unix;
     /// other platforms report an explicit unsupported I/O error.
@@ -88,15 +89,22 @@ impl Jsonl {
 
     /// Read and validate a stable file without mutating it. A complete corrupt
     /// record is an error; an unterminated suffix is exposed and never applied.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, JsonlError> {
+    pub async fn open(path: impl AsRef<Path>) -> Result<Self, JsonlError> {
         let path = absolute(path.as_ref())?;
-        let mut file =
-            File::open(&path).map_err(|e| JsonlError::io(&path, JsonlOperation::Open, e))?;
-        let bytes = read(&mut file, &path)?;
-        let decoded = decode_jsonl(&bytes).map_err(|source| JsonlError::Decode {
-            path: path.clone(),
-            source,
-        })?;
+        use tokio::io::AsyncReadExt;
+        let mut file = tokio::fs::File::open(&path)
+            .await
+            .map_err(|error| JsonlError::io(&path, JsonlOperation::Open, error))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .await
+            .map_err(|error| JsonlError::io(&path, JsonlOperation::Read, error))?;
+        let decoded = decode_jsonl(&bytes)
+            .await
+            .map_err(|source| JsonlError::Decode {
+                path: path.clone(),
+                source,
+            })?;
         Ok(Self {
             source: JsonlContinuation {
                 path,
@@ -208,9 +216,9 @@ impl JsonlError {
                 operation: JsonlOperation::SynchronizeFile | JsonlOperation::SynchronizeDirectory,
                 ..
             } => HistoryWritePhase::Synchronize,
-            Self::Changed { .. } | Self::Decode { .. } | Self::AlreadyAttached => {
-                HistoryWritePhase::Revalidate
-            }
+            Self::Changed { .. }
+            | Self::Decode { .. }
+            | Self::AlreadyAttached => HistoryWritePhase::Revalidate,
         }
     }
 }
@@ -255,35 +263,48 @@ impl DurableWrite for File {
     }
 }
 
-/// A required synchronous writer. Attach it to a fresh conversation; it cannot
-/// be cloned, reused, or used to append arbitrary records outside the state machine.
+/// An owned async writer for one conversation. Attach it before execution;
+/// the conversation supplies record identity, ordering, and recovery checks.
 #[derive(Debug)]
 pub struct JsonlWriter {
-    file: Box<dyn DurableWrite>,
+    file: Option<Box<dyn DurableWrite>>,
 }
 
 impl JsonlWriter {
     fn new(file: File) -> Self {
         Self {
-            file: Box::new(file),
+            file: Some(Box::new(file)),
         }
     }
 }
 
+#[async_trait::async_trait]
 impl HistoryWriter for JsonlWriter {
-    fn commit(&mut self, record: &HistoryRecord) -> Result<(), HistoryWriteError> {
+    async fn commit(&mut self, record: &HistoryRecord) -> Result<(), HistoryWriteError> {
         let failure = |phase, cause: String| HistoryWriteError { phase, cause };
         let bytes = encode_jsonl(std::slice::from_ref(record))
             .map_err(|e| failure(HistoryWritePhase::Serialize, e.to_string()))?;
-        self.file
-            .write_all(&bytes)
-            .map_err(|e| failure(HistoryWritePhase::Append, e.to_string()))?;
-        self.file
-            .flush()
-            .map_err(|e| failure(HistoryWritePhase::Flush, e.to_string()))?;
-        self.file
-            .synchronize()
-            .map_err(|e| failure(HistoryWritePhase::Synchronize, e.to_string()))
+        let mut file = self.file.take().ok_or_else(|| {
+            failure(
+                HistoryWritePhase::Append,
+                "JSONL commit was interrupted; reconcile before reuse".into(),
+            )
+        })?;
+        let (file, result) = tokio::task::spawn_blocking(move || {
+            let result = (|| {
+                file.write_all(&bytes)
+                    .map_err(|e| failure(HistoryWritePhase::Append, e.to_string()))?;
+                file.flush()
+                    .map_err(|e| failure(HistoryWritePhase::Flush, e.to_string()))?;
+                file.synchronize()
+                    .map_err(|e| failure(HistoryWritePhase::Synchronize, e.to_string()))
+            })();
+            (file, result)
+        })
+        .await
+        .map_err(|e| failure(HistoryWritePhase::Append, e.to_string()))?;
+        self.file = Some(file);
+        result
     }
 }
 

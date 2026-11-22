@@ -21,8 +21,8 @@ fn state(candidate: u64) -> State {
     }
 }
 
-#[test]
-fn checkpoint_roundtrips_exact_prefix_and_latest_stream_without_execution() {
+#[tokio::test]
+async fn checkpoint_roundtrips_exact_prefix_and_latest_stream_without_execution() {
     let mut conversation = Conversation::new("input");
     assert!(
         conversation
@@ -34,7 +34,10 @@ fn checkpoint_roundtrips_exact_prefix_and_latest_stream_without_execution() {
         conversation.history().is_empty(),
         "reading cannot create Opened"
     );
-    let seq = conversation.save_checkpoint("app", 1, &state(7)).unwrap();
+    let seq = conversation
+        .save_checkpoint("app", 1, &state(7))
+        .await
+        .unwrap();
     assert_eq!(seq, 1);
     let loaded = conversation
         .load_checkpoint::<State>("app", 1)
@@ -47,13 +50,16 @@ fn checkpoint_roundtrips_exact_prefix_and_latest_stream_without_execution() {
     assert!(conversation.responses().is_empty());
     assert_eq!(conversation.status(), ConversationStatus::Active);
 
-    let seq = conversation.save_checkpoint("app", 1, &state(8)).unwrap();
+    let seq = conversation
+        .save_checkpoint("app", 1, &state(8))
+        .await
+        .unwrap();
     assert_eq!(
         seq, 2,
         "consecutive checkpoints associate with the prior record"
     );
     let encoded = encode_jsonl(conversation.history()).unwrap();
-    let replay = decode_jsonl(&encoded).unwrap().replay;
+    let replay = decode_jsonl(&encoded).await.unwrap().replay;
     assert_eq!(replay.checkpoint.as_ref().unwrap().0, seq);
     assert!(!replay.checkpoint_stale);
     assert_eq!(
@@ -68,12 +74,16 @@ fn checkpoint_roundtrips_exact_prefix_and_latest_stream_without_execution() {
     assert_eq!(replay.conversation.messages(), conversation.messages());
 }
 
-#[test]
-fn incompatible_stale_and_unreadable_are_distinct_and_do_not_fall_back() {
+#[tokio::test]
+async fn incompatible_stale_and_unreadable_are_distinct_and_do_not_fall_back() {
     let mut conversation = Conversation::new("input");
-    conversation.save_checkpoint("app", 1, &state(7)).unwrap();
+    conversation
+        .save_checkpoint("app", 1, &state(7))
+        .await
+        .unwrap();
     conversation
         .push_user(vec![UserContent::text("later feedback")])
+        .await
         .unwrap();
     assert!(matches!(
         conversation.load_checkpoint::<State>("app", 1),
@@ -89,12 +99,14 @@ fn incompatible_stale_and_unreadable_are_distinct_and_do_not_fall_back() {
         json!({"stage":"inspect", "candidate":7})
     );
     let replay = decode_jsonl(&encode_jsonl(conversation.history()).unwrap())
+        .await
         .unwrap()
         .replay;
     assert!(replay.checkpoint_stale);
 
     let seq = conversation
         .save_checkpoint("other-app", 2, &state(8))
+        .await
         .unwrap();
     assert!(matches!(
         conversation.load_checkpoint::<State>("app", 1),
@@ -104,6 +116,7 @@ fn incompatible_stale_and_unreadable_are_distinct_and_do_not_fall_back() {
     // Correct identity but incompatible payload; never return the earlier State.
     let seq = conversation
         .save_checkpoint("app", 1, &json!({"stage":false}))
+        .await
         .unwrap();
     assert!(matches!(
         conversation.load_checkpoint::<State>("app", 1),
@@ -142,15 +155,19 @@ async fn serialization_failure_stops_without_fabricated_payload_and_preserves_co
         conversation
             .attach_jsonl(frona_harness::Jsonl::create(&path).unwrap())
             .unwrap();
-        conversation.save_checkpoint("app", 1, &state(7)).unwrap();
+        conversation
+            .save_checkpoint("app", 1, &state(7))
+            .await
+            .unwrap();
         if terminal {
-            conversation.finish().unwrap();
+            conversation.finish().await.unwrap();
         }
         let before = encode_jsonl(conversation.history()).unwrap();
         let acknowledged = conversation.history().last().unwrap().seq;
         let serializations = AtomicUsize::new(0);
         let error = conversation
             .save_checkpoint("app", 1, &CannotSerialize(&serializations))
+            .await
             .unwrap_err();
         let ConversationError::Storage(failure) = error else {
             panic!("typed storage failure")
@@ -174,6 +191,7 @@ async fn serialization_failure_stops_without_fabricated_payload_and_preserves_co
         assert!(
             conversation
                 .save_checkpoint("app", 1, &CannotSerialize(&serializations))
+                .await
                 .is_err()
         );
         assert_eq!(
@@ -197,7 +215,7 @@ async fn serialization_failure_stops_without_fabricated_payload_and_preserves_co
                 Err(ToolDispatchError::Recovery(RecoveryError::AlreadyCompleted))
             ));
         }
-        memory.save_checkpoint("app", 1, &state(9)).unwrap();
+        memory.save_checkpoint("app", 1, &state(9)).await.unwrap();
         assert_eq!(
             memory
                 .load_checkpoint::<State>("app", 1)
@@ -219,11 +237,14 @@ async fn serialization_failure_stops_without_fabricated_payload_and_preserves_co
     }
 }
 
-#[test]
-fn saving_after_completion_keeps_terminal_evidence_and_does_not_accept_candidate() {
+#[tokio::test]
+async fn saving_after_completion_keeps_terminal_evidence_and_does_not_accept_candidate() {
     let mut conversation = Conversation::new("input");
-    conversation.finish().unwrap();
-    let seq = conversation.save_checkpoint("app", 1, &state(42)).unwrap();
+    conversation.finish().await.unwrap();
+    let seq = conversation
+        .save_checkpoint("app", 1, &state(42))
+        .await
+        .unwrap();
     assert!(matches!(
         conversation.history()[seq as usize - 1].event,
         HistoryEvent::Finished { .. }
@@ -238,14 +259,15 @@ fn saving_after_completion_keeps_terminal_evidence_and_does_not_accept_candidate
         state(42)
     );
     let replay = decode_jsonl(&encode_jsonl(conversation.history()).unwrap())
+        .await
         .unwrap()
         .replay;
     assert_eq!(replay.conversation.status(), ConversationStatus::Finished);
     assert!(!replay.checkpoint_stale);
 }
 
-#[test]
-fn checkpoints_preserve_pending_submissions_and_incomplete_stops() {
+#[tokio::test]
+async fn checkpoints_preserve_pending_submissions_and_incomplete_stops() {
     use frona_harness::{ActionStatus, ModelOutput, Submission, UsageReport, submission_tool};
     use rig_core::completion::{
         AssistantContent,
@@ -263,21 +285,29 @@ fn checkpoints_preserve_pending_submissions_and_incomplete_stops() {
             ),
             vec![submission_tool::<String>()],
         )
+        .await
         .unwrap();
     let submission = &actions.actions[0];
     assert!(matches!(
-        conversation.submission::<String>(submission).unwrap(),
+        conversation.submission::<String>(submission).await.unwrap(),
         Submission::Ready(_)
     ));
-    conversation.save_checkpoint("app", 1, &state(7)).unwrap();
+    conversation
+        .save_checkpoint("app", 1, &state(7))
+        .await
+        .unwrap();
     assert_eq!(conversation.pending_count(), 1);
     assert_eq!(
         conversation.action(submission).unwrap().status,
         ActionStatus::Proposed
     );
-    conversation.stop().unwrap();
-    conversation.save_checkpoint("app", 1, &state(8)).unwrap();
+    conversation.stop().await.unwrap();
+    conversation
+        .save_checkpoint("app", 1, &state(8))
+        .await
+        .unwrap();
     let replay = decode_jsonl(&encode_jsonl(conversation.history()).unwrap())
+        .await
         .unwrap()
         .replay;
     assert_eq!(replay.conversation.status(), ConversationStatus::Stopped);
@@ -302,8 +332,8 @@ fn checkpoints_preserve_pending_submissions_and_incomplete_stops() {
 }
 
 #[cfg(feature = "jsonl")]
-#[test]
-fn jsonl_typed_load_preserves_app_state_and_requires_explicit_writes() {
+#[tokio::test]
+async fn jsonl_typed_load_preserves_app_state_and_requires_explicit_writes() {
     use frona_harness::Jsonl;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("app.jsonl");
@@ -311,10 +341,13 @@ fn jsonl_typed_load_preserves_app_state_and_requires_explicit_writes() {
     conversation
         .attach_jsonl(Jsonl::create(&path).unwrap())
         .unwrap();
-    conversation.save_checkpoint("app", 3, &state(7)).unwrap();
+    conversation
+        .save_checkpoint("app", 3, &state(7))
+        .await
+        .unwrap();
     drop(conversation);
     let before = std::fs::read(&path).unwrap();
-    let loaded = Jsonl::open(&path).unwrap();
+    let loaded = Jsonl::open(&path).await.unwrap();
     assert_eq!(
         loaded
             .load_checkpoint::<State>("app", 3)
@@ -329,9 +362,10 @@ fn jsonl_typed_load_preserves_app_state_and_requires_explicit_writes() {
     ));
     assert_eq!(std::fs::read(&path).unwrap(), before);
     let mut writable = loaded.into_writable().unwrap();
-    writable.save_checkpoint("app", 3, &state(8)).unwrap();
+    writable.save_checkpoint("app", 3, &state(8)).await.unwrap();
     assert_eq!(
         Jsonl::open(&path)
+            .await
             .unwrap()
             .load_checkpoint::<State>("app", 3)
             .unwrap()

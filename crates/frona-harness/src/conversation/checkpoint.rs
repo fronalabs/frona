@@ -80,13 +80,13 @@ impl Conversation {
     /// identifies this checkpoint; its through_seq is the preceding record.
     /// Checkpoints may follow completion and never accept or reactivate work.
     /// This is one reliable history write, not a transaction with app effects.
-    pub fn save_checkpoint<T: Serialize + ?Sized>(
+    pub async fn save_checkpoint<T: Serialize + ?Sized>(
         &mut self,
         schema: impl Into<String>,
         version: u64,
         payload: &T,
     ) -> Result<u64, ConversationError> {
-        self.ensure_history()?;
+        self.ensure_history().await?;
         let payload = serde_json::to_value(payload).map_err(|error| {
             let failure = self
                 .history
@@ -105,7 +105,8 @@ impl Conversation {
                 },
             },
             EffectState::NoEffect,
-        )?;
+        )
+        .await?;
         Ok(self.history().last().expect("checkpoint committed").seq)
     }
 

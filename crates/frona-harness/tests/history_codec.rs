@@ -99,8 +99,10 @@ fn checkpoint(records: &mut Vec<HistoryRecord>, payload: Value) {
         },
     );
 }
-fn assert_state_error(records: &[HistoryRecord]) {
-    let error = decode_jsonl(&encode_jsonl(records).unwrap()).unwrap_err();
+async fn assert_state_error(records: &[HistoryRecord]) {
+    let error = decode_jsonl(&encode_jsonl(records).unwrap())
+        .await
+        .unwrap_err();
     assert_eq!(error.kind, HistoryDecodeErrorKind::InvalidState, "{error}");
     assert!(error.byte.is_some());
 }
@@ -109,8 +111,8 @@ struct Answer {
     value: u32,
 }
 
-#[test]
-fn rich_source_history_roundtrips_exactly_and_batches_in_proposal_order() {
+#[tokio::test]
+async fn rich_source_history_roundtrips_exactly_and_batches_in_proposal_order() {
     let image = Image {
         data: DocumentSourceKind::Base64("aW1hZ2U=".into()),
         media_type: Some(ImageMediaType::PNG),
@@ -127,15 +129,16 @@ fn rich_source_history_roundtrips_exactly_and_batches_in_proposal_order() {
             ]),
             vec![submission_tool::<Answer>()],
         )
-        .unwrap()
+        .await.unwrap()
         .actions;
     source
         .resolve(
             &actions[1],
             ActionResolution::Rejected(ToolOutput::text("policy feedback")),
         )
+        .await
         .unwrap();
-    source.start(&actions[0]).unwrap();
+    source.start(&actions[0]).await.unwrap();
     source
         .resolve(
             &actions[0],
@@ -149,10 +152,11 @@ fn rich_source_history_roundtrips_exactly_and_batches_in_proposal_order() {
                 .with_metadata(json!({"error":"remote failed"})),
             ),
         )
+        .await
         .unwrap();
     let encoded = encode_jsonl(source.history()).unwrap();
     for _ in 0..2 {
-        let decoded = decode_jsonl(&encoded).unwrap();
+        let decoded = decode_jsonl(&encoded).await.unwrap();
         let restored = decoded.replay.conversation;
         assert_eq!(restored.messages(), source.messages());
         assert_eq!(encode_jsonl(restored.history()).unwrap(), encoded);
@@ -174,11 +178,13 @@ fn rich_source_history_roundtrips_exactly_and_batches_in_proposal_order() {
     }
 }
 
-#[test]
-fn default_and_empty_initial_content_keep_distinct_original_positions() {
+#[tokio::test]
+async fn default_and_empty_initial_content_keep_distinct_original_positions() {
     let mut empty = Conversation::default();
-    empty.push_user(vec![]).unwrap();
-    let decoded = decode_jsonl(&encode_jsonl(empty.history()).unwrap()).unwrap();
+    empty.push_user(vec![]).await.unwrap();
+    let decoded = decode_jsonl(&encode_jsonl(empty.history()).unwrap())
+        .await
+        .unwrap();
     assert_eq!(decoded.replay.conversation.messages(), empty.messages());
     assert!(matches!(
         decoded.replay.conversation.history()[0].event,
@@ -186,15 +192,15 @@ fn default_and_empty_initial_content_keep_distinct_original_positions() {
     ));
     for initial in [None, Some(vec![])] {
         let expected = usize::from(initial.is_some());
-        let replay = replay_history(&[opened(initial)]).unwrap();
+        let replay = replay_history(&[opened(initial)]).await.unwrap();
         assert_eq!(replay.conversation.messages().len(), expected);
     }
 }
 
-#[test]
-fn proposed_started_restarted_and_partial_resolution_remain_distinct() {
+#[tokio::test]
+async fn proposed_started_restarted_and_partial_resolution_remain_distinct() {
     let mut records = fixture();
-    let proposed = replay_history(&records).unwrap().conversation;
+    let proposed = replay_history(&records).await.unwrap().conversation;
     assert_eq!(proposed.pending_count(), 2);
     assert!(
         proposed.responses()[0]
@@ -216,7 +222,7 @@ fn proposed_started_restarted_and_partial_resolution_remain_distinct() {
             message: "interrupted".into(),
         },
     );
-    let stopped = replay_history(&records).unwrap().conversation;
+    let stopped = replay_history(&records).await.unwrap().conversation;
     assert_eq!(stopped.status(), ConversationStatus::Stopped);
     assert_eq!(
         stopped.responses()[0].actions()[0].status(),
@@ -236,7 +242,7 @@ fn proposed_started_restarted_and_partial_resolution_remain_distinct() {
             resolution: ActionResolution::Rejected(ToolOutput::text("revise")),
         },
     );
-    let partial = replay_history(&records).unwrap().conversation;
+    let partial = replay_history(&records).await.unwrap().conversation;
     assert_eq!(partial.messages().len(), 2);
     assert_eq!(partial.pending_count(), 1);
     assert_eq!(partial.responses()[0].actions()[0].invocation_ordinal(), 2);
@@ -250,6 +256,7 @@ fn proposed_started_restarted_and_partial_resolution_remain_distinct() {
     );
     assert_eq!(
         replay_history(&records)
+            .await
             .unwrap()
             .conversation
             .messages()
@@ -258,30 +265,37 @@ fn proposed_started_restarted_and_partial_resolution_remain_distinct() {
     );
 }
 
-#[test]
-fn pending_validation_is_never_restored_and_low_level_completions_are_honest() {
+#[tokio::test]
+async fn pending_validation_is_never_restored_and_low_level_completions_are_honest() {
     let mut source = Conversation::new("low-level text mode");
     let action = source
         .record_response(output(vec![call("submit", json!({"value":7}))]), vec![])
+        .await
         .unwrap()
         .actions
         .remove(0);
     assert!(matches!(
-        source.submission::<Answer>(&action).unwrap(),
+        source.submission::<Answer>(&action).await.unwrap(),
         Submission::Ready(Answer { value: 7 })
     ));
     assert!(source.action(&action).unwrap().submission_validated);
     let mut decoded = decode_jsonl(&encode_jsonl(source.history()).unwrap())
+        .await
         .unwrap()
         .replay
         .conversation;
     let restored = decoded.pending_actions().unwrap().actions.remove(0);
     assert!(!decoded.action(&restored).unwrap().submission_validated);
     assert!(matches!(
-        decoded.accept_submission(&restored, "must not accept"),
+        decoded
+            .accept_submission(&restored, "must not accept")
+            .await,
         Err(SubmissionError::NotValidated)
     ));
-    source.accept_submission(&action, "caller owns A").unwrap();
+    source
+        .accept_submission(&action, "caller owns A")
+        .await
+        .unwrap();
     for kind in [
         SubmissionCompletion::Application,
         SubmissionCompletion::Schema,
@@ -294,6 +308,7 @@ fn pending_validation_is_never_restored_and_low_level_completions_are_honest() {
         };
         *saved = kind;
         let finished = decode_jsonl(&encode_jsonl(&records).unwrap())
+            .await
             .unwrap()
             .replay
             .conversation;
@@ -306,11 +321,11 @@ fn pending_validation_is_never_restored_and_low_level_completions_are_honest() {
     }
 }
 
-#[test]
-fn checkpoints_have_exact_prefix_association_and_never_promote_candidates() {
+#[tokio::test]
+async fn checkpoints_have_exact_prefix_association_and_never_promote_candidates() {
     let mut records = fixture();
     checkpoint(&mut records, json!({"stage":"candidate", "value":7}));
-    let saved = replay_history(&records).unwrap();
+    let saved = replay_history(&records).await.unwrap();
     assert_eq!(saved.checkpoint.as_ref().unwrap().0, 2);
     assert_eq!(saved.checkpoint.as_ref().unwrap().1.through_seq, 1);
     assert!(!saved.checkpoint_stale);
@@ -323,7 +338,7 @@ fn checkpoints_have_exact_prefix_association_and_never_promote_candidates() {
             resolution: ActionResolution::Result(ToolOutput::text("result")),
         },
     );
-    assert!(replay_history(&records).unwrap().checkpoint_stale);
+    assert!(replay_history(&records).await.unwrap().checkpoint_stale);
     append(
         &mut records,
         HistoryEvent::SubmissionCompleted {
@@ -334,7 +349,7 @@ fn checkpoints_have_exact_prefix_association_and_never_promote_candidates() {
         },
     );
     checkpoint(&mut records, json!({"stage":"complete"}));
-    let finished = replay_history(&records).unwrap();
+    let finished = replay_history(&records).await.unwrap();
     assert!(!finished.checkpoint_stale);
     assert_eq!(finished.conversation.status(), ConversationStatus::Finished);
     assert_eq!(
@@ -346,7 +361,7 @@ fn checkpoints_have_exact_prefix_association_and_never_promote_candidates() {
         panic!()
     };
     checkpoint.through_seq -= 1;
-    assert_state_error(&invalid);
+    assert_state_error(&invalid).await;
     for event in [
         HistoryEvent::Stopped {
             category: FailureKind::ApplicationStop,
@@ -362,12 +377,12 @@ fn checkpoints_have_exact_prefix_association_and_never_promote_candidates() {
     ] {
         let mut invalid = records.clone();
         append(&mut invalid, event);
-        assert_state_error(&invalid);
+        assert_state_error(&invalid).await;
     }
 }
 
-#[test]
-fn incomplete_tail_and_committed_corruption_are_different_outcomes() {
+#[tokio::test]
+async fn incomplete_tail_and_committed_corruption_are_different_outcomes() {
     let records = fixture();
     let prefix = encode_jsonl(&records[..1]).unwrap();
     let full = encode_jsonl(&records).unwrap();
@@ -378,7 +393,7 @@ fn incomplete_tail_and_committed_corruption_are_different_outcomes() {
     ] {
         let mut bytes = prefix.clone();
         bytes.extend(suffix);
-        let decoded = decode_jsonl(&bytes).unwrap();
+        let decoded = decode_jsonl(&bytes).await.unwrap();
         assert_eq!(decoded.incomplete_tail, Some(prefix.len()..bytes.len()));
         assert_eq!(decoded.replay.conversation.history().len(), 1);
     }
@@ -386,19 +401,20 @@ fn incomplete_tail_and_committed_corruption_are_different_outcomes() {
         let mut bytes = prefix.clone();
         bytes.extend(suffix);
         bytes.extend(&full[prefix.len()..]);
-        let error = decode_jsonl(&bytes).unwrap_err();
+        let error = decode_jsonl(&bytes).await.unwrap_err();
         assert_eq!(error.kind, HistoryDecodeErrorKind::Corruption);
         assert_eq!(error.byte, Some(prefix.len()));
         assert_eq!(error.seq, 1);
     }
     for bytes in [b"".as_slice(), &prefix[..prefix.len() - 1]] {
         assert_eq!(
-            decode_jsonl(bytes).unwrap_err().kind,
+            decode_jsonl(bytes).await.unwrap_err().kind,
             HistoryDecodeErrorKind::MissingOpened
         );
     }
     assert_eq!(
         decode_jsonl(&full)
+            .await
             .unwrap()
             .replay
             .conversation
@@ -408,8 +424,8 @@ fn incomplete_tail_and_committed_corruption_are_different_outcomes() {
     );
 }
 
-#[test]
-fn format_versions_positions_and_envelopes_fail_without_guessing() {
+#[tokio::test]
+async fn format_versions_positions_and_envelopes_fail_without_guessing() {
     let valid = fixture();
     let line = serde_json::to_value(&valid[0]).unwrap();
     for (field, value, expected) in [
@@ -440,26 +456,26 @@ fn format_versions_positions_and_envelopes_fail_without_guessing() {
         changed[field] = value;
         let mut bytes = serde_json::to_vec(&changed).unwrap();
         bytes.push(b'\n');
-        assert_eq!(decode_jsonl(&bytes).unwrap_err().kind, expected);
+        assert_eq!(decode_jsonl(&bytes).await.unwrap_err().kind, expected);
     }
     for seq in [0, 2, u64::MAX] {
         let mut records = valid.clone();
         records[1].seq = seq;
-        assert_state_error(&records);
+        assert_state_error(&records).await;
     }
     let mut wrong_id = valid.clone();
     wrong_id[1].conversation = Uuid::from_u128(1);
-    assert_state_error(&wrong_id);
+    assert_state_error(&wrong_id).await;
     let mut duplicate = valid.clone();
     append(&mut duplicate, valid[0].event.clone());
-    assert_state_error(&duplicate);
+    assert_state_error(&duplicate).await;
     for field in ["message", "response"] {
         let mut value = serde_json::to_value(&valid[1]).unwrap();
         value["event"]["Response"][field] = json!(u64::MAX);
         let mut bytes = encode_jsonl(&valid[..1]).unwrap();
         bytes.extend(serde_json::to_vec(&value).unwrap());
         bytes.push(b'\n');
-        let error = decode_jsonl(&bytes).unwrap_err();
+        let error = decode_jsonl(&bytes).await.unwrap_err();
         assert!(matches!(
             error.kind,
             HistoryDecodeErrorKind::InvalidState | HistoryDecodeErrorKind::Format
@@ -474,13 +490,13 @@ fn format_versions_positions_and_envelopes_fail_without_guessing() {
     bytes.extend(serde_json::to_vec(&value).unwrap());
     bytes.push(b'\n');
     assert_eq!(
-        decode_jsonl(&bytes).unwrap_err().kind,
+        decode_jsonl(&bytes).await.unwrap_err().kind,
         HistoryDecodeErrorKind::Format
     );
 }
 
-#[test]
-fn lifecycle_errors_never_turn_incomplete_work_into_completion() {
+#[tokio::test]
+async fn lifecycle_errors_never_turn_incomplete_work_into_completion() {
     for event in [
         HistoryEvent::ToolStarted {
             action: position(1),
@@ -525,7 +541,7 @@ fn lifecycle_errors_never_turn_incomplete_work_into_completion() {
     ] {
         let mut records = fixture();
         append(&mut records, event);
-        assert_state_error(&records);
+        assert_state_error(&records).await;
     }
     let mut started = fixture();
     append(
@@ -547,7 +563,7 @@ fn lifecycle_errors_never_turn_incomplete_work_into_completion() {
     ] {
         let mut invalid = started.clone();
         append(&mut invalid, event);
-        assert_state_error(&invalid);
+        assert_state_error(&invalid).await;
     }
     let mut resolved = fixture();
     let resolution = HistoryEvent::ActionResolved {
@@ -556,11 +572,11 @@ fn lifecycle_errors_never_turn_incomplete_work_into_completion() {
     };
     append(&mut resolved, resolution.clone());
     append(&mut resolved, resolution);
-    assert_state_error(&resolved);
+    assert_state_error(&resolved).await;
 }
 
-#[test]
-fn text_completion_uses_the_driver_final_response_rule() {
+#[tokio::test]
+async fn text_completion_uses_the_driver_final_response_rule() {
     let mut records = vec![opened(None)];
     append(
         &mut records,
@@ -568,7 +584,7 @@ fn text_completion_uses_the_driver_final_response_rule() {
             kind: HistoryCompletion::Text { response: 0 },
         },
     );
-    assert_state_error(&records);
+    assert_state_error(&records).await;
     records.pop();
     append(
         &mut records,
@@ -586,39 +602,49 @@ fn text_completion_uses_the_driver_final_response_rule() {
             kind: HistoryCompletion::Text { response: 0 },
         },
     );
-    assert_state_error(&records);
+    assert_state_error(&records).await;
     let HistoryEvent::Response { output, .. } = &mut records[1].event else {
         panic!()
     };
     output.content = vec![AssistantContent::text("answer")];
     assert_eq!(
-        replay_history(&records).unwrap().conversation.status(),
+        replay_history(&records)
+            .await
+            .unwrap()
+            .conversation
+            .status(),
         ConversationStatus::Finished
     );
     records.last_mut().unwrap().event = HistoryEvent::Finished {
         kind: HistoryCompletion::Text { response: 1 },
     };
-    assert_state_error(&records);
+    assert_state_error(&records).await;
     records.last_mut().unwrap().event = HistoryEvent::Finished {
         kind: HistoryCompletion::Protocol,
     };
     assert_eq!(
-        replay_history(&records).unwrap().conversation.status(),
+        replay_history(&records)
+            .await
+            .unwrap()
+            .conversation
+            .status(),
         ConversationStatus::Finished
     );
 }
 
-#[test]
-fn compaction_replays_the_exact_view_and_preserves_all_originals_and_metadata() {
+#[tokio::test]
+async fn compaction_replays_the_exact_view_and_preserves_all_originals_and_metadata() {
     let mut conversation = Conversation::new("old request ".repeat(100));
     conversation
         .record_response(
             output(vec![AssistantContent::text("old answer ".repeat(100))]),
             vec![],
         )
+        .await
         .unwrap();
     conversation
         .push_user(vec![UserContent::text("active request")])
+        .await
         .unwrap();
     let view = conversation
         .model_view()
@@ -649,7 +675,7 @@ fn compaction_replays_the_exact_view_and_preserves_all_originals_and_metadata() 
         },
     );
     let bytes = encode_jsonl(&records).unwrap();
-    let replayed = decode_jsonl(&bytes).unwrap().replay.conversation;
+    let replayed = decode_jsonl(&bytes).await.unwrap().replay.conversation;
     assert_eq!(replayed.messages(), conversation.messages());
     assert_eq!(replayed.request_messages().unwrap(), expected);
     assert_eq!(replayed.compacted_view(), Some(&view));
@@ -660,15 +686,15 @@ fn compaction_replays_the_exact_view_and_preserves_all_originals_and_metadata() 
     bytes.extend(serde_json::to_vec(&malformed).unwrap());
     bytes.push(b'\n');
     assert_eq!(
-        decode_jsonl(&bytes).unwrap_err().kind,
+        decode_jsonl(&bytes).await.unwrap_err().kind,
         HistoryDecodeErrorKind::InvalidState
     );
 }
 
-#[test]
-fn golden_version_one_upgrades_and_duplicate_fields_are_not_normalized() {
+#[tokio::test]
+async fn golden_version_one_upgrades_and_duplicate_fields_are_not_normalized() {
     let golden = include_bytes!("fixtures/history/completed-checkpoint-v1.jsonl");
-    let decoded = decode_jsonl(golden).unwrap();
+    let decoded = decode_jsonl(golden).await.unwrap();
     assert_eq!(
         decoded.replay.conversation.status(),
         ConversationStatus::Finished
@@ -686,7 +712,7 @@ fn golden_version_one_upgrades_and_duplicate_fields_are_not_normalized() {
             .iter()
             .all(|record| record.version == 2)
     );
-    let reread = decode_jsonl(&upgraded).unwrap();
+    let reread = decode_jsonl(&upgraded).await.unwrap();
     assert_eq!(
         reread.replay.conversation.messages(),
         decoded.replay.conversation.messages()
@@ -704,7 +730,7 @@ fn golden_version_one_upgrades_and_duplicate_fields_are_not_normalized() {
     ] {
         let ambiguous = original.replace(from, to);
         assert_eq!(
-            decode_jsonl(ambiguous.as_bytes()).unwrap_err().kind,
+            decode_jsonl(ambiguous.as_bytes()).await.unwrap_err().kind,
             HistoryDecodeErrorKind::Format
         );
     }
@@ -713,7 +739,7 @@ fn golden_version_one_upgrades_and_duplicate_fields_are_not_normalized() {
         "\"mode\":\"Text\",\"submission_validated\":true",
     );
     assert!(
-        decode_jsonl(extra.as_bytes()).is_ok(),
+        decode_jsonl(extra.as_bytes()).await.is_ok(),
         "additional object fields are permitted without semantics"
     );
 }
@@ -771,15 +797,15 @@ async fn replay_never_calls_registered_models_tools_inspectors_or_restores_live_
     session.execute(first).await.unwrap();
     let submission = session.call_model().await.unwrap().actions.remove(0);
     assert!(matches!(
-        session.submission(&submission).unwrap(),
+        session.submission(&submission).await.unwrap(),
         Submission::Ready(_)
     ));
     inspections.fetch_add(1, Ordering::SeqCst);
-    session.accept(submission, "application A").unwrap();
+    session.accept(submission, "application A").await.unwrap();
     let bytes = encode_jsonl(session.conversation().history()).unwrap();
     let attempts = report.snapshot().provider_attempts();
     for _ in 0..3 {
-        let restored = decode_jsonl(&bytes).unwrap().replay.conversation;
+        let restored = decode_jsonl(&bytes).await.unwrap().replay.conversation;
         assert_eq!(restored.messages(), session.conversation().messages());
         assert!(restored.history_failure().is_none());
         assert!(restored.detached_failures().is_empty());

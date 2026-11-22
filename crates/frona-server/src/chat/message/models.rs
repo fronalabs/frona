@@ -418,6 +418,9 @@ pub struct MessageResponse {
 
 impl From<Message> for MessageResponse {
     fn from(msg: Message) -> Self {
+        let mut metadata = msg.metadata;
+        // Older rows can contain a private execution journal in metadata.
+        metadata.remove("harness_history");
         Self {
             id: msg.id,
             chat_id: msg.chat_id,
@@ -434,7 +437,7 @@ impl From<Message> for MessageResponse {
             delivery: msg.delivery,
             tool_calls: vec![],
             command: msg.command,
-            metadata: msg.metadata,
+            metadata,
             created_at: msg.created_at,
         }
     }

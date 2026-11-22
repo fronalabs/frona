@@ -23,8 +23,8 @@ fn append(records: &mut Vec<HistoryRecord>, event: HistoryEvent) {
     });
 }
 
-#[test]
-fn create_attach_append_reopen_and_continue_same_conversation() {
+#[tokio::test]
+async fn create_attach_append_reopen_and_continue_same_conversation() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("history.jsonl");
     let writer = Jsonl::create(&path).unwrap();
@@ -36,7 +36,7 @@ fn create_attach_append_reopen_and_continue_same_conversation() {
         })
     ));
     assert!(
-        matches!(Jsonl::open(&path), Err(JsonlError::Decode { source, .. }) if source.kind == HistoryDecodeErrorKind::MissingOpened)
+        matches!(Jsonl::open(&path).await, Err(JsonlError::Decode { source, .. }) if source.kind == HistoryDecodeErrorKind::MissingOpened)
     );
     let mut conversation = Conversation::new("initial");
     conversation.attach_jsonl(writer).unwrap();
@@ -48,12 +48,13 @@ fn create_attach_append_reopen_and_continue_same_conversation() {
             ))),
             vec![],
         )
+        .await
         .unwrap();
     let action = actions.actions.into_iter().next().unwrap();
-    conversation.start(&action).unwrap();
+    conversation.start(&action).await.unwrap();
     let expected = encode_jsonl(conversation.history()).unwrap();
     drop(conversation);
-    let loaded = Jsonl::open(&path).unwrap();
+    let loaded = Jsonl::open(&path).await.unwrap();
     assert_eq!(fs::read(&path).unwrap(), expected);
     assert_eq!(
         loaded.conversation().responses()[0].actions()[0].status(),
@@ -73,11 +74,12 @@ fn create_attach_append_reopen_and_continue_same_conversation() {
             &action,
             ActionResolution::Result(ToolOutput::text("saved result")),
         )
+        .await
         .unwrap();
-    conversation.finish().unwrap();
+    conversation.finish().await.unwrap();
     let expected = encode_jsonl(conversation.history()).unwrap();
     drop(conversation);
-    let loaded = Jsonl::open(&path).unwrap();
+    let loaded = Jsonl::open(&path).await.unwrap();
     assert_eq!(loaded.conversation().status(), ConversationStatus::Finished);
     assert_eq!(
         encode_jsonl(loaded.conversation().history()).unwrap(),
@@ -87,8 +89,8 @@ fn create_attach_append_reopen_and_continue_same_conversation() {
     assert_eq!(terminal.status(), ConversationStatus::Finished);
 }
 
-#[test]
-fn fresh_writer_cannot_replace_writer_or_existing_history() {
+#[tokio::test]
+async fn fresh_writer_cannot_replace_writer_or_existing_history() {
     let dir = tempfile::tempdir().unwrap();
     let mut fresh = Conversation::new("input");
     fresh
@@ -98,21 +100,27 @@ fn fresh_writer_cannot_replace_writer_or_existing_history() {
         fresh.attach_jsonl(Jsonl::create(dir.path().join("two")).unwrap()),
         Err(JsonlError::AlreadyAttached)
     ));
-    fresh.push_user(vec![UserContent::text("later")]).unwrap();
+    fresh
+        .push_user(vec![UserContent::text("later")])
+        .await
+        .unwrap();
     assert!(matches!(
         fresh.attach_jsonl(Jsonl::create(dir.path().join("three")).unwrap()),
         Err(JsonlError::AlreadyAttached)
     ));
     let mut memory = Conversation::new("input");
-    memory.push_user(vec![UserContent::text("later")]).unwrap();
+    memory
+        .push_user(vec![UserContent::text("later")])
+        .await
+        .unwrap();
     assert!(matches!(
         memory.attach_jsonl(Jsonl::create(dir.path().join("four")).unwrap()),
         Err(JsonlError::AlreadyAttached)
     ));
 }
 
-#[test]
-fn open_preserves_tail_and_only_explicit_continuation_truncates_it() {
+#[tokio::test]
+async fn open_preserves_tail_and_only_explicit_continuation_truncates_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("history.jsonl");
     let mut original = Conversation::new("input");
@@ -121,6 +129,7 @@ fn open_preserves_tail_and_only_explicit_continuation_truncates_it() {
         .unwrap();
     original
         .push_user(vec![UserContent::text("feedback")])
+        .await
         .unwrap();
     let prefix = fs::read(&path).unwrap();
     drop(original);
@@ -132,22 +141,23 @@ fn open_preserves_tail_and_only_explicit_continuation_truncates_it() {
         .write_all(tail)
         .unwrap();
     let before = fs::read(&path).unwrap();
-    let loaded = Jsonl::open(&path).unwrap();
+    let loaded = Jsonl::open(&path).await.unwrap();
     assert_eq!(loaded.incomplete_tail(), Some(prefix.len()..before.len()));
     assert_eq!(fs::read(&path).unwrap(), before, "open must not repair");
     let mut continued = loaded.into_writable().unwrap();
     assert_eq!(fs::read(&path).unwrap(), prefix);
     continued
         .push_user(vec![UserContent::text("continued")])
+        .await
         .unwrap();
     assert_eq!(
-        Jsonl::open(&path).unwrap().conversation().messages(),
+        Jsonl::open(&path).await.unwrap().conversation().messages(),
         continued.messages()
     );
 }
 
-#[test]
-fn changed_file_is_never_truncated_or_appended() {
+#[tokio::test]
+async fn changed_file_is_never_truncated_or_appended() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("history.jsonl");
     fs::write(
@@ -155,7 +165,7 @@ fn changed_file_is_never_truncated_or_appended() {
         include_bytes!("fixtures/history/completed-checkpoint-v1.jsonl"),
     )
     .unwrap();
-    let loaded = Jsonl::open(&path).unwrap();
+    let loaded = Jsonl::open(&path).await.unwrap();
     fs::OpenOptions::new()
         .append(true)
         .open(&path)
@@ -170,11 +180,11 @@ fn changed_file_is_never_truncated_or_appended() {
     assert_eq!(fs::read(&path).unwrap(), changed);
 }
 
-#[test]
-fn corruption_version_and_io_errors_remain_structured() {
+#[tokio::test]
+async fn corruption_version_and_io_errors_remain_structured() {
     let dir = tempfile::tempdir().unwrap();
     assert!(
-        matches!(Jsonl::open(dir.path().join("missing")), Err(JsonlError::Io { operation: JsonlOperation::Open, source, .. }) if source.kind() == std::io::ErrorKind::NotFound)
+        matches!(Jsonl::open(dir.path().join("missing")).await, Err(JsonlError::Io { operation: JsonlOperation::Open, source, .. }) if source.kind() == std::io::ErrorKind::NotFound)
     );
     assert!(matches!(
         Jsonl::create(dir.path().join("missing/child")),
@@ -193,14 +203,14 @@ fn corruption_version_and_io_errors_remain_structured() {
     ] {
         fs::write(&path, bytes).unwrap();
         assert!(
-            matches!(Jsonl::open(&path), Err(JsonlError::Decode { source, .. }) if source.kind == expected)
+            matches!(Jsonl::open(&path).await, Err(JsonlError::Decode { source, .. }) if source.kind == expected)
         );
         assert_eq!(fs::read(&path).unwrap(), bytes);
     }
 }
 
-#[test]
-fn compaction_and_checkpoint_evidence_survive_file_reopen() {
+#[tokio::test]
+async fn compaction_and_checkpoint_evidence_survive_file_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("history.jsonl");
     let mut original = Conversation::new("old input ".repeat(100));
@@ -209,9 +219,11 @@ fn compaction_and_checkpoint_evidence_survive_file_reopen() {
             response(AssistantContent::text("old answer ".repeat(100))),
             vec![],
         )
+        .await
         .unwrap();
     original
         .push_user(vec![UserContent::text("active")])
+        .await
         .unwrap();
     let view = original
         .model_view()
@@ -250,7 +262,7 @@ fn compaction_and_checkpoint_evidence_survive_file_reopen() {
         },
     );
     fs::write(&path, encode_jsonl(&records).unwrap()).unwrap();
-    let loaded = Jsonl::open(&path).unwrap();
+    let loaded = Jsonl::open(&path).await.unwrap();
     assert_eq!(loaded.conversation().messages(), original.messages());
     assert_eq!(loaded.conversation().compacted_view(), Some(&view));
     assert_eq!(
@@ -261,9 +273,10 @@ fn compaction_and_checkpoint_evidence_survive_file_reopen() {
     let mut writable = loaded.into_writable().unwrap();
     writable
         .push_user(vec![UserContent::text("later")])
+        .await
         .unwrap();
     drop(writable);
-    let loaded = Jsonl::open(&path).unwrap();
+    let loaded = Jsonl::open(&path).await.unwrap();
     assert!(loaded.checkpoint_stale());
     assert_eq!(loaded.conversation().compacted_view(), Some(&view));
     assert_eq!(loaded.checkpoint().unwrap().1.through_seq, through_seq);
@@ -271,12 +284,13 @@ fn compaction_and_checkpoint_evidence_survive_file_reopen() {
     let mut memory = loaded.into_memory().conversation;
     memory
         .push_user(vec![UserContent::text("memory only")])
+        .await
         .unwrap();
     assert_eq!(fs::read(&path).unwrap(), before);
 }
 
-#[test]
-fn a_relative_filename_has_a_durable_parent_directory() {
+#[tokio::test]
+async fn a_relative_filename_has_a_durable_parent_directory() {
     // TempPath removes the unique test file without changing the process cwd.
     let path = tempfile::NamedTempFile::new_in(".")
         .unwrap()
@@ -287,9 +301,9 @@ fn a_relative_filename_has_a_durable_parent_directory() {
     conversation
         .attach_jsonl(Jsonl::create(relative).unwrap())
         .unwrap();
-    conversation.finish().unwrap();
+    conversation.finish().await.unwrap();
     assert_eq!(
-        Jsonl::open(relative).unwrap().conversation().status(),
+        Jsonl::open(relative).await.unwrap().conversation().status(),
         ConversationStatus::Finished
     );
 }

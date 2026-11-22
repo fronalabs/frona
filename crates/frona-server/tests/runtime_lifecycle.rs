@@ -1146,9 +1146,7 @@ async fn pending_results_survive_shutdown_and_recovery_until_explicit_readiness(
         );
         if let Some(task_id) = &task_id {
             if callback {
-                runtime
-                    .state
-                    .chat_service
+                helpers::history::fixtures(&runtime.state.db)
                     .finish_tool_call(&waiting_id, "callback complete".into(), true, 0, None)
                     .await
                     .unwrap();

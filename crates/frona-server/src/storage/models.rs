@@ -15,6 +15,20 @@ pub struct Attachment {
     pub url: Option<String>,
 }
 
+pub(crate) fn extend_unique_attachments(
+    all_attachments: &mut Vec<Attachment>,
+    attachments: &[Attachment],
+) {
+    for attachment in attachments {
+        let already_attached = all_attachments
+            .iter()
+            .any(|existing| existing.owner == attachment.owner && existing.path == attachment.path);
+        if !already_attached {
+            all_attachments.push(attachment.clone());
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct PresignClaims {
     pub sub: String,

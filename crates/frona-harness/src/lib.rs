@@ -91,7 +91,8 @@ pub use session::{
 
 pub use history::{
     EffectState, HistoryCheckpoint, HistoryCompletion, HistoryEvent, HistoryFailure, HistoryMode,
-    HistoryOperation, HistoryRecord, HistoryWritePhase, PersistenceOutcome, SubmissionCompletion,
+    HistoryOperation, HistoryRecord, HistoryWriteError, HistoryWritePhase,
+    HistoryWriter, PersistenceOutcome, SubmissionCompletion,
 };
 
 pub use compaction::{

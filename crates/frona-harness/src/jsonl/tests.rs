@@ -71,13 +71,13 @@ async fn real_writer_failures_stop_before_effect_or_preserve_returned_effect() {
             let path = dir.path().join("history.jsonl");
             let operations = Arc::new(Mutex::new(Vec::new()));
             let writer = JsonlWriter {
-                file: Box::new(FaultFile {
+                file: Some(Box::new(FaultFile {
                     file: File::create(&path).unwrap(),
                     fail: phase,
                     record: 0,
                     fail_record,
                     operations: operations.clone(),
-                }),
+                })),
             };
             let mut conversation = Conversation::new("input");
             conversation.attach_jsonl(writer).unwrap();
@@ -103,6 +103,7 @@ async fn real_writer_failures_stop_before_effect_or_preserve_returned_effect() {
                     ),
                     tools.definitions().cloned().collect(),
                 )
+                .await
                 .unwrap();
             let action = actions.actions.into_iter().next().unwrap();
             let budget = DefaultBudget::default();
@@ -140,13 +141,13 @@ async fn real_writer_failures_stop_before_effect_or_preserve_returned_effect() {
             );
             assert!(conversation.pending_write().is_some());
             let operation_count = operations.lock().unwrap().len();
-            assert!(conversation.stop().is_err());
+            assert!(conversation.stop().await.is_err());
             assert_eq!(
                 operations.lock().unwrap().len(),
                 operation_count,
                 "uncertain writer must be disabled"
             );
-            let loaded = Jsonl::open(&path).unwrap();
+            let loaded = Jsonl::open(&path).await.unwrap();
             assert_eq!(
                 effects.load(Ordering::SeqCst),
                 usize::from(fail_record == 4),
@@ -169,10 +170,10 @@ async fn real_writer_failures_stop_before_effect_or_preserve_returned_effect() {
             let saved_bytes = std::fs::read(&path).unwrap();
             let mut memory = conversation.into_memory().unwrap();
             if fail_record == 4 {
-                memory.adopt_pending_write().unwrap();
+                memory.adopt_pending_write().await.unwrap();
                 assert_eq!(memory.pending_count(), 0);
                 assert_eq!(effects.load(Ordering::SeqCst), 1);
-                memory.finish().unwrap();
+                memory.finish().await.unwrap();
             } else {
                 memory.discard_pending_write().unwrap();
                 assert_eq!(memory.pending_count(), 1);
@@ -197,8 +198,8 @@ async fn real_writer_failures_stop_before_effect_or_preserve_returned_effect() {
     }
 }
 
-#[test]
-fn attaching_does_not_freeze_mode_or_instructions() {
+#[tokio::test]
+async fn attaching_does_not_freeze_mode_or_instructions() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("history.jsonl");
     let mut conversation = Conversation::new("question");
@@ -207,8 +208,8 @@ fn attaching_does_not_freeze_mode_or_instructions() {
         .unwrap();
     let submission = crate::submission_tool::<String>();
     conversation.configure_history("standing instructions", Some(&submission));
-    conversation.ensure_history().unwrap();
-    let loaded = Jsonl::open(&path).unwrap();
+    conversation.ensure_history().await.unwrap();
+    let loaded = Jsonl::open(&path).await.unwrap();
     let crate::HistoryEvent::Opened {
         instructions, mode, ..
     } = &loaded.conversation().history()[0].event
@@ -231,24 +232,26 @@ async fn checkpoint_failures_preserve_acknowledged_state_and_terminal_history() 
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("checkpoint.jsonl");
             let writer = JsonlWriter {
-                file: Box::new(FaultFile {
+                file: Some(Box::new(FaultFile {
                     file: File::create(&path).unwrap(),
                     fail: phase,
                     record: 0,
                     fail_record: if terminal { 4 } else { 3 },
                     operations: Arc::default(),
-                }),
+                })),
             };
             let mut conversation = Conversation::new("input");
             conversation.attach_jsonl(writer).unwrap();
             conversation
                 .save_checkpoint("app", 1, &json!({"candidate":"old"}))
+                .await
                 .unwrap();
             if terminal {
-                conversation.finish().unwrap();
+                conversation.finish().await.unwrap();
             }
             let error = conversation
                 .save_checkpoint("app", 1, &json!({"candidate":"new"}))
+                .await
                 .unwrap_err();
             let ConversationError::Storage(failure) = error else {
                 panic!("storage failure")
@@ -269,10 +272,11 @@ async fn checkpoint_failures_preserve_acknowledged_state_and_terminal_history() 
             assert!(
                 conversation
                     .save_checkpoint("app", 1, &json!("again"))
+                    .await
                     .is_err()
             );
             assert_eq!(std::fs::read(&path).unwrap(), saved_bytes);
-            let loaded = Jsonl::open(&path).unwrap();
+            let loaded = Jsonl::open(&path).await.unwrap();
             let partial = phase == HistoryWritePhase::Append;
             assert_eq!(loaded.incomplete_tail().is_some(), partial);
             assert_eq!(
@@ -286,7 +290,7 @@ async fn checkpoint_failures_preserve_acknowledged_state_and_terminal_history() 
 
             let mut memory = conversation.into_memory().unwrap();
             assert!(
-                memory.adopt_pending_write().is_err(),
+                memory.adopt_pending_write().await.is_err(),
                 "failed checkpoint cannot be adopted as saved"
             );
             memory.discard_pending_write().unwrap();
@@ -304,6 +308,7 @@ async fn checkpoint_failures_preserve_acknowledged_state_and_terminal_history() 
             }
             memory
                 .save_checkpoint("app", 1, &json!({"candidate":"memory"}))
+                .await
                 .unwrap();
             assert_eq!(std::fs::read(&path).unwrap(), saved_bytes);
             assert!(memory.responses().is_empty());

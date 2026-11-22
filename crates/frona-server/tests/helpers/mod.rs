@@ -1206,3 +1206,5 @@ pub async fn test_harness(
 }
 
 pub mod app_state;
+
+pub mod history;

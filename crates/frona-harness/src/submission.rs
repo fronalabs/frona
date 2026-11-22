@@ -51,7 +51,7 @@ impl Conversation {
     /// existing one-level wrapper and JSON-text collection repairs are supported.
     /// Successful serde decoding must also satisfy T's JSON Schema. Schema setup
     /// errors leave the action pending and never become model repair feedback.
-    pub fn submission<T: DeserializeOwned + JsonSchema>(
+    pub async fn submission<T: DeserializeOwned + JsonSchema>(
         &mut self,
         handle: &PendingAction,
     ) -> Result<Submission<T>, SubmissionError> {
@@ -71,7 +71,7 @@ impl Conversation {
                     "Your `submit` call did not match the required schema and was NOT accepted: \
                      {error}. Call `submit` again with every required field present."
                 );
-                self.revise_submission(handle, feedback.clone())?;
+                self.revise_submission(handle, feedback.clone()).await?;
                 Ok(Submission::Repaired { feedback })
             }
         }
@@ -79,7 +79,7 @@ impl Conversation {
 
     /// Answer this submission with application revision feedback. Sibling calls
     /// remain pending; the complete result batch is emitted only after all resolve.
-    pub fn revise_submission(
+    pub async fn revise_submission(
         &mut self,
         handle: &PendingAction,
         feedback: impl Into<String>,
@@ -88,22 +88,24 @@ impl Conversation {
         self.resolve(
             handle,
             ActionResolution::Rejected(ToolOutput::text(feedback)),
-        )?;
+        )
+        .await?;
         Ok(())
     }
 
     /// Explicitly accept caller-owned A after this exact proposal passed decoding.
     /// Every other proposal must already be resolved or rejected. No sibling is
     /// silently discarded, and A is not written over the original submission.
-    pub fn accept_submission<A>(
+    pub async fn accept_submission<A>(
         &mut self,
         handle: &PendingAction,
         accepted: A,
     ) -> Result<A, SubmissionError> {
         self.accept_submission_with_kind(handle, accepted, super::SubmissionCompletion::Application)
+            .await
     }
 
-    pub(super) fn accept_submission_with_kind<A>(
+    pub(super) async fn accept_submission_with_kind<A>(
         &mut self,
         handle: &PendingAction,
         accepted: A,
@@ -116,14 +118,14 @@ impl Conversation {
         if self.pending_count() != 1 {
             return Err(ConversationError::PendingActions(self.pending_count() - 1).into());
         }
-        self.complete_submission(handle, kind)?;
+        self.complete_submission(handle, kind).await?;
         Ok(accepted)
     }
 
     /// Request a submission after prose or a completed tool-only response. This
     /// appends ordinary user feedback, never an invented tool call/result. Pending
     /// tools must first be resolved; responses containing submit use their handles.
-    pub fn repair_missing_submission(&mut self) -> Result<(), SubmissionError> {
+    pub async fn repair_missing_submission(&mut self) -> Result<(), SubmissionError> {
         self.require_ready()?;
         let response = self.responses().last().ok_or(SubmissionError::NoResponse)?;
         if response
@@ -135,7 +137,7 @@ impl Conversation {
         }
         self.push_user(vec![UserContent::text(format!(
             "You replied without a recorded submission. Call the `{SUBMIT_TOOL_NAME}` tool with your answer."
-        ))])?;
+        ))]).await?;
         Ok(())
     }
 

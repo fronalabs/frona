@@ -36,12 +36,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Use `ModelAdapter` for an application-owned model implementation. Reuse a `Harness`
 across runs; each run configures its own instructions, tools, and execution policy.
 
+Use `.on_start(|token| ...)` to register activity for the lifetime of a run. The
+hook receives the configured cancellation token and returns a guard. The SDK
+holds the guard through model calls, tool calls, and verification, then drops it
+when execution ends or the running future is dropped. Creating a builder leaves
+the hook pending. Opening a manual session starts it.
+
 ## Annotated tools and context
 
 Tools are ordinary async functions registered by function reference. The harness
 recognizes `ToolContext` by type and excludes it from the model's argument schema.
 Tools are installed explicitly; application authorization belongs in the tool or
-in a `before_tool` callback.
+in a `before_tool` callback. Each `before_tool` or `tool_call_hook` registration
+appends a hook. Before invocation, hooks run in registration order until one
+rejects, stops, or fails. After the tool result commits, result hooks run in
+registration order until one stops the run.
 
 ```rust no_run
 use frona_harness::{Harness, ToolContext, ToolError, tool};
@@ -122,7 +131,8 @@ any domain commit.
 
 Call `.manual()` on a configured run to obtain a session. Use `call_model()` to
 request a turn, inspect its actions, and `execute()` or `reject()` each proposed
-action. `finish()` returns the completed result. Automatic and manual execution
+action. Await state-changing operations, including `reject()`, `accept()`, and
+`finish()`: successful completion includes the required history write. Automatic and manual execution
 share conversation management, tool-call pairing, and budget admission.
 
 Reuse a `DefaultBudget` across runs or implement `Budget`. Admission happens before
@@ -136,7 +146,16 @@ context overflow checks remain active. `subscribe()` adds optional bounded progr
 |---|---|---|
 | `jsonl` | Off | File-backed history and explicit resume |
 
-Runs work in memory without storage. With `jsonl`, history can be loaded without
+Runs work in memory by default. Attach an owned `HistoryWriter` with
+`.history_writer(writer)` to require asynchronous persistence. Database adapters
+and the JSONL writer share the same commit ordering and failure tracking; no
+separate flush is required. A failed or dropped commit retains an uncertain
+pending record and blocks further transitions until explicit reconciliation.
+
+File creation is synchronous. Replay and durable commits are awaited. Dropping a commit does not guarantee that its underlying
+file or database operation stopped. Coordinate storage before resuming it.
+
+With `jsonl`, history can be loaded without
 execution and continued through `Harness::resume`. The caller restores model/tool
 dependencies and budget policy, coordinates writers, and makes interrupted tools
 safe to repeat. Checkpoints do not restore budget usage or grant acceptance.

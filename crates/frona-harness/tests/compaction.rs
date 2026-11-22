@@ -42,10 +42,11 @@ fn image() -> Image {
         ..Default::default()
     }
 }
-fn exchange(contents: Vec<AssistantContent>) -> Vec<Message> {
+async fn exchange(contents: Vec<AssistantContent>) -> Vec<Message> {
     let mut conversation = Conversation::new("current request");
     let actions = conversation
         .record_response(ModelOutput::new(contents, UsageReport::Unavailable), vec![])
+        .await
         .unwrap();
     for action in &actions.actions {
         conversation
@@ -56,20 +57,22 @@ fn exchange(contents: Vec<AssistantContent>) -> Vec<Message> {
                     ToolContent::Text("result".into()),
                 ])),
             )
+            .await
             .unwrap();
     }
     conversation.messages().to_vec()
 }
 
-#[test]
-fn active_attachments_and_signed_tool_groups_are_retained_exactly() {
+#[tokio::test]
+async fn active_attachments_and_signed_tool_groups_are_retained_exactly() {
     let mut originals = old();
     let mut active = exchange(vec![
         AssistantContent::Reasoning(Reasoning::new("reasoning")).with_native(
             json!({"type":"thinking", "thinking":"reasoning", "signature":"reason-signature"}),
         ),
         AssistantContent::ToolCall(call("item", "call", "lookup")),
-    ]);
+    ])
+    .await;
     active[0] = Message::User {
         content: vec![UserContent::Image(image())],
     };
@@ -99,12 +102,13 @@ fn active_attachments_and_signed_tool_groups_are_retained_exactly() {
     assert_eq!(serde_json::to_value(view.originals()).unwrap(), before);
 }
 
-#[test]
-fn text_with_results_protects_the_entire_preceding_call_group() {
+#[tokio::test]
+async fn text_with_results_protects_the_entire_preceding_call_group() {
     let mut originals = old();
     let mut group = exchange(vec![AssistantContent::ToolCall(call(
         "item", "id", "lookup",
-    ))]);
+    ))])
+    .await;
     if let Message::User { content } = group.last_mut().unwrap() {
         content.push(UserContent::text("latest instruction alongside results"));
     }
@@ -121,14 +125,17 @@ fn text_with_results_protects_the_entire_preceding_call_group() {
     assert!(materialized.ends_with(&group[1..]));
 }
 
-#[test]
-fn duplicate_ids_remain_distinct_and_results_match_call_id_and_name() {
+#[tokio::test]
+async fn duplicate_ids_remain_distinct_and_results_match_call_id_and_name() {
     let mut originals = old();
-    originals.extend(exchange(vec![
-        AssistantContent::ToolCall(call("item-a", "same", "first")),
-        AssistantContent::ToolCall(call("item-b", "same", "second")),
-        AssistantContent::ToolCall(call("item-b", "same", "second")),
-    ]));
+    originals.extend(
+        exchange(vec![
+            AssistantContent::ToolCall(call("item-a", "same", "first")),
+            AssistantContent::ToolCall(call("item-b", "same", "second")),
+            AssistantContent::ToolCall(call("item-b", "same", "second")),
+        ])
+        .await,
+    );
     let plan = HistoryView::new(&originals)
         .plan("", &[], limits())
         .unwrap()
@@ -162,12 +169,13 @@ fn duplicate_ids_remain_distinct_and_results_match_call_id_and_name() {
     ));
 }
 
-#[test]
-fn incomplete_or_unpaired_protocol_cannot_be_hidden_in_summary() {
+#[tokio::test]
+async fn incomplete_or_unpaired_protocol_cannot_be_hidden_in_summary() {
     let mut originals = old();
     let group = exchange(vec![AssistantContent::ToolCall(call(
         "item", "id", "lookup",
-    ))]);
+    ))])
+    .await;
     originals.extend_from_slice(&group[..2]);
     let before = originals.clone();
     assert!(matches!(
@@ -312,8 +320,8 @@ fn current_request_and_request_overhead_cannot_be_trimmed_to_fit() {
     ));
 }
 
-#[test]
-fn a_single_input_refinement_loop_compacts_completed_revisions_and_preserves_input() {
+#[tokio::test]
+async fn a_single_input_refinement_loop_compacts_completed_revisions_and_preserves_input() {
     let mut conversation = Conversation::new("Produce a correct answer from the attached evidence");
     for round in 0..5 {
         let actions = conversation
@@ -330,9 +338,11 @@ fn a_single_input_refinement_loop_compacts_completed_revisions_and_preserves_inp
                 ),
                 vec![],
             )
+            .await
             .unwrap();
         conversation
             .revise_submission(&actions.actions[0], "Revision feedback ".repeat(20))
+            .await
             .unwrap();
     }
     let mut originals = conversation.messages().to_vec();
@@ -368,9 +378,11 @@ fn a_single_input_refinement_loop_compacts_completed_revisions_and_preserves_inp
             ),
             vec![],
         )
+        .await
         .unwrap();
     conversation
         .revise_submission(&actions.actions[0], "new feedback ".repeat(30))
+        .await
         .unwrap();
     originals.extend_from_slice(&conversation.messages()[11..]);
     let view = HistoryView::from_compacted(&originals, &compacted).unwrap();
@@ -410,12 +422,13 @@ fn restored_view_can_display_new_pending_actions_but_cannot_plan_over_them() {
     ));
 }
 
-#[test]
-fn legacy_truncation_still_rejects_duplicate_ids_while_sdk_keeps_distinct_actions() {
+#[tokio::test]
+async fn legacy_truncation_still_rejects_duplicate_ids_while_sdk_keeps_distinct_actions() {
     let history = exchange(vec![
         AssistantContent::ToolCall(call("item-a", "same", "lookup")),
         AssistantContent::ToolCall(call("item-b", "same", "lookup")),
-    ]);
+    ])
+    .await;
     let error =
         frona_harness::inference::context::truncate_history(history.clone(), "", 10_000, 100, 100)
             .unwrap_err();

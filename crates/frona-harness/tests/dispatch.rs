@@ -37,7 +37,7 @@ fn call(name: &str) -> AssistantContent {
         ToolFunction::new(name.try_into().unwrap(), json!({"value":1})),
     ))
 }
-fn record(
+async fn record(
     conversation: &mut Conversation,
     names: &[&str],
     tools: &ToolRegistry<'_>,
@@ -50,6 +50,7 @@ fn record(
             ),
             tools.definitions().cloned().collect(),
         )
+        .await
         .unwrap()
         .actions
 }
@@ -70,7 +71,7 @@ async fn each_tool_checks_aggregate_limits_and_refusal_stops_unstarted_action() 
     let mut tools = ToolRegistry::default();
     tools.register(counting("work", calls.clone())).unwrap();
     let mut conversation = Conversation::new("go");
-    let handles = record(&mut conversation, &["work", "work"], &tools);
+    let handles = record(&mut conversation, &["work", "work"], &tools).await;
     let budget = DefaultBudget::new(BudgetLimits {
         tool_calls: Some(1),
         ..Default::default()
@@ -151,7 +152,7 @@ async fn nested_model_tokens_block_next_tool_with_remaining_tool_allowance() {
         .register(counting("next", tool_calls.clone()))
         .unwrap();
     let mut conversation = Conversation::new("go");
-    let handles = record(&mut conversation, &["nested", "next"], &tools);
+    let handles = record(&mut conversation, &["nested", "next"], &tools).await;
     let budget = DefaultBudget::new(BudgetLimits {
         tokens: Some(10),
         ..Default::default()
@@ -198,7 +199,7 @@ async fn nested_budget_stop_survives_helper_conversion_without_feedback() {
         )
         .unwrap();
     let mut conversation = Conversation::new("go");
-    let handles = record(&mut conversation, &["nested"], &tools);
+    let handles = record(&mut conversation, &["nested"], &tools).await;
     let budget = DefaultBudget::new(BudgetLimits {
         model_attempts: Some(0),
         ..Default::default()
@@ -249,10 +250,12 @@ async fn rejected_unknown_and_unoffered_calls_never_execute_or_consume_budget() 
             ),
             offered,
         )
+        .await
         .unwrap()
         .actions;
     conversation
         .reject_tool(&handles[0], ToolOutput::text("application declined"))
+        .await
         .unwrap();
     let budget = DefaultBudget::default();
     for handle in &handles[1..] {
@@ -289,7 +292,7 @@ async fn ordinary_errors_are_paired_feedback_but_typed_storage_and_cancellation_
             )
             .unwrap();
         let mut conversation = Conversation::new("go");
-        let handles = record(&mut conversation, &["work"], &tools);
+        let handles = record(&mut conversation, &["work"], &tools).await;
         let budget = DefaultBudget::default();
         let result = conversation
             .execute_tool(&handles[0], &mut tools, ExecutionControl::new(&budget))
@@ -312,7 +315,7 @@ async fn ordinary_errors_are_paired_feedback_but_typed_storage_and_cancellation_
     let mut tools = ToolRegistry::default();
     tools.register(counting("work", calls.clone())).unwrap();
     let mut conversation = Conversation::new("go");
-    let handles = record(&mut conversation, &["work"], &tools);
+    let handles = record(&mut conversation, &["work"], &tools).await;
     let budget = DefaultBudget::default();
     let cancellation = CancellationToken::new();
     cancellation.cancel();
@@ -337,8 +340,8 @@ async fn invalid_handles_and_submission_never_reach_effects_or_admission() {
     tools.register(counting("work", calls.clone())).unwrap();
     let mut conversation = Conversation::new("go");
     let mut foreign = Conversation::new("other");
-    let other = record(&mut foreign, &["work"], &tools);
-    let handles = record(&mut conversation, &["work", "submit"], &tools);
+    let other = record(&mut foreign, &["work"], &tools).await;
+    let handles = record(&mut conversation, &["work", "submit"], &tools).await;
     let budget = DefaultBudget::default();
     let control = ExecutionControl::new(&budget);
     assert!(matches!(
@@ -355,7 +358,7 @@ async fn invalid_handles_and_submission_never_reach_effects_or_admission() {
             .await,
         Err(ToolDispatchError::Submission)
     ));
-    conversation.start(&handles[0]).unwrap();
+    conversation.start(&handles[0]).await.unwrap();
     assert!(matches!(
         conversation
             .execute_tool(&handles[0], &mut tools, control)
@@ -365,7 +368,9 @@ async fn invalid_handles_and_submission_never_reach_effects_or_admission() {
         ))
     ));
     assert!(matches!(
-        conversation.reject_tool(&handles[0], ToolOutput::text("late")),
+        conversation
+            .reject_tool(&handles[0], ToolOutput::text("late"))
+            .await,
         Err(ToolDispatchError::Conversation(
             ConversationError::AlreadyStarted
         ))
@@ -375,6 +380,7 @@ async fn invalid_handles_and_submission_never_reach_effects_or_admission() {
             &handles[0],
             ActionResolution::Result(ToolOutput::text("external result")),
         )
+        .await
         .unwrap();
     assert!(matches!(
         conversation
@@ -389,8 +395,9 @@ async fn invalid_handles_and_submission_never_reach_effects_or_admission() {
             &handles[1],
             ActionResolution::Rejected(ToolOutput::text("repair")),
         )
+        .await
         .unwrap();
-    record(&mut conversation, &[], &tools);
+    record(&mut conversation, &[], &tools).await;
     assert!(matches!(
         conversation
             .execute_tool(&handles[0], &mut tools, control)
@@ -399,7 +406,7 @@ async fn invalid_handles_and_submission_never_reach_effects_or_admission() {
             ConversationError::StaleAction
         ))
     ));
-    conversation.stop().unwrap();
+    conversation.stop().await.unwrap();
     assert!(matches!(
         conversation
             .execute_tool(&handles[0], &mut tools, control)
@@ -486,6 +493,7 @@ async fn borrowed_policy_and_lending_non_sync_tool_keep_metadata_and_raw_argumen
                 ),
                 tools.definitions().cloned().collect(),
             )
+            .await
             .unwrap()
             .actions;
         let result = conversation
@@ -535,7 +543,7 @@ async fn admitted_tool_finishes_after_exhaustion_but_cancellation_interrupts_it(
         });
         let token = CancellationToken::new();
         let mut conversation = Conversation::new("go");
-        let handles = record(&mut conversation, &["wait"], &tools);
+        let handles = record(&mut conversation, &["wait"], &tools).await;
         let (result, ()) = tokio::join!(
             conversation.execute_tool(
                 &handles[0],
@@ -624,7 +632,7 @@ async fn cancellation_from_budget_completion_stops_before_pairing_success() {
     let mut tools = ToolRegistry::default();
     tools.register(counting("work", calls.clone())).unwrap();
     let mut conversation = Conversation::new("go");
-    let handles = record(&mut conversation, &["work"], &tools);
+    let handles = record(&mut conversation, &["work"], &tools).await;
     let result = conversation
         .execute_tool(
             &handles[0],
@@ -680,7 +688,7 @@ async fn unsuccessful_rich_feedback_preserves_content_and_metadata() {
         )
         .unwrap();
     let mut conversation = Conversation::default();
-    let actions = record(&mut conversation, &["rich_failure"], &tools);
+    let actions = record(&mut conversation, &["rich_failure"], &tools).await;
     let budget = DefaultBudget::default();
     let resolution = conversation
         .execute_tool(&actions[0], &mut tools, ExecutionControl::new(&budget))

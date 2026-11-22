@@ -91,40 +91,49 @@ impl<T: DeserializeOwned + JsonSchema> Run<'_, Structured<T>> {
     where
         F: AsyncFnMut(T) -> Result<Decision<A>, E>,
     {
-        let mut session = self.manual();
-        let mut retained = None;
-        let outcome = loop {
-            let (action, value) = match next_submission(&mut session).await {
-                Ok(submission) => submission,
-                Err(error) => break Err(error),
-            };
-            let cancellation = session.cancellation_token();
-            session.refinement_progress(RefinementStage::Inspecting);
-            let mut decision = tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => break Err(ManualError::Stop(
-                    ExecutionStop::Cancelled("execution cancelled during inspection".into())
-                )),
-                result = inspector(value) => match result {
-                    Ok(decision) => decision,
-                    Err(error) => break Err(ManualError::Inspector(format!("{error:?}"))),
-                },
-            };
-            if let Some(candidate) = decision.retained_mut().take() {
-                retained = Some(candidate);
-                session.refinement_progress(RefinementStage::Retained);
-            }
-            match decision {
-                Decision::Accept { value, .. } => break session.accept(action, value),
-                Decision::Revise { feedback, .. } => {
-                    if let Err(error) = session.revise(action, feedback) {
-                        break Err(error);
-                    }
+        // Keep the refinement state off enclosing application futures. Hosts
+        // may await database work from inspectors and inference observers on
+        // the same thread; embedding this state grows every caller's frame.
+        Box::pin(async move {
+            let mut session = self.manual();
+            let mut retained = None;
+            let outcome = loop {
+                let (action, value) = match next_submission(&mut session).await {
+                    Ok(submission) => submission,
+                    Err(error) => break Err(error),
+                };
+                let cancellation = session.cancellation_token();
+                session.refinement_progress(RefinementStage::Inspecting);
+                let mut decision = tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => break Err(ManualError::Stop(
+                        ExecutionStop::Cancelled("execution cancelled during inspection".into())
+                    )),
+                    result = inspector(value) => match result {
+                        Ok(decision) => decision,
+                        Err(error) => break Err(ManualError::Inspector(format!("{error:?}"))),
+                    },
+                };
+                if let Some(candidate) = decision.retained_mut().take() {
+                    retained = Some(candidate);
+                    session.refinement_progress(RefinementStage::Retained);
                 }
-                Decision::Stop { reason, .. } => break Err(session.stop(reason)),
-                Decision::Abandon { reason, .. } => break Err(ManualError::Abandoned(reason)),
+                match decision {
+                    Decision::Accept { value, .. } => break session.accept(action, value).await,
+                    Decision::Revise { feedback, .. } => {
+                        if let Err(error) = session.revise(action, feedback).await {
+                            break Err(error);
+                        }
+                    }
+                    Decision::Stop { reason, .. } => break Err(session.stop(reason).await),
+                    Decision::Abandon { reason, .. } => break Err(ManualError::Abandoned(reason)),
+                }
+            };
+            match outcome {
+                Ok(value) => Ok(value),
+                Err(reason) => Err(session.incomplete(reason, retained).await),
             }
-        };
-        outcome.map_err(|reason| session.incomplete(reason, retained))
+        })
+        .await
     }
 }

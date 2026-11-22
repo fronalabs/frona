@@ -1,7 +1,7 @@
 //! Integration tests for HITL persistence — verifies that the new `hitl` +
 //! `task_event` fields on `ToolCall` round-trip correctly through SurrealDB,
-//! and that the `set_hitl` / `set_task_event` / `set_hitl_delivery` methods
-//! on `ChatService` work end-to-end against an in-memory backing store.
+//! including approval answers and delivery metadata, against an in-memory store.
+//! Live execution writes these fields through MessageHistoryWriter.
 
 use chrono::Utc;
 use frona::core::repository::Repository;

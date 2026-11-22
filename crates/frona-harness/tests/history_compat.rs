@@ -31,8 +31,8 @@ fn call(id: &str, args: Value) -> Value {
     json!({"type":"toolcall","id":id,"function":{"name":"lookup","arguments":args},"signature":"signature+/=","additional_params":{"opaque":true}})
 }
 
-#[test]
-fn version_one_keeps_media_calls_usage_and_application_payloads() {
+#[tokio::test]
+async fn version_one_keeps_media_calls_usage_and_application_payloads() {
     let args = json!({"type":"toolcall","id":"application-owned","data":{"type":"string","value":"literal"}});
     let records = vec![
         opened(
@@ -51,7 +51,7 @@ fn version_one_keeps_media_calls_usage_and_application_payloads() {
             json!({"Checkpoint":{"checkpoint":{"schema":"application","version":1,"payload":{"type":"reasoning","content":[{"type":"encrypted","content":"not-a-message"}]},"through_seq":2}}}),
         ),
     ];
-    let decoded = decode_jsonl(&bytes(&records)).unwrap();
+    let decoded = decode_jsonl(&bytes(&records)).await.unwrap();
     let conversation = &decoded.replay.conversation;
     let Message::User { content } = &conversation.messages()[0] else {
         panic!()
@@ -102,7 +102,7 @@ fn version_one_keeps_media_calls_usage_and_application_payloads() {
         records[3]["event"]["Checkpoint"]["checkpoint"]["payload"]
     );
     let encoded = encode_jsonl(conversation.history()).unwrap();
-    let reread = decode_jsonl(&encoded).unwrap();
+    let reread = decode_jsonl(&encoded).await.unwrap();
     assert_eq!(
         conversation.messages(),
         reread.replay.conversation.messages()
@@ -182,36 +182,36 @@ fn legacy_signed_reasoning_uses_configured_wire_but_current_origins_are_untouche
     assert_eq!(assistant, before);
 }
 
-#[test]
-fn version_one_corruption_versions_and_unterminated_tail_keep_boundaries() {
+#[tokio::test]
+async fn version_one_corruption_versions_and_unterminated_tail_keep_boundaries() {
     let first = opened(json!([{"type":"text","text":"hello"}]));
     let mut encoded = bytes(std::slice::from_ref(&first));
     let start = encoded.len();
     encoded.extend_from_slice(br#"{"version":1,"unfinished"#);
-    let decoded = decode_jsonl(&encoded).unwrap();
+    let decoded = decode_jsonl(&encoded).await.unwrap();
     assert_eq!(decoded.incomplete_tail, Some(start..encoded.len()));
     encoded.push(b'\n');
     assert_eq!(
-        decode_jsonl(&encoded).unwrap_err().kind,
+        decode_jsonl(&encoded).await.unwrap_err().kind,
         HistoryDecodeErrorKind::Corruption
     );
     let mut future = first.clone();
     future["version"] = json!(3);
     assert_eq!(
-        decode_jsonl(&bytes(&[future])).unwrap_err().kind,
+        decode_jsonl(&bytes(&[future])).await.unwrap_err().kind,
         HistoryDecodeErrorKind::UnsupportedVersion
     );
     let text = String::from_utf8(bytes(&[first]))
         .unwrap()
         .replace("\"seq\":0", "\"seq\":0,\"seq\":0");
     assert_eq!(
-        decode_jsonl(text.as_bytes()).unwrap_err().kind,
+        decode_jsonl(text.as_bytes()).await.unwrap_err().kind,
         HistoryDecodeErrorKind::Format
     );
 }
 
-#[test]
-fn version_one_compaction_keeps_summary_and_summarizer_provenance() {
+#[tokio::test]
+async fn version_one_compaction_keeps_summary_and_summarizer_provenance() {
     let records = vec![
         opened(json!([{"type":"text","text":"input"}])),
         record(
@@ -227,7 +227,7 @@ fn version_one_compaction_keeps_summary_and_summarizer_provenance() {
             json!({"Compacted":{"view":{"source_message_count":3,"entries":[{"Summary":{"message":{"role":"user","content":[{"type":"text","text":"summary"}]},"covered_original_positions":[0,1]}},{"Original":2}]},"summarizer":"openai/summary-model","output":output(json!([{"type":"text","text":"summary"}]))}}),
         ),
     ];
-    let decoded = decode_jsonl(&bytes(&records)).unwrap();
+    let decoded = decode_jsonl(&bytes(&records)).await.unwrap();
     let frona_harness::HistoryEvent::Compacted {
         output, summarizer, ..
     } = &decoded.replay.conversation.history()[3].event
@@ -237,7 +237,7 @@ fn version_one_compaction_keeps_summary_and_summarizer_provenance() {
     assert_eq!(summarizer, "openai/summary-model");
     assert_eq!(output.origin.as_ref().unwrap().model, "summary-model");
     let encoded = encode_jsonl(decoded.replay.conversation.history()).unwrap();
-    assert!(decode_jsonl(&encoded).is_ok());
+    assert!(decode_jsonl(&encoded).await.is_ok());
 }
 
 fn resolved_call_records(source: &str, call: Value) -> Vec<Value> {
@@ -262,7 +262,7 @@ async fn version_one_gemini_signed_call_replays_without_archival_fields() {
         "google/mock-model",
         call("local-handle", json!({"query":"original"})),
     );
-    let replay = decode_jsonl(&bytes(&records)).unwrap().replay;
+    let replay = decode_jsonl(&bytes(&records)).await.unwrap().replay;
     let archived = encode_jsonl(replay.conversation.history()).unwrap();
     let server = MockServer::start().await;
     Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -326,6 +326,7 @@ async fn version_one_openai_dual_ids_replay_without_archival_fields() {
         "openai/mock-model",
         original,
     )))
+    .await
     .unwrap()
     .replay;
     let archived = encode_jsonl(replay.conversation.history()).unwrap();
@@ -393,7 +394,7 @@ async fn context_bound_signed_legacy_fails_before_network_without_inventing_cont
             json!({"User":{"message":2,"content":[{"type":"text","text":"continue"}]}}),
         ),
     ];
-    let replay = decode_jsonl(&bytes(&records)).unwrap().replay;
+    let replay = decode_jsonl(&bytes(&records)).await.unwrap().replay;
     let archived = encode_jsonl(replay.conversation.history()).unwrap();
     let server = wiremock::MockServer::start().await;
     let model = Model::builder("anthropic", "claude-opus-5-5")
@@ -417,8 +418,8 @@ async fn context_bound_signed_legacy_fails_before_network_without_inventing_cont
     );
 }
 
-#[test]
-fn version_one_rejects_duplicate_nested_structural_fields() {
+#[tokio::test]
+async fn version_one_rejects_duplicate_nested_structural_fields() {
     let initial = opened(json!([{"type":"text","text":"hello"}]));
     let encoded = String::from_utf8(bytes(&[initial])).unwrap();
     for (needle, duplicate) in [
@@ -427,7 +428,7 @@ fn version_one_rejects_duplicate_nested_structural_fields() {
     ] {
         assert!(encoded.contains(needle));
         let duplicate = encoded.replacen(needle, duplicate, 1);
-        let error = decode_jsonl(duplicate.as_bytes()).unwrap_err();
+        let error = decode_jsonl(duplicate.as_bytes()).await.unwrap_err();
         assert_eq!(error.kind, HistoryDecodeErrorKind::Format);
         assert!(error.message.contains("duplicate field"));
     }
@@ -441,7 +442,7 @@ fn version_one_rejects_duplicate_nested_structural_fields() {
     ]))
     .unwrap();
     let duplicate = encoded.replacen("\"output\":", "\"output\":{},\"output\":", 1);
-    let error = decode_jsonl(duplicate.as_bytes()).unwrap_err();
+    let error = decode_jsonl(duplicate.as_bytes()).await.unwrap_err();
     assert_eq!(error.seq, 1);
     assert_eq!(error.kind, HistoryDecodeErrorKind::Format);
     assert!(error.message.contains("duplicate field"));
@@ -477,7 +478,7 @@ async fn version_one_openrouter_replays_call_metadata_and_ordered_reasoning_deta
             .as_array_mut()
             .unwrap()
             .insert(0, reasoning);
-        let replay = decode_jsonl(&bytes(&records)).unwrap().replay;
+        let replay = decode_jsonl(&bytes(&records)).await.unwrap().replay;
         let archived = encode_jsonl(replay.conversation.history()).unwrap();
         let server = MockServer::start().await;
         Mock::given(method("POST")).and(path("/chat/completions"))
@@ -553,7 +554,7 @@ async fn openrouter_local_call_reasoning_uses_collision_safe_request_aliases() {
     for action in 0..3 {
         records.push(record(2+action,json!({"ActionResolved":{"action":{"conversation":"00000000-0000-0000-0000-000000000000","response":0,"action":action},"resolution":{"Result":{"content":[{"type":"text","text":"result"}],"metadata":null}}}})));
     }
-    let replay = decode_jsonl(&bytes(&records)).unwrap().replay;
+    let replay = decode_jsonl(&bytes(&records)).await.unwrap().replay;
     let archived = encode_jsonl(replay.conversation.history()).unwrap();
     let server = MockServer::start().await;
     Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -636,7 +637,7 @@ async fn context_bound_openrouter_signed_legacy_fails_before_network() {
         &format!("openrouter/{model_id}"),
         call("local-handle", json!({})),
     );
-    let replay = decode_jsonl(&bytes(&records)).unwrap().replay;
+    let replay = decode_jsonl(&bytes(&records)).await.unwrap().replay;
     let server = wiremock::MockServer::start().await;
     let model = Model::builder("openrouter", model_id)
         .api_key("fixture-key")

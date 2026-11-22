@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use frona::{
     agent::models::Agent,
     auth::User,
-    chat::{message::models::Reasoning, models::CreateChatRequest},
+    chat::{models::CreateChatRequest, service::history::MessageHistoryBinding},
     core::{error::AppError, repository::Repository},
     db::repo::agents::SurrealAgentRepo,
     inference::{
@@ -13,8 +13,8 @@ use frona::{
     },
     tool::{
         AgentTool, InferenceContext, ToolDefinition, ToolOutput,
-        persistent_dispatch::{PersistentToolDispatcher, PersistentToolOutcome, project_messages},
         registry::AgentToolRegistry,
+        runtime_dispatch::{RuntimeToolDispatcher, project_messages},
     },
 };
 use frona_harness::{
@@ -212,7 +212,7 @@ fn registry(kind: &'static str) -> (AgentToolRegistry, Arc<AtomicUsize>) {
     }));
     (registry, calls)
 }
-fn record(
+async fn record(
     conversation: &mut Conversation,
     names: &[&str],
     registry: &AgentToolRegistry,
@@ -242,11 +242,13 @@ fn record(
                         ))
                         .with_native(json!({"id":"item", "thoughtSignature":"signature"}))
                     })
+                    .chain([AssistantContent::text("turn text")])
                     .collect(),
                 UsageReport::Unavailable,
             ),
             definitions,
         )
+        .await
         .unwrap()
         .actions
 }
@@ -257,25 +259,21 @@ async fn rich_success_and_failure_keep_raw_calls_but_project_canonical_requests(
         let (fixture, ctx, message) = setup().await;
         let service = &fixture.state.chat_service;
         let (registry, calls) = registry(kind);
+        let history = MessageHistoryBinding::new(&fixture.state.chat_service, &ctx, &message)
+            .await
+            .unwrap();
         let mut conversation = Conversation::default();
-        let actions = record(&mut conversation, &["probe", "probe"], &registry);
+        conversation
+            .attach_history(Box::new(history.clone().into_writer()))
+            .unwrap();
+        let stale = history.message().await.unwrap();
+        let actions = record(&mut conversation, &["probe", "probe"], &registry).await;
+        let first_position = conversation.action_position(&actions[0]).unwrap();
+        let second_position = conversation.action_position(&actions[1]).unwrap();
         let budget = DefaultBudget::default();
-        let mut dispatcher = PersistentToolDispatcher::new(
-            service,
-            &registry,
-            &ctx,
-            &message,
-            4,
-            Some("turn text".into()),
-            Some(Reasoning {
-                id: None,
-                content: "thought".into(),
-                signature: Some("sig".into()),
-                raw: None,
-            }),
-        )
-        .await
-        .unwrap();
+        let mut dispatcher = RuntimeToolDispatcher::new(history.clone(), &registry, &ctx)
+            .await
+            .unwrap();
         let mut results = dispatcher
             .execute_batch(
                 &mut conversation,
@@ -287,24 +285,28 @@ async fn rich_success_and_failure_keep_raw_calls_but_project_canonical_requests(
             .unwrap()
             .into_iter();
         let first = results.next().unwrap();
-        let second = results.next().unwrap();
+        assert!(results.next().is_some());
+        let first_row = history.tool_record(first_position).await.unwrap();
+        let second_row = history.tool_record(second_position).await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert_ne!(first.result().record.id, second.result().record.id);
-        assert_eq!(
-            first.result().record.turn_text.as_deref(),
-            Some("turn text")
-        );
-        assert!(second.result().record.turn_text.is_none());
-        assert!(second.result().record.turn_reasoning.is_none());
-        assert_eq!(first.result().attachments.len(), 1);
-        let output = first.result().resolution.output();
+        assert_ne!(first_row.id, second_row.id);
+        assert_eq!(first_row.turn_text.as_deref(), Some("turn text"));
+        assert!(second_row.turn_text.is_none());
+        assert!(second_row.turn_reasoning.is_none());
+        assert_eq!(first.attachments.len(), 1);
+        let saved = service.get_message(&ctx.user.id, &message).await.unwrap();
+        assert_eq!(saved.attachments, first.attachments);
+        let finalized = service.complete_agent_message(stale).await.unwrap();
+        assert_eq!(finalized.attachments.len(), 1);
+        assert_eq!(finalized.attachments[0].path, saved.attachments[0].path);
+        let output = first.resolution.output();
         assert_eq!(output.content.len(), 2);
         assert_eq!(
-            matches!(first.result().resolution, ActionResolution::Failed(_)),
+            matches!(first.resolution, ActionResolution::Failed(_)),
             kind == "failure"
         );
         assert_eq!(
-            first.result().record.result,
+            first_row.result,
             if kind == "failure" {
                 "exact failure"
             } else {
@@ -352,13 +354,18 @@ async fn pending_hitl_is_completed_prompt_invocation_and_answer_stays_in_canonic
     let (fixture, ctx, message) = setup().await;
     let service = &fixture.state.chat_service;
     let (registry, calls) = registry("hitl");
+    let history = MessageHistoryBinding::new(&fixture.state.chat_service, &ctx, &message)
+        .await
+        .unwrap();
     let mut conversation = Conversation::default();
-    let actions = record(&mut conversation, &["probe"], &registry);
+    conversation
+        .attach_history(Box::new(history.clone().into_writer()))
+        .unwrap();
+    let actions = record(&mut conversation, &["probe"], &registry).await;
     let budget = DefaultBudget::default();
-    let mut dispatcher =
-        PersistentToolDispatcher::new(service, &registry, &ctx, &message, 0, None, None)
-            .await
-            .unwrap();
+    let mut dispatcher = RuntimeToolDispatcher::new(history.clone(), &registry, &ctx)
+        .await
+        .unwrap();
     let outcome = dispatcher
         .execute(
             &mut conversation,
@@ -367,13 +374,13 @@ async fn pending_hitl_is_completed_prompt_invocation_and_answer_stays_in_canonic
         )
         .await
         .unwrap();
-    assert!(matches!(outcome, PersistentToolOutcome::Pending(_)));
+    assert!(outcome.pending.is_some());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         conversation.responses()[0].actions()[0].status(),
         ActionStatus::Resolved
     );
-    let id = &outcome.result().record.id;
+    let id = &outcome.pending.as_ref().unwrap().id;
     service
         .resolve_tool_call_with_hitl_response(
             id,
@@ -394,20 +401,19 @@ async fn task_and_external_callback_are_explicit_host_outcomes() {
     for kind in ["task", "callback"] {
         let (fixture, ctx, message) = setup().await;
         let (registry, _) = registry(kind);
+        let history = MessageHistoryBinding::new(&fixture.state.chat_service, &ctx, &message)
+            .await
+            .unwrap();
         let mut conversation = Conversation::default();
-        let actions = record(&mut conversation, &["probe"], &registry);
+        conversation
+            .attach_history(Box::new(history.clone().into_writer()))
+            .unwrap();
+        let actions = record(&mut conversation, &["probe"], &registry).await;
+        let first_position = conversation.action_position(&actions[0]).unwrap();
         let budget = DefaultBudget::default();
-        let mut dispatcher = PersistentToolDispatcher::new(
-            &fixture.state.chat_service,
-            &registry,
-            &ctx,
-            &message,
-            0,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+        let mut dispatcher = RuntimeToolDispatcher::new(history.clone(), &registry, &ctx)
+            .await
+            .unwrap();
         let outcome = dispatcher
             .execute(
                 &mut conversation,
@@ -416,21 +422,9 @@ async fn task_and_external_callback_are_explicit_host_outcomes() {
             )
             .await
             .unwrap();
-        assert_eq!(
-            matches!(outcome, PersistentToolOutcome::Task(_)),
-            kind == "task"
-        );
-        assert_eq!(
-            matches!(outcome, PersistentToolOutcome::Pending(_)),
-            kind == "callback"
-        );
-        let row = fixture
-            .state
-            .chat_service
-            .get_tool_call(&outcome.result().record.id)
-            .await
-            .unwrap()
-            .unwrap();
+        assert_eq!(outcome.task_event.is_some(), kind == "task");
+        assert_eq!(outcome.pending.is_some(), kind == "callback");
+        let row = history.tool_record(first_position).await.unwrap();
         assert_eq!(row.task_event.is_some(), kind == "task");
     }
 }
@@ -439,23 +433,21 @@ async fn task_and_external_callback_are_explicit_host_outcomes() {
 async fn rejection_pairs_without_effect_and_stopped_conversation_writes_nothing() {
     let (fixture, ctx, message) = setup().await;
     let (registry, calls) = registry("success");
+    let history = MessageHistoryBinding::new(&fixture.state.chat_service, &ctx, &message)
+        .await
+        .unwrap();
     let mut conversation = Conversation::default();
-    let actions = record(&mut conversation, &["unknown", "probe"], &registry);
+    conversation
+        .attach_history(Box::new(history.clone().into_writer()))
+        .unwrap();
+    let actions = record(&mut conversation, &["unknown", "probe"], &registry).await;
     let budget = DefaultBudget::new(BudgetLimits {
         tool_calls: Some(0),
         ..Default::default()
     });
-    let mut dispatcher = PersistentToolDispatcher::new(
-        &fixture.state.chat_service,
-        &registry,
-        &ctx,
-        &message,
-        0,
-        None,
-        None,
-    )
-    .await
-    .unwrap();
+    let mut dispatcher = RuntimeToolDispatcher::new(history.clone(), &registry, &ctx)
+        .await
+        .unwrap();
     let rejected = dispatcher
         .execute(
             &mut conversation,
@@ -464,12 +456,9 @@ async fn rejection_pairs_without_effect_and_stopped_conversation_writes_nothing(
         )
         .await
         .unwrap();
-    assert!(matches!(
-        rejected.result().resolution,
-        ActionResolution::Rejected(_)
-    ));
+    assert!(matches!(rejected.resolution, ActionResolution::Rejected(_)));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
-    conversation.stop().unwrap();
+    conversation.stop().await.unwrap();
     assert!(
         dispatcher
             .reject(
@@ -497,23 +486,21 @@ async fn rejection_pairs_without_effect_and_stopped_conversation_writes_nothing(
 async fn admission_and_ownership_refusal_precede_any_record_or_effect() {
     let (fixture, mut ctx, message) = setup().await;
     let (registry, calls) = registry("success");
+    let history = MessageHistoryBinding::new(&fixture.state.chat_service, &ctx, &message)
+        .await
+        .unwrap();
     let mut conversation = Conversation::default();
-    let actions = record(&mut conversation, &["probe"], &registry);
+    conversation
+        .attach_history(Box::new(history.clone().into_writer()))
+        .unwrap();
+    let actions = record(&mut conversation, &["probe"], &registry).await;
     let budget = DefaultBudget::new(BudgetLimits {
         tool_calls: Some(0),
         ..Default::default()
     });
-    let mut dispatcher = PersistentToolDispatcher::new(
-        &fixture.state.chat_service,
-        &registry,
-        &ctx,
-        &message,
-        0,
-        None,
-        None,
-    )
-    .await
-    .unwrap();
+    let mut dispatcher = RuntimeToolDispatcher::new(history.clone(), &registry, &ctx)
+        .await
+        .unwrap();
     assert!(matches!(
         dispatcher
             .execute(
@@ -537,17 +524,9 @@ async fn admission_and_ownership_refusal_precede_any_record_or_effect() {
     );
     ctx.agent.id = "other-agent".into();
     assert!(
-        PersistentToolDispatcher::new(
-            &fixture.state.chat_service,
-            &registry,
-            &ctx,
-            &message,
-            0,
-            None,
-            None
-        )
-        .await
-        .is_err()
+        RuntimeToolDispatcher::new(history.clone(), &registry, &ctx)
+            .await
+            .is_err()
     );
 }
 
@@ -556,20 +535,18 @@ async fn failed_required_begin_and_finish_stop_without_feedback_or_later_effects
     for event in ["CREATE", "UPDATE"] {
         let (fixture, ctx, message) = setup().await;
         let (registry, calls) = registry("success");
+        let history = MessageHistoryBinding::new(&fixture.state.chat_service, &ctx, &message)
+            .await
+            .unwrap();
         let mut conversation = Conversation::default();
-        let actions = record(&mut conversation, &["probe", "probe"], &registry);
+        conversation
+            .attach_history(Box::new(history.clone().into_writer()))
+            .unwrap();
+        let actions = record(&mut conversation, &["probe", "probe"], &registry).await;
         let budget = DefaultBudget::default();
-        let mut dispatcher = PersistentToolDispatcher::new(
-            &fixture.state.chat_service,
-            &registry,
-            &ctx,
-            &message,
-            0,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+        let mut dispatcher = RuntimeToolDispatcher::new(history.clone(), &registry, &ctx)
+            .await
+            .unwrap();
         fixture.state.db.query(format!("DEFINE EVENT refuse ON TABLE tool_call WHEN $event = '{event}' THEN {{ THROW 'required storage unavailable'; }};")).await.unwrap().check().unwrap();
         let error = dispatcher
             .execute(
@@ -587,7 +564,11 @@ async fn failed_required_begin_and_finish_stop_without_feedback_or_later_effects
         assert_eq!(conversation.status(), ConversationStatus::Stopped);
         assert_eq!(
             conversation.responses()[0].actions()[0].status(),
-            ActionStatus::Started
+            if event == "CREATE" {
+                ActionStatus::Proposed
+            } else {
+                ActionStatus::Started
+            }
         );
         assert!(
             dispatcher
@@ -631,20 +612,19 @@ async fn authorization_is_rechecked_at_controlled_invocation_after_registry_crea
         .await;
     assert!(registry.definitions().iter().any(|d| d.id == "probe"));
     fixture.state.policy_service.create_policy(&ctx.user.id,"@id(\"deny-now\") forbid(principal, action == Policy::Action::\"invoke_tool\", resource);").await.unwrap();
+    let history = MessageHistoryBinding::new(&fixture.state.chat_service, &ctx, &message)
+        .await
+        .unwrap();
     let mut conversation = Conversation::default();
-    let actions = record(&mut conversation, &["probe"], &registry);
+    conversation
+        .attach_history(Box::new(history.clone().into_writer()))
+        .unwrap();
+    let actions = record(&mut conversation, &["probe"], &registry).await;
+    let first_position = conversation.action_position(&actions[0]).unwrap();
     let budget = DefaultBudget::default();
-    let mut dispatcher = PersistentToolDispatcher::new(
-        &fixture.state.chat_service,
-        &registry,
-        &ctx,
-        &message,
-        0,
-        None,
-        None,
-    )
-    .await
-    .unwrap();
+    let mut dispatcher = RuntimeToolDispatcher::new(history.clone(), &registry, &ctx)
+        .await
+        .unwrap();
     let outcome = dispatcher
         .execute(
             &mut conversation,
@@ -653,18 +633,10 @@ async fn authorization_is_rechecked_at_controlled_invocation_after_registry_crea
         )
         .await
         .unwrap();
-    assert!(matches!(
-        outcome.result().resolution,
-        ActionResolution::Failed(_)
-    ));
-    assert!(
-        outcome
-            .result()
-            .record
-            .result
-            .contains("Authorization denied")
-    );
-    assert!(!outcome.result().record.success);
+    assert!(matches!(outcome.resolution, ActionResolution::Failed(_)));
+    let row = history.tool_record(first_position).await.unwrap();
+    assert!(row.result.contains("Authorization denied"));
+    assert!(!row.success);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
@@ -678,24 +650,22 @@ async fn rejection_cancelled_during_required_writes_retains_evidence_and_stops()
         if fail_finish {
             fixture.state.db.query("DEFINE EVENT refuse ON TABLE tool_call WHEN $event = 'UPDATE' THEN { THROW 'required storage unavailable'; };").await.unwrap().check().unwrap();
         }
+        let history = MessageHistoryBinding::new(&fixture.state.chat_service, &ctx, &message)
+            .await
+            .unwrap();
         let mut conversation = Conversation::default();
-        let actions = record(&mut conversation, &["probe"], &registry);
+        conversation
+            .attach_history(Box::new(history.clone().into_writer()))
+            .unwrap();
+        let actions = record(&mut conversation, &["probe"], &registry).await;
         // Zero allowance proves rejection performs no tool admission.
         let budget = DefaultBudget::new(BudgetLimits {
             tool_calls: Some(0),
             ..Default::default()
         });
-        let mut dispatcher = PersistentToolDispatcher::new(
-            &fixture.state.chat_service,
-            &registry,
-            &ctx,
-            &message,
-            0,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+        let mut dispatcher = RuntimeToolDispatcher::new(history.clone(), &registry, &ctx)
+            .await
+            .unwrap();
         let error = dispatcher
             .reject(
                 &mut conversation,
@@ -720,7 +690,17 @@ async fn rejection_cancelled_during_required_writes_retains_evidence_and_stops()
         assert_eq!(conversation.status(), ConversationStatus::Stopped);
         assert_eq!(
             conversation.responses()[0].actions()[0].status(),
-            ActionStatus::Proposed
+            if fail_finish {
+                ActionStatus::Proposed
+            } else {
+                ActionStatus::Rejected
+            }
+        );
+        assert_eq!(
+            conversation.responses()[0].actions()[0]
+                .resolution()
+                .is_some(),
+            !fail_finish
         );
         let rows = fixture
             .state
@@ -748,21 +728,30 @@ async fn stale_and_foreign_proposals_never_write_canonical_rows_or_invoke_tools(
     for foreign in [false, true] {
         let (fixture, ctx, message) = setup().await;
         let (registry, calls) = registry("success");
+        let history = MessageHistoryBinding::new(&fixture.state.chat_service, &ctx, &message)
+            .await
+            .unwrap();
         let mut conversation = Conversation::default();
+        conversation
+            .attach_history(Box::new(history.clone().into_writer()))
+            .unwrap();
         let action = if foreign {
             let mut other = Conversation::default();
-            let action = record(&mut other, &["probe"], &registry).remove(0);
-            record(&mut conversation, &["probe"], &registry);
+            let action = record(&mut other, &["probe"], &registry).await.remove(0);
+            record(&mut conversation, &["probe"], &registry).await;
             action
         } else {
-            let action = record(&mut conversation, &["probe"], &registry).remove(0);
+            let action = record(&mut conversation, &["probe"], &registry)
+                .await
+                .remove(0);
             conversation
                 .resolve(
                     &action,
                     ActionResolution::Result(frona_harness::ToolOutput::text("already resolved")),
                 )
+                .await
                 .unwrap();
-            record(&mut conversation, &["probe"], &registry);
+            record(&mut conversation, &["probe"], &registry).await;
             action
         };
         let expected = if foreign {
@@ -773,17 +762,16 @@ async fn stale_and_foreign_proposals_never_write_canonical_rows_or_invoke_tools(
         let before = conversation.messages().to_vec();
         let history_len = conversation.history().len();
         let budget = DefaultBudget::default();
-        let mut dispatcher = PersistentToolDispatcher::new(
-            &fixture.state.chat_service,
-            &registry,
-            &ctx,
-            &message,
-            0,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+        let mut dispatcher = RuntimeToolDispatcher::new(history.clone(), &registry, &ctx)
+            .await
+            .unwrap();
+        let prior_rows = fixture
+            .state
+            .chat_service
+            .get_tool_calls_by_message(&message)
+            .await
+            .unwrap()
+            .len();
         for reject in [false, true] {
             let error = if reject {
                 dispatcher
@@ -810,14 +798,15 @@ async fn stale_and_foreign_proposals_never_write_canonical_rows_or_invoke_tools(
             assert_eq!(conversation.pending_count(), 1);
             assert_eq!(calls.load(Ordering::SeqCst), 0);
             assert_eq!(budget.snapshot().tool_calls, 0);
-            assert!(
+            assert_eq!(
                 fixture
                     .state
                     .chat_service
                     .get_tool_calls_by_message(&message)
                     .await
                     .unwrap()
-                    .is_empty()
+                    .len(),
+                prior_rows
             );
         }
     }
@@ -829,20 +818,18 @@ async fn cancellation_after_required_begin_preserves_row_without_invoking_tool()
     let (registry, calls) = registry("success");
     let cancellation = CancellationToken::new();
     let mut events = cancel_on_next_event(&mut ctx, &cancellation);
+    let history = MessageHistoryBinding::new(&fixture.state.chat_service, &ctx, &message)
+        .await
+        .unwrap();
     let mut conversation = Conversation::default();
-    let actions = record(&mut conversation, &["probe", "probe"], &registry);
+    conversation
+        .attach_history(Box::new(history.clone().into_writer()))
+        .unwrap();
+    let actions = record(&mut conversation, &["probe", "probe"], &registry).await;
     let budget = DefaultBudget::default();
-    let mut dispatcher = PersistentToolDispatcher::new(
-        &fixture.state.chat_service,
-        &registry,
-        &ctx,
-        &message,
-        0,
-        None,
-        None,
-    )
-    .await
-    .unwrap();
+    let mut dispatcher = RuntimeToolDispatcher::new(history.clone(), &registry, &ctx)
+        .await
+        .unwrap();
     let error = dispatcher
         .execute(
             &mut conversation,
@@ -940,20 +927,19 @@ async fn concurrent_repeated_server_calls_preserve_rows_and_turn_metadata() {
     });
     let mut registry = AgentToolRegistry::empty();
     registry.register(probe.clone());
+    let history = MessageHistoryBinding::new(&fixture.state.chat_service, &ctx, &message)
+        .await
+        .unwrap();
     let mut conversation = Conversation::default();
-    let actions = record(&mut conversation, &["probe", "probe", "probe"], &registry);
+    conversation
+        .attach_history(Box::new(history.clone().into_writer()))
+        .unwrap();
+    let actions = record(&mut conversation, &["probe", "probe", "probe"], &registry).await;
+    let first_position = conversation.action_position(&actions[0]).unwrap();
     let budget = DefaultBudget::default();
-    let mut dispatcher = PersistentToolDispatcher::new(
-        service,
-        &registry,
-        &ctx,
-        &message,
-        4,
-        Some("turn text".into()),
-        None,
-    )
-    .await
-    .unwrap();
+    let mut dispatcher = RuntimeToolDispatcher::new(history.clone(), &registry, &ctx)
+        .await
+        .unwrap();
     let (results, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         tokio::join!(
             dispatcher.execute_batch(
@@ -980,15 +966,8 @@ async fn concurrent_repeated_server_calls_preserve_rows_and_turn_metadata() {
     assert_eq!(conversation.pending_count(), 0);
     assert_eq!(budget.snapshot().tool_calls, 3);
     assert_eq!(budget.snapshot().in_flight, 0);
-    assert_eq!(
-        results[0].result().record.turn_text.as_deref(),
-        Some("turn text")
-    );
-    assert!(
-        results[1..]
-            .iter()
-            .all(|result| result.result().record.turn_text.is_none())
-    );
+    let first_row = history.tool_record(first_position).await.unwrap();
+    assert_eq!(first_row.turn_text.as_deref(), Some("turn text"));
     let rows = service.get_tool_calls_by_message(&message).await.unwrap();
     assert_eq!(rows.len(), 3);
     assert!(
@@ -1002,23 +981,21 @@ async fn concurrent_repeated_server_calls_preserve_rows_and_turn_metadata() {
 async fn stopped_batch_retains_attachments_from_completed_calls() {
     let (fixture, ctx, message) = setup().await;
     let (registry, calls) = registry("success");
+    let history = MessageHistoryBinding::new(&fixture.state.chat_service, &ctx, &message)
+        .await
+        .unwrap();
     let mut conversation = Conversation::default();
-    let actions = record(&mut conversation, &["probe", "probe"], &registry);
+    conversation
+        .attach_history(Box::new(history.clone().into_writer()))
+        .unwrap();
+    let actions = record(&mut conversation, &["probe", "probe"], &registry).await;
     let budget = DefaultBudget::new(BudgetLimits {
         tool_calls: Some(1),
         ..Default::default()
     });
-    let mut dispatcher = PersistentToolDispatcher::new(
-        &fixture.state.chat_service,
-        &registry,
-        &ctx,
-        &message,
-        0,
-        None,
-        None,
-    )
-    .await
-    .unwrap();
+    let mut dispatcher = RuntimeToolDispatcher::new(history.clone(), &registry, &ctx)
+        .await
+        .unwrap();
     let failure = dispatcher
         .execute_batch(
             &mut conversation,
@@ -1050,20 +1027,18 @@ async fn concurrent_storage_failure_stops_admission_and_preserves_unfinished_cal
     for event in ["CREATE", "UPDATE"] {
         let (fixture, ctx, message) = setup().await;
         let (registry, calls) = registry("success");
+        let history = MessageHistoryBinding::new(&fixture.state.chat_service, &ctx, &message)
+            .await
+            .unwrap();
         let mut conversation = Conversation::default();
-        let actions = record(&mut conversation, &["probe", "probe", "probe"], &registry);
+        conversation
+            .attach_history(Box::new(history.clone().into_writer()))
+            .unwrap();
+        let actions = record(&mut conversation, &["probe", "probe", "probe"], &registry).await;
         let budget = DefaultBudget::default();
-        let mut dispatcher = PersistentToolDispatcher::new(
-            &fixture.state.chat_service,
-            &registry,
-            &ctx,
-            &message,
-            0,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
+        let mut dispatcher = RuntimeToolDispatcher::new(history.clone(), &registry, &ctx)
+            .await
+            .unwrap();
         fixture.state.db.query(format!("DEFINE EVENT refuse ON TABLE tool_call WHEN $event = '{event}' THEN {{ THROW 'required storage unavailable'; }};")).await.unwrap().check().unwrap();
         let failure = dispatcher
             .execute_batch(

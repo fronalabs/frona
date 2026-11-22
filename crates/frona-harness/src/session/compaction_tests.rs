@@ -159,7 +159,7 @@ async fn unsupported_main_request_is_recoverable_without_compaction_side_effects
                 .application_tools(ToolSelection::None)
                 .await
                 .unwrap();
-            session.feedback("continue").unwrap();
+            session.feedback("continue").await.unwrap();
         }
         assert_eq!(state.summaries.load(Ordering::SeqCst), 0);
         let before_budget = budget.snapshot();
@@ -303,7 +303,7 @@ async fn manual_compaction_commits_raw_summary_and_exact_report_inputs_with_stre
             session.conversation().request_messages().unwrap().len()
                 < session.conversation().messages().len()
         );
-        assert_eq!(session.finish().unwrap(), "finished");
+        assert_eq!(session.finish().await.unwrap(), "finished");
         assert_eq!(
             &session.conversation().messages()[..originals.len()],
             originals
@@ -380,6 +380,7 @@ async fn disabled_suppresses_summaries_and_reports_overflow_without_trimming() {
     session.call_model().await.unwrap();
     session
         .feedback("additional constraints ".repeat(100))
+        .await
         .unwrap();
     let before = session.conversation().messages().to_vec();
     assert!(matches!(
@@ -440,8 +441,9 @@ async fn failed_empty_or_tool_summary_stops_without_replacing_view_or_retrying()
 
 #[derive(Debug)]
 struct FailCompaction;
+#[async_trait::async_trait]
 impl HistoryWriter for FailCompaction {
-    fn commit(&mut self, record: &HistoryRecord) -> Result<(), HistoryWriteError> {
+    async fn commit(&mut self, record: &HistoryRecord) -> Result<(), HistoryWriteError> {
         if record.event.operation() == HistoryOperation::Compact {
             Err(HistoryWriteError {
                 phase: HistoryWritePhase::Synchronize,
@@ -457,7 +459,8 @@ async fn failed_compaction_write_preserves_old_view_and_is_explicitly_discardabl
     let (mut run, state) = small(Summary::Text("Earlier evidence".into()));
     run.core
         .conversation
-        .attach_history(Box::new(FailCompaction));
+        .attach_history(Box::new(FailCompaction))
+        .unwrap();
     let mut session = run.manual();
     three_rounds(&mut session).await;
     let before = session.conversation().messages().to_vec();
@@ -473,7 +476,7 @@ async fn failed_compaction_write_preserves_old_view_and_is_explicitly_discardabl
     ));
     let mut session = session.into_memory().unwrap();
     assert!(matches!(
-        session.adopt_pending_write().unwrap_err(),
+        session.adopt_pending_write().await.unwrap_err(),
         ManualError::Conversation(ConversationError::CannotAdoptWrite)
     ));
     assert_eq!(session.conversation().messages(), before);
@@ -525,6 +528,7 @@ async fn summary_request_itself_must_fit_before_dispatch() {
                 ),
                 vec![],
             )
+            .await
             .unwrap()
             .actions
             .remove(0);
@@ -534,6 +538,7 @@ async fn summary_request_itself_must_fit_before_dispatch() {
                 &action,
                 ActionResolution::Result(ToolOutput::text("old evidence ".repeat(100))),
             )
+            .await
             .unwrap();
     }
     let mut session = run.manual();
@@ -602,8 +607,9 @@ async fn configured_output_setting_and_invalid_configuration_precede_effects() {
 
 #[derive(Debug)]
 struct CancelCompaction(CancellationToken);
+#[async_trait::async_trait]
 impl HistoryWriter for CancelCompaction {
-    fn commit(&mut self, record: &HistoryRecord) -> Result<(), HistoryWriteError> {
+    async fn commit(&mut self, record: &HistoryRecord) -> Result<(), HistoryWriteError> {
         if matches!(record.event, HistoryEvent::Compacted { .. }) {
             self.0.cancel();
         }
@@ -617,7 +623,8 @@ async fn cancellation_during_successful_compaction_commit_keeps_view_without_mai
     let mut run = run.cancellation(token.clone());
     run.core
         .conversation
-        .attach_history(Box::new(CancelCompaction(token)));
+        .attach_history(Box::new(CancelCompaction(token)))
+        .unwrap();
     let mut session = run.manual();
     three_rounds(&mut session).await;
     assert!(matches!(
@@ -694,6 +701,7 @@ async fn saved_view_still_materializes_when_new_response_has_unresolved_actions(
             ModelOutput::new(vec![proposal("pending", "read")], UsageReport::Unavailable),
             vec![],
         )
+        .await
         .unwrap();
     let view = HistoryView::from_compacted(session.conversation().messages(), &saved).unwrap();
     assert_eq!(

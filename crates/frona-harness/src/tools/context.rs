@@ -30,6 +30,11 @@ impl std::fmt::Debug for ToolContext<'_> {
 }
 
 impl<'a> ToolContext<'a> {
+    pub fn action_position(&self) -> Option<crate::ActionPosition> {
+        self.execution
+            .and_then(|execution| execution.action_position())
+    }
+
     pub fn with_call_id(mut self, call_id: impl Into<String>) -> Self {
         self.call_id = Some(call_id.into());
         self

@@ -184,7 +184,7 @@ async fn prose_returns_one_missing_submission_per_request() {
         .manual();
     for _ in 0..3 {
         assert!(session.call_model().await.unwrap().actions.is_empty());
-        session.repair_missing_submission().unwrap();
+        session.repair_missing_submission().await.unwrap();
     }
     assert!(matches!(
         session.call_model().await,
@@ -210,7 +210,7 @@ async fn malformed_submissions_do_not_consume_the_tool_turn_limit() {
     for _ in 0..3 {
         let turn = session.call_model().await.unwrap();
         assert!(matches!(
-            session.submission(&turn.actions[0]).unwrap(),
+            session.submission(&turn.actions[0]).await.unwrap(),
             Submission::Repaired { .. }
         ));
     }
@@ -292,6 +292,6 @@ async fn rejection_without_a_pending_submission_is_refused() {
     let (other, _) = harness(vec![submit("call-1", json!({"classes":[]}))]);
     let mut other = other.run("other").structured::<Classification>().manual();
     let action = other.call_model().await.unwrap().actions.pop().unwrap();
-    assert!(empty.revise(action, "nothing to reject").is_err());
+    assert!(empty.revise(action, "nothing to reject").await.is_err());
     assert_eq!(provider.calls(), 0);
 }

@@ -324,8 +324,7 @@ async fn reasoning_metadata_replays_through_native_anthropic_and_openai_requests
             .await
             .unwrap();
         let stored = extract_reasoning(&[AssistantContent::Reasoning(reasoning)]).unwrap();
-        state
-            .chat_service
+        crate::helpers::history::fixtures(&state.db)
             .begin_tool_call(
                 "replay-call",
                 &chat.id,
@@ -342,8 +341,7 @@ async fn reasoning_metadata_replays_through_native_anthropic_and_openai_requests
             )
             .await
             .unwrap();
-        state
-            .chat_service
+        crate::helpers::history::fixtures(&state.db)
             .finish_tool_call("replay-call", "Result".into(), true, 1, None)
             .await
             .unwrap();
@@ -440,9 +438,7 @@ async fn reasoning_metadata_replays_through_native_anthropic_and_openai_requests
 async fn old_tool_calls_without_signature_load_from_json_and_database() {
     let db = database().await;
     let fixture = helpers::app_state::build(&db).await;
-    let call = fixture
-        .state
-        .chat_service
+    let call = crate::helpers::history::fixtures(&fixture.state.db)
         .begin_tool_call(
             "old-call",
             "chat",
@@ -551,8 +547,7 @@ async fn assert_tool_call_replay_matches_live_request(dual_id: bool, snapshot: b
         call = native_call;
     }
     if snapshot {
-        state
-            .chat_service
+        crate::helpers::history::fixtures(&state.db)
             .record_provider_turn(
                 &message.id,
                 0,
@@ -569,8 +564,7 @@ async fn assert_tool_call_replay_matches_live_request(dual_id: bool, snapshot: b
             .unwrap();
         arguments.as_object_mut().unwrap().remove("description");
     }
-    state
-        .chat_service
+    crate::helpers::history::fixtures(&state.db)
         .begin_tool_call(
             "prefix-call",
             &chat.id,
@@ -587,8 +581,7 @@ async fn assert_tool_call_replay_matches_live_request(dual_id: bool, snapshot: b
         )
         .await
         .unwrap();
-    state
-        .chat_service
+    crate::helpers::history::fixtures(&state.db)
         .finish_tool_call("prefix-call", "Result".into(), true, 1, None)
         .await
         .unwrap();
@@ -640,7 +633,7 @@ async fn assert_tool_call_replay_matches_live_request(dual_id: bool, snapshot: b
             })],
         },
     ];
-    let live = frona::tool::persistent_dispatch::project_messages(&live);
+    let live = frona::tool::runtime_dispatch::project_messages(&live);
     for history in [live, replay] {
         let mut input = vec![RigMessage::user("Look up the value.")];
         input.extend(history);

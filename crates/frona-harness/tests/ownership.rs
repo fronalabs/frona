@@ -73,7 +73,7 @@ async fn one_configuration_supports_text_typed_and_manual_execution() {
         loop {
             let turn = session.call_model().await.unwrap();
             if turn.actions.is_empty() {
-                break session.finish().unwrap();
+                break session.finish().await.unwrap();
             }
             // The owned turn/actions retain no borrow of the mutable session.
             for action in turn.actions {
@@ -159,4 +159,35 @@ async fn owned_run_and_stateful_inspector_are_spawn_safe() {
     .unwrap();
     assert_eq!(result.unwrap(), Accepted("OWNED".into()));
     assert_eq!(*observations.lock().unwrap(), ["{}"]);
+}
+
+#[tokio::test]
+async fn start_hooks_share_the_configured_token_and_end_at_manual_completion() {
+    use frona_harness::Harness;
+    use tokio_util::sync::CancellationToken;
+
+    let cancellation = CancellationToken::new();
+    let first = CancellationToken::new();
+    let second = CancellationToken::new();
+    let (starts, mut observed) = tokio::sync::mpsc::unbounded_channel();
+    let run = Harness::new(ownership::model("done"))
+        .run("hello")
+        .on_start(|token| {
+            starts.send((1, token)).unwrap();
+            first.clone().drop_guard()
+        })
+        .on_start(|token| {
+            starts.send((2, token)).unwrap();
+            second.clone().drop_guard()
+        })
+        .cancellation(cancellation.clone());
+    assert!(observed.try_recv().is_err());
+    let mut session = run.manual();
+    assert_eq!(observed.try_recv().unwrap(), (1, cancellation.clone()));
+    assert_eq!(observed.try_recv().unwrap(), (2, cancellation));
+    session.call_model().await.unwrap();
+    assert!(!first.is_cancelled() && !second.is_cancelled());
+    assert_eq!(session.finish().await.unwrap(), "done");
+    assert!(first.is_cancelled() && second.is_cancelled());
+    assert!(observed.try_recv().is_err());
 }

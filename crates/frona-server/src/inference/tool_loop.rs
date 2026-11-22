@@ -150,20 +150,6 @@ pub(crate) fn to_rig_tool_definitions(
     definitions
 }
 
-fn extend_unique_attachments(
-    all_attachments: &mut Vec<crate::storage::Attachment>,
-    attachments: &[crate::storage::Attachment],
-) {
-    for attachment in attachments {
-        let already_attached = all_attachments
-            .iter()
-            .any(|existing| existing.owner == attachment.owner && existing.path == attachment.path);
-        if !already_attached {
-            all_attachments.push(attachment.clone());
-        }
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub async fn run_tool_loop(
     model_group: &ModelGroup,
@@ -219,13 +205,22 @@ pub async fn run_tool_loop_controlled(
     mut input_token_estimate: Option<frona_harness::inference::context::InputTokenEstimate>,
     execution: frona_harness::ExecutionControl<'_>,
 ) -> Result<ToolLoopOutcome, AppError> {
-    use crate::tool::persistent_dispatch::{
-        PersistentToolDispatcher, PersistentToolOutcome, project_messages,
-    };
+    use crate::tool::runtime_dispatch::{RuntimeToolDispatcher, project_messages};
     use frona_harness::{Conversation, ExecutionStop};
     let rig_tools =
         to_rig_tool_definitions(tool_registry.definitions(), tool_registry.mcp_bridge_mode());
+    let recording =
+        crate::chat::service::history::MessageHistoryBinding::new(chat_service, ctx, message_id)
+            .await?
+            .with_events(event_tx.clone());
     let mut conversation = Conversation::from_execution(execution);
+    conversation
+        .attach_history(Box::new(recording.clone().into_writer()))
+        .map_err(conversation_error)?;
+    conversation
+        .ensure_history()
+        .await
+        .map_err(conversation_error)?;
     let mut all_attachments = Vec::new();
     let mut last_reasoning = None;
     let mut last_text = String::new();
@@ -236,27 +231,20 @@ pub async fn run_tool_loop_controlled(
     } else {
         model_group.inference.max_tool_turns
     };
-    let first_turn = if turns == 0 {
-        0
-    } else {
-        chat_service.next_provider_turn(message_id).await?
-    };
     for turn in 0..turns {
-        let persisted_turn = first_turn
-            .checked_add(turn as u32)
-            .ok_or_else(|| AppError::Internal("Provider turn index exhausted".into()))?;
         if ctx.shutdown_token.is_cancelled() {
             return shutdown(
                 &mut conversation,
                 last_text,
                 all_attachments,
                 last_reasoning,
-            );
+            )
+            .await;
         }
         let projected = project_messages(&conversation.request_messages().map_err(protocol_error)?);
         let input = conversation
             .projected_input(&projected)
-            .map_err(protocol_error)?;
+            .map_err(conversation_error)?;
         let history = chat_history.iter().cloned().chain(projected).collect();
         let kind = if tool_registry.is_empty() {
             super::usage::InferenceKind::Text {
@@ -301,7 +289,8 @@ pub async fn run_tool_loop_controlled(
                     turn_text,
                     all_attachments,
                     last_reasoning,
-                );
+                )
+                .await;
             }
             Err(error) => match crate::tool::sdk_adapter::legacy_error(error) {
                 frona_harness::ToolError::Stop(stop) => {
@@ -311,10 +300,11 @@ pub async fn run_tool_loop_controlled(
                         turn_text,
                         all_attachments,
                         last_reasoning,
-                    );
+                    )
+                    .await;
                 }
                 frona_harness::ToolError::Failed(error) => {
-                    conversation.stop().map_err(protocol_error)?;
+                    conversation.stop().await.map_err(conversation_error)?;
                     return Err(*error
                         .downcast::<AppError>()
                         .unwrap_or_else(|error| Box::new(AppError::Internal(error.to_string()))));
@@ -324,24 +314,20 @@ pub async fn run_tool_loop_controlled(
                 }
             },
         };
-        let assistant = rig_core::message::AssistantMessage::new(output.content.clone())
-            .with_origin(output.origin.clone())
-            .with_stop(output.stop.clone());
-        chat_service
-            .record_provider_turn(message_id, persisted_turn, &assistant)
-            .await?;
         last_reasoning = extract_reasoning(&output.content);
         last_text = turn_text.clone();
         let actions = conversation
             .record_response(output, rig_tools.clone())
-            .map_err(protocol_error)?;
+            .await
+            .map_err(conversation_error)?;
         if ctx.shutdown_token.is_cancelled() {
             return shutdown(
                 &mut conversation,
                 turn_text,
                 all_attachments,
                 last_reasoning,
-            );
+            )
+            .await;
         }
         if let Err(error) = execution.check_cancellation() {
             return stopped(
@@ -350,10 +336,11 @@ pub async fn run_tool_loop_controlled(
                 turn_text,
                 all_attachments,
                 last_reasoning,
-            );
+            )
+            .await;
         }
         if actions.actions.is_empty() {
-            conversation.finish().map_err(protocol_error)?;
+            conversation.finish().await.map_err(conversation_error)?;
             return Ok(ToolLoopOutcome::Completed {
                 text: turn_text,
                 attachments: all_attachments,
@@ -361,17 +348,8 @@ pub async fn run_tool_loop_controlled(
                 reasoning: last_reasoning,
             });
         }
-        let mut dispatcher = PersistentToolDispatcher::new(
-            chat_service,
-            tool_registry,
-            ctx,
-            message_id,
-            persisted_turn,
-            (!turn_text.is_empty()).then_some(turn_text.clone()),
-            last_reasoning.clone(),
-        )
-        .await?
-        .with_events(event_tx.clone());
+        let mut dispatcher =
+            RuntimeToolDispatcher::new(recording.clone(), tool_registry, ctx).await?;
         let mut pending = Vec::new();
         let mut task_event = None;
         let mut prompts = Vec::new();
@@ -386,7 +364,10 @@ pub async fn run_tool_loop_controlled(
         {
             Ok(result) => result,
             Err(failure) => {
-                extend_unique_attachments(&mut all_attachments, &failure.attachments);
+                crate::storage::models::extend_unique_attachments(
+                    &mut all_attachments,
+                    &failure.attachments,
+                );
                 let stop = match failure.error {
                     frona_harness::ToolDispatchError::Stop(stop) => stop,
                     error => return Err(protocol_error(error)),
@@ -397,20 +378,23 @@ pub async fn run_tool_loop_controlled(
                     turn_text,
                     all_attachments,
                     last_reasoning,
-                );
+                )
+                .await;
             }
         };
         for result in results {
-            extend_unique_attachments(&mut all_attachments, &result.result().attachments);
-            match result {
-                PersistentToolOutcome::Pending(result) => pending.push(result.record),
-                PersistentToolOutcome::Task(result) | PersistentToolOutcome::Continue(result) => {
-                    if task_event.is_none() {
-                        task_event = result.record.task_event;
-                    }
-                    if let Some(prompt) = result.record.system_prompt {
-                        prompts.push(prompt);
-                    }
+            crate::storage::models::extend_unique_attachments(
+                &mut all_attachments,
+                &result.attachments,
+            );
+            if let Some(record) = result.pending {
+                pending.push(record);
+            } else {
+                if task_event.is_none() {
+                    task_event = result.task_event;
+                }
+                if let Some(prompt) = result.system_prompt {
+                    prompts.push(prompt);
                 }
             }
         }
@@ -421,10 +405,11 @@ pub async fn run_tool_loop_controlled(
                 turn_text,
                 all_attachments,
                 last_reasoning,
-            );
+            )
+            .await;
         }
         if !pending.is_empty() {
-            stop_host_wait(&mut conversation, "waiting for external tool result")?;
+            stop_host_wait(&mut conversation, "waiting for external tool result").await?;
             let system_prompt = pending
                 .last()
                 .and_then(|record| record.system_prompt.clone());
@@ -440,10 +425,11 @@ pub async fn run_tool_loop_controlled(
                 turn_text,
                 all_attachments,
                 last_reasoning,
-            );
+            )
+            .await;
         }
         if task_event.is_some() {
-            conversation.finish().map_err(protocol_error)?;
+            conversation.finish().await.map_err(conversation_error)?;
             return Ok(ToolLoopOutcome::Completed {
                 text: turn_text,
                 attachments: all_attachments,
@@ -456,7 +442,8 @@ pub async fn run_tool_loop_controlled(
                 .push_user(vec![rig_core::completion::message::UserContent::text(
                     prompt,
                 )])
-                .map_err(protocol_error)?;
+                .await
+                .map_err(conversation_error)?;
         }
     }
     stopped(
@@ -466,17 +453,32 @@ pub async fn run_tool_loop_controlled(
         all_attachments,
         last_reasoning,
     )
+    .await
+}
+
+fn conversation_error(error: frona_harness::ConversationError) -> AppError {
+    match error {
+        frona_harness::ConversationError::Storage(failure) => {
+            AppError::Inference(Box::new(frona_harness::inference::InferenceError::Stop(
+                frona_harness::ExecutionStop::Storage(Box::new((*failure).clone())),
+            )))
+        }
+        error => protocol_error(error),
+    }
 }
 
 fn protocol_error(error: impl std::fmt::Display) -> AppError {
     AppError::Internal(format!("runtime conversation: {error}"))
 }
 
-fn stop_host_wait(
+async fn stop_host_wait(
     conversation: &mut frona_harness::Conversation,
     message: &str,
 ) -> Result<(), AppError> {
-    match conversation.stop_execution(frona_harness::ExecutionStop::Stopped(message.into())) {
+    match conversation
+        .stop_execution(frona_harness::ExecutionStop::Stopped(message.into()))
+        .await
+    {
         frona_harness::ToolDispatchError::Stop(frona_harness::ExecutionStop::Stopped(_)) => Ok(()),
         frona_harness::ToolDispatchError::Stop(stop) => Err(AppError::Inference(Box::new(
             frona_harness::inference::InferenceError::Stop(stop),
@@ -485,13 +487,13 @@ fn stop_host_wait(
     }
 }
 
-fn shutdown(
+async fn shutdown(
     conversation: &mut frona_harness::Conversation,
     text: String,
     attachments: Vec<crate::storage::Attachment>,
     reasoning: Option<Reasoning>,
 ) -> Result<ToolLoopOutcome, AppError> {
-    stop_host_wait(conversation, "server shutting down")?;
+    stop_host_wait(conversation, "server shutting down").await?;
     Ok(ToolLoopOutcome::Shutdown {
         text,
         attachments,
@@ -499,14 +501,14 @@ fn shutdown(
     })
 }
 
-fn stopped(
+async fn stopped(
     conversation: &mut frona_harness::Conversation,
     reason: frona_harness::ExecutionStop,
     text: String,
     attachments: Vec<crate::storage::Attachment>,
     reasoning: Option<Reasoning>,
 ) -> Result<ToolLoopOutcome, AppError> {
-    let reason = match conversation.stop_execution(reason) {
+    let reason = match conversation.stop_execution(reason).await {
         frona_harness::ToolDispatchError::Stop(reason) => reason,
         error => return Err(protocol_error(error)),
     };

@@ -35,8 +35,8 @@ fn offered(name: &str) -> ToolDefinition {
     }
 }
 
-#[test]
-fn records_every_mixed_proposal_without_decoding_dispatch_or_mutating_arguments() {
+#[tokio::test]
+async fn records_every_mixed_proposal_without_decoding_dispatch_or_mutating_arguments() {
     let mut conversation = Conversation::new("investigate");
     let mut response = output(vec![
         AssistantContent::text("exploring"),
@@ -53,6 +53,7 @@ fn records_every_mixed_proposal_without_decoding_dispatch_or_mutating_arguments(
     let original = response.content.clone();
     let pending = conversation
         .record_response(response, vec![offered("lookup"), offered("submit")])
+        .await
         .unwrap();
     assert_eq!(pending.actions.len(), 4);
     assert_eq!(conversation.pending_count(), 4);
@@ -92,13 +93,13 @@ fn records_every_mixed_proposal_without_decoding_dispatch_or_mutating_arguments(
         ConversationError::PendingActions(4)
     );
     assert_eq!(
-        conversation.finish().unwrap_err(),
+        conversation.finish().await.unwrap_err(),
         ConversationError::PendingActions(4)
     );
 }
 
-#[test]
-fn resolves_out_of_order_into_one_original_order_result_batch_with_rich_content() {
+#[tokio::test]
+async fn resolves_out_of_order_into_one_original_order_result_batch_with_rich_content() {
     let image = Image {
         data: DocumentSourceKind::Base64("aW1hZ2U=".into()),
         media_type: Some(ImageMediaType::PNG),
@@ -122,12 +123,14 @@ fn resolves_out_of_order_into_one_original_order_result_batch_with_rich_content(
     let mut conversation = Conversation::new("hello");
     let pending = conversation
         .record_response(output(contents.clone()), vec![])
+        .await
         .unwrap();
     conversation
         .resolve(
             &pending.actions[1],
             ActionResolution::Rejected(ToolOutput::text("revise")),
         )
+        .await
         .unwrap();
     assert_eq!(
         conversation.messages().len(),
@@ -145,9 +148,10 @@ fn resolves_out_of_order_into_one_original_order_result_batch_with_rich_content(
         },
     ])
     .with_metadata(json!({"private":"result metadata"}));
-    conversation.start(&pending.actions[0]).unwrap();
+    conversation.start(&pending.actions[0]).await.unwrap();
     conversation
         .resolve(&pending.actions[0], ActionResolution::Result(rich.clone()))
+        .await
         .unwrap();
     assert_eq!(conversation.messages().len(), 3);
     assert!(
@@ -180,8 +184,8 @@ fn resolves_out_of_order_into_one_original_order_result_batch_with_rich_content(
     assert_eq!(decoded, history);
 }
 
-#[test]
-fn duplicate_and_absent_provider_ids_do_not_conflate_action_slots() {
+#[tokio::test]
+async fn duplicate_and_absent_provider_ids_do_not_conflate_action_slots() {
     let mut conversation = Conversation::default();
     let pending = conversation
         .record_response(
@@ -192,6 +196,7 @@ fn duplicate_and_absent_provider_ids_do_not_conflate_action_slots() {
             ]),
             vec![],
         )
+        .await
         .unwrap();
     assert_eq!(pending.actions.len(), 3);
     assert!(
@@ -205,6 +210,7 @@ fn duplicate_and_absent_provider_ids_do_not_conflate_action_slots() {
     for (index, handle) in pending.actions.iter().enumerate() {
         conversation
             .resolve(handle, result(&index.to_string()))
+            .await
             .unwrap();
     }
     let Message::User { content } = &conversation.messages()[1] else {
@@ -224,32 +230,34 @@ fn duplicate_and_absent_provider_ids_do_not_conflate_action_slots() {
     assert_ne!(first.content, second.content);
 }
 
-#[test]
-fn foreign_stale_and_resolved_handles_cannot_change_state() {
+#[tokio::test]
+async fn foreign_stale_and_resolved_handles_cannot_change_state() {
     let mut a = Conversation::default();
     let pending = a
         .record_response(output(vec![call("a", "lookup", json!({}))]), vec![])
+        .await
         .unwrap();
     let handle = &pending.actions[0];
     let mut b = Conversation::default();
     b.record_response(output(vec![call("a", "lookup", json!({}))]), vec![])
+        .await
         .unwrap();
     assert_eq!(
         b.action(handle).unwrap_err(),
         ConversationError::ForeignAction
     );
     assert_eq!(
-        b.start(handle).unwrap_err(),
+        b.start(handle).await.unwrap_err(),
         ConversationError::ForeignAction
     );
     assert_eq!(
-        b.resolve(handle, result("wrong")).unwrap_err(),
+        b.resolve(handle, result("wrong")).await.unwrap_err(),
         ConversationError::ForeignAction
     );
     assert_eq!(b.pending_count(), 1);
-    a.start(handle).unwrap();
+    a.start(handle).await.unwrap();
     assert_eq!(
-        a.start(handle).unwrap_err(),
+        a.start(handle).await.unwrap_err(),
         ConversationError::AlreadyStarted
     );
     assert_eq!(
@@ -257,35 +265,41 @@ fn foreign_stale_and_resolved_handles_cannot_change_state() {
             handle,
             ActionResolution::Rejected(ToolOutput::text("too late"))
         )
+        .await
         .unwrap_err(),
         ConversationError::AlreadyStarted
     );
-    a.resolve(handle, result("done")).unwrap();
+    a.resolve(handle, result("done")).await.unwrap();
     assert_eq!(
-        a.resolve(handle, result("twice")).unwrap_err(),
+        a.resolve(handle, result("twice")).await.unwrap_err(),
         ConversationError::AlreadyResolved
     );
     assert_eq!(a.messages().len(), 2);
     a.record_response(output(vec![call("a", "lookup", json!({}))]), vec![])
+        .await
         .unwrap();
-    assert_eq!(a.start(handle).unwrap_err(), ConversationError::StaleAction);
     assert_eq!(
-        a.resolve(handle, result("stale")).unwrap_err(),
+        a.start(handle).await.unwrap_err(),
+        ConversationError::StaleAction
+    );
+    assert_eq!(
+        a.resolve(handle, result("stale")).await.unwrap_err(),
         ConversationError::StaleAction
     );
     assert_eq!(a.pending_count(), 1);
 }
 
-#[test]
-fn terminal_states_invalidate_handles_without_resolving_or_accepting_work() {
+#[tokio::test]
+async fn terminal_states_invalidate_handles_without_resolving_or_accepting_work() {
     let mut stopped = Conversation::default();
     let pending = stopped
         .record_response(
             output(vec![call("a", "submit", json!({"candidate":1}))]),
             vec![],
         )
+        .await
         .unwrap();
-    stopped.stop().unwrap();
+    stopped.stop().await.unwrap();
     assert_eq!(stopped.status(), ConversationStatus::Stopped);
     assert_eq!(stopped.pending_count(), 1);
     assert_eq!(
@@ -293,12 +307,13 @@ fn terminal_states_invalidate_handles_without_resolving_or_accepting_work() {
         ConversationError::Terminal
     );
     assert_eq!(
-        stopped.start(&pending.actions[0]).unwrap_err(),
+        stopped.start(&pending.actions[0]).await.unwrap_err(),
         ConversationError::Terminal
     );
     assert_eq!(
         stopped
             .resolve(&pending.actions[0], result("accepted?"))
+            .await
             .unwrap_err(),
         ConversationError::Terminal
     );
@@ -307,35 +322,44 @@ fn terminal_states_invalidate_handles_without_resolving_or_accepting_work() {
         ActionStatus::Proposed
     );
     assert_eq!(
-        stopped.record_response(output(vec![]), vec![]).unwrap_err(),
+        stopped
+            .record_response(output(vec![]), vec![])
+            .await
+            .unwrap_err(),
         ConversationError::Terminal
     );
     let mut finished = Conversation::default();
     let pending = finished
         .record_response(output(vec![call("b", "lookup", json!({}))]), vec![])
+        .await
         .unwrap();
     finished
         .resolve(&pending.actions[0], result("done"))
+        .await
         .unwrap();
-    finished.finish().unwrap();
+    finished.finish().await.unwrap();
     assert_eq!(finished.status(), ConversationStatus::Finished);
     assert_eq!(
         finished
             .resolve(&pending.actions[0], result("again"))
+            .await
             .unwrap_err(),
         ConversationError::Terminal
     );
-    finished.stop().unwrap();
+    finished.stop().await.unwrap();
     assert_eq!(finished.status(), ConversationStatus::Finished);
 }
 
-#[test]
-fn native_structured_and_empty_content_remain_raw_without_invented_actions() {
+#[tokio::test]
+async fn native_structured_and_empty_content_remain_raw_without_invented_actions() {
     let mut response = output(vec![]);
     response.structured = Some(json!({"answer":42}));
     response.metadata = json!({"id":"provider-response"});
     let mut conversation = Conversation::default();
-    let pending = conversation.record_response(response, vec![]).unwrap();
+    let pending = conversation
+        .record_response(response, vec![])
+        .await
+        .unwrap();
     assert!(pending.actions.is_empty());
     assert_eq!(
         conversation.responses()[0].output().structured,
@@ -351,26 +375,30 @@ fn native_structured_and_empty_content_remain_raw_without_invented_actions() {
     assert!(conversation.request_messages().is_ok());
 }
 
-#[test]
-fn new_messages_and_responses_cannot_bypass_pending_pairing() {
+#[tokio::test]
+async fn new_messages_and_responses_cannot_bypass_pending_pairing() {
     let mut conversation = Conversation::default();
     let pending = conversation
         .record_response(output(vec![call("a", "lookup", json!({}))]), vec![])
+        .await
         .unwrap();
     assert_eq!(
         conversation
             .push_user(vec![UserContent::text("later")])
+            .await
             .unwrap_err(),
         ConversationError::PendingActions(1)
     );
     assert_eq!(
         conversation
             .record_response(output(vec![]), vec![])
+            .await
             .unwrap_err(),
         ConversationError::PendingActions(1)
     );
     conversation
         .resolve(&pending.actions[0], result("done"))
+        .await
         .unwrap();
     assert_eq!(
         conversation
@@ -379,11 +407,13 @@ fn new_messages_and_responses_cannot_bypass_pending_pairing() {
                 "lookup".try_into().unwrap(),
                 vec![ToolContent::text("invented")]
             )])
+            .await
             .unwrap_err(),
         ConversationError::UnpairedToolResult
     );
     conversation
         .push_user(vec![UserContent::text("revise without invented call")])
+        .await
         .unwrap();
     assert_eq!(conversation.messages().len(), 3);
     assert!(
@@ -391,8 +421,8 @@ fn new_messages_and_responses_cannot_bypass_pending_pairing() {
     );
 }
 
-#[test]
-fn native_turn_provenance_and_failed_results_survive_history_replay() {
+#[tokio::test]
+async fn native_turn_provenance_and_failed_results_survive_history_replay() {
     use rig_core::completion::message::{Origin, StopReason};
     let native_item = json!({"type":"tool_use", "id":"call", "name":"lookup", "input":{}});
     let content = call("call", "lookup", json!({})).with_native(native_item.clone());
@@ -401,12 +431,16 @@ fn native_turn_provenance_and_failed_results_survive_history_replay() {
     response.origin = Some(origin.clone());
     response.stop = Some(StopReason::ToolUse);
     let mut conversation = Conversation::new("lookup");
-    let actions = conversation.record_response(response, vec![]).unwrap();
+    let actions = conversation
+        .record_response(response, vec![])
+        .await
+        .unwrap();
     conversation
         .resolve(
             &actions.actions[0],
             ActionResolution::Failed(ToolOutput::text("unavailable")),
         )
+        .await
         .unwrap();
 
     let Message::Assistant(turn) = &conversation.messages()[1] else {
@@ -421,7 +455,7 @@ fn native_turn_provenance_and_failed_results_survive_history_replay() {
     assert!(matches!(&content[0], UserContent::ToolResult(result) if result.is_error));
 
     let bytes = frona_harness::encode_jsonl(conversation.history()).unwrap();
-    let restored = frona_harness::decode_jsonl(&bytes).unwrap();
+    let restored = frona_harness::decode_jsonl(&bytes).await.unwrap();
     assert_eq!(
         restored.replay.conversation.messages(),
         conversation.messages()

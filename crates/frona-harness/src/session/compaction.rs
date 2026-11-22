@@ -27,7 +27,9 @@ impl SessionCore<'_> {
             || max_tokens == 0
             || output_tokens.is_none_or(|output| output >= config.context_window)
         {
-            return Err(self.fail(CompactionError::InvalidConfiguration.into()));
+            return Err(self
+                .fail(CompactionError::InvalidConfiguration.into())
+                .await);
         }
         let available = config.context_window - output_tokens.unwrap();
         let fraction = |percent: u8| ((available as u128 * percent as u128) / 100) as usize;
@@ -35,13 +37,15 @@ impl SessionCore<'_> {
         let before = view.estimated_tokens(&self.instructions, tools);
         if !config.enabled || before <= fraction(config.trigger_percent) {
             if before > available {
-                return Err(self.fail(
-                    CompactionError::ContextOverflow {
-                        estimated: before,
-                        available,
-                    }
-                    .into(),
-                ));
+                return Err(self
+                    .fail(
+                        CompactionError::ContextOverflow {
+                            estimated: before,
+                            available,
+                        }
+                        .into(),
+                    )
+                    .await);
             }
             return Ok((
                 view.messages(),
@@ -65,19 +69,21 @@ impl SessionCore<'_> {
                     request_max_tokens,
                 ));
             }
-            Err(error) => return Err(self.fail(error.into())),
+            Err(error) => return Err(self.fail(error.into()).await),
         };
         let mut messages = plan.summary_input().to_vec();
         messages.push(Message::user(SUMMARY_INSTRUCTION));
         let estimated = HistoryView::new(&messages).estimated_tokens(&self.instructions, &[]);
         if estimated > available {
-            return Err(self.fail(
-                CompactionError::ContextOverflow {
-                    estimated,
-                    available,
-                }
-                .into(),
-            ));
+            return Err(self
+                .fail(
+                    CompactionError::ContextOverflow {
+                        estimated,
+                        available,
+                    }
+                    .into(),
+                )
+                .await);
         }
         let input = self
             .conversation
@@ -108,9 +114,9 @@ impl SessionCore<'_> {
                     Ok(stop) => stop.into(),
                     Err(error) => ModelError::Provider(error).into(),
                 };
-                return Err(self.fail(error));
+                return Err(self.fail(error).await);
             }
-            Err(error) => return Err(self.fail(error.into())),
+            Err(error) => return Err(self.fail(error.into()).await),
         };
         let output = invocation.output;
         if output.structured.is_some()
@@ -119,7 +125,7 @@ impl SessionCore<'_> {
                 .iter()
                 .any(|c| matches!(c, AssistantContent::ToolCall(_)))
         {
-            return Err(self.fail(CompactionError::InvalidSummary.into()));
+            return Err(self.fail(CompactionError::InvalidSummary.into()).await);
         }
         let summary = output
             .content
@@ -132,20 +138,23 @@ impl SessionCore<'_> {
             .join("\n");
         let compacted = match plan.finish(&summary, None) {
             Ok(view) => view,
-            Err(error) => return Err(self.fail(error.into())),
+            Err(error) => return Err(self.fail(error.into()).await),
         };
         let after = HistoryView::from_compacted(self.conversation.messages(), &compacted)?
             .estimated_tokens(&self.instructions, tools);
         if after >= before {
-            return Err(self.fail(CompactionError::NoReduction { before, after }.into()));
+            return Err(self
+                .fail(CompactionError::NoReduction { before, after }.into())
+                .await);
         }
         let result = self
             .conversation
-            .commit_compaction(compacted, invocation.origin, output);
-        self.result(result)?;
-        // A writer may cancel synchronously. The committed view stays durable,
+            .commit_compaction(compacted, invocation.origin, output)
+            .await;
+        self.result(result).await?;
+        // A writer may cancel during its commit. The committed view stays durable,
         // but no main request may follow cancellation or a failed required write.
-        self.check_active()?;
+        self.check_active().await?;
         let view = self.conversation.model_view()?;
         let input = self.conversation.request_input(view.original_positions());
         Ok((view.messages(), input, request_max_tokens))

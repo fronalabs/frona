@@ -690,7 +690,7 @@ fn convert_agent_with_tool_calls(
                 false
             }
         });
-        crate::tool::persistent_dispatch::project_assistant(&mut assistant);
+        crate::tool::runtime_dispatch::project_assistant(&mut assistant);
         let calls: Vec<_> = assistant.tool_calls().cloned().collect();
         if !assistant.content.is_empty() {
             result.push(RigMessage::Assistant(assistant));

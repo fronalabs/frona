@@ -57,7 +57,7 @@ impl Conversation {
         tools: &mut ToolRegistry<'_>,
         execution: ExecutionControl<'_>,
     ) -> Result<ActionResolution, ToolDispatchError> {
-        self.dispatch_tool(handle, tools, execution, None, false)
+        self.dispatch_tool(handle, tools, execution, &mut [], false)
             .await
     }
 
@@ -71,17 +71,17 @@ impl Conversation {
         execution: ExecutionControl<'_>,
         maximum: NonZeroUsize,
     ) -> Result<Vec<ActionResolution>, ToolDispatchError> {
-        self.execute_tools_with_hook(actions, tools, execution, maximum, None)
+        self.execute_tools_with_hooks(actions, tools, execution, maximum, &mut [])
             .await
     }
 
-    pub(crate) async fn execute_tools_with_hook(
+    pub(crate) async fn execute_tools_with_hooks(
         &mut self,
         actions: &[PendingAction],
         tools: &mut ToolRegistry<'_>,
         execution: ExecutionControl<'_>,
         maximum: NonZeroUsize,
-        hook: Option<&mut dyn ToolCallHook>,
+        hooks: &mut [&mut dyn ToolCallHook],
     ) -> Result<Vec<ActionResolution>, ToolDispatchError> {
         let tools = tools.locked();
         let calls = actions
@@ -91,7 +91,7 @@ impl Conversation {
                 Ok((action, tools.get(name.as_str())))
             })
             .collect::<Result<Vec<_>, ToolDispatchError>>()?;
-        self.dispatch_batch(calls, execution, maximum, hook).await
+        self.dispatch_batch(calls, execution, maximum, hooks).await
     }
 
     /// Execute call-local tool instances under the same batch scheduler. This is
@@ -121,7 +121,7 @@ impl Conversation {
                 .collect(),
             execution,
             maximum,
-            None,
+            &mut [],
         )
         .await
     }
@@ -134,11 +134,11 @@ impl Conversation {
         )>,
         execution: ExecutionControl<'_>,
         maximum: NonZeroUsize,
-        hook: Option<&mut dyn ToolCallHook>,
+        hooks: &mut [&mut dyn ToolCallHook],
     ) -> Result<Vec<ActionResolution>, ToolDispatchError> {
         let mut results = vec![None; calls.len()];
         let conversation = Mutex::new(self);
-        let hook = Mutex::new(hook);
+        let hooks = Mutex::new(hooks);
         let mut pending: VecDeque<_> = calls.into_iter().enumerate().collect();
         let admission = CancellationToken::new();
         let mut running = FuturesUnordered::new();
@@ -159,7 +159,7 @@ impl Conversation {
                 };
                 let (index, (action, _)) = pending.remove(position).unwrap();
                 let conversation = &conversation;
-                let hook = &hook;
+                let hooks = &hooks;
                 let admission = &admission;
                 running.push(async move {
                     let result = Self::dispatch_tool_inner(
@@ -168,7 +168,7 @@ impl Conversation {
                         tool.as_mut()
                             .map(|tool| &mut ***tool as &mut (dyn crate::Tool + 'tool)),
                         execution,
-                        hook,
+                        hooks,
                         admission,
                         false,
                     )
@@ -208,6 +208,7 @@ impl Conversation {
                 None => Ok(results.into_iter().map(Option::unwrap).collect()),
             },
         )
+        .await
     }
 
     /// Explicitly retry interrupted ordinary calls, in proposal order, using
@@ -223,7 +224,8 @@ impl Conversation {
         tools: &mut ToolRegistry<'_>,
         execution: ExecutionControl<'_>,
     ) -> Result<ResponseActions, ToolDispatchError> {
-        self.recover_tools_inner(tools, execution, None).await
+        self.recover_tools_with_hooks(tools, execution, &mut [])
+            .await
     }
 
     /// Recovery with restored application policy. Reject/Stop preserves an
@@ -235,14 +237,16 @@ impl Conversation {
         execution: ExecutionControl<'_>,
         hook: &mut dyn ToolCallHook,
     ) -> Result<ResponseActions, ToolDispatchError> {
-        self.recover_tools_inner(tools, execution, Some(hook)).await
+        self.recover_tools_with_hooks(tools, execution, &mut [hook])
+            .await
     }
 
-    async fn recover_tools_inner(
+    /// Retry interrupted actions with each hook in registration order.
+    pub async fn recover_tools_with_hooks(
         &mut self,
         tools: &mut ToolRegistry<'_>,
         execution: ExecutionControl<'_>,
-        mut hook: Option<&mut dyn ToolCallHook>,
+        hooks: &mut [&mut dyn ToolCallHook],
     ) -> Result<ResponseActions, ToolDispatchError> {
         // These checks must precede reactivation, observer rebinding, or writes.
         if let Some(failure) = self.history_failure() {
@@ -262,24 +266,21 @@ impl Conversation {
             return Err(RecoveryError::FinalizedReport.into());
         }
         self.activate_recovery(execution.report_handle());
-        self.check_dispatch_cancellation(execution)?;
+        self.check_dispatch_cancellation(execution).await?;
         let pending = self.pending_actions()?;
         // Preflight all interrupted dependencies before any retry can have an effect.
         for action in &pending.actions {
             if self.action(action)?.status == ActionStatus::Started
                 && let Err(error) = self.require_recovery_tool(action, tools)
             {
-                return Err(self.stop_dispatch_error(error));
+                return Err(self.stop_dispatch_error(error).await);
             }
         }
         for action in &pending.actions {
             if self.action(action)?.status != ActionStatus::Started {
                 continue;
             }
-            let hook = hook
-                .as_mut()
-                .map(|hook| &mut **hook as &mut dyn ToolCallHook);
-            self.dispatch_tool(action, tools, execution, hook, true)
+            self.dispatch_tool(action, tools, execution, hooks, true)
                 .await?;
         }
         self.pending_actions().map_err(Into::into)
@@ -312,14 +313,14 @@ impl Conversation {
         Ok(())
     }
 
-    pub(crate) async fn execute_tool_with_hook(
+    pub(crate) async fn execute_tool_with_hooks(
         &mut self,
         handle: &PendingAction,
         tools: &mut ToolRegistry<'_>,
         execution: ExecutionControl<'_>,
-        hook: Option<&mut dyn ToolCallHook>,
+        hooks: &mut [&mut dyn ToolCallHook],
     ) -> Result<ActionResolution, ToolDispatchError> {
-        self.dispatch_tool(handle, tools, execution, hook, false)
+        self.dispatch_tool(handle, tools, execution, hooks, false)
             .await
     }
 
@@ -328,11 +329,11 @@ impl Conversation {
         handle: &PendingAction,
         tools: &mut ToolRegistry<'_>,
         execution: ExecutionControl<'_>,
-        hook: Option<&mut dyn ToolCallHook>,
+        hooks: &mut [&mut dyn ToolCallHook],
         recovery: bool,
     ) -> Result<ActionResolution, ToolDispatchError> {
         let conversation = Mutex::new(self);
-        let hook = Mutex::new(hook);
+        let hooks = Mutex::new(hooks);
         let tool = tools.get_mut(
             &conversation
                 .lock()
@@ -348,26 +349,26 @@ impl Conversation {
             handle,
             tool,
             execution,
-            &hook,
+            &hooks,
             &CancellationToken::new(),
             recovery,
         )
         .await
         .map(|result| result.expect("single-call admission stays open"));
         let conversation = conversation.into_inner();
-        Self::finish_dispatch(conversation, result)
+        Self::finish_dispatch(conversation, result).await
     }
 
-    fn finish_dispatch<T>(
+    async fn finish_dispatch<T>(
         conversation: &mut Conversation,
         result: Result<T, ToolDispatchError>,
     ) -> Result<T, ToolDispatchError> {
-        result.map_err(|error| match error {
-            ToolDispatchError::Stop(_) | ToolDispatchError::ToolHook(_) => {
-                conversation.stop_dispatch_error(error)
+        match result {
+            Err(error @ (ToolDispatchError::Stop(_) | ToolDispatchError::ToolHook(_))) => {
+                Err(conversation.stop_dispatch_error(error).await)
             }
-            error => error,
-        })
+            result => result,
+        }
     }
 
     async fn dispatch_tool_inner<'tool>(
@@ -375,7 +376,7 @@ impl Conversation {
         handle: &PendingAction,
         tool: Option<&mut (dyn crate::Tool + 'tool)>,
         execution: ExecutionControl<'_>,
-        hook: &Mutex<Option<&mut dyn ToolCallHook>>,
+        hooks: &Mutex<&mut [&mut dyn ToolCallHook]>,
         admission: &CancellationToken,
         recovery: bool,
     ) -> Result<Option<ActionResolution>, ToolDispatchError> {
@@ -409,6 +410,7 @@ impl Conversation {
                     handle,
                     ToolOutput::text(format!("Tool '{name}' was not offered for this request.")),
                 )
+                .await
                 .map(Some);
         }
         let Some(tool) = tool else {
@@ -417,12 +419,12 @@ impl Conversation {
                     handle,
                     ToolOutput::text(format!("Tool '{name}' is not registered.")),
                 )
+                .await
                 .map(Some);
         };
         drop(state);
         {
-            let mut hook = hook.lock().await;
-            if let Some(hook) = hook.as_deref_mut() {
+            for hook in hooks.lock().await.iter_mut() {
                 let decision = tokio::select! {
                     biased;
                     _ = admission.cancelled() => return Ok(None),
@@ -446,6 +448,7 @@ impl Conversation {
                             .lock()
                             .await
                             .reject_tool(handle, ToolOutput::text(feedback))
+                            .await
                             .map(Some);
                     }
                     Ok(ToolDecision::Reject(reason) | ToolDecision::Stop(reason)) => {
@@ -469,6 +472,7 @@ impl Conversation {
                     .lock()
                     .await
                     .start_invocation(handle, recovery)
+                    .await
                     .map_err(|error| match error {
                         ConversationError::Storage(failure) => {
                             ToolError::Stop(ExecutionStop::Storage(Box::new((*failure).clone())))
@@ -495,7 +499,7 @@ impl Conversation {
             }
             Err(ToolError::Stop(stop)) => return Err(stop.into()),
         };
-        state.resolve(handle, resolution.clone())?;
+        state.resolve(handle, resolution.clone()).await?;
         execution.check_cancellation().map_err(|error| {
             ToolDispatchError::Stop(
                 error
@@ -503,32 +507,49 @@ impl Conversation {
                     .expect("cancellation is terminal"),
             )
         })?;
+        drop(state);
+        for hook in hooks.lock().await.iter_mut() {
+            tokio::select! {
+                biased;
+                _ = execution.cancelled() => return Err(ExecutionStop::Cancelled("execution cancelled during result hook".into()).into()),
+                result = hook.after(&call, &resolution) => result?,
+            }
+            execution.check_cancellation().map_err(|error| {
+                ToolDispatchError::Stop(
+                    error
+                        .into_execution_stop()
+                        .expect("cancellation is terminal"),
+                )
+            })?;
+        }
         Ok(Some(resolution))
     }
 
-    fn check_dispatch_cancellation(
+    async fn check_dispatch_cancellation(
         &mut self,
         execution: ExecutionControl<'_>,
     ) -> Result<(), ToolDispatchError> {
         if let Err(error) = execution.check_cancellation() {
-            return Err(self.stop_dispatch_error(
-                error
-                    .into_execution_stop()
-                    .expect("cancellation is terminal")
-                    .into(),
-            ));
+            return Err(self
+                .stop_dispatch_error(
+                    error
+                        .into_execution_stop()
+                        .expect("cancellation is terminal")
+                        .into(),
+                )
+                .await);
         }
         Ok(())
     }
 
-    fn stop_dispatch_error(&mut self, error: ToolDispatchError) -> ToolDispatchError {
+    async fn stop_dispatch_error(&mut self, error: ToolDispatchError) -> ToolDispatchError {
         let category = match &error {
             ToolDispatchError::Stop(stop) => stop.failure_kind(),
             ToolDispatchError::Recovery(_) => FailureKind::Setup,
             ToolDispatchError::ToolHook(_) => FailureKind::ToolHook,
             _ => FailureKind::Protocol,
         };
-        match self.stop_with_reason(category, error.to_string()) {
+        match self.stop_with_reason(category, error.to_string()).await {
             Err(error) => error.into(),
             Ok(()) => error,
         }
@@ -537,14 +558,14 @@ impl Conversation {
     /// Pair rejection feedback without invoking a tool or charging its allowance.
     /// This accepts only an unstarted ordinary proposal; submissions have their
     /// own typed resolution path. Rejection itself needs no execution budget.
-    pub fn reject_tool(
+    pub async fn reject_tool(
         &mut self,
         handle: &PendingAction,
         feedback: ToolOutput,
     ) -> Result<ActionResolution, ToolDispatchError> {
         self.require_tool_proposal(handle)?;
         let resolution = ActionResolution::Rejected(feedback);
-        self.resolve(handle, resolution.clone())?;
+        self.resolve(handle, resolution.clone()).await?;
         Ok(resolution)
     }
 
@@ -572,8 +593,8 @@ impl Conversation {
     /// Stop with a typed host execution failure, retaining unfinished actions.
     /// A failed required stop write takes precedence over the supplied reason.
     /// The returned error is the authoritative stop; this never completes work.
-    pub fn stop_execution(&mut self, stop: ExecutionStop) -> ToolDispatchError {
-        self.stop_dispatch_error(stop.into())
+    pub async fn stop_execution(&mut self, stop: ExecutionStop) -> ToolDispatchError {
+        self.stop_dispatch_error(stop.into()).await
     }
 
     pub(crate) fn require_tool_proposal(

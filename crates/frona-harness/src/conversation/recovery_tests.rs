@@ -16,8 +16,9 @@ struct RetryFault {
     fail: bool,
     cancel: Option<CancellationToken>,
 }
+#[async_trait::async_trait]
 impl HistoryWriter for RetryFault {
-    fn commit(&mut self, record: &HistoryRecord) -> Result<(), HistoryWriteError> {
+    async fn commit(&mut self, record: &HistoryRecord) -> Result<(), HistoryWriteError> {
         let targeted = match &record.event {
             HistoryEvent::ToolStarted { ordinal, .. } => !self.result && *ordinal == 2,
             HistoryEvent::ActionResolved { .. } => self.result,
@@ -37,7 +38,9 @@ impl HistoryWriter for RetryFault {
         Ok(())
     }
 }
-fn fixture(writer: Option<RetryFault>) -> (Conversation, ToolRegistry<'static>, Arc<AtomicUsize>) {
+async fn fixture(
+    writer: Option<RetryFault>,
+) -> (Conversation, ToolRegistry<'static>, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let effects = calls.clone();
     let mut tools = ToolRegistry::default();
@@ -52,7 +55,7 @@ fn fixture(writer: Option<RetryFault>) -> (Conversation, ToolRegistry<'static>, 
         .unwrap();
     let mut conversation = Conversation::new("input");
     if let Some(writer) = writer {
-        conversation.attach_history(Box::new(writer));
+        conversation.attach_history(Box::new(writer)).unwrap();
     }
     let actions = conversation
         .record_response(
@@ -68,8 +71,9 @@ fn fixture(writer: Option<RetryFault>) -> (Conversation, ToolRegistry<'static>, 
             ),
             tools.definitions().cloned().collect(),
         )
+        .await
         .unwrap();
-    conversation.start(&actions.actions[0]).unwrap();
+    conversation.start(&actions.actions[0]).await.unwrap();
     (conversation, tools, calls)
 }
 
@@ -80,7 +84,8 @@ async fn failed_retry_start_or_result_blocks_recovery_until_explicit_reconciliat
             result,
             fail: true,
             cancel: None,
-        }));
+        }))
+        .await;
         let budget = DefaultBudget::default();
         let error = conversation
             .recover_tools(&mut tools, ExecutionControl::new(&budget))
@@ -120,7 +125,7 @@ async fn failed_retry_start_or_result_blocks_recovery_until_explicit_reconciliat
                 detached.discard_pending_write(),
                 Err(ConversationError::CannotDiscardWrite)
             );
-            detached.adopt_pending_write().unwrap();
+            detached.adopt_pending_write().await.unwrap();
             detached
                 .recover_tools(&mut tools, ExecutionControl::new(&budget))
                 .await
@@ -146,7 +151,8 @@ async fn cancellation_from_successful_retry_writes_preserves_saved_state_and_sto
             result,
             fail: false,
             cancel: Some(cancel.clone()),
-        }));
+        }))
+        .await;
         assert!(matches!(
             conversation
                 .recover_tools(
@@ -176,7 +182,7 @@ async fn cancellation_from_successful_retry_writes_preserves_saved_state_and_sto
 #[tokio::test]
 async fn overflow_and_unoffered_interrupted_calls_are_effect_free_errors() {
     for overflow in [false, true] {
-        let (mut conversation, mut tools, calls) = fixture(None);
+        let (mut conversation, mut tools, calls) = fixture(None).await;
         if overflow {
             conversation.responses[0].actions[0].invocation_ordinal = u64::MAX;
         } else {

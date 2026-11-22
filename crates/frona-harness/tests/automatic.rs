@@ -151,7 +151,7 @@ async fn automatic_and_manual_text_have_identical_requests_pairing_and_admission
         session.execute(action).await.unwrap();
     }
     assert!(session.call_model().await.unwrap().actions.is_empty());
-    assert_eq!(session.finish().unwrap(), "done");
+    assert_eq!(session.finish().await.unwrap(), "done");
     assert_eq!(history(&automatic_requests), history(&manual_requests));
     assert_eq!(automatic_budget.snapshot(), manual_budget.snapshot());
     assert_eq!(
@@ -193,21 +193,24 @@ async fn automatic_and_manual_structured_repair_and_multiple_submissions_match()
     );
     let mut session = run(manual, &manual_budget).manual();
     assert!(session.call_model().await.unwrap().actions.is_empty());
-    session.repair_missing_submission().unwrap();
+    session.repair_missing_submission().await.unwrap();
     let mut turn = session.call_model().await.unwrap().actions.into_iter();
     let bad = turn.next().unwrap();
     session.execute(turn.next().unwrap()).await.unwrap();
     assert!(matches!(
-        session.submission(&bad).unwrap(),
+        session.submission(&bad).await.unwrap(),
         Submission::Repaired { .. }
     ));
     let mut turn = session.call_model().await.unwrap().actions.into_iter();
     let chosen = turn.next().unwrap();
-    let Submission::Ready(value) = session.submission(&chosen).unwrap() else {
+    let Submission::Ready(value) = session.submission(&chosen).await.unwrap() else {
         panic!("valid submission rejected")
     };
-    session.reject(turn.next().unwrap(), "An earlier valid submission was selected. This additional submission was not selected.").unwrap();
-    assert_eq!(session.accept(chosen, value).unwrap(), Answer { value: 7 });
+    session.reject(turn.next().unwrap(), "An earlier valid submission was selected. This additional submission was not selected.").await.unwrap();
+    assert_eq!(
+        session.accept(chosen, value).await.unwrap(),
+        Answer { value: 7 }
+    );
     assert_eq!(history(&automatic_requests), history(&manual_requests));
     assert_eq!(automatic_budget.snapshot(), manual_budget.snapshot());
     assert!(

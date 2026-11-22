@@ -454,11 +454,12 @@ async fn manual_loop_can_reuse_the_same_matchable_inspector_decisions() {
     let mut retained = None;
     let accepted = loop {
         let action = manual.call_model().await.unwrap().actions.pop().unwrap();
-        let frona_harness::Submission::Ready(value) = manual.submission(&action).unwrap() else {
+        let frona_harness::Submission::Ready(value) = manual.submission(&action).await.unwrap()
+        else {
             panic!("fixture is schema-valid")
         };
         match inspect(value).await.unwrap() {
-            Decision::Accept { value, .. } => break manual.accept(action, value).unwrap(),
+            Decision::Accept { value, .. } => break manual.accept(action, value).await.unwrap(),
             Decision::Revise {
                 feedback,
                 retained: candidate,
@@ -466,7 +467,7 @@ async fn manual_loop_can_reuse_the_same_matchable_inspector_decisions() {
                 if candidate.is_some() {
                     retained = candidate;
                 }
-                manual.revise(action, feedback).unwrap();
+                manual.revise(action, feedback).await.unwrap();
             }
             Decision::Stop { .. } | Decision::Abandon { .. } => panic!("fixture does not stop"),
         }
@@ -672,4 +673,284 @@ async fn model_response_limit_accepts_the_last_response_and_zero_never_calls() {
         harness.run("last").model_responses(1).await.unwrap(),
         "done"
     );
+}
+
+#[derive(Debug, Default, Clone)]
+struct RequiredHistory {
+    records: Arc<Mutex<Vec<frona_harness::HistoryRecord>>>,
+    fail_on: Option<frona_harness::HistoryOperation>,
+}
+#[async_trait]
+impl frona_harness::HistoryWriter for RequiredHistory {
+    async fn commit(
+        &mut self,
+        record: &frona_harness::HistoryRecord,
+    ) -> Result<(), frona_harness::HistoryWriteError> {
+        tokio::task::yield_now().await;
+        if self.fail_on == Some(record.event.operation()) {
+            return Err(frona_harness::HistoryWriteError {
+                phase: frona_harness::HistoryWritePhase::Append,
+                cause: "database unavailable".into(),
+            });
+        }
+        self.records.lock().unwrap().push(record.clone());
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn required_history_failure_prevents_dependent_model_and_tool_effects() {
+    use frona_harness::HistoryOperation as Op;
+    for (failure, expected_models, expected_tools) in [
+        (Op::Open, 0, 0),
+        (Op::Response, 1, 0),
+        (Op::ToolStart, 1, 0),
+        (Op::ActionResolution, 1, 1),
+    ] {
+        let (model, requests) = scripted_model(vec![
+            Ok(output(vec![call("change", "change", json!({"value":1}))])),
+            submitted(2),
+        ]);
+        let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = effects.clone();
+        let tool = tool("change", "effect", move |_: Answer| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { Ok(ToolOutput::text("changed")) }
+        })
+        .unwrap();
+        let sink = RequiredHistory {
+            fail_on: Some(failure),
+            ..Default::default()
+        };
+        let error = Harness::new(model)
+            .run("change")
+            .tool(tool)
+            .history_writer(sink)
+            .structured::<Answer>()
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            matches!(error.reason, ManualError::Stop(ExecutionStop::Storage(_))),
+            "{failure:?}: {error:?}"
+        );
+        assert_eq!(
+            requests.lock().unwrap().len(),
+            expected_models,
+            "{failure:?}"
+        );
+        assert_eq!(
+            effects.load(std::sync::atomic::Ordering::SeqCst),
+            expected_tools,
+            "{failure:?}"
+        );
+        assert!(matches!(
+            error.report.outcome,
+            Some(frona_harness::RunOutcome::Incomplete {
+                kind: frona_harness::FailureKind::Storage,
+                ..
+            })
+        ));
+    }
+}
+
+#[tokio::test]
+async fn inspection_feedback_and_acceptance_are_durable_before_returning_success() {
+    let (model, requests) = scripted_model(vec![submitted(1), submitted(2)]);
+    let sink = RequiredHistory::default();
+    let accepted = Harness::new(model)
+        .run("verify")
+        .history_writer(sink.clone())
+        .structured::<Answer>()
+        .submission_attempts(2)
+        .inspect(async |answer| {
+            assert!(
+                sink.records
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|r| matches!(r.event, frona_harness::HistoryEvent::Response { .. }))
+            );
+            Ok::<_, ()>(if answer.value == 1 {
+                Decision::revise("health check failed")
+            } else {
+                Decision::accept(answer.value)
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(accepted, 2);
+    assert_eq!(requests.lock().unwrap().len(), 2);
+    let history = sink.records.lock().unwrap();
+    assert!(
+        serde_json::to_string(&*history)
+            .unwrap()
+            .contains("health check failed")
+    );
+    assert!(matches!(
+        history.last().unwrap().event,
+        frona_harness::HistoryEvent::SubmissionCompleted { .. }
+    ));
+}
+
+#[tokio::test]
+async fn accepted_candidate_is_not_success_when_terminal_database_write_fails() {
+    let (model, _) = scripted_model(vec![submitted(1)]);
+    let sink = RequiredHistory {
+        fail_on: Some(frona_harness::HistoryOperation::SubmissionCompletion),
+        ..Default::default()
+    };
+    let error = Harness::new(model)
+        .run("verify")
+        .history_writer(sink)
+        .structured::<Answer>()
+        .inspect(async |a| Ok::<_, ()>(Decision::accept(a.value)))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error.reason,
+        ManualError::Stop(ExecutionStop::Storage(_))
+    ));
+    assert!(matches!(
+        error.report.outcome,
+        Some(frona_harness::RunOutcome::Incomplete {
+            kind: frona_harness::FailureKind::Storage,
+            ..
+        })
+    ));
+}
+
+#[derive(Debug)]
+struct InterruptedWriter {
+    entered: Arc<Notify>,
+    operation: frona_harness::HistoryOperation,
+}
+#[async_trait]
+impl frona_harness::HistoryWriter for InterruptedWriter {
+    async fn commit(
+        &mut self,
+        record: &frona_harness::HistoryRecord,
+    ) -> Result<(), frona_harness::HistoryWriteError> {
+        if record.event.operation() == self.operation {
+            self.entered.notify_one();
+            std::future::pending().await
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[tokio::test]
+async fn dropped_async_commit_preserves_uncertainty_and_blocks_later_transitions() {
+    use frona_harness::{Conversation, ConversationError, HistoryOperation, PersistenceOutcome};
+    for operation in [HistoryOperation::Open, HistoryOperation::Response] {
+        let entered = Arc::new(Notify::new());
+        let mut conversation = Conversation::new("input");
+        conversation
+            .attach_history(Box::new(InterruptedWriter {
+                entered: entered.clone(),
+                operation,
+            }))
+            .unwrap();
+        let mut write = Box::pin(
+            conversation.record_response(output(vec![AssistantContent::text("answer")]), vec![]),
+        );
+        tokio::select! {
+            result = &mut write => panic!("unexpected completed write: {result:?}"),
+            _ = entered.notified() => {}
+        }
+        drop(write);
+        assert_eq!(conversation.status(), ConversationStatus::Stopped);
+        let failure = conversation.history_failure().unwrap();
+        assert_eq!(failure.operation, operation);
+        assert_eq!(failure.persistence, PersistenceOutcome::Unknown);
+        assert_eq!(
+            conversation.pending_write().unwrap().event.operation(),
+            operation
+        );
+        assert!(matches!(
+            conversation.finish().await,
+            Err(ConversationError::Terminal)
+        ));
+        // A dropped write cannot turn into a silently acknowledged response.
+        assert!(conversation.responses().is_empty());
+        let mut detached = conversation.into_memory().unwrap();
+        detached.adopt_pending_write().await.unwrap();
+        assert!(detached.history_failure().is_none());
+    }
+}
+
+struct AfterRecorded {
+    records: Arc<Mutex<Vec<frona_harness::HistoryRecord>>>,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+#[async_trait]
+impl frona_harness::ToolCallHook for AfterRecorded {
+    async fn decide(
+        &mut self,
+        _: &ToolCall,
+    ) -> Result<frona_harness::ToolDecision, frona_harness::ToolFailure> {
+        Ok(frona_harness::ToolDecision::Execute)
+    }
+    async fn after(
+        &mut self,
+        _: &ToolCall,
+        _: &frona_harness::ActionResolution,
+    ) -> Result<(), ExecutionStop> {
+        assert!(matches!(
+            self.records.lock().unwrap().last().unwrap().event,
+            frona_harness::HistoryEvent::ActionResolved { .. }
+        ));
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(ExecutionStop::Stopped(
+            "external continuation required".into(),
+        ))
+    }
+}
+#[tokio::test]
+async fn post_tool_policy_runs_only_after_required_resolution_commit() {
+    for fail in [false, true] {
+        let (model, requests) = scripted_model(vec![Ok(output(vec![call(
+            "probe",
+            "probe",
+            json!({"value":1}),
+        )]))]);
+        let writer = RequiredHistory {
+            fail_on: fail.then_some(frona_harness::HistoryOperation::ActionResolution),
+            ..Default::default()
+        };
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hook = AfterRecorded {
+            records: writer.records.clone(),
+            calls: calls.clone(),
+        };
+        let error = Harness::new(model)
+            .run("probe")
+            .tool(
+                tool("probe", "probe", |_: Answer| async {
+                    Ok(ToolOutput::text("done"))
+                })
+                .unwrap(),
+            )
+            .history_writer(writer)
+            .tool_call_hook(hook)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            usize::from(!fail)
+        );
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        if fail {
+            assert!(matches!(
+                error.reason,
+                ManualError::Stop(ExecutionStop::Storage(_))
+            ));
+        } else {
+            assert!(matches!(
+                error.reason,
+                ManualError::Stop(ExecutionStop::Stopped(_))
+            ));
+        }
+    }
 }

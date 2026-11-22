@@ -57,7 +57,7 @@ pub fn encode_jsonl(records: &[HistoryRecord]) -> Result<Vec<u8>, serde_json::Er
 /// Decode complete lines and replay all of them, without models, tools, callbacks,
 /// filesystem access, or budget restoration. A nonterminated tail is never applied,
 /// including when it contains syntactically valid JSON.
-pub fn decode_jsonl(bytes: &[u8]) -> Result<DecodedHistory, HistoryDecodeError> {
+pub async fn decode_jsonl(bytes: &[u8]) -> Result<DecodedHistory, HistoryDecodeError> {
     let end = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |p| p + 1);
     let incomplete_tail = (end < bytes.len()).then_some(end..bytes.len());
     let mut records = Vec::new();
@@ -106,7 +106,7 @@ pub fn decode_jsonl(bytes: &[u8]) -> Result<DecodedHistory, HistoryDecodeError> 
         offsets.push(offset);
         offset += line.len();
     }
-    let replay = replay_history(&records).map_err(|mut error| {
+    let replay = replay_history(&records).await.map_err(|mut error| {
         error.byte = usize::try_from(error.seq)
             .ok()
             .and_then(|seq| offsets.get(seq).copied());

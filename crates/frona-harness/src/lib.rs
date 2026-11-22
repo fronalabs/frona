@@ -91,7 +91,7 @@ pub use session::{
 
 pub use history::{
     EffectState, HistoryCheckpoint, HistoryCompletion, HistoryEvent, HistoryFailure, HistoryMode,
-    HistoryOperation, HistoryRecord, HistoryWriteError, HistoryWritePhase,
+    HistoryOperation, HistoryReader, HistoryRecord, HistoryWriteError, HistoryWritePhase,
     HistoryWriter, PersistenceOutcome, SubmissionCompletion,
 };
 

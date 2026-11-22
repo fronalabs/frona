@@ -3210,6 +3210,17 @@ async fn persistent_request_preserves_native_ids_signatures_system_and_mixed_res
         agent_id: app.chat.agent_id.clone(),
         model_config: group.main.clone(),
     };
+    let reader = frona::chat::conversation::ChatHistoryReader {
+        service: &app.chat_service,
+        chat_id: "chat",
+        through_message: Some("source"),
+        builder: &builder,
+        context: &context,
+    };
+    let messages = frona_harness::HistoryReader::read_messages(&reader)
+        .await
+        .unwrap();
+    assert_eq!(messages, native);
     let scope = helpers::mock_context();
     for _ in 0..2 {
         let mut conversation = PersistentConversation::load(

@@ -77,6 +77,11 @@ async fn create_attach_append_reopen_and_continue_same_conversation() {
         .await
         .unwrap();
     conversation.finish().await.unwrap();
+    let reader = Jsonl::reader(&path);
+    let messages = frona_harness::HistoryReader::read_messages(&reader)
+        .await
+        .unwrap();
+    assert_eq!(messages, conversation.messages());
     let expected = encode_jsonl(conversation.history()).unwrap();
     drop(conversation);
     let loaded = Jsonl::open(&path).await.unwrap();

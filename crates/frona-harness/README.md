@@ -152,6 +152,12 @@ and the JSONL writer share the same commit ordering and failure tracking; no
 separate flush is required. A failed or dropped commit retains an uncertain
 pending record and blocks further transitions until explicit reconciliation.
 
+Use `HistoryReader::read_messages().await` for the model-facing messages from a
+JSONL file or a database-backed chat. The JSONL reader opens and replays the file
+when read. The chat reader projects stored messages and tool calls through its
+conversation builder. Use `Jsonl::open(path).await` for file-specific recovery
+state such as checkpoints and pending actions.
+
 File creation is synchronous. Replay and durable commits are awaited. Dropping a commit does not guarantee that its underlying
 file or database operation stopped. Coordinate storage before resuming it.
 

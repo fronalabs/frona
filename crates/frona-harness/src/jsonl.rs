@@ -41,6 +41,8 @@ pub enum JsonlError {
         #[source]
         source: HistoryDecodeError,
     },
+    #[error(transparent)]
+    InvalidView(#[from] super::CompactionError),
     #[error("JSONL history changed since open: {path}")]
     Changed { path: PathBuf },
     #[error("a new JSONL writer must be attached before any history or other writer")]
@@ -65,7 +67,24 @@ pub struct Jsonl {
     replay: HistoryReplay,
 }
 
+struct JsonlReader(PathBuf);
+
+#[async_trait::async_trait]
+impl super::HistoryReader for JsonlReader {
+    type Error = JsonlError;
+
+    async fn read_messages(&self) -> Result<Vec<rig_core::completion::Message>, Self::Error> {
+        let loaded = Jsonl::open(&self.0).await?;
+        Ok(loaded.conversation().model_view()?.messages())
+    }
+}
+
 impl Jsonl {
+    /// Bind a path for use with a generic model-history consumer.
+    pub fn reader(path: impl Into<PathBuf>) -> impl super::HistoryReader<Error = JsonlError> {
+        JsonlReader(path.into())
+    }
+
     /// Durably create a new file, refusing to overwrite any existing path.
     /// The empty file is not replayable until its attached conversation commits
     /// `Opened`. This lets run configuration be supplied before the first write.
@@ -218,6 +237,7 @@ impl JsonlError {
             } => HistoryWritePhase::Synchronize,
             Self::Changed { .. }
             | Self::Decode { .. }
+            | Self::InvalidView(_)
             | Self::AlreadyAttached => HistoryWritePhase::Revalidate,
         }
     }

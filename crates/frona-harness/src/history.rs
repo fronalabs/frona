@@ -171,6 +171,16 @@ pub struct HistoryWriteError {
     pub cause: String,
 }
 
+/// Reads the model-facing message history from a bound conversation source.
+/// Loading preserves the backend's saved compaction and does not run tools or models.
+/// An unfinished history may contain proposals still awaiting a tool result.
+#[async_trait::async_trait]
+pub trait HistoryReader: Send + Sync {
+    type Error: std::error::Error + Send + Sync;
+
+    async fn read_messages(&self) -> Result<Vec<rig_core::completion::Message>, Self::Error>;
+}
+
 /// Required durable writes complete before dependent state changes or effects.
 /// An error or dropped commit may leave an uncertain write; callers must
 /// reconcile the stable `(conversation, seq)` identity before resuming.

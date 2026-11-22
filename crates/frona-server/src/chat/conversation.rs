@@ -49,6 +49,35 @@ pub struct PersistentRequest<'a> {
     pub tools: &'a [ToolDefinition],
 }
 
+/// Reads an authorized chat prefix through the same projection used by live requests.
+pub struct ChatHistoryReader<'a> {
+    pub service: &'a ChatService,
+    pub chat_id: &'a str,
+    pub through_message: Option<&'a str>,
+    pub builder: &'a dyn ConversationBuilder,
+    pub context: &'a ConversationContext,
+}
+
+#[async_trait::async_trait]
+impl frona_harness::HistoryReader for ChatHistoryReader<'_> {
+    type Error = AppError;
+
+    async fn read_messages(&self) -> Result<Vec<rig_core::completion::Message>, AppError> {
+        self.service
+            .get_chat(&self.context.user_id, self.chat_id)
+            .await?;
+        let loaded = PersistentConversation::load(
+            self.service,
+            self.chat_id,
+            self.through_message,
+            self.builder,
+            self.context,
+        )
+        .await?;
+        Ok(loaded.into_model_history().history)
+    }
+}
+
 impl PersistentConversation {
     /// Load only through the requested persisted row, excluding later arrivals.
     /// Builders keep ownership of attachments, cross-agent projection, and frozen

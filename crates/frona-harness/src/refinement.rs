@@ -80,6 +80,22 @@ impl<A> Decision<A> {
 }
 
 impl<T: DeserializeOwned + JsonSchema> Run<'_, Structured<T>> {
+    /// Accept the submitted value when validation succeeds, or return feedback
+    /// to the model for another submission. The outer error stops the run when
+    /// the verifier itself cannot complete. Use `inspect` to transform or retain values.
+    pub async fn verify<E: std::fmt::Debug>(
+        self,
+        mut check: impl AsyncFnMut(&T) -> Result<Result<(), String>, E>,
+    ) -> Result<T, Incomplete<T>> {
+        self.inspect(async move |value| {
+            Ok::<_, E>(match check(&value).await? {
+                Ok(()) => Decision::accept(value),
+                Err(feedback) => Decision::revise(feedback),
+            })
+        })
+        .await
+    }
+
     /// Inspect typed submissions sequentially. The callback can lend mutable
     /// application state across await, including local non-Send state. No task is
     /// spawned; the resulting future is Send when its actual captures permit it.

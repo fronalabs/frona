@@ -954,3 +954,37 @@ async fn post_tool_policy_runs_only_after_required_resolution_commit() {
         }
     }
 }
+
+#[tokio::test]
+async fn verifier_returns_the_submission_and_keeps_operational_errors_out_of_feedback() {
+    let (model, requests) = scripted_model(vec![submitted(1), submitted(7)]);
+    let answer = Harness::new(model)
+        .run("verify")
+        .structured::<Answer>()
+        .verify(async |answer| {
+            Ok::<_, ()>(if answer.value == 7 {
+                Ok(())
+            } else {
+                Err("expected seven".to_owned())
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(answer.value, 7);
+    assert!(
+        serde_json::to_string(&requests.lock().unwrap()[1].messages)
+            .unwrap()
+            .contains("expected seven")
+    );
+
+    let (model, requests) = scripted_model(vec![submitted(1)]);
+    let error = Harness::new(model)
+        .run("verify")
+        .structured::<Answer>()
+        .verify(async |_| Err("verification unavailable"))
+        .await
+        .err()
+        .unwrap();
+    assert!(matches!(error.reason, ManualError::Inspector(_)));
+    assert_eq!(requests.lock().unwrap().len(), 1);
+}

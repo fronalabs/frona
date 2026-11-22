@@ -23,13 +23,14 @@ use super::{
 
 /// Reusable model configuration. Each run starts fresh conversation and budget
 /// state; explicitly supply a shared budget when work should share an allowance.
-pub struct Harness<'a> {
-    model: Model<'a>,
+pub struct Harness<'a, Binding = ()> {
+    pub(super) model: Model<'a>,
+    pub(super) binding: Binding,
 }
 
 impl<'a> Harness<'a> {
     pub fn new(model: Model<'a>) -> Self {
-        Self { model }
+        Self { model, binding: () }
     }
 
     /// The run shares the prepared model without borrowing this harness. Its
@@ -239,6 +240,11 @@ impl<'a, Mode> Run<'a, Mode> {
         }
         self
     }
+    /// Apply limits with a fresh budget for this run.
+    pub fn budget_limits(self, limits: super::BudgetLimits) -> Self {
+        self.budget(DefaultBudget::new(limits))
+    }
+
     /// Pass a budget, its shared clone/Arc, or a reference to a borrowed policy.
     pub fn budget(mut self, budget: impl Budget + 'a) -> Self {
         self.core.budget = Box::new(budget);

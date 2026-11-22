@@ -30,6 +30,8 @@ pub mod retry_config;
 pub mod tools;
 pub use handle::{Handle, InvalidHandle};
 mod automatic;
+mod binding;
+pub use binding::{BoundRun, RunBinding};
 mod budget;
 mod compaction;
 mod conversation;

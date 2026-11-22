@@ -36,6 +36,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Use `ModelAdapter` for an application-owned model implementation. Reuse a `Harness`
 across runs; each run configures its own instructions, tools, and execution policy.
 
+A host factory can use `Harness::bind(user_id, chat_id, initialize)` to return a
+single-use SDK harness. `chat_id` is optional. Calling `run(input)` consumes the
+binding. Its async initializer receives the SDK run and input on first execution,
+so dropping the harness or unpolled run performs no host writes. For manual
+driving, explicitly await `run.start()` to initialize it.
+
 Use `.on_start(|token| ...)` to register activity for the lifetime of a run. The
 hook receives the configured cancellation token and returns a guard. The SDK
 holds the guard through model calls, tool calls, and verification, then drops it
@@ -123,6 +129,10 @@ let title = harness.run("Give this article a title")
 # }
 ```
 
+Use `.verify(check)` when the caller wants the submitted value unchanged. The
+check borrows the submission. Return `Ok(Ok(()))` to accept it, `Ok(Err(feedback))`
+to request a revision, or an outer `Err` if verification itself failed.
+
 Only explicit acceptance completes refinement. A retained candidate in an
 `Incomplete` outcome is unfinished work and needs application revalidation before
 any domain commit.
@@ -135,7 +145,7 @@ action. Await state-changing operations, including `reject()`, `accept()`, and
 `finish()`: successful completion includes the required history write. Automatic and manual execution
 share conversation management, tool-call pairing, and budget admission.
 
-Reuse a `DefaultBudget` across runs or implement `Budget`. Admission happens before
+Use `.budget_limits(limits)` for a fresh per-run budget. Reuse a `DefaultBudget` across runs or implement `Budget` for a custom policy. Admission happens before
 every model/tool call; already-admitted calls may finish after exhaustion.
 Compaction is enabled by default and can be disabled with `disable_compaction()`;
 context overflow checks remain active. `subscribe()` adds optional bounded progress.

@@ -191,3 +191,27 @@ async fn start_hooks_share_the_configured_token_and_end_at_manual_completion() {
     assert!(first.is_cancelled() && second.is_cancelled());
     assert!(observed.try_recv().is_err());
 }
+
+#[tokio::test]
+async fn dropping_a_pending_verifier_releases_the_run_guard() {
+    use frona_harness::Harness;
+    use tokio_util::sync::CancellationToken;
+
+    let released = CancellationToken::new();
+    let (entered, mut inspecting) = tokio::sync::mpsc::unbounded_channel();
+    let run = Harness::new(ownership::model("answer"))
+        .run("hello")
+        .on_start(|_| released.clone().drop_guard())
+        .structured::<ownership::Answer>();
+    let mut pending = Box::pin(run.verify(async |_| {
+        entered.send(()).unwrap();
+        std::future::pending::<Result<Result<(), String>, ()>>().await
+    }));
+    tokio::select! {
+        _ = &mut pending => panic!("verification must remain pending"),
+        _ = inspecting.recv() => {}
+    }
+    assert!(!released.is_cancelled());
+    drop(pending);
+    assert!(released.is_cancelled());
+}

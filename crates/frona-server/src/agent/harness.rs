@@ -1,3 +1,6 @@
+mod factory;
+pub use factory::{AgentHarness, ChatRunOptions};
+
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -752,6 +755,11 @@ impl Harness {
     }
 
     pub async fn resume_all(self: &Arc<Self>) {
+        // Caller-owned runs have no automatic Rust continuation. Finalize their
+        // interrupted records before resuming ordinary chats, never widen tools.
+        if let Err(error) = self.chat_service.interrupt_application_runs().await {
+            tracing::error!(%error, "Failed to finalize interrupted application runs");
+        }
         let executing: Vec<Message> = self.chat_service.find_executing_chat_messages().await;
         if executing.is_empty() {
             return;

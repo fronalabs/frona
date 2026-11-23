@@ -547,6 +547,54 @@ async fn create_test_chat(state: &AppState) -> String {
         .id
 }
 
+#[tokio::test]
+async fn interrupted_chat_run_is_excluded_from_turn_resume() {
+    use frona::chat::message::models::MessageStatus;
+    let (state, _tmp) = build_state().await;
+    seed_user_and_agent(&state).await;
+    let chat_id = create_test_chat(&state).await;
+    let run = state
+        .harness
+        .prepare_for_chat("user-1", &chat_id)
+        .await
+        .unwrap()
+        .run("later")
+        .start()
+        .await
+        .unwrap();
+    drop(run);
+    assert!(
+        state
+            .chat_service
+            .find_executing_chat_messages()
+            .await
+            .is_empty()
+    );
+    state
+        .chat_service
+        .interrupt_application_runs()
+        .await
+        .unwrap();
+    let messages = state
+        .chat_service
+        .get_stored_messages(&chat_id)
+        .await
+        .unwrap();
+    let response = messages
+        .iter()
+        .find(|m| m.metadata.get("execution_owner").is_some())
+        .unwrap();
+    assert_eq!(response.status, Some(MessageStatus::Failed));
+    assert!(
+        response
+            .error
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("interrupted")
+    );
+}
+
 async fn ordinary_run(
     state: &AppState,
     chat_id: &str,
@@ -725,6 +773,394 @@ async fn ordinary_chat_provider_turn_write_failure_prevents_tool_dispatch() {
         state
             .chat_service
             .get_tool_calls_by_message(&message.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn caller_owned_run_records_hitl_before_stopping_without_continuation() {
+    let provider = Arc::new(MockModelProvider::new(vec![
+        helpers::MockResponse::ToolCalls(vec![(
+            "question-call".into(),
+            "ask_user_question".into(),
+            serde_json::json!({"question":"Region?","options":["eu","us"]}),
+        )]),
+    ]));
+    let (state, _tmp) = build_state_with_provider(provider.clone(), false).await;
+    seed_user_and_agent(&state).await;
+    let chat = create_test_chat(&state).await;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let hook_calls = Arc::new(AtomicUsize::new(0));
+    let calls = hook_calls.clone();
+    let result = state
+        .harness
+        .prepare_for_chat_with_options(
+            "user-1",
+            &chat,
+            frona::agent::harness::ChatRunOptions {
+                tools: &["ask_user_question"],
+                kind: frona::core::execution::ExecutionKind::Inference,
+                action: "Ask",
+                related_chat_ids: &[],
+            },
+        )
+        .await
+        .unwrap()
+        .run("ask")
+        .start()
+        .await
+        .unwrap()
+        .before_tool(move |_| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            async { Ok::<_, ()>(frona_harness::ToolDecision::Execute) }
+        })
+        .await;
+    assert_eq!(hook_calls.load(Ordering::Relaxed), 1);
+    assert!(matches!(
+        result.unwrap_err().reason,
+        frona_harness::ManualError::Stop(frona_harness::ExecutionStop::Stopped(_))
+    ));
+    assert_eq!(provider.histories().len(), 1);
+    let rows = state.chat_service.get_tool_calls(&chat).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].hitl.as_ref().unwrap().status,
+        frona::inference::tool_call::ToolStatus::Pending
+    );
+    let message = state
+        .chat_service
+        .get_message("user-1", &rows[0].message_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        message.status,
+        Some(frona::chat::message::models::MessageStatus::Failed)
+    );
+    assert_eq!(message.provider_turns.len(), 1);
+    assert!(!message.metadata.contains_key("harness_history"));
+}
+
+#[tokio::test]
+async fn chat_run_text_matches_sdk_and_rejects_unsupported_checkpoint() {
+    use frona::chat::message::models::{MessageRole, MessageStatus};
+    use rig_core::completion::AssistantContent;
+
+    let provider = Arc::new(MockModelProvider::new(vec![
+        helpers::MockResponse::Content(vec![
+            AssistantContent::text("first "),
+            AssistantContent::text("second"),
+        ]),
+    ]));
+    let (state, _tmp) = build_state_with_provider(provider, false).await;
+    seed_user_and_agent(&state).await;
+    let chat = create_test_chat(&state).await;
+    let mut session = state
+        .harness
+        .prepare_for_chat("user-1", &chat)
+        .await
+        .unwrap()
+        .run("answer")
+        .start()
+        .await
+        .unwrap()
+        .manual();
+    session.call_model().await.unwrap();
+    let answer = session.finish().await.unwrap();
+    assert_eq!(answer, "first second");
+    let error = session.save_checkpoint("cursor", 1, &42).await.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("does not support application checkpoints"),
+        "{error}"
+    );
+    assert!(session.conversation().checkpoint().is_none());
+    let message = state
+        .chat_service
+        .get_stored_messages(&chat)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|message| message.role == MessageRole::Agent)
+        .unwrap();
+    assert_eq!(message.status, Some(MessageStatus::Completed));
+    assert_eq!(message.content, answer);
+}
+
+#[tokio::test]
+async fn structured_chat_run_preserves_description_field() {
+    use frona::chat::message::models::MessageRole;
+
+    #[derive(schemars::JsonSchema, serde::Deserialize)]
+    struct Answer {
+        description: String,
+    }
+
+    let arguments = serde_json::json!({"description":"fixed"});
+    let provider = Arc::new(MockModelProvider::new(vec![
+        helpers::MockResponse::ToolCalls(vec![(
+            "submission".into(),
+            "submit".into(),
+            arguments.clone(),
+        )]),
+    ]));
+    let (state, _tmp) = build_state_with_provider(provider, false).await;
+    seed_user_and_agent(&state).await;
+    let chat = create_test_chat(&state).await;
+    let answer = state
+        .harness
+        .prepare_for_chat("user-1", &chat)
+        .await
+        .unwrap()
+        .run("submit")
+        .start()
+        .await
+        .unwrap()
+        .structured::<Answer>()
+        .await
+        .unwrap();
+    assert_eq!(answer.description, "fixed");
+    let message = state
+        .chat_service
+        .get_stored_messages(&chat)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|message| message.role == MessageRole::Agent)
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&message.content).unwrap(),
+        arguments
+    );
+    let calls = state
+        .chat_service
+        .get_tool_calls_by_message(&message.id)
+        .await
+        .unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].arguments, arguments);
+}
+
+#[tokio::test]
+async fn tracked_sdk_run_observes_chat_cancellation_and_shutdown() {
+    use frona::agent::harness::ChatRunOptions;
+    use frona::chat::message::models::{MessageRole, MessageStatus};
+    use frona::core::execution::ExecutionKind;
+    for shutdown in [false, true] {
+        let started = Arc::new(tokio::sync::Barrier::new(2));
+        let provider = Arc::new(MockModelProvider::new(vec![
+            helpers::MockResponse::Barrier(
+                started.clone(),
+                Box::new(helpers::MockResponse::Pending),
+            ),
+        ]));
+        let (state, _tmp) = build_state_with_provider(provider, false).await;
+        seed_user_and_agent(&state).await;
+        let chat = create_test_chat(&state).await;
+        let run = state
+            .harness
+            .prepare_for_chat_with_options(
+                "user-1",
+                &chat,
+                ChatRunOptions {
+                    tools: &[],
+                    kind: ExecutionKind::App,
+                    action: "Checking",
+                    related_chat_ids: &[],
+                },
+            )
+            .await
+            .unwrap()
+            .run("work");
+        assert!(
+            state
+                .chat_service
+                .get_stored_messages(&chat)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(state.active_sessions.count().await, 0);
+        assert!(
+            state
+                .execution_registry
+                .snapshot("user-1")
+                .executions
+                .is_empty()
+        );
+        let cancel = async {
+            started.wait().await;
+            assert_eq!(state.active_sessions.count().await, 1);
+            let activity = state.execution_registry.snapshot("user-1");
+            assert_eq!(activity.executions.len(), 1);
+            assert_eq!(
+                activity.executions[0].source.as_ref().unwrap().id.as_ref(),
+                Some(&chat)
+            );
+            if shutdown {
+                state.shutdown_token.cancel();
+            } else {
+                assert!(state.active_sessions.cancel(&chat).await);
+            }
+        };
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            tokio::join!(async { run.await }, cancel)
+        })
+        .await
+        .unwrap();
+        assert!(result.is_err());
+        assert_eq!(state.active_sessions.count().await, 0);
+        assert!(
+            state
+                .execution_registry
+                .snapshot("user-1")
+                .executions
+                .is_empty()
+        );
+        let messages = state.chat_service.get_stored_messages(&chat).await.unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .find(|m| m.role == MessageRole::Agent)
+                .unwrap()
+                .status,
+            Some(MessageStatus::Cancelled)
+        );
+    }
+}
+
+#[tokio::test]
+async fn prepare_rejects_unavailable_tools_before_writing_to_chat() {
+    use frona::agent::harness::ChatRunOptions;
+    use frona::core::{error::AppError, execution::ExecutionKind};
+
+    let (state, _tmp) = build_state().await;
+    seed_user_and_agent(&state).await;
+    let chat = create_test_chat(&state).await;
+    let outcome = state
+        .harness
+        .prepare_for_chat_with_options(
+            "user-1",
+            &chat,
+            ChatRunOptions {
+                tools: &["unavailable-tool"],
+                kind: ExecutionKind::App,
+                action: "Checking",
+                related_chat_ids: &[],
+            },
+        )
+        .await;
+    assert!(matches!(outcome, Err(AppError::Forbidden(_))));
+    assert!(
+        state
+            .chat_service
+            .get_stored_messages(&chat)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(state.active_sessions.count().await, 0);
+}
+
+#[tokio::test]
+async fn factory_creates_a_chat_only_when_an_explicit_new_chat_run_is_driven() {
+    let provider = Arc::new(MockModelProvider::new(vec![
+        helpers::MockResponse::Text("memory".into()),
+        helpers::MockResponse::Text("saved".into()),
+    ]));
+    let (state, _tmp) = build_state_with_provider(provider, false).await;
+    seed_user_and_agent(&state).await;
+    let before = state.chat_service.list_chats("user-1").await.unwrap().len();
+
+    let memory = state.harness.prepare("user-1", "agent-1").await.unwrap();
+    assert_eq!(memory.user_id(), "user-1");
+    assert_eq!(memory.chat_id(), None);
+    assert_eq!(memory.run("work").await.unwrap(), "memory");
+    assert_eq!(
+        state.chat_service.list_chats("user-1").await.unwrap().len(),
+        before
+    );
+
+    let unused = state
+        .harness
+        .prepare_with_new_chat("user-1", "agent-1", "A new run")
+        .await
+        .unwrap();
+    let unused_id = unused.chat_id().unwrap().to_owned();
+    drop(unused.run("never polled"));
+    assert!(
+        state
+            .chat_service
+            .find_chat(&unused_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let harness = state
+        .harness
+        .prepare_with_new_chat("user-1", "agent-1", "A new run")
+        .await
+        .unwrap();
+    let id = harness.chat_id().unwrap().to_owned();
+    let run = harness.run("start");
+    assert!(state.chat_service.find_chat(&id).await.unwrap().is_none());
+    assert_eq!(run.await.unwrap(), "saved");
+    let chat = state.chat_service.get_chat("user-1", &id).await.unwrap();
+    assert_eq!(chat.agent_id, "agent-1");
+    assert_eq!(chat.title.as_deref(), Some("A new run"));
+    assert_eq!(
+        state.chat_service.list_chats("user-1").await.unwrap().len(),
+        before + 1
+    );
+    use frona::chat::message::models::{MessageRole, MessageStatus};
+    let rows = state.chat_service.get_stored_messages(&id).await.unwrap();
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.role == MessageRole::System && row.content == "start")
+            .count(),
+        1
+    );
+    let replies: Vec<_> = rows
+        .iter()
+        .filter(|row| row.role == MessageRole::Agent)
+        .collect();
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].status, Some(MessageStatus::Completed));
+    assert_eq!(replies[0].content, "saved");
+}
+
+#[tokio::test]
+async fn prepare_checks_the_existing_chats_user_and_agent() {
+    use frona::core::error::AppError;
+    let (state, _tmp) = build_state().await;
+    seed_user_and_agent(&state).await;
+    let id = create_test_chat(&state).await;
+    let mut chat = state.chat_service.get_chat("user-1", &id).await.unwrap();
+    let previously_authorized = state.harness.prepare_for_chat("user-1", &id).await.unwrap();
+    chat.agent_id = "other-agent".into();
+    state.chat_service.save_chat(&chat).await.unwrap();
+    assert!(matches!(
+        previously_authorized.run("stale").await,
+        Err(AppError::Forbidden(_))
+    ));
+    assert!(matches!(
+        state.harness.prepare_for_chat("user-1", &id).await,
+        Err(AppError::NotFound(_))
+    ));
+    chat.agent_id = "agent-1".into();
+    chat.user_id = "other-user".into();
+    state.chat_service.save_chat(&chat).await.unwrap();
+    assert!(matches!(
+        state.harness.prepare_for_chat("user-1", &id).await,
+        Err(AppError::Forbidden(_))
+    ));
+    assert!(
+        state
+            .chat_service
+            .get_stored_messages(&id)
             .await
             .unwrap()
             .is_empty()

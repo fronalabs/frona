@@ -148,3 +148,9 @@ impl From<frona_sandbox::Error> for AppError {
         Self::Tool(error.to_string())
     }
 }
+
+impl<T> From<frona_harness::Incomplete<T>> for AppError {
+    fn from(error: frona_harness::Incomplete<T>) -> Self {
+        Self::Tool(error.to_string())
+    }
+}

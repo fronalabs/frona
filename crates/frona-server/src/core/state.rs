@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use metrics_exporter_prometheus::PrometheusHandle;
-use tokio::sync::Mutex;
+use std::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::signal::SignalService;
@@ -60,24 +60,63 @@ pub struct ActiveSessions {
     sequence: Arc<std::sync::atomic::AtomicU64>,
 }
 
+/// Registration owned by a single execution. Dropping an old registration
+/// must never remove a replacement for the same chat.
+pub(crate) struct ActiveSessionGuard {
+    sessions: ActiveSessions,
+    chat_id: String,
+    generation: u64,
+    token: CancellationToken,
+}
+
+impl Drop for ActiveSessionGuard {
+    fn drop(&mut self) {
+        self.token.cancel();
+        self.sessions
+            .remove_if_current(&self.chat_id, Some(self.generation));
+    }
+}
+
 impl ActiveSessions {
     pub async fn register(&self, chat_id: &str) -> CancellationToken {
-        let mut map = self.inner.lock().await;
-        if let Some(existing) = map.get(chat_id) {
-            existing.1.cancel();
-        }
         let token = CancellationToken::new();
-        let generation = self
-            .sequence
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        map.insert(chat_id.to_string(), (generation, token.clone()));
+        self.insert(chat_id, token.clone());
         token
     }
 
+    pub(crate) fn register_scoped(
+        &self,
+        chat_id: &str,
+        token: CancellationToken,
+    ) -> ActiveSessionGuard {
+        let generation = self.insert(chat_id, token.clone());
+        ActiveSessionGuard {
+            sessions: self.clone(),
+            chat_id: chat_id.to_owned(),
+            generation,
+            token,
+        }
+    }
+
+    fn insert(&self, chat_id: &str, token: CancellationToken) -> u64 {
+        let generation = self
+            .sequence
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let previous = self
+            .inner
+            .lock()
+            .unwrap()
+            .insert(chat_id.to_string(), (generation, token));
+        if let Some((_, previous)) = previous {
+            previous.cancel();
+        }
+        generation
+    }
+
     pub async fn cancel(&self, chat_id: &str) -> bool {
-        let map = self.inner.lock().await;
-        if let Some(token) = map.get(chat_id) {
-            token.1.cancel();
+        let entry = self.inner.lock().unwrap().get(chat_id).cloned();
+        if let Some((_, token)) = entry {
+            token.cancel();
             true
         } else {
             false
@@ -85,7 +124,7 @@ impl ActiveSessions {
     }
 
     pub async fn remove(&self, chat_id: &str) {
-        self.inner.lock().await.remove(chat_id);
+        self.inner.lock().unwrap().remove(chat_id);
     }
 
     /// Capture only the generation owned by this token. A worker may start
@@ -94,20 +133,24 @@ impl ActiveSessions {
     pub async fn generation(&self, chat_id: &str, token: &CancellationToken) -> Option<u64> {
         self.inner
             .lock()
-            .await
+            .unwrap()
             .get(chat_id)
             .filter(|(_, registered)| registered == token)
             .map(|(generation, _)| *generation)
     }
     pub async fn remove_generation(&self, chat_id: &str, generation: Option<u64>) {
-        let mut map = self.inner.lock().await;
+        self.remove_if_current(chat_id, generation);
+    }
+
+    fn remove_if_current(&self, chat_id: &str, generation: Option<u64>) {
+        let mut map = self.inner.lock().unwrap();
         if map.get(chat_id).map(|(current, _)| *current) == generation {
             map.remove(chat_id);
         }
     }
 
     pub async fn count(&self) -> usize {
-        self.inner.lock().await.len()
+        self.inner.lock().unwrap().len()
     }
 }
 
@@ -862,6 +905,22 @@ mod tests {
     async fn test_cancel_returns_false_for_missing() {
         let sessions = ActiveSessions::default();
         assert!(!sessions.cancel("nonexistent").await);
+    }
+
+    #[tokio::test]
+    async fn dropping_a_scoped_session_only_cancels_and_removes_its_own_registration() {
+        let sessions = ActiveSessions::default();
+        let first = CancellationToken::new();
+        let old = sessions.register_scoped("chat", first.clone());
+        let second = CancellationToken::new();
+        let current = sessions.register_scoped("chat", second.clone());
+        drop(old);
+        assert!(first.is_cancelled());
+        assert!(!second.is_cancelled());
+        assert_eq!(sessions.count().await, 1);
+        drop(current);
+        assert!(second.is_cancelled());
+        assert_eq!(sessions.count().await, 0);
     }
 
     #[tokio::test]

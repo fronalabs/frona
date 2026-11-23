@@ -32,7 +32,7 @@ pub struct AgentConfig {
     pub identity: std::collections::BTreeMap<String, String>,
 }
 
-use super::message::models::{Message, MessageRole, Reasoning};
+use super::message::models::{Message, MessageRole};
 use super::message::models::{
     MessageEvent, MessageResponse, MessageStatus, PaginatedMessagesResponse, SendMessageRequest,
 };
@@ -185,6 +185,17 @@ impl ChatService {
         user_id: &str,
         req: CreateChatRequest,
     ) -> Result<ChatResponse, AppError> {
+        self.create_chat_with_id(user_id, crate::core::repository::new_id(), req)
+            .await
+            .map(Into::into)
+    }
+
+    pub(crate) async fn create_chat_with_id(
+        &self,
+        user_id: &str,
+        id: String,
+        req: CreateChatRequest,
+    ) -> Result<Chat, AppError> {
         // Fail eagerly on bad `agent_id` - first /messages/stream would silently 404.
         let agent = self
             .agent_service
@@ -198,7 +209,7 @@ impl ChatService {
         let now = chrono::Utc::now();
         let chat = Chat {
             agent_context_state: Default::default(),
-            id: crate::core::repository::new_id(),
+            id,
             user_id: user_id.to_string(),
             space_id: req.space_id,
             task_id: req.task_id,
@@ -214,7 +225,7 @@ impl ChatService {
 
         let chat = self.chat_repo.create(&chat).await?;
         self.broadcast_chat_entity(&chat, crate::chat::broadcast::EntityAction::Created);
-        Ok(chat.into())
+        Ok(chat)
     }
 
     pub async fn get_message(&self, user_id: &str, message_id: &str) -> Result<Message, AppError> {
@@ -1279,6 +1290,45 @@ impl ChatService {
         self.save_message(msg).await
     }
 
+    /// Caller-owned SDK runs retain a chat trail but are never resumed by the
+    /// ordinary chat driver. The marker is saved atomically with the placeholder.
+    pub async fn create_application_agent_message(
+        &self,
+        chat_id: &str,
+        agent_id: &str,
+    ) -> Result<MessageResponse, AppError> {
+        let msg = Message::builder(chat_id, MessageRole::Agent, String::new())
+            .agent_id(agent_id.to_string())
+            .status(MessageStatus::Executing)
+            .metadata(std::collections::BTreeMap::from([(
+                "execution_owner".into(),
+                serde_json::json!("caller"),
+            )]))
+            .build();
+        self.save_message(msg).await
+    }
+
+    pub async fn interrupt_application_runs(&self) -> Result<(), AppError> {
+        let mut result = self.message_repo.db().query(
+            "SELECT *, meta::id(id) as id FROM message WHERE status = $status AND metadata.execution_owner = 'caller'"
+        ).bind(("status", MessageStatus::Executing)).await
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        let messages: Vec<Message> = result
+            .take(0)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+        for message in messages {
+            self.fail_agent_message(
+                message,
+                super::message::error::MessageError::from(&AppError::Internal(
+                    "Caller-owned run interrupted by server restart; explicit restart is required"
+                        .into(),
+                )),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     /// Stamps `dispatch_mode = Signal` so the outbound dispatcher refuses delivery.
     pub async fn create_executing_signal_message(
         &self,
@@ -1745,7 +1795,7 @@ impl ChatService {
     /// Strictly Executing - Paused messages are waiting on a human and MUST
     /// NOT be auto-resumed (doing so would feed the loop empty HITL answers).
     pub async fn find_executing_chat_messages(&self) -> Vec<Message> {
-        let query = "SELECT *, meta::id(id) as id FROM message WHERE status = $status AND chat_id IN (SELECT VALUE meta::id(id) FROM chat WHERE task_id IS NONE)";
+        let query = "SELECT *, meta::id(id) as id FROM message WHERE status = $status AND metadata.execution_owner IS NONE AND chat_id IN (SELECT VALUE meta::id(id) FROM chat WHERE task_id IS NONE)";
         let result = self
             .message_repo
             .db()

@@ -547,6 +547,121 @@ async fn create_test_chat(state: &AppState) -> String {
         .id
 }
 
+fn submit(summary: &str) -> helpers::MockResponse {
+    helpers::MockResponse::ToolCalls(vec![(
+        format!("submit-{summary}"),
+        "submit".into(),
+        serde_json::json!({"summary":summary}),
+    )])
+}
+
+#[tokio::test]
+async fn chat_run_records_verification_and_limits_tools() {
+    use frona::app::repair::RepairResult;
+    use frona::chat::message::models::{MessageRole, MessageStatus};
+    let provider = Arc::new(MockModelProvider::new(vec![
+        helpers::MockResponse::ToolCalls(vec![(
+            "status".into(),
+            "manage_app".into(),
+            serde_json::json!({"action":"status"}),
+        )]),
+        submit("first"),
+        submit("verified"),
+    ]));
+    let (state, _tmp) = build_state_with_provider(provider.clone(), false).await;
+    seed_user_and_agent(&state).await;
+    let chat_id = create_test_chat(&state).await;
+    // Historical commands and messages do not drive this isolated conversation.
+    let prior = frona::chat::message::models::Message::builder(
+        &chat_id,
+        MessageRole::User,
+        "@developer old work".into(),
+    )
+    .command(frona::chat::message::models::MessageCommand::Command {
+        name: "developer".into(),
+        args: "old work".into(),
+    })
+    .build();
+    state
+        .chat_service
+        .persist_inbound_message(&prior)
+        .await
+        .unwrap();
+    let answer = state
+        .harness
+        .prepare_for_chat_with_options(
+            "user-1",
+            &chat_id,
+            frona::agent::harness::ChatRunOptions {
+                tools: &["manage_app"],
+                kind: frona::core::execution::ExecutionKind::App,
+                action: "Repairing",
+                related_chat_ids: &[],
+            },
+        )
+        .await
+        .unwrap()
+        .run("repair")
+        .structured::<RepairResult>()
+        .submission_attempts(2)
+        .verify(async |result| {
+            Ok::<_, ()>(if result.summary == "verified" {
+                Ok(())
+            } else {
+                Err("HTTP health check failed".to_owned())
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(state.active_sessions.count().await, 0);
+    assert!(
+        state
+            .execution_registry
+            .snapshot("user-1")
+            .executions
+            .is_empty()
+    );
+    assert_eq!(answer.summary, "verified");
+    for tools in provider.tool_histories() {
+        assert!(
+            tools
+                .iter()
+                .all(|t| matches!(t.name.as_str(), "manage_app" | "submit"))
+        );
+    }
+    assert!(!format!("{:?}", provider.histories()).contains("old work"));
+    assert!(format!("{:?}", provider.last_history()).contains("HTTP health check failed"));
+    let messages = state
+        .chat_service
+        .get_stored_messages(&chat_id)
+        .await
+        .unwrap();
+    let response = messages
+        .iter()
+        .find(|m| m.role == frona::chat::message::models::MessageRole::Agent)
+        .unwrap();
+    assert_eq!(response.agent_id.as_deref(), Some("agent-1"));
+    assert_eq!(response.status, Some(MessageStatus::Completed));
+    assert_eq!(response.provider_turns.len(), 3);
+    let calls = state
+        .chat_service
+        .get_tool_calls_by_message(&response.id)
+        .await
+        .unwrap();
+    assert_eq!(calls.len(), 3);
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.name == "manage_app" && c.result.contains("No apps"))
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.name == "submit" && c.result.contains("HTTP health check failed"))
+    );
+    assert!(response.content.contains("verified"));
+}
+
 #[tokio::test]
 async fn interrupted_chat_run_is_excluded_from_turn_resume() {
     use frona::chat::message::models::MessageStatus;
@@ -593,6 +708,166 @@ async fn interrupted_chat_run_is_excluded_from_turn_resume() {
             .message
             .contains("interrupted")
     );
+}
+
+#[tokio::test]
+async fn repair_rejects_stale_running_status_and_stops_at_submission_limit() {
+    use frona::app::{
+        models::AppStatus,
+        repair::{repair_app, verify_running},
+    };
+    use frona::chat::message::models::MessageStatus;
+    let provider = Arc::new(MockModelProvider::new(vec![
+        submit("one"),
+        submit("two"),
+        submit("three"),
+    ]));
+    let (state, _tmp) = build_state_with_provider(provider.clone(), false).await;
+    seed_user_and_agent(&state).await;
+    let original = create_test_chat(&state).await;
+    let manifest = serde_json::from_value(serde_json::json!({
+        "handle":"uuid", "name":"UUID Generator", "kind":"static", "static_dir":"."
+    }))
+    .unwrap();
+    let app = state
+        .app_service
+        .deploy("agent-1", "user-1", &original, &manifest, vec![])
+        .await
+        .unwrap();
+    state
+        .app_service
+        .update_status(&app.id, AppStatus::Running, Some(4001), Some(123))
+        .await
+        .unwrap();
+    assert!(
+        verify_running(&state.app_service, &app.id)
+            .await
+            .unwrap()
+            .unwrap_err()
+            .contains("no live managed process")
+    );
+    let app = state.app_service.get(&app.id).await.unwrap().unwrap();
+    let result = repair_app(&state, &app).await;
+    assert!(result.is_err());
+    assert_eq!(*provider.call_count.lock().unwrap(), 3);
+    let chats = state.chat_service.list_chats("user-1").await.unwrap();
+    let repair = chats.iter().find(|c| c.id != original).unwrap();
+    assert_eq!(repair.agent_id, "agent-1");
+    let messages = state
+        .chat_service
+        .get_stored_messages(&repair.id)
+        .await
+        .unwrap();
+    let response = messages
+        .iter()
+        .find(|m| m.role == frona::chat::message::models::MessageRole::Agent)
+        .unwrap();
+    assert_eq!(response.status, Some(MessageStatus::Failed));
+    assert!(
+        state
+            .chat_service
+            .get_tool_calls_by_message(&response.id)
+            .await
+            .unwrap()
+            .iter()
+            .any(|call| call.result.contains("no live managed process"))
+    );
+    for tools in provider.tool_histories() {
+        assert!(
+            !tools
+                .iter()
+                .any(|t| matches!(t.name.as_str(), "create_task" | "create_recurring_task"))
+        );
+    }
+}
+
+#[tokio::test]
+async fn app_repair_revises_false_claim_then_restarts_and_accepts_live_health() {
+    use frona::app::{
+        models::AppStatus,
+        repair::{repair_app, verify_running},
+    };
+    use frona::chat::message::models::MessageStatus;
+    let provider = Arc::new(MockModelProvider::new(vec![
+        submit("claimed"),
+        helpers::MockResponse::ToolCalls(vec![(
+            "restart".into(),
+            "manage_app".into(),
+            serde_json::json!({"action":"restart","manifest":{"handle":"uuid"}}),
+        )]),
+        submit("restarted"),
+    ]));
+    let (state, _tmp) = build_state_with_provider(provider.clone(), true).await;
+    seed_user_and_agent(&state).await;
+    let original = create_test_chat(&state).await;
+    let source = std::path::Path::new(&state.config.storage.data_dir)
+        .join("users/user-1/agents/agent-1/apps/uuid");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(source.join("health"), "ready").unwrap();
+    let manifest = serde_json::from_value(serde_json::json!({
+        "handle":"uuid", "name":"UUID Generator", "kind":"service",
+        "command":format!("python3 -m http.server \"$PORT\" --bind 127.0.0.1 --directory '{}'", source.display()),
+        "health_check":{"path":"/health", "timeout_secs":2}
+    }))
+    .unwrap();
+    let app = state
+        .app_service
+        .deploy("agent-1", "user-1", &original, &manifest, vec![])
+        .await
+        .unwrap();
+    state
+        .app_service
+        .stop("agent-1", &app.id, &original)
+        .await
+        .unwrap();
+    state
+        .app_service
+        .update_status(&app.id, AppStatus::Failed, None, None)
+        .await
+        .unwrap();
+    let app = state.app_service.get(&app.id).await.unwrap().unwrap();
+    let result = repair_app(&state, &app).await;
+    let healthy = verify_running(&state.app_service, &app.id).await;
+    // Always stop the process before assertions, including failure diagnostics.
+    state.app_service.manager().stop_app(&app.id).await.unwrap();
+    assert!(
+        result.is_ok(),
+        "{result:?}; health={healthy:?}; log={}",
+        std::fs::read_to_string(source.join("logs/app.log")).unwrap_or_default()
+    );
+    assert!(healthy.unwrap().is_ok());
+    assert_eq!(*provider.call_count.lock().unwrap(), 3);
+    assert!(format!("{:?}", provider.histories()).contains("still failed"));
+    let repair = state
+        .chat_service
+        .list_chats("user-1")
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|c| c.id != original)
+        .unwrap();
+    let messages = state
+        .chat_service
+        .get_stored_messages(&repair.id)
+        .await
+        .unwrap();
+    let message = messages
+        .iter()
+        .find(|m| m.role == frona::chat::message::models::MessageRole::Agent)
+        .unwrap();
+    assert_eq!(message.status, Some(MessageStatus::Completed));
+    assert!(message.content.contains("restarted"));
+    let calls = state
+        .chat_service
+        .get_tool_calls_by_message(&message.id)
+        .await
+        .unwrap();
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.name == "submit" && c.result.contains("still failed"))
+    );
+    assert!(calls.iter().any(|c| c.name == "manage_app" && c.success));
 }
 
 async fn ordinary_run(

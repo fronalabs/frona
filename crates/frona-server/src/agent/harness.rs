@@ -607,41 +607,6 @@ impl Harness {
         Ok(())
     }
 
-    pub async fn resume_with_execution(
-        &self,
-        user_id: &str,
-        chat_id: &str,
-        message_id: &str,
-        execution: NewExecution,
-    ) -> Result<(), AppError> {
-        let cancel_token = self.active_sessions.register(chat_id).await;
-        let generation = self
-            .active_sessions
-            .generation(chat_id, &cancel_token)
-            .await;
-        let builder = Box::new(DefaultConversationBuilder {
-            user_service: self.user_service.clone(),
-            storage_service: self.storage_service.clone(),
-            agent_service: self.agent_service.clone(),
-        });
-        self.run_turn_with_execution(
-            user_id,
-            chat_id,
-            message_id,
-            cancel_token,
-            builder,
-            &[],
-            None,
-            execution,
-            Default::default(),
-        )
-        .await;
-        self.active_sessions
-            .remove_generation(chat_id, generation)
-            .await;
-        Ok(())
-    }
-
     /// Does NOT spawn a resume - the caller dispatches via
     /// `state.task_executor.resume_or_notify(...)` when `should_resume`.
     pub async fn resolve_and_resume(

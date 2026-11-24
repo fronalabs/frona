@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tracing::info;
 
 use crate::core::error::AppError;
 use crate::core::state::AppState;
@@ -194,83 +193,19 @@ impl Supervisor for AppSupervisor {
         if app.crash_fix_attempts > 0 {
             return false;
         }
-        if let Some(mut app) = self.state.app_service.get(&app.id).await.ok().flatten() {
-            app.crash_fix_attempts += 1;
-            let _ = self
-                .state
-                .app_service
-                .update_crash_fix_attempts(&app.id, app.crash_fix_attempts)
-                .await;
-        }
-        let app_handle = app.handle.to_string();
-        let Some(crash_msg) = self.state.prompts.read_with_vars(
-            "APP_CRASH.md",
-            &[("app_name", &app.name), ("app_handle", &app_handle)],
-        ) else {
-            return false;
-        };
-        let _ = self
+        if let Err(error) = self
             .state
-            .chat_service
-            .save_system_message(&app.user_id, None, &app.chat_id, crash_msg)
-            .await;
-        let state = self.state.clone();
-        let user_id = app.user_id.clone();
-        let chat_id = app.chat_id.clone();
-        let agent_id = app.agent_id.clone();
-        let agent_name = self
-            .state
-            .agent_service
-            .find_by_id(&agent_id)
+            .app_service
+            .update_crash_fix_attempts(&app.id, app.crash_fix_attempts + 1)
             .await
-            .ok()
-            .flatten()
-            .map(|agent| agent.name);
-        let app_name = app.name.clone();
+        {
+            tracing::error!(app_id = %app.id, %error, "Failed to record repair attempt");
+            return false;
+        }
+        let state = self.state.clone();
         tokio::spawn(async move {
-            let message_id = match state
-                .chat_service
-                .find_executing_message_for_chat(&chat_id)
-                .await
-            {
-                Ok(Some(msg)) => msg.id,
-                Ok(None) => {
-                    info!(chat_id = %chat_id, "Creating agent message for crash fix");
-                    match state
-                        .chat_service
-                        .create_executing_agent_message(&chat_id, &agent_id)
-                        .await
-                    {
-                        Ok(msg) => msg.id,
-                        Err(e) => {
-                            tracing::error!(error = %e, "Failed to create agent message for crash fix");
-                            return;
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to find executing message");
-                    return;
-                }
-            };
-            let execution = crate::core::execution::NewExecution {
-                title: format!("Fixing {app_name}"),
-                agent_name,
-                kind: crate::core::execution::ExecutionKind::App,
-                action: Some("Repairing crashed app".to_string()),
-                source: Some(crate::core::execution::ExecutionSource {
-                    kind: crate::core::execution::ExecutionSourceKind::Chat,
-                    id: Some(chat_id.clone()),
-                }),
-                related_chat_ids: vec![chat_id.clone()],
-                can_cancel: true,
-            };
-            if let Err(e) = state
-                .harness
-                .resume_with_execution(&user_id, &chat_id, &message_id, execution)
-                .await
-            {
-                tracing::error!(error = %e, chat_id = %chat_id, "Failed to resume app chat for crash fix");
+            if let Err(error) = super::repair::repair_app(&state, &app).await {
+                tracing::error!(app_id = %app.id, %error, "App repair failed");
             }
         });
         true

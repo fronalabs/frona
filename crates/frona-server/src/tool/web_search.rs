@@ -299,6 +299,95 @@ impl SearchProvider for YouComProvider {
     }
 }
 
+pub const FIRECRAWL_ORIGIN: &str = "frona";
+
+/// Firecrawl web search. Requires an API key.
+pub struct FirecrawlProvider {
+    client: reqwest::Client,
+    api_key: String,
+}
+
+impl FirecrawlProvider {
+    pub fn new(client: reqwest::Client, api_key: String) -> Self {
+        Self { client, api_key }
+    }
+
+    fn request(&self, query: &str, max_results: usize) -> reqwest::RequestBuilder {
+        self.client
+            .post("https://api.firecrawl.dev/v2/search")
+            .bearer_auth(self.api_key.trim())
+            .json(&serde_json::json!({
+                "query": query,
+                "limit": max_results,
+                "origin": FIRECRAWL_ORIGIN,
+            }))
+    }
+}
+
+#[derive(Deserialize)]
+struct FirecrawlResponse {
+    #[serde(default)]
+    data: FirecrawlData,
+}
+
+#[derive(Deserialize, Default)]
+struct FirecrawlData {
+    #[serde(default)]
+    web: Vec<FirecrawlResult>,
+}
+
+#[derive(Deserialize)]
+struct FirecrawlResult {
+    #[serde(default)]
+    title: Option<String>,
+    url: String,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+impl From<FirecrawlResult> for SearchResult {
+    fn from(r: FirecrawlResult) -> Self {
+        SearchResult {
+            title: r.title.unwrap_or_default(),
+            url: r.url,
+            snippet: r.description.unwrap_or_default(),
+        }
+    }
+}
+
+#[async_trait]
+impl SearchProvider for FirecrawlProvider {
+    async fn search(&self, query: &str, max_results: usize) -> Result<Vec<SearchResult>, AppError> {
+        let resp = self
+            .request(query, max_results)
+            .send()
+            .await
+            .map_err(|e| AppError::Tool(format!("Firecrawl request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::Http {
+                status: status.as_u16(),
+                message: text,
+            });
+        }
+
+        let data: FirecrawlResponse = resp
+            .json()
+            .await
+            .map_err(|e| AppError::Tool(format!("Firecrawl parse error: {e}")))?;
+
+        Ok(data
+            .data
+            .web
+            .into_iter()
+            .take(max_results)
+            .map(SearchResult::from)
+            .collect())
+    }
+}
+
 pub struct BraveProvider {
     client: reqwest::Client,
     api_key: String,
@@ -476,8 +565,9 @@ impl WebSearchTool {
                  - BRAVE_API_KEY (for Brave search)\n\
                  - KEENABLE_API_KEY (for Keenable search; or set FRONA_SEARCH_PROVIDER=keenable to use it key-free)\n\
                  - YDC_API_KEY (for You.com search; or set FRONA_SEARCH_PROVIDER=youcom to use it key-free)\n\
+                 - FIRECRAWL_API_KEY (for Firecrawl search)\n\
                  - FRONA_SEARCH_SEARXNG_BASE_URL (for SearXNG, e.g. http://localhost:3400)\n\
-                 You can also set FRONA_SEARCH_PROVIDER explicitly to: tavily, brave, keenable, youcom, or searxng"
+                 You can also set FRONA_SEARCH_PROVIDER explicitly to: tavily, brave, keenable, youcom, firecrawl, or searxng"
                     .into(),
             )
         })?;
@@ -532,6 +622,10 @@ pub fn create_search_provider(
                 let api_key = env::var("YDC_API_KEY").ok();
                 Some(Arc::new(YouComProvider::new(http, api_key)))
             }
+            "firecrawl" => {
+                let api_key = env::var("FIRECRAWL_API_KEY").ok()?;
+                Some(Arc::new(FirecrawlProvider::new(http, api_key)))
+            }
             "searxng" => {
                 let base_url = settings.searxng_base_url.clone()?;
                 Some(Arc::new(SearxngProvider::new(http, base_url)))
@@ -554,6 +648,9 @@ pub fn create_search_provider(
     }
     if let Ok(api_key) = env::var("YDC_API_KEY") {
         return Some(Arc::new(YouComProvider::new(http, Some(api_key))));
+    }
+    if let Ok(api_key) = env::var("FIRECRAWL_API_KEY") {
+        return Some(Arc::new(FirecrawlProvider::new(http, api_key)));
     }
     if let Some(base_url) = settings.searxng_base_url.clone() {
         return Some(Arc::new(SearxngProvider::new(http, base_url)));
@@ -853,6 +950,40 @@ mod tests {
         assert_eq!(mapped[1].snippet, "D2");
         let empty: YouComResponse = serde_json::from_value(serde_json::json!({})).unwrap();
         assert!(empty.results.web.is_empty());
+    }
+
+    #[test]
+    fn firecrawl_request_sends_key_limit_and_origin() {
+        let provider = FirecrawlProvider::new(reqwest::Client::new(), "fc-k".into());
+        let req = provider.request("rust", 3).build().unwrap();
+        assert_eq!(req.method(), reqwest::Method::POST);
+        assert_eq!(req.url().as_str(), "https://api.firecrawl.dev/v2/search");
+        assert_eq!(req.headers()["Authorization"], "Bearer fc-k");
+        let body: Value = serde_json::from_slice(req.body().unwrap().as_bytes().unwrap()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "query": "rust", "limit": 3, "origin": FIRECRAWL_ORIGIN })
+        );
+    }
+
+    #[test]
+    fn firecrawl_response_maps_web_results() {
+        let data: FirecrawlResponse = serde_json::from_value(serde_json::json!({
+            "success": true,
+            "data": { "web": [
+                { "title": "A", "url": "https://a", "description": "D", "position": 1 },
+                { "title": null, "url": "https://b", "description": null, "position": 2 }
+            ] }
+        }))
+        .unwrap();
+        let mapped: Vec<SearchResult> = data.data.web.into_iter().map(SearchResult::from).collect();
+        assert_eq!(mapped[0].title, "A");
+        assert_eq!(mapped[0].snippet, "D");
+        assert_eq!(mapped[1].title, "");
+        assert_eq!(mapped[1].url, "https://b");
+        assert_eq!(mapped[1].snippet, "");
+        let empty: FirecrawlResponse = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(empty.data.web.is_empty());
     }
 
     #[test]

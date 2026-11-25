@@ -197,14 +197,14 @@ resolve_binary_version() {
 
 	case "$package" in
 	op)
-		version=$(latest_op_version)
-		curl -sfIL "https://cache.agilebits.com/dist/1P/op2/pkg/v${version}/op_linux_amd64_v${version}.zip" >/dev/null
-		curl -sfIL "https://cache.agilebits.com/dist/1P/op2/pkg/v${version}/op_linux_arm64_v${version}.zip" >/dev/null
+		version=$(latest_op_version) || return 1
+		curl -sfIL "https://cache.agilebits.com/dist/1P/op2/pkg/v${version}/op_linux_amd64_v${version}.zip" >/dev/null || return 1
+		curl -sfIL "https://cache.agilebits.com/dist/1P/op2/pkg/v${version}/op_linux_arm64_v${version}.zip" >/dev/null || return 1
 		;;
 	bw)
-		version=$(latest_bw_version)
-		curl -sfIL "https://github.com/bitwarden/clients/releases/download/cli-v${version}/bw-linux-${version}.zip" >/dev/null
-		curl -sfIL "https://github.com/bitwarden/clients/releases/download/cli-v${version}/bw-linux-arm64-${version}.zip" >/dev/null
+		version=$(latest_bw_version) || return 1
+		curl -sfIL "https://github.com/bitwarden/clients/releases/download/cli-v${version}/bw-bit-linux-${version}.zip" >/dev/null || return 1
+		curl -sfIL "https://github.com/bitwarden/clients/releases/download/cli-v${version}/bw-bit-linux-arm64-${version}.zip" >/dev/null || return 1
 		;;
 	syd)
 		version=$(latest_syd_version) || return 1

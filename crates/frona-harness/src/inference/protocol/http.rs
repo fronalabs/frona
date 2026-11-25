@@ -33,8 +33,9 @@ impl WireClient {
 }
 
 fn log_transport_error(operation: &str, error: &http_client::Error) {
-    let http_client::Error::Instance(error) = error else {
-        return;
+    let error = match error {
+        http_client::Error::Transient(error) | http_client::Error::Permanent(error) => error,
+        _ => return,
     };
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error.as_ref());
     let mut causes = Vec::new();
@@ -120,46 +121,36 @@ fn rewrite(
 }
 
 impl HttpClientExt for WireClient {
-    fn send<T, U>(
+    fn send(
         &self,
-        request: Request<T>,
-    ) -> impl Future<Output = http_client::Result<Response<LazyBody<U>>>> + Send + 'static
-    where
-        T: Into<Bytes> + Send,
-        U: From<Bytes> + Send + 'static,
-    {
-        let request = rewrite(request.map(Into::into));
+        request: Request<Bytes>,
+    ) -> impl Future<Output = http_client::Result<Response<LazyBody>>> + Send + 'static {
+        let request = rewrite(request);
         let inner = rig_reqwest::ReqwestClient::from(self.inner.clone());
         async move {
             inner
-                .send(request.map_err(http_client::Error::Instance)?)
+                .send(request.map_err(http_client::Error::Permanent)?)
                 .await
                 .inspect_err(|error| log_transport_error("send", error))
         }
     }
 
-    fn send_multipart<U>(
+    fn send_multipart(
         &self,
         request: Request<MultipartForm>,
-    ) -> impl Future<Output = http_client::Result<Response<LazyBody<U>>>> + Send + 'static
-    where
-        U: From<Bytes> + Send + 'static,
-    {
+    ) -> impl Future<Output = http_client::Result<Response<LazyBody>>> + Send + 'static {
         let inner = rig_reqwest::ReqwestClient::from(self.inner.clone());
         async move { inner.send_multipart(request).await }
     }
 
-    fn send_streaming<T>(
+    fn send_streaming(
         &self,
-        request: Request<T>,
-    ) -> impl Future<Output = http_client::Result<StreamingResponse>> + Send
-    where
-        T: Into<Bytes> + Send,
-    {
-        let request = rewrite(request.map(Into::into));
+        request: Request<Bytes>,
+    ) -> impl Future<Output = http_client::Result<StreamingResponse>> + Send {
+        let request = rewrite(request);
         async move {
             rig_reqwest::ReqwestClient::from(self.inner.clone())
-                .send_streaming(request.map_err(http_client::Error::Instance)?)
+                .send_streaming(request.map_err(http_client::Error::Permanent)?)
                 .await
                 .inspect_err(|error| log_transport_error("send_streaming", error))
         }
@@ -219,7 +210,7 @@ mod tests {
             if streaming {
                 client.send_streaming(request).await.map(|_| ())
             } else {
-                client.send::<_, Bytes>(request).await.map(|_| ())
+                client.send(request).await.map(|_| ())
             }
         }
         .with_subscriber(subscriber)
@@ -261,7 +252,7 @@ mod tests {
     }
 
     fn request_error(captured: &CapturedSend) -> &reqwest::Error {
-        let http_client::Error::Instance(error) = captured.result.as_ref().unwrap_err() else {
+        let http_client::Error::Transient(error) = captured.result.as_ref().unwrap_err() else {
             panic!("expected original SDK transport error");
         };
         let error = error.downcast_ref::<reqwest::Error>().unwrap();

@@ -9,7 +9,7 @@ The harness does not require a Frona server, database, User, Chat, or Agent reco
 ```toml
 [dependencies]
 frona-harness = "0.1"
-rig-core = { version = "0.46", features = ["reqwest"] }
+rig-core = { version = "0.47.1", features = ["reqwest"] }
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 

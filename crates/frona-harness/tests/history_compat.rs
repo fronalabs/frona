@@ -28,7 +28,7 @@ fn output(content: Value) -> Value {
     json!({"content":content,"structured":null,"usage":{"Reported":{"input_tokens":7,"output_tokens":3,"total_tokens":10,"cached_input_tokens":0,"cache_creation_input_tokens":0,"tool_use_prompt_tokens":0,"reasoning_tokens":0}},"metadata":{"opaque":{"type":"reasoning","content":"untouched"}},"ttft_ms":9})
 }
 fn call(id: &str, args: Value) -> Value {
-    json!({"type":"toolcall","id":id,"function":{"name":"lookup","arguments":args},"signature":"signature+/=","additional_params":{"opaque":true}})
+    json!({"type":"toolcall","id":id,"function":{"name":"lookup","arguments":args},"signature":"signature+8=","additional_params":{"opaque":true}})
 }
 
 #[tokio::test]
@@ -81,7 +81,7 @@ async fn version_one_keeps_media_calls_usage_and_application_payloads() {
         args
     );
     let native = response.content[0].native_item().unwrap();
-    assert_eq!(native["thoughtSignature"], "signature+/=");
+    assert_eq!(native["thoughtSignature"], "signature+8=");
     assert_eq!(
         native["frona_legacy_additional_params"],
         json!({"opaque":true})
@@ -294,7 +294,7 @@ async fn version_one_gemini_signed_call_replays_without_archival_fields() {
         .into_iter()
         .find(|part| part.get("functionCall").is_some())
         .unwrap();
-    assert_eq!(signed["thoughtSignature"], "signature+/=");
+    assert_eq!(signed["thoughtSignature"], "signature+8=");
     assert_eq!(signed["functionCall"]["args"], json!({"query":"original"}));
     assert!(
         signed["functionCall"].get("id").is_none(),
@@ -458,7 +458,7 @@ async fn version_one_openrouter_replays_call_metadata_and_ordered_reasoning_deta
     for full in [true, false] {
         let mut original = call("call_original", json!({"query":"original"}));
         original["provider"] = json!({"call_id":"call_original"});
-        let expected = json!({"type":"reasoning.encrypted","id":"reasoning_original","format":"anthropic-claude-v1","index":null,"data":"signature+/="});
+        let expected = json!({"type":"reasoning.encrypted","id":"reasoning_original","format":"anthropic-claude-v1","index":null,"data":"signature+8="});
         original["additional_params"] = if full {
             expected.clone()
         } else {
@@ -608,7 +608,7 @@ async fn openrouter_local_call_reasoning_uses_collision_safe_request_aliases() {
     assert_eq!(details[0]["id"], calls[1]["id"]);
     assert_eq!(details[1]["id"], calls[2]["id"]);
     for detail in details {
-        assert_eq!(detail["data"], "signature+/=");
+        assert_eq!(detail["data"], "signature+8=");
     }
     assert_eq!(
         messages

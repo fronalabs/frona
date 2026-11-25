@@ -144,13 +144,7 @@ impl InferenceError {
                     return status.is_success() || matches!(code, 429 | 500 | 502 | 503 | 504);
                 }
                 match error.as_ref() {
-                    ProviderError::Http(error) => {
-                        matches!(
-                            &**error,
-                            rig_core::http_client::Error::Instance(_)
-                                | rig_core::http_client::Error::StreamEnded
-                        )
-                    }
+                    ProviderError::Http(error) => error.is_transient(),
                     ProviderError::Json(_)
                     | ProviderError::Truncated
                     | ProviderError::Stalled(_) => true,

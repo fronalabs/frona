@@ -13,7 +13,7 @@ COPY --from=catalog-builder /app/target/release/frona-model-catalog /usr/local/b
 COPY crates/frona-model-catalog/resources/modelparams-schema.json /catalogs/modelparams-schema.json
 RUN frona-model-catalog download --output /catalogs
 
-FROM node:24.22.1-bookworm-slim AS node-runtime
+FROM node:24.22.3-bookworm-slim AS node-runtime
 
 FROM node-runtime AS frontend-builder
 WORKDIR /app/web

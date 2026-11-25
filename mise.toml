@@ -1,6 +1,6 @@
 [tools]
 rust = { version = "1.100.0", components = ["rust-src", "rust-analyzer"] }
-node = "24.22.1"
+node = "24.22.3"
 "cargo:cargo-edit" = { version = "0.13.14", default-features = false, features = ["set-version"] }
 "github:release-plz/release-plz" = "release-plz-v0.4.3"
 "github:obi1kenobi/cargo-semver-checks" = "0.51.0"

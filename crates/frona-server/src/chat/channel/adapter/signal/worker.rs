@@ -274,7 +274,7 @@ async fn run(
                         signals.connected();
                         tracing::info!(channel_id = %channel_id, "Signal backlog drained - ready to send");
                     }
-                    Some(Received::Contacts) => {
+                    Some(Received::Contacts { .. }) => {
                         tracing::info!(channel_id = %channel_id, "Signal contacts sync received");
                     }
                     Some(Received::DecryptionError(_)) => {

@@ -27,14 +27,10 @@ bon = "3"
 moka = { version = "0.12", features = ["future", "sync"] }
 cedar-policy = { version = "4", features = ["partial-eval"] }
 # Git-only because the Signal client is not published on crates.io.
-presage = { git = "https://github.com/whisperfish/presage", rev = "4b81740610c301cbd54d95f4dbd4cadd692af95e" }
-presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "4b81740610c301cbd54d95f4dbd4cadd692af95e" }
+presage = { git = "https://github.com/whisperfish/presage", rev = "17337b09ccfcbf8f07a752bb8d1047758e470611" }
+presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "17337b09ccfcbf8f07a752bb8d1047758e470611" }
 
-# Signal's fork of curve25519-dalek shares the upstream crate name, so
-# `[patch.crates-io]` is the only way to substitute it. Mirrors presage's
-# own root Cargo.toml.
 [patch.crates-io]
-curve25519-dalek = { git = "https://github.com/signalapp/curve25519-dalek", tag = "signal-curve25519-4.1.3" }
 # Forces a single libsqlite3-sys across the graph: wa-rs's diesel wants 0.37
 # while presage-store-sqlite pins 0.36, and `links = "sqlite3"` cannot duplicate.
 libsqlite3-sys = { version = "0.36.0", git = "https://github.com/whisperfish/rusqlite", rev = "2a42b3354c9194700d08aa070f70a131a470e7dc" }

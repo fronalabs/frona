@@ -141,8 +141,7 @@ wa-rs-sqlite-storage = { git = "https://github.com/homun-app/wa-rs", rev = "418c
 wa-rs-tokio-transport = { git = "https://github.com/homun-app/wa-rs", rev = "418ccf29279101f425e0657c45c77f91667d6409" }
 wa-rs-ureq-http = { git = "https://github.com/homun-app/wa-rs", rev = "418ccf29279101f425e0657c45c77f91667d6409" }
 
-# Pure-Rust Signal client. See workspace Cargo.toml for the git rev and the
-# curve25519-dalek patch (both non-optional).
+# Pure-Rust Signal client. The workspace pins both crates to the same revision.
 presage = { workspace = true }
 presage-store-sqlite = { workspace = true }
 smol_str = { version = "0.3.6", features = ["serde"] }

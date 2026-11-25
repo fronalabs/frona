@@ -198,7 +198,7 @@ async fn send_typing<S: Store>(
                 ts,
             )
             .await
-            .map_err(into_app_error)
+            .map_err(into_app_error)?;
         }
         SignalTarget::Group { master_key } => {
             let typing = TypingMessage {
@@ -208,9 +208,10 @@ async fn send_typing<S: Store>(
             };
             mgr.send_message_to_group(&master_key, ContentBody::TypingMessage(typing), ts)
                 .await
-                .map_err(into_app_error)
+                .map_err(into_app_error)?;
         }
     }
+    Ok(())
 }
 
 fn into_app_error<E: std::fmt::Display>(e: E) -> AppError {

@@ -1,5 +1,5 @@
 [tools]
-rust = { version = "1.99.1", components = ["rust-src", "rust-analyzer"] }
+rust = { version = "1.100.0", components = ["rust-src", "rust-analyzer"] }
 node = "24.22.1"
 "cargo:cargo-edit" = { version = "0.13.14", default-features = false, features = ["set-version"] }
 "github:release-plz/release-plz" = "release-plz-v0.4.3"

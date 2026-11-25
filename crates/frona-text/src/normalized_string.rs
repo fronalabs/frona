@@ -135,9 +135,9 @@ impl NormalizedString {
             let span = if cur_end > cur_start {
                 let mut min_start = self.spans[cur_start].0;
                 let mut max_end = self.spans[cur_start].1;
-                for i in (cur_start + 1)..cur_end {
-                    min_start = min_start.min(self.spans[i].0);
-                    max_end = max_end.max(self.spans[i].1);
+                for &(start, end) in &self.spans[cur_start + 1..cur_end] {
+                    min_start = min_start.min(start);
+                    max_end = max_end.max(end);
                 }
                 (min_start, max_end)
             } else {
